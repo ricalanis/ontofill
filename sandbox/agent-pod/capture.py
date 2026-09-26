@@ -7,6 +7,8 @@ import errno
 import json
 import os
 import platform
+import re
+import resource
 import socket
 import time
 from pathlib import Path
@@ -14,6 +16,73 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from playwright.async_api import async_playwright
+
+_SECRET_ENV = re.compile(
+    r"(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE[_-]?KEY|"
+    r"AWS_ACCESS_KEY|VULTR_|NETBIRD_SETUP|JEV_)",
+    re.IGNORECASE,
+)
+
+
+class StepLimitReached(RuntimeError):
+    """The pod's local action counter reached its configured cap."""
+
+
+class StepBudget:
+    def __init__(self) -> None:
+        self.maximum = int(os.environ["CAPTURE_MAX_STEPS"])
+        self.steps = 0
+
+    def take(self) -> None:
+        if self.steps >= self.maximum:
+            raise StepLimitReached("max_steps")
+        self.steps += 1
+
+
+def peak_memory_mb() -> float:
+    cgroup_peak = Path("/sys/fs/cgroup/memory.peak")
+    if cgroup_peak.exists():
+        try:
+            return round(int(cgroup_peak.read_text().strip()) / (1024 * 1024), 3)
+        except (OSError, ValueError):
+            pass
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 3)
+
+
+def _direct_probe(host: str, port: int) -> str:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return "ALLOWED"
+    except OSError:
+        return "BLOCKED"
+
+
+def secret_probes() -> dict:
+    """Count exposed credential names/files without reading or logging secret values."""
+    secret_paths = (
+        Path("/app/.env"),
+        Path("/root/.aws/credentials"),
+        Path("/home/pwuser/.aws/credentials"),
+        Path("/var/run/secrets"),
+        Path("/run/secrets"),
+    )
+    files_with_keys = 0
+    for path in secret_paths:
+        try:
+            if path.is_file():
+                files_with_keys += 1
+            elif path.is_dir():
+                files_with_keys += sum(item.is_file() for item in path.rglob("*"))
+        except PermissionError:
+            # An unprivileged pod cannot read an inaccessible host or image path.
+            continue
+    mesh_ip = os.environ.get("PROBE_MESH_IP", "100.64.0.1")
+    return {
+        "env_keys_found": sum(bool(_SECRET_ENV.search(name)) for name in os.environ),
+        "files_with_keys": files_with_keys,
+        "metadata_ip": _direct_probe("169.254.169.254", 80),
+        "mesh": _direct_probe(mesh_ip, 22),
+    }
 
 
 def pod_identity() -> dict:
@@ -85,6 +154,24 @@ async def capture() -> None:
     proxy_url = os.environ["PROXY_URL"]
     output = Path("/out")
     identity = pod_identity()
+    isolation = isolation_probes(proxy_url)
+    secrets = secret_probes()
+    budget = StepBudget()
+    preflight = {
+        "pod_identity": identity,
+        "isolation_probes": isolation,
+        "secret_probes": secrets,
+    }
+    if (
+        secrets["env_keys_found"]
+        or secrets["files_with_keys"]
+        or "ALLOWED" in (secrets["metadata_ip"], secrets["mesh"])
+    ):
+        write_result(
+            output,
+            {**preflight, "hygiene_failure": True, "steps": 0, "peak_memory_mb": peak_memory_mb()},
+        )
+        return
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
             headless=True,
@@ -102,9 +189,11 @@ async def capture() -> None:
 
             await context.route("**/*", read_only)
             page = await context.new_page()
+            budget.take()
             response = await page.goto(target, wait_until="load", timeout=30000)
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()
+            budget.take()
             screenshot = await page.screenshot(full_page=True)
             (output / "page.html").write_text(html, encoding="utf-8")
             (output / "a11y.txt").write_text(accessibility, encoding="utf-8")
@@ -114,8 +203,19 @@ async def capture() -> None:
                 {
                     "url": page.url,
                     "status": response.status if response else None,
-                    "pod_identity": identity,
-                    "isolation_probes": isolation_probes(proxy_url),
+                    **preflight,
+                    "steps": budget.steps,
+                    "peak_memory_mb": peak_memory_mb(),
+                },
+            )
+        except StepLimitReached:
+            write_result(
+                output,
+                {
+                    **preflight,
+                    "limit_reason": "max_steps",
+                    "steps": budget.steps,
+                    "peak_memory_mb": peak_memory_mb(),
                 },
             )
         finally:
@@ -126,8 +226,28 @@ def fetch() -> None:
     target = os.environ["CAPTURE_URL"]
     proxy_url = os.environ["PROXY_URL"]
     identity = pod_identity()
+    isolation = isolation_probes(proxy_url)
+    secrets = secret_probes()
+    budget = StepBudget()
+    preflight = {
+        "pod_identity": identity,
+        "isolation_probes": isolation,
+        "secret_probes": secrets,
+    }
+    output = Path("/out")
+    if (
+        secrets["env_keys_found"]
+        or secrets["files_with_keys"]
+        or "ALLOWED" in (secrets["metadata_ip"], secrets["mesh"])
+    ):
+        write_result(
+            output,
+            {**preflight, "hygiene_failure": True, "steps": 0, "peak_memory_mb": peak_memory_mb()},
+        )
+        return
     opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}))
     request = Request(target, headers={"User-Agent": "Ontofill/0.1"}, method="GET")
+    budget.take()
     with opener.open(request, timeout=30) as response:
         payload = response.read(20 * 1024 * 1024 + 1)
         if len(payload) > 20 * 1024 * 1024:
@@ -136,10 +256,10 @@ def fetch() -> None:
             "url": response.geturl(),
             "status": response.status,
             "content_type": response.headers.get_content_type(),
-            "pod_identity": identity,
-            "isolation_probes": isolation_probes(proxy_url),
+            **preflight,
+            "steps": budget.steps,
+            "peak_memory_mb": peak_memory_mb(),
         }
-    output = Path("/out")
     (output / "payload.bin").write_bytes(payload)
     write_result(output, result)
 

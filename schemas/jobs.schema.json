@@ -4,110 +4,430 @@
   "title": "Sandbox proof jobs.jsonl record",
   "type": "object",
   "additionalProperties": false,
-  "required": ["job_id", "run_id", "step_id", "source_id", "started_at", "ended_at", "checkpoints", "generated_by"],
+  "required": [
+    "job_id",
+    "run_id",
+    "step_id",
+    "source_id",
+    "started_at",
+    "ended_at",
+    "checkpoints",
+    "generated_by",
+    "limits",
+    "usage"
+  ],
   "properties": {
-    "job_id": {"type": "string", "minLength": 1},
-    "run_id": {"type": "string", "minLength": 1},
-    "step_id": {"type": "string", "minLength": 1},
-    "source_id": {"type": "string", "minLength": 1},
-    "started_at": {"type": "string", "format": "date-time"},
-    "ended_at": {"type": "string", "format": "date-time"},
-    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "step_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_by": {
+      "$ref": "common.schema.json#/$defs/generated_by"
+    },
     "checkpoints": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["host", "task", "where", "isolation", "teardown"],
+      "required": [
+        "host",
+        "task",
+        "where",
+        "isolation",
+        "teardown",
+        "secrets"
+      ],
       "properties": {
         "host": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["ok", "sandbox_host", "runtime", "virt"],
-          "properties": {
-            "ok": {"type": "boolean"},
-            "sandbox_host": {"type": "string", "minLength": 1},
-            "runtime": {"type": "string", "minLength": 1},
-            "virt": {
+          "oneOf": [
+            {
               "type": "object",
               "additionalProperties": false,
-              "required": ["cpu_virtualization_flags", "dev_kvm_present"],
+              "required": [
+                "ok",
+                "sandbox_host",
+                "runtime",
+                "virt"
+              ],
               "properties": {
-                "cpu_virtualization_flags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-                "dev_kvm_present": {"type": "boolean"}
+                "ok": {
+                  "type": "boolean"
+                },
+                "sandbox_host": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "runtime": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "virt": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "cpu_virtualization_flags",
+                    "dev_kvm_present"
+                  ],
+                  "properties": {
+                    "cpu_virtualization_flags": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "dev_kvm_present": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ok",
+                "not_run"
+              ],
+              "properties": {
+                "ok": {
+                  "const": false
+                },
+                "not_run": {
+                  "const": true
+                }
               }
             }
-          }
+          ]
         },
         "task": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["ok", "requested", "result", "value_ids"],
+          "required": [
+            "ok",
+            "requested",
+            "result",
+            "value_ids"
+          ],
           "properties": {
-            "ok": {"type": "boolean"},
-            "requested": {"type": "object"},
-            "result": {"type": "object"},
-            "value_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/value_id"}}
-          }
-        },
-        "where": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["ok", "hostname", "uname"],
-          "properties": {
-            "ok": {"type": "boolean"},
-            "hostname": {"type": "string", "minLength": 1},
-            "uname": {
-              "type": "object",
-              "required": ["system", "release", "machine"],
-              "properties": {
-                "system": {"type": "string", "minLength": 1},
-                "release": {"type": "string", "minLength": 1},
-                "machine": {"type": "string", "minLength": 1}
-              },
-              "additionalProperties": true
+            "ok": {
+              "type": "boolean"
+            },
+            "requested": {
+              "type": "object"
+            },
+            "result": {
+              "type": "object"
+            },
+            "value_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "common.schema.json#/$defs/value_id"
+              }
             }
           }
         },
+        "where": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ok",
+                "hostname",
+                "uname"
+              ],
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                },
+                "hostname": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uname": {
+                  "type": "object",
+                  "required": [
+                    "system",
+                    "release",
+                    "machine"
+                  ],
+                  "properties": {
+                    "system": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "release": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "machine": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ok",
+                "not_run"
+              ],
+              "properties": {
+                "ok": {
+                  "const": false
+                },
+                "not_run": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        },
         "isolation": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "probes"
+              ],
+              "properties": {
+                "probes": {
+                  "type": "array",
+                  "minItems": 2,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "probe",
+                      "result"
+                    ],
+                    "properties": {
+                      "probe": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "result": {
+                        "enum": [
+                          "BLOCKED",
+                          "ALLOWED"
+                        ]
+                      },
+                      "detail": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "probes",
+                "not_run"
+              ],
+              "properties": {
+                "probes": {
+                  "type": "array",
+                  "maxItems": 0
+                },
+                "not_run": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        },
+        "teardown": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["probes"],
+          "required": [
+            "ok",
+            "detail"
+          ],
           "properties": {
-            "probes": {
-              "type": "array",
-              "minItems": 2,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["probe", "result"],
-                "properties": {
-                  "probe": {"type": "string", "minLength": 1},
-                  "result": {"enum": ["BLOCKED", "ALLOWED"]},
-                  "detail": {"type": "object"}
+            "ok": {
+              "type": "boolean"
+            },
+            "detail": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pod_gone",
+                "proxy_gone",
+                "network_removed"
+              ],
+              "properties": {
+                "pod_gone": {
+                  "type": "boolean"
+                },
+                "proxy_gone": {
+                  "type": "boolean"
+                },
+                "network_removed": {
+                  "type": "boolean"
+                },
+                "verified": {
+                  "type": "boolean"
                 }
               }
             }
           }
         },
-        "teardown": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["ok", "detail"],
-          "properties": {
-            "ok": {"type": "boolean"},
-            "detail": {
+        "secrets": {
+          "oneOf": [
+            {
               "type": "object",
               "additionalProperties": false,
-              "required": ["pod_gone", "proxy_gone", "network_removed"],
+              "required": [
+                "ok",
+                "env_keys_found",
+                "files_with_keys",
+                "metadata_ip",
+                "mesh"
+              ],
               "properties": {
-                "pod_gone": {"type": "boolean"},
-                "proxy_gone": {"type": "boolean"},
-                "network_removed": {"type": "boolean"},
-                "verified": {"type": "boolean"}
+                "ok": {
+                  "type": "boolean"
+                },
+                "env_keys_found": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "files_with_keys": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "metadata_ip": {
+                  "enum": [
+                    "BLOCKED",
+                    "ALLOWED"
+                  ]
+                },
+                "mesh": {
+                  "enum": [
+                    "BLOCKED",
+                    "ALLOWED"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ok",
+                "not_run"
+              ],
+              "properties": {
+                "ok": {
+                  "const": false
+                },
+                "not_run": {
+                  "const": true
+                }
               }
             }
-          }
+          ]
         }
       }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_mb",
+        "cpus",
+        "pids",
+        "timeout_s",
+        "max_steps"
+      ],
+      "properties": {
+        "memory_mb": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 16384
+        },
+        "cpus": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 16
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 4096
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "peak_memory_mb",
+        "wall_s",
+        "steps"
+      ],
+      "properties": {
+        "peak_memory_mb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "wall_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "failure_reason": {
+      "enum": [
+        "timeout",
+        "memory",
+        "pids",
+        "max_steps"
+      ]
     }
   }
 }

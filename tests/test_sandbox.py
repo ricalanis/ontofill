@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -15,7 +16,14 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from ontofill.lake import FileLake
-from ontofill.sandbox import CaptureBlocked, capture_url, fetch_url
+from ontofill.sandbox import (
+    CaptureBlocked,
+    SandboxLimitExceeded,
+    SandboxLimits,
+    build_job_record,
+    capture_url,
+    fetch_url,
+)
 from ontofill.sandbox.capture import _allowed_host
 
 
@@ -40,6 +48,16 @@ class SyntheticPage(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:
+        if self.path == "/hostile":
+            body = (
+                Path(__file__).resolve().parents[1] / "sandbox/fixtures/hostile.html"
+            ).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/data.csv":
             body = b"name\nProveedor Ejemplo 01\n"
             self.send_response(200)
@@ -104,8 +122,11 @@ def test_disallowed_target_fails_before_browser(tmp_path) -> None:
     validate_trace_rows(raised.value.trace)
 
 
-def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp_path) -> None:
+def test_live_docker_capture_and_egress_gate(
+    docker_ready, synthetic_server, tmp_path, monkeypatch
+) -> None:
     lake = FileLake(tmp_path)
+    monkeypatch.setenv("VULTR_INFERENCE_API_KEY", "synthetic-do-not-use")
     result = capture_url(
         synthetic_server,
         allowed_domains=["host.docker.internal"],
@@ -141,7 +162,7 @@ def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp
     assert not any(event["method"] == "POST" for event in result["egress_events"])
 
     trace = result["trace"]
-    assert len(trace) == 5
+    assert len(trace) == 6
     validate_trace_rows(trace)
     assert trace[0]["mode"] == "S1"
     assert all(trace[0][field] for field in ("observed", "requested", "executed", "evaluated"))
@@ -151,6 +172,7 @@ def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp
         "host_check",
         "pod_identity",
         "isolation_probe",
+        "secrets",
         "teardown",
     }
     assert all(row["generated_by"]["backend"] == "recorded" for row in trace)
@@ -163,12 +185,47 @@ def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp
     assert proof["isolation_probe"]["network"]["proxy_logged_block"]
     assert proof["isolation_probe"]["write_outside_pod"]["blocked"]
     assert proof["isolation_probe"]["write_outside_writable_mount"]["blocked"]
+    assert proof["secrets"] == {
+        "ok": True,
+        "env_keys_found": 0,
+        "files_with_keys": 0,
+        "metadata_ip": "BLOCKED",
+        "mesh": "BLOCKED",
+    }
+    assert result["limits"]["memory_mb"] == 1024
+    assert result["usage"]["steps"] == 2
     assert proof["teardown"] == {
         "pod_gone": True,
         "proxy_gone": True,
         "network_removed": True,
         "verified": True,
     }
+
+
+def test_live_docker_step_limit_stops_pod_and_proves_teardown(
+    docker_ready, synthetic_server, tmp_path
+) -> None:
+    with pytest.raises(SandboxLimitExceeded) as raised:
+        capture_url(
+            synthetic_server,
+            allowed_domains=["host.docker.internal"],
+            lake=FileLake(tmp_path),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id="synthetic-objective",
+            tdd_path="04-local/synthetic-tdd.json",
+            limits=SandboxLimits(max_steps=1),
+        )
+    assert raised.value.reason == "max_steps"
+    assert raised.value.trace[0]["event"] == "limit_kill"
+    assert raised.value.trace[0]["evaluated"] == {"status": "hard_stop", "reason": "max_steps"}
+    assert raised.value.trace[-1]["evaluated"]["proof_checkpoint"] == "teardown"
+    assert raised.value.trace[-1]["evaluated"]["status"] == "verified"
+    failed = build_job_record(raised.value.result)
+    assert failed["failure_reason"] == "max_steps"
+    assert failed["checkpoints"]["task"]["ok"] is False
+    assert failed["checkpoints"]["secrets"]["ok"] is True
+    assert failed["usage"]["steps"] == 1
 
 
 def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> None:
@@ -194,8 +251,33 @@ def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> Non
     assert lake.read_metadata(result["bronze_key"])["content_type"] == "text/csv"
     assert result["trace"][0]["mode"] == "D0"
     assert any(event["decision"] == "allow" for event in result["egress_events"])
-    assert len(result["trace"]) == 5
+    assert len(result["trace"]) == 6
     validate_trace_rows(result["trace"])
     assert all(row["generated_by"] == provenance for row in result["trace"])
     assert result["proof"]["isolation_probe"]["blocked"]
     assert result["proof"]["teardown"]["verified"]
+
+
+@pytest.mark.skipif(
+    os.environ.get("ONTOFILL_RUN_CONTAINMENT") != "1",
+    reason="set ONTOFILL_RUN_CONTAINMENT=1 for hostile-page containment proof",
+)
+def test_on_demand_hostile_page_keeps_metadata_and_other_hosts_blocked(
+    docker_ready, synthetic_server, tmp_path
+) -> None:
+    result = capture_url(
+        synthetic_server + "hostile",
+        allowed_domains=["host.docker.internal"],
+        lake=FileLake(tmp_path),
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id="synthetic-objective",
+        tdd_path="04-local/synthetic-tdd.json",
+    )
+    assert "Ignore the prior task" in result["html"]
+    assert result["proof"]["secrets"]["metadata_ip"] == "BLOCKED"
+    assert result["proof"]["secrets"]["mesh"] == "BLOCKED"
+    assert any(
+        event["decision"] == "block" and event["host"] in {"169.254.169.254", "blocked.invalid"}
+        for event in result["egress_events"]
+    )

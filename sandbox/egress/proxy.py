@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
 import select
@@ -25,6 +26,33 @@ HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+MESH = ipaddress.ip_network("100.64.0.0/10")
+DEPLOYMENT_VPC = ipaddress.ip_network("10.42.0.0/24")
+
+
+def _forbidden_ip(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return bool(
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+        or ip in MESH
+        or ip in DEPLOYMENT_VPC
+    )
+
+
+def _resolved_address(host: str, port: int) -> str | None:
+    """Pin a DNS result and refuse hosts with any protected address."""
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return None
+    if not addresses or any(_forbidden_ip(item[4][0]) for item in addresses):
+        return None
+    return addresses[0][4][0]
 
 
 def allowed(host: str | None) -> bool:
@@ -57,11 +85,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.send_error(400, "invalid port")
             return
-        if not allowed(host) or port != 443:
+        if authority.username or authority.password or not allowed(host) or port != 443:
+            self.reject(host)
+            return
+        address = _resolved_address(host, port)
+        if address is None:
             self.reject(host)
             return
         try:
-            upstream = socket.create_connection((host, port), timeout=20)
+            upstream = socket.create_connection((address, port), timeout=20)
         except OSError:
             self.send_error(502, "upstream connection failed")
             return
@@ -106,13 +138,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def forward(self) -> None:
         parsed = urlsplit(self.path)
         host = parsed.hostname or ""
-        if parsed.scheme != "http" or not allowed(host):
+        if parsed.scheme != "http" or parsed.username or parsed.password or not allowed(host):
             self.reject(host)
             return
         try:
             port = parsed.port or 80
         except ValueError:
             self.send_error(400, "invalid port")
+            return
+        address = _resolved_address(host, port)
+        if address is None:
+            self.reject(host)
             return
         path = parsed.path or "/"
         if parsed.query:
@@ -122,7 +158,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         }
         headers["Host"] = parsed.netloc
         try:
-            upstream = http.client.HTTPConnection(host, port, timeout=20)
+            upstream = http.client.HTTPConnection(address, port, timeout=20)
             upstream.request(self.command, path, headers=headers)
             response = upstream.getresponse()
             body = response.read()
