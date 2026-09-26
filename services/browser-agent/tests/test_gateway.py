@@ -328,6 +328,40 @@ def test_both_screens_down_fails_closed_and_is_not_cached(env):
 
 
 @respx.mock
+@pytest.mark.parametrize("safety, gate", [("safe", "clean"), ("unsafe", "flagged")])
+def test_low_confidence_injection_is_unsure_not_a_flag(env, safety, gate):
+    """Long untagged agent prompts (Skyvern) get Jev 'injection' at low confidence; the safety model decides."""
+    respx.post(f"{JEV}/v1/systemone").mock(return_value=jev_answer("injection", 0.31))
+
+    def vultr(req):
+        m = json.loads(req.content)["model"]
+        return safety_answer(safety) if m == "nemotron-3.5-content-safety" else chat_ok()
+
+    respx.post(f"{VULTR}/chat/completions").mock(side_effect=vultr)
+    tok = env.open_session()
+    r = env.client.post("/v1/chat/completions", json=body("You are an agent. Page elements: " + "x " * 1200),
+                        headers=auth(tok))
+    assert r.status_code == 200 and r.headers["X-BA-Gate"] == gate
+
+
+@respx.mock
+def test_admin_view_carries_last_flag_without_page_text(env):
+    respx.post(f"{JEV}/v1/systemone").mock(return_value=jev_answer("injection", 0.97))
+
+    def vultr(req):
+        m = json.loads(req.content)["model"]
+        return safety_answer("unsafe") if m == "nemotron-3.5-content-safety" else chat_ok()
+
+    respx.post(f"{VULTR}/chat/completions").mock(side_effect=vultr)
+    tok = env.open_session()
+    env.client.post("/v1/chat/completions", json=body(f"<page_content>{INJECTED}</page_content>"), headers=auth(tok))
+    view = env.client.get("/admin/sessions/s1", headers=env.admin).json()
+    flag = view["last_flag"]
+    assert view["flagged"] >= 1 and flag["by"] == "gateway" and flag["jev_choice"] == "injection"
+    assert flag["safety_verdict"] == "unsafe" and INJECTED not in json.dumps(view)
+
+
+@respx.mock
 def test_screen_cache_hit(env):
     jev = respx.post(f"{JEV}/v1/systemone").mock(return_value=jev_answer("benign", 0.99))
     respx.post(f"{VULTR}/chat/completions").mock(return_value=chat_ok())

@@ -1,0 +1,70 @@
+# One Skyvern cell (brain + hands) plus the shared Postgres, for a VM. Documentation of what
+# backends/skyvern/cell.py does with the docker CLI; the controller's CellPool normally manages cells itself.
+#
+# Skyvern is AGPL-3.0: the image runs unmodified; we only set env and mount our own hands.sh.
+# The brain never gets an upstream key: SKYVERN_GATEWAY_TOKEN is a short-lived gateway session token
+# (minted by the controller via POST /admin/sessions). Put it in ./secrets/brain.env (0600), never in this file:
+#   OPENAI_COMPATIBLE_API_KEY=<gateway session token>
+#
+#   docker compose -f deploy/skyvern-cell/compose.yaml up -d
+#
+# Measured (SMOKE.md): brain ~1.7 GiB idle, hands ~0.2-0.3 GiB; brain boot ~17 s on a migrated DB.
+
+name: ba-skyvern-cell
+
+x-image: &skyvern public.ecr.aws/skyvern/skyvern:latest
+
+services:
+  pg:
+    image: postgres:14-alpine
+    environment: {POSTGRES_USER: skyvern, POSTGRES_PASSWORD: skyvern, POSTGRES_DB: skyvern}
+    networks: [db]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "skyvern"]
+      interval: 2s
+      retries: 30
+
+  hands:
+    image: *skyvern
+    entrypoint: ["/bin/bash", "/hands.sh"]   # headless Chromium, CDP relayed to 0.0.0.0:9222
+    volumes: ["../../cells/hands.sh:/hands.sh:ro"]
+    networks:
+      cell: {ipv4_address: 172.30.101.10}     # stable IP: Chrome's Host check accepts IPs, and recycles keep it
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 512
+    security_opt: [no-new-privileges]
+
+  brain:
+    image: *skyvern
+    depends_on:
+      pg: {condition: service_healthy}
+      hands: {condition: service_started}
+    env_file: [./secrets/brain.env]            # OPENAI_COMPATIBLE_API_KEY=<gateway session token> only
+    environment:
+      ENABLE_OPENAI_COMPATIBLE: "true"
+      OPENAI_COMPATIBLE_MODEL_NAME: qwen3.8-flash-next
+      OPENAI_COMPATIBLE_API_BASE: http://host.docker.internal:8700/v1   # the gateway on the host
+      OPENAI_COMPATIBLE_SUPPORTS_VISION: "false"
+      LLM_KEY: OPENAI_COMPATIBLE
+      BROWSER_TYPE: cdp-connect
+      BROWSER_REMOTE_DEBUGGING_URL: http://172.30.101.10:9222
+      DATABASE_STRING: postgresql+psycopg://skyvern:skyvern@pg:5432/skyvern
+      SKYVERN_TELEMETRY: "false"
+    # Linux: host-gateway is the docker bridge IP, so a gateway bound to 127.0.0.1 is NOT reachable from here
+    # (OrbStack/Docker Desktop forward loopback; plain Linux does not). On the VM, bind the gateway to the bridge
+    # IP (BA_GATEWAY_HOST=172.17.0.1) with a firewall rule allowing only cell subnets, or run it on this network.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1::8000"]                 # API on loopback only, random host port
+    networks: [cell, db]
+    mem_limit: 3g
+    cpus: 2
+    pids_limit: 1024
+    security_opt: [no-new-privileges]
+
+networks:
+  cell:
+    ipam: {config: [{subnet: 172.30.101.0/24}]}
+  db:
+    internal: true

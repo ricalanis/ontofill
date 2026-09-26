@@ -23,12 +23,14 @@ class Session:
     spent_usd: float = 0.0
     calls: int = 0
     flagged: int = 0
+    last_flag: dict | None = None  # §12a screen summary of the most recent flagged chunk (no page text)
     revoked: bool = False
     created_at: float = field(default_factory=time.time)
 
     def view(self) -> dict:
         return {"session_id": self.session_id, "run_id": self.run_id, "spent_usd": round(self.spent_usd, 6),
                 "budget_usd": self.budget_usd, "calls": self.calls, "flagged": self.flagged,
+                "last_flag": self.last_flag,
                 "expires_at": self.expires_at, "revoked": self.revoked}
 
 
@@ -77,13 +79,15 @@ class SessionStore:
                 raise SessionError(402, "session budget exhausted")
             return s
 
-    def charge(self, session_id: str, usd: float, flagged: bool = False) -> None:
+    def charge(self, session_id: str, usd: float, flagged: bool = False, flag: dict | None = None) -> None:
         with self._lock:
             s = self._by_id.get(session_id)
             if s:
                 s.spent_usd += usd
                 s.calls += 1
                 s.flagged += int(flagged)
+                if flagged and flag:
+                    s.last_flag = flag
 
     def revoke(self, session_id: str) -> bool:
         with self._lock:

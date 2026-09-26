@@ -17,6 +17,7 @@ import anyio
 
 from controller.backend import CALL_ERRORS
 from controller.captures import LocalCaptureStore
+from controller.cells import CellError, CellPool, pool_from_env
 from controller.gateway import ScreenedGatewayClient
 from controller.loop import Limits, Session
 from shared import config
@@ -39,7 +40,7 @@ class Broker:
     """Holds live sessions. Factories are injectable so tests run without a gateway or a browser."""
 
     def __init__(self, *, admin=None, gateway_factory=None, backend_factory=None, steps_dir: Path | None = None,
-                 captures_dir: Path | None = None, case_dir: Path | None = None):
+                 captures_dir: Path | None = None, case_dir: Path | None = None, pool: CellPool | None | bool = None):
         gateway_url = config.env(config.GATEWAY_URL_ENV)
         admin_token = os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV)
         if admin is None and admin_token:
@@ -51,6 +52,9 @@ class Broker:
         self.captures_dir = Path(captures_dir or os.environ.get(CAPTURES_DIR_ENV) or "runs/browser-agent/captures")
         case = case_dir or os.environ.get(CASE_DIR_ENV)
         self.case_dir = Path(case) if case else None
+        # Cells (§13a): a pool leases one cell per session; None = the backend launches/connects a browser itself.
+        self.pool = pool_from_env() if pool is None else (pool or None)
+        self.cells: dict[str, object] = {}  # session_id -> leased Cell
         self.sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
 
@@ -77,6 +81,18 @@ class Broker:
                         tdd_path=tdd.get("tdd_path"))
         case_dir = Path(tdd["case_dir"]) if tdd.get("case_dir") else self.case_dir
         cdp_url = tdd.get("cdp_url") or os.environ.get(CDP_URL_ENV)
+        cell = None
+        if self.pool is not None:  # no fallback to a host browser when cells are configured
+            try:
+                cell = self.pool.lease("native", allowed_domains, limits or {})
+            except (CellError, ValueError) as exc:
+                self.admin.revoke(session_id)
+                raise RuntimeError(f"could not lease a cell for {session_id}: {exc}") from exc
+            cdp_url = cell.cdp_url
+        cell_info = None
+        if cell is not None:
+            cell_info = {"cell_id": cell.cell_id, "isolation": cell.isolation, "placement": cell.placement,
+                         **{k: v for k, v in self.pool.timings(cell.cell_id).items() if k.endswith("_ms") or k == "warm"}}
         session = Session(session_id=session_id, backend=self.backend_factory(cdp_url),
                           gateway=self.gateway_factory(token), steps=steps,
                           captures=LocalCaptureStore(self.captures_dir), allowed_domains=allowed_domains,
@@ -84,17 +100,22 @@ class Broker:
                           source_id=tdd.get("source_id"),
                           artifact_paths=[tdd["tdd_path"]] if tdd.get("tdd_path") else None, admin=self.admin,
                           vision_grounding=bool(tdd.get("vision_grounding")), start_url=tdd.get("start_url"),
-                          cdp_url=cdp_url)
+                          cdp_url=cdp_url, cell=cell_info)
         try:
             opened = session.open()
         except Exception:
             session.close()
             self.admin.revoke(session_id)
+            if cell is not None:
+                self.pool.release(cell)
             raise
         with self._lock:
             self.sessions[session_id] = session
+            if cell is not None:
+                self.cells[session_id] = cell
         return {"session_id": session_id, "live_view_url": None, "url": opened.get("url"),
-                "steps_path": str(steps.path)}
+                "steps_path": str(steps.path),
+                **({"cell_id": cell_info["cell_id"], "isolation": cell_info["isolation"]} if cell_info else {})}
 
     def act(self, session_id: str, goal: str | None = None, action: dict | None = None) -> dict:
         if bool(goal) == bool(action):
@@ -108,8 +129,10 @@ class Broker:
     def close(self, session_id: str) -> dict:
         with self._lock:
             session = self.sessions.pop(session_id, None)
+            cell = self.cells.pop(session_id, None)
         if session is None:
             return {"closed": False, "error": f"unknown session {session_id!r}"}
+        cell_result = None
         try:
             result = session.close()
         finally:
@@ -118,11 +141,20 @@ class Broker:
                 revoked = True
             except CALL_ERRORS:
                 revoked = False
+            if cell is not None:  # recycle = destroy + recreate; the cell is never reused
+                cell_result = self.pool.release(cell)
+        if cell_result is not None:
+            result = result | {"cell": cell_result}
+            result["metrics"] = dict(result.get("metrics") or {}) | {
+                "cell": {k: v for k, v in self.pool.timings(cell_result["cell_id"]).items()
+                         if k.endswith("_ms") or k == "warm"}}
         return result | {"token_revoked": revoked}
 
     def close_all(self) -> None:
         for session_id in list(self.sessions):
             self.close(session_id)
+        if self.pool is not None:
+            self.pool.shutdown()
 
 
 _broker: Broker | None = None

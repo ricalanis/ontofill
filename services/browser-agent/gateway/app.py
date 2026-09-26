@@ -46,6 +46,19 @@ class Settings:
                    log_path=os.environ.get(config.GATEWAY_LOG_ENV) or ".cache/gateway-calls.jsonl")
 
 
+
+def screen_summary(gate: dict | None) -> dict | None:
+    """CONTRACT §12a `screen` object for the first flagged chunk of a call (no page text), or None."""
+    for c in (gate or {}).get("chunks") or []:
+        if c.get("flagged"):
+            jev, safety = c.get("jev") or {}, c.get("safety") or {}
+            verdict = safety.get("verdict")
+            return {"flagged": True, "jev_choice": jev.get("choice"), "jev_confidence": jev.get("confidence"),
+                    "safety_verdict": verdict if verdict in ("safe", "unsafe") else "unavailable",
+                    "reason": c.get("reason") or ("injection" if jev.get("choice") == "injection" else "unsafe"),
+                    "by": "gateway", "ts": time.time()}
+    return None
+
 def _bearer(request: Request) -> str | None:
     auth = request.headers.get("authorization") or ""
     return auth[7:].strip() if auth.lower().startswith("bearer ") else None
@@ -100,7 +113,8 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
                 inp, out = _vultr_tokens(usage or {})
                 usd = vultr_usd(model, inp, out)
             if status == 200:
-                store.charge(session.session_id, usd, flagged=bool(gate and gate.get("flagged")))
+                store.charge(session.session_id, usd, flagged=bool(gate and gate.get("flagged")),
+                             flag=screen_summary(gate))
             log.write(session_id=session.session_id, run_id=session.run_id, step_id=step_id, upstream=upstream,
                       purpose=purpose, model=model, status=status, input_tokens=inp, output_tokens=out,
                       est_usd=round(usd, 8), est_tokens=est_tokens or None, gate=gate,

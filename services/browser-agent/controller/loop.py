@@ -78,7 +78,7 @@ class Session:
                  allowed_domains: list[str], case_dir: Path | None, job_id: str, limits: Limits | None = None,
                  source_id: str | None = None, artifact_paths: list[str] | None = None, admin=None,
                  vision_grounding: bool = False, start_url: str | None = None, cdp_url: str | None = None,
-                 prescreen: bool = True):
+                 prescreen: bool = True, cell: dict | None = None):
         self.session_id = session_id
         self.backend = backend
         self.gateway = gateway
@@ -105,6 +105,8 @@ class Session:
         self._vision_costs: list[float] = []
         self._started = time.monotonic()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"ba-{session_id[:12]}")
+        self.cell = cell  # the leased cell (§13a): id, isolation, timings; noted on the first step's `executed`
+        self._cell_note = dict(cell) if cell else None
         self._open_args = {"session_id": session_id, "allowed_domains": self.allowed_domains,
                            "start_url": start_url, "cdp_url": cdp_url}
 
@@ -142,6 +144,9 @@ class Session:
         kw.setdefault("mode", self.mode)
         if kw.get("generated_by") is None:
             kw["generated_by"] = self._gen()
+        if self._cell_note and isinstance(kw.get("executed"), dict):
+            kw["executed"] = {**kw["executed"], "cell": self._cell_note}
+            self._cell_note = None
         step = self.steps.emit(**kw)
         self.metrics.steps += 1
         for key in {kw.get("screenshot_key"), (kw.get("verify") or {}).get("screenshot_key")} - {None}:

@@ -126,7 +126,11 @@ class Screener:
                 report(upstream="vultr", purpose="screen", model=self.safety_model, status=exc.status or 502,
                        usage={}, latency_ms=None)
                 result["safety"] = {"verdict": "error", "model": self.safety_model, "error": exc.detail[:120]}
-        jev_flag = (result["jev"] or {}).get("choice") == "injection"
+        # Jev flags on its own only when confident; a low-confidence "injection" is "unsure" (common on long agent
+        # prompts such as Skyvern's, which carry the agent's own instructions) and goes to the safety model below.
+        jev = result["jev"] or {}
+        jev_conf = jev.get("confidence") if isinstance(jev.get("confidence"), (int, float)) else 0.0
+        jev_flag = jev.get("choice") == "injection" and jev_conf >= JEV_MIN_CONFIDENCE
         safety_verdict = (result["safety"] or {}).get("verdict")
         # Fail closed: when Jev was unsure or down, only an explicit "safe" from the safety model clears the chunk.
         # Quarantine only wraps the text, so an unscreened chunk costs a notice, never content.

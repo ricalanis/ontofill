@@ -29,8 +29,11 @@ Errors: `400` malformed body, `401` unknown/expired/revoked token, `402` session
 failure.
 
 Screening is one-way and fails closed: Jev asks first; if Jev says injection, is below 0.8 confidence or is
-down, the Vultr content-safety model gives a second opinion. A chunk is flagged if either says so, or if Jev was
-unsure/down and the safety model did not explicitly say `safe` (`reason: unscreened`). A "benign" verdict never
+down, the Vultr content-safety model gives a second opinion. A chunk is flagged if Jev says injection with
+confidence ≥ 0.8, if the safety model says `unsafe`, or if Jev was unsure (< 0.8, either answer) or down and the
+safety model did not explicitly say `safe` (`reason: unscreened`). Long untagged agent prompts (Skyvern's, which
+include the agent's own instructions) typically get a low-confidence "injection" from Jev; the safety model decides
+those. A "benign" verdict never
 removes another defense. Screening calls are charged to the same session and logged with `purpose: screen`;
 results are cached per chunk hash (errors are not cached).
 
@@ -73,6 +76,30 @@ Metrics: `jev_observations_screened`, `jev_flagged`, `vision_calls_avoided`, `vi
 The native backend drives Chromium over CDP (`cdp_url`, the pod) or launches it locally for development; every
 request outside `allowed_domains` is aborted and recorded (the pod's egress proxy enforces the same list below it,
 including WebSockets, which page routing does not see).
+
+## Cells
+
+Each session leases one **cell** (CONTRACT §13a) when `BA_CELL_PROVIDER` is set; the native backend then drives
+that cell's Chromium over its `cdp_url` instead of a browser on the control plane.
+
+- Provider interface (`controller/cells.py`), the shape of the engine's substrate:
+  `create(backend: native|skyvern, allowed_domains, limits, placement: sandbox_vm|throwaway_vx1)` →
+  `{cell_id, cdp_url, brain_url?, live_view_port}`, `destroy(cell_id)`, `status(cell_id)`.
+- `BA_CELL_PROVIDER`: `none` (default; the backend launches or connects a browser itself), `docker-stub`, or
+  `ontofill` (the engine's `ontofill.cells` module, adapted as-is). With a provider set, a failed lease fails
+  `session.open`; there is no fallback to a host browser.
+- Warm pool (`BA_CELL_K_NATIVE`, default 1; `BA_CELL_K_SKYVERN`, default 0). A cell's allowed domains and caps are
+  fixed at creation, so warm cells are made for the most recent (domains, caps) per backend and a lease that does not
+  match creates a fresh cell. Release destroys the cell and a replacement is created in the background: **a cell is
+  never reused across sessions**. `session.open` returns `cell_id` + `isolation`; the first step's `executed.cell`
+  carries them with `create_ms` / `lease_ms` / `warm`; `session.close` returns `destroy_ms`.
+- **`docker-stub` is a local stand-in, not a sandbox:** runc (tier 2), and the egress allowlist is enforced only by
+  the controller's per-request route abort, not at the network layer; `isolation` says so. One hands container per
+  cell (upstream Skyvern image as a Chromium carrier, unmodified, `cells/hands.sh` mounted read-only) on its own
+  Docker network, `--memory/--cpus/--pids-limit`, CDP published on 127.0.0.1 only, no environment passed at all.
+  A skyvern cell gets hands only (`brain_url` null). Measured on a laptop (OrbStack, image already pulled): cold
+  create 0.42 s, warm lease ~0 ms, destroy 0.32 s, hands memory 149 MiB idle / 163 MiB during a task.
+- `uv run pytest -q -m docker` runs a real stub cell end to end and checks that nothing is left behind.
 
 ## Environment
 

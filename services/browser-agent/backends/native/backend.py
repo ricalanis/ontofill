@@ -91,6 +91,8 @@ class NativeBackend:
         self.viewport = viewport
         self.text_limit = text_limit
         self.timeout_ms = timeout_ms
+        self.nav_grace_ms = 300  # how long after a click a navigation may take to start
+        self._nav = {"requested": 0, "committed": 0}
         self.allowed_domains: list[str] = []
         self.blocked: list[str] = []  # every blocked host, in order of first attempt
         self._new_blocked: list[str] = []
@@ -147,9 +149,13 @@ class NativeBackend:
         self._wire(page)
         self.page = page
 
-    @staticmethod
-    def _wire(page) -> None:
+    def _wire(self, page) -> None:
         page.on("dialog", lambda d: d.dismiss())
+        # Count main-frame document requests and commits, so a click that starts a navigation can wait for it.
+        page.on("request", lambda r: self._nav.__setitem__("requested", self._nav["requested"] + 1)
+                if r.is_navigation_request() and r.frame == page.main_frame else None)
+        page.on("framenavigated", lambda f: self._nav.__setitem__("committed", self._nav["committed"] + 1)
+                if f == page.main_frame else None)
 
     def _drain_blocked(self) -> list[str]:
         out, self._new_blocked = sorted(set(self._new_blocked)), []
@@ -183,8 +189,20 @@ class NativeBackend:
             return f'[data-ba-id="{ref}"]'
         return ref
 
-    def _settle(self) -> None:
+    def _settle(self, before: dict | None = None) -> None:
+        """After a click: if it started a main-frame navigation (a document request within the grace window), wait
+        for that navigation to commit and load, so the next observe tags the new page, not the old one."""
         with contextlib.suppress(PlaywrightError):
+            if before is not None:
+                waited = 0
+                while self._nav["requested"] == before["requested"] and waited < self.nav_grace_ms:
+                    self.page.wait_for_timeout(25)
+                    waited += 25
+                if self._nav["requested"] != before["requested"]:
+                    waited = 0
+                    while self._nav["committed"] == before["committed"] and waited < self.timeout_ms:
+                        self.page.wait_for_timeout(25)
+                        waited += 25
             self.page.wait_for_load_state("domcontentloaded", timeout=self.timeout_ms)
 
     def act(self, action: Action) -> ActResult:
@@ -200,8 +218,9 @@ class NativeBackend:
                     return ActResult(False, page.url, f"blocked: {host} is not an allowed domain", blocked_hosts=[host])
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             elif action.tool == "click":
+                before = dict(self._nav)
                 page.locator(self._selector(a.get("element_id"))).first.click(timeout=self.timeout_ms)
-                self._settle()
+                self._settle(before)
             elif action.tool == "type":
                 page.locator(self._selector(a.get("element_id"))).first.fill(str(a.get("text", "")),
                                                                                timeout=self.timeout_ms)
