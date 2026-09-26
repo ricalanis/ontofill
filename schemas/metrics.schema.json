@@ -4,8 +4,10 @@
   "title": "Gold run metrics",
   "type": "object",
   "additionalProperties": false,
-  "required": ["run_id", "suppliers_total", "suppliers_at_80pct_core", "per_field_completeness", "distinct_source_types", "gold_values_without_evidence", "level_ratio_coverage", "mode_counts", "jobs"],
+  "required": ["run_id", "suppliers_total", "suppliers_at_80pct_core", "per_field_completeness", "distinct_source_types", "gold_values_without_evidence", "level_ratio_coverage", "mode_counts", "jobs", "generated_by", "inference_backend"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "inference_backend": {"enum": ["recorded", "vultr"]},
     "run_id": {"type": "string", "minLength": 1},
     "suppliers_total": {"type": "integer", "minimum": 0},
     "suppliers_at_80pct_core": {"type": "integer", "minimum": 0},
@@ -36,5 +38,15 @@
       }
     }
   },
-  "$defs": {"ratio": {"type": "number", "minimum": 0, "maximum": 1}}
+  "$defs": {"ratio": {"type": "number", "minimum": 0, "maximum": 1}},
+  "allOf": [
+    {
+      "if": {"properties": {"inference_backend": {"const": "recorded"}}},
+      "then": {"properties": {"generated_by": {"properties": {"backend": {"const": "recorded"}}}}}
+    },
+    {
+      "if": {"properties": {"inference_backend": {"const": "vultr"}}},
+      "then": {"properties": {"generated_by": {"properties": {"backend": {"const": "vultr"}}}}}
+    }
+  ]
 }

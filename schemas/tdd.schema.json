@@ -4,8 +4,9 @@
   "title": "Phase 4 technical definition document",
   "type": "object",
   "additionalProperties": false,
-  "required": ["source_id", "objective_id", "local_prd_path", "ontology_version", "source_url", "allowed_domains", "target_fields", "extraction_method", "validation_rules", "rate_limit_per_minute", "budget_usd", "steps"],
+  "required": ["source_id", "objective_id", "local_prd_path", "ontology_version", "source_url", "allowed_domains", "target_fields", "extraction_method", "validation_rules", "rate_limit_per_minute", "budget_usd", "steps", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "source_id": {"type": "string", "minLength": 1},
     "objective_id": {"type": "string", "minLength": 1},
     "local_prd_path": {"type": "string", "minLength": 1},

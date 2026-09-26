@@ -49,3 +49,11 @@ During a run, each `trace.live.jsonl` row uses `trace-step.schema.json` and may
 include `screenshot_key`. `status.json` uses `run-status.schema.json`: its
 `metrics` object may contain any subset of the final metrics while work is in
 progress. `runs/<case_id>/latest.json` uses `latest.schema.json`.
+
+Engine-written PRD, factors, ontology, objectives, local PRD, TDD, supplier,
+contract, trace, metrics, status, and approval-pending metadata include
+`generated_by: {backend, model, at}`. Each supplier field includes it as well,
+including a missing field. `backend` is `recorded` or `vultr`, and `at` is an
+ISO-8601 timestamp. Final metrics also require `inference_backend`, which must
+match `generated_by.backend`. The `mock-` run-ID rule and regeneration of
+recorded artifacts require workflow checks outside JSON Schema.

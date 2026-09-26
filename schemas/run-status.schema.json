@@ -4,8 +4,9 @@
   "title": "Live run status.json snapshot",
   "type": "object",
   "additionalProperties": false,
-  "required": ["run_id", "state", "phase", "checkpoint_pending", "updated_at", "sources", "metrics"],
+  "required": ["run_id", "state", "phase", "checkpoint_pending", "updated_at", "sources", "metrics", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "run_id": {"type": "string", "minLength": 1},
     "state": {"enum": ["running", "paused", "done", "failed"]},
     "phase": {"type": "integer", "minimum": 1, "maximum": 5},
@@ -35,6 +36,8 @@
     "partial_metrics": {
       "type": "object", "additionalProperties": false,
       "properties": {
+        "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+        "inference_backend": {"enum": ["recorded", "vultr"]},
         "run_id": {"type": "string", "minLength": 1},
         "suppliers_total": {"type": "integer", "minimum": 0},
         "suppliers_at_80pct_core": {"type": "integer", "minimum": 0},

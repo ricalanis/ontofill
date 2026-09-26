@@ -4,8 +4,9 @@
   "title": "Execution trace JSONL step",
   "type": "object",
   "additionalProperties": false,
-  "required": ["step_id", "run_id", "phase", "source_id", "objective_id", "tdd_path", "mode", "observed", "requested", "executed", "evaluated", "parent_step_id", "value_ids", "ts"],
+  "required": ["step_id", "run_id", "phase", "source_id", "objective_id", "tdd_path", "mode", "observed", "requested", "executed", "evaluated", "parent_step_id", "value_ids", "ts", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "step_id": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "minLength": 1},
     "phase": {"type": "integer", "minimum": 1, "maximum": 5},

@@ -4,8 +4,9 @@
   "title": "Gold supplier JSONL record",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "classified_as", "fields", "flags", "links", "contract_ids"],
+  "required": ["id", "classified_as", "fields", "flags", "links", "contract_ids", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "id": {"$ref": "common.schema.json#/$defs/supplier_id"},
     "classified_as": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "fields": {

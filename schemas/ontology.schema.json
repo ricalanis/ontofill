@@ -4,8 +4,9 @@
   "title": "Phase 2 reviewed taxonomy and data schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "prd_path", "factors", "taxonomies", "classes", "properties", "shacl_path"],
+  "required": ["version", "prd_path", "factors", "taxonomies", "classes", "properties", "shacl_path", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "version": {"type": "string", "minLength": 1},
     "prd_path": {"type": "string", "minLength": 1},
     "factors": {

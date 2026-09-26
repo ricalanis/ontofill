@@ -4,8 +4,9 @@
   "title": "Phase 4 local product requirements",
   "type": "object",
   "additionalProperties": false,
-  "required": ["source_id", "objective_id", "global_prd_path", "global_requirement_ids", "target_fields", "local_definition_of_done"],
+  "required": ["source_id", "objective_id", "global_prd_path", "global_requirement_ids", "target_fields", "local_definition_of_done", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "source_id": {"type": "string", "minLength": 1},
     "objective_id": {"type": "string", "minLength": 1},
     "global_prd_path": {"type": "string", "minLength": 1},

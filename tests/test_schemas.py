@@ -18,6 +18,11 @@ SCHEMAS = {
 REGISTRY = Registry().with_resources(
     (schema["$id"], Resource.from_contents(schema)) for schema in SCHEMAS.values()
 )
+PROVENANCE = {
+    "backend": "recorded",
+    "model": "recorded-test-double",
+    "at": "2026-01-01T00:00:00Z",
+}
 
 
 def validate(name: str, document: object) -> None:
@@ -45,6 +50,7 @@ def field(name: str, value: str) -> dict:
         "confidence": 0.9,
         "status": "gold",
         "evidence": [evidence()],
+        "generated_by": dict(PROVENANCE),
     }
 
 
@@ -60,10 +66,12 @@ def supplier() -> dict:
             "confidence": 0,
             "status": "missing",
             "evidence": [],
+            "generated_by": dict(PROVENANCE),
         },
     }
     return {
         "id": "sup:example-1",
+        "generated_by": dict(PROVENANCE),
         "classified_as": ["taxonomy:example"],
         "fields": fields,
         "flags": [
@@ -294,6 +302,22 @@ EXAMPLES = {
     },
 }
 
+for artifact_name in (
+    "approval-pending",
+    "contract",
+    "factors",
+    "global-prd",
+    "local-prd",
+    "metrics",
+    "objectives",
+    "ontology",
+    "run-status",
+    "tdd",
+    "trace-step",
+):
+    EXAMPLES[artifact_name]["generated_by"] = dict(PROVENANCE)
+EXAMPLES["metrics"]["inference_backend"] = "recorded"
+
 
 @pytest.mark.parametrize("name", sorted(SCHEMAS))
 def test_schema_is_valid(name: str) -> None:
@@ -415,3 +439,51 @@ def test_run_status_accepts_partial_metrics_but_rejects_bad_health() -> None:
     status["sources"][0]["health"]["failed"] = -1
     with pytest.raises(ValidationError):
         validate("run-status", status)
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "approval-pending",
+        "contract",
+        "factors",
+        "global-prd",
+        "local-prd",
+        "metrics",
+        "objectives",
+        "ontology",
+        "run-status",
+        "supplier",
+        "tdd",
+        "trace-step",
+    ),
+)
+def test_engine_artifact_requires_generated_by(name: str) -> None:
+    artifact = copy.deepcopy(EXAMPLES[name])
+    del artifact["generated_by"]
+    with pytest.raises(ValidationError):
+        validate(name, artifact)
+
+
+def test_each_supplier_field_requires_generated_by() -> None:
+    artifact = supplier()
+    del artifact["fields"]["legal_name"]["generated_by"]
+    with pytest.raises(ValidationError):
+        validate("supplier", artifact)
+
+
+def test_generated_by_has_bounded_backend_and_valid_timestamp() -> None:
+    artifact = copy.deepcopy(EXAMPLES["global-prd"])
+    artifact["generated_by"]["backend"] = "unknown"
+    with pytest.raises(ValidationError):
+        validate("global-prd", artifact)
+    artifact["generated_by"] = {**PROVENANCE, "at": "yesterday"}
+    with pytest.raises(ValidationError):
+        validate("global-prd", artifact)
+
+
+def test_metric_backend_matches_generation_provenance() -> None:
+    artifact = copy.deepcopy(EXAMPLES["metrics"])
+    artifact["inference_backend"] = "vultr"
+    with pytest.raises(ValidationError):
+        validate("metrics", artifact)

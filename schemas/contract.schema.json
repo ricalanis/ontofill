@@ -4,8 +4,9 @@
   "title": "Gold contract JSONL record",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "title", "amount", "currency", "date", "buyer", "procedure_type", "supplier_ids", "evidence"],
+  "required": ["id", "title", "amount", "currency", "date", "buyer", "procedure_type", "supplier_ids", "evidence", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "id": {"$ref": "common.schema.json#/$defs/contract_id"},
     "title": {"type": "string", "minLength": 1},
     "amount": {"type": "number", "minimum": 0},

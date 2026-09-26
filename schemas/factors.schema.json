@@ -4,8 +4,9 @@
   "title": "Phase 2 factors of variation",
   "type": "object",
   "additionalProperties": false,
-  "required": ["factors"],
+  "required": ["factors", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "factors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/factor"}}
   },
   "$defs": {

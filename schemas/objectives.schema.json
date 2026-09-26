@@ -4,8 +4,9 @@
   "title": "Phase 3 discovered source objectives",
   "type": "object",
   "additionalProperties": false,
-  "required": ["ontology_version", "prd_path", "objectives"],
+  "required": ["ontology_version", "prd_path", "objectives", "generated_by"],
   "properties": {
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "ontology_version": {"type": "string", "minLength": 1},
     "prd_path": {"type": "string", "minLength": 1},
     "objectives": {
