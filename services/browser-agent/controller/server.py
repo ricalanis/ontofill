@@ -15,9 +15,9 @@ from pathlib import Path
 
 import anyio
 
-from controller.backend import CALL_ERRORS
+from controller.backend import CALL_ERRORS, ActResult
 from controller.captures import LocalCaptureStore
-from controller.cells import CellError, CellPool, pool_from_env
+from controller.cells import Cell, CellError, CellPool, pool_from_env
 from controller.gateway import ScreenedGatewayClient
 from controller.loop import Limits, Session
 from shared import config
@@ -55,6 +55,7 @@ class Broker:
         # Cells (§13a): a pool leases one cell per session; None = the backend launches/connects a browser itself.
         self.pool = pool_from_env() if pool is None else (pool or None)
         self.cells: dict[str, object] = {}  # session_id -> leased Cell
+        self.results: dict[str, list[dict]] = {}  # session_id -> act outcomes, reported to the cell at close
         self.sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
 
@@ -93,7 +94,10 @@ class Broker:
         if cell is not None:
             cell_info = {"cell_id": cell.cell_id, "isolation": cell.isolation, "placement": cell.placement,
                          **{k: v for k, v in self.pool.timings(cell.cell_id).items() if k.endswith("_ms") or k == "warm"}}
-        session = Session(session_id=session_id, backend=self.backend_factory(cdp_url),
+        backend = self.backend_factory(cdp_url)
+        if cell is not None:
+            backend = CellCountedBackend(backend, self.pool, cell)
+        session = Session(session_id=session_id, backend=backend,
                           gateway=self.gateway_factory(token), steps=steps,
                           captures=LocalCaptureStore(self.captures_dir), allowed_domains=allowed_domains,
                           case_dir=case_dir, job_id=str(tdd.get("job_id") or f"job:{session_id}"), limits=lim,
@@ -121,7 +125,11 @@ class Broker:
         if bool(goal) == bool(action):
             raise ValueError("pass exactly one of goal or action")
         session = self._get(session_id)
-        return session.run_goal(goal) if goal else session.run_action(action, None)
+        result = session.run_goal(goal) if goal else session.run_action(action, None)
+        with self._lock:
+            self.results.setdefault(session_id, []).append(
+                {"goal": goal, "status": result.get("status"), "url": result.get("url")})
+        return result
 
     def observe(self, session_id: str) -> dict:
         return self._get(session_id).observe()
@@ -133,7 +141,15 @@ class Broker:
         if session is None:
             return {"closed": False, "error": f"unknown session {session_id!r}"}
         cell_result = None
+        outcomes = self.results.pop(session_id, [])
         try:
+            if cell is not None:  # the proof's task checkpoint gets the real result, never an inference
+                ok = bool(outcomes) and all(o["status"] == "achieved" for o in outcomes if o["goal"])
+                try:
+                    self.pool.report_task_result(cell, {"outcomes": outcomes[-10:],
+                                                        "extracted_fields": sorted(session.extracted)[:50]}, ok)
+                except CellError:
+                    pass
             result = session.close()
         finally:
             try:
@@ -155,6 +171,24 @@ class Broker:
             self.close(session_id)
         if self.pool is not None:
             self.pool.shutdown()
+
+
+class CellCountedBackend:
+    """Counts each browser action with the cell substrate before it runs (the substrate enforces max_steps and
+    stops the cell; a stopped cell refuses the action instead of running it on a dead browser)."""
+
+    def __init__(self, inner, pool: CellPool, cell: Cell):
+        self.inner, self.pool, self.cell = inner, pool, cell
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def act(self, action):
+        try:
+            self.pool.record_step(self.cell)
+        except CellError as exc:
+            return ActResult(False, None, f"stopped by the cell: {exc}")
+        return self.inner.act(action)
 
 
 _broker: Broker | None = None

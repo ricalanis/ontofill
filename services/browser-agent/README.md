@@ -85,8 +85,15 @@ that cell's Chromium over its `cdp_url` instead of a browser on the control plan
 - Provider interface (`controller/cells.py`), the shape of the engine's substrate:
   `create(backend: native|skyvern, allowed_domains, limits, placement: sandbox_vm|throwaway_vx1)` →
   `{cell_id, cdp_url, brain_url?, live_view_port}`, `destroy(cell_id)`, `status(cell_id)`.
-- `BA_CELL_PROVIDER`: `none` (default; the backend launches or connects a browser itself), `docker-stub`, or
-  `ontofill` (the engine's `ontofill.cells` module, adapted as-is). With a provider set, a failed lease fails
+- `BA_CELL_PROVIDER`: `none` (default; the backend launches or connects a browser itself), `docker-stub`,
+  `ontofill-http` (**the engine's gVisor cell substrate** over its loopback API `serve_cells`: `BA_CELLS_URL`,
+  default `http://127.0.0.1:8766`, and `BA_CELLS_TOKEN`), or `ontofill` (an importable module with the same three
+  functions). With `ontofill-http` the controller counts each browser action with the substrate (`POST
+  /cells/{id}/steps`; it stops the cell at `max_steps`), reports the session's real outcome at close (`task-result`,
+  never inferred), and returns the teardown's six-checkpoint `job_record` in `session.close` → `cell.teardown`. The
+  substrate requires gVisor (`runsc`) and fails closed without it; its cells age from creation, so the warm pool
+  defaults to K=0 there. End-to-end check: `BA_CELLS_TOKEN=… uv run pytest -m docker tests/test_cells_engine_e2e.py`
+  where the substrate runs (control plane → sandbox host). With a provider set, a failed lease fails
   `session.open`; there is no fallback to a host browser.
 - Warm pool (`BA_CELL_K_NATIVE`, default 1; `BA_CELL_K_SKYVERN`, default 0). A cell's allowed domains and caps are
   fixed at creation, so warm cells are made for the most recent (domains, caps) per backend and a lease that does not

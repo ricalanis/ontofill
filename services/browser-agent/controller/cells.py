@@ -135,13 +135,17 @@ class CellPool:
         t0 = time.monotonic()
         with self._lock:
             self._retired.add(cell.cell_id)
+        teardown = None
         try:
-            self.provider.destroy(cell.cell_id)
+            teardown = self.provider.destroy(cell.cell_id)
         except Exception as exc:  # noqa: BLE001 - any provider failure is recorded; a sweep/reaper cleans up
             self.errors.append(f"destroy {cell.cell_id}: {exc}")
         ms = _ms(t0)
         with self._lock:
-            self.records.setdefault(cell.cell_id, {})["destroy_ms"] = ms
+            rec = self.records.setdefault(cell.cell_id, {})
+            rec["destroy_ms"] = ms
+            if isinstance(teardown, dict):  # the engine substrate returns {state, job_record} (six checkpoints)
+                rec["teardown"] = {k: teardown[k] for k in ("state", "job_record") if k in teardown}
         return ms
 
     # --- warm pool ----------------------------------------------------------------------------------------
@@ -243,7 +247,20 @@ class CellPool:
             return {"cell_id": cell_id, "released": False, "error": "not leased from this pool"}
         destroy_ms = self._destroy(leased)
         self._replenish(leased.backend)
-        return {"cell_id": cell_id, "released": True, "destroy_ms": destroy_ms}
+        out = {"cell_id": cell_id, "released": True, "destroy_ms": destroy_ms}
+        teardown = (self.records.get(cell_id) or {}).get("teardown")
+        return out | ({"teardown": teardown} if teardown else {})
+
+    def record_step(self, cell: Cell) -> int | None:
+        """Count one browser action with the substrate (it stops the cell at max_steps); no-op if unsupported."""
+        fn = getattr(self.provider, "record_step", None)
+        return fn(cell.cell_id) if callable(fn) else None
+
+    def report_task_result(self, cell: Cell, result: dict, ok: bool) -> None:
+        """Hand the substrate the task's real result for the proof's task checkpoint (never inferred)."""
+        fn = getattr(self.provider, "report_task_result", None)
+        if callable(fn):
+            fn(cell.cell_id, result, ok)
 
     def timings(self, cell_id: str) -> dict:
         with self._lock:
@@ -295,6 +312,10 @@ def provider_from_env(name: str | None = None) -> CellProvider | None:
         from cells.docker_stub import DockerStubProvider
 
         return DockerStubProvider()
+    if name == "ontofill-http":
+        from cells.ontofill_http import OntofillHttpProvider
+
+        return OntofillHttpProvider()
     if name == "ontofill":
         try:
             import ontofill.cells as substrate  # the engine's cell substrate (CONTRACT §13a), when installed
@@ -302,12 +323,14 @@ def provider_from_env(name: str | None = None) -> CellProvider | None:
             raise CellError("BA_CELL_PROVIDER=ontofill but the engine's cell substrate (ontofill.cells) is not "
                             "installed in this environment") from exc
         return ModuleProvider(substrate)
-    raise CellError(f"unknown {PROVIDER_ENV}={name!r} (none | docker-stub | ontofill)")
+    raise CellError(f"unknown {PROVIDER_ENV}={name!r} (none | docker-stub | ontofill-http | ontofill)")
 
 
 def pool_from_env() -> CellPool | None:
     provider = provider_from_env()
     if provider is None:
         return None
-    return CellPool(provider, k_native=int(os.environ.get(K_NATIVE_ENV, "1")),
+    # Engine cells start their timeout clock at create, so a warm pool would age them: default K=0 there.
+    default_k = "0" if getattr(provider, "name", "") == "ontofill-http" else "1"
+    return CellPool(provider, k_native=int(os.environ.get(K_NATIVE_ENV, default_k)),
                     k_skyvern=int(os.environ.get(K_SKYVERN_ENV, "0")))
