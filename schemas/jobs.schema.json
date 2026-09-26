@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/jobs.schema.json",
+  "title": "Sandbox proof jobs.jsonl record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "run_id", "step_id", "source_id", "started_at", "ended_at", "checkpoints", "generated_by"],
+  "properties": {
+    "job_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "step_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "checkpoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "task", "where", "isolation", "teardown"],
+      "properties": {
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "sandbox_host", "runtime", "virt"],
+          "properties": {
+            "ok": {"type": "boolean"},
+            "sandbox_host": {"type": "string", "minLength": 1},
+            "runtime": {"type": "string", "minLength": 1},
+            "virt": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cpu_virtualization_flags", "dev_kvm_present"],
+              "properties": {
+                "cpu_virtualization_flags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                "dev_kvm_present": {"type": "boolean"}
+              }
+            }
+          }
+        },
+        "task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "requested", "result", "value_ids"],
+          "properties": {
+            "ok": {"type": "boolean"},
+            "requested": {"type": "object"},
+            "result": {"type": "object"},
+            "value_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/value_id"}}
+          }
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "hostname", "uname"],
+          "properties": {
+            "ok": {"type": "boolean"},
+            "hostname": {"type": "string", "minLength": 1},
+            "uname": {
+              "type": "object",
+              "required": ["system", "release", "machine"],
+              "properties": {
+                "system": {"type": "string", "minLength": 1},
+                "release": {"type": "string", "minLength": 1},
+                "machine": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "isolation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["probes"],
+          "properties": {
+            "probes": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["probe", "result"],
+                "properties": {
+                  "probe": {"type": "string", "minLength": 1},
+                  "result": {"enum": ["BLOCKED", "ALLOWED"]},
+                  "detail": {"type": "object"}
+                }
+              }
+            }
+          }
+        },
+        "teardown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "detail"],
+          "properties": {
+            "ok": {"type": "boolean"},
+            "detail": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pod_gone", "proxy_gone", "network_removed"],
+              "properties": {
+                "pod_gone": {"type": "boolean"},
+                "proxy_gone": {"type": "boolean"},
+                "network_removed": {"type": "boolean"},
+                "verified": {"type": "boolean"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

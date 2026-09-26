@@ -16,3 +16,11 @@ typical local installation. Set `ONTOFILL_SANDBOX_RUNTIME=runsc` on the Linux
 sandbox host to dispatch the agent pod through gVisor; the job fails if that
 runtime is unavailable. The local test exercises Docker containment, while
 the `runsc` target needs a Linux host with gVisor installed.
+
+After a capture or fetch returns, call `build_job_record(result, job_id=..., value_ids=...)`
+to collapse its five checkpoints into a v0.4 `jobs.jsonl` record. The returned
+record includes the captured start time, verified teardown time and provenance.
+`append_job_record(lake, case_id, record)` validates and appends it at
+`runs/<case_id>/<run_id>/jobs.jsonl`; the last record for each `job_id` wins.
+Pass the same `job_id` when adding value IDs after refinement. The writer
+serializes appends within one engine process.

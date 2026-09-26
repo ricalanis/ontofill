@@ -343,6 +343,7 @@ def capture_url(
     browser_name = f"ontofill-browser-{suffix}"
     trace_rows: list[dict] | None = None
     proof: dict = {}
+    job_result: dict | None = None
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -479,7 +480,7 @@ def capture_url(
                 "pod_identity": pod_identity,
                 "isolation_probe": isolation,
             }
-            return {
+            job_result = {
                 **keys,
                 "html": html_bytes.decode("utf-8"),
                 "url": final_url,
@@ -487,7 +488,9 @@ def capture_url(
                 "trace": trace_rows,
                 "egress_events": events,
                 "proof": proof,
+                "started_at": timestamp,
             }
+            return job_result
     finally:
         teardown = _cleanup_and_verify(proxy_name, browser_name, network)
         if trace_rows is not None:
@@ -505,6 +508,8 @@ def capture_url(
                     teardown=teardown,
                 )
             )
+        if job_result is not None:
+            job_result["ended_at"] = datetime.now(UTC).isoformat()
         if not teardown["verified"]:
             raise CaptureError("sandbox teardown proof failed", trace_rows)
 
@@ -554,6 +559,7 @@ def fetch_url(
     pod_name = f"ontofill-fetch-{suffix}"
     trace_rows: list[dict] | None = None
     proof: dict = {}
+    job_result: dict | None = None
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -692,7 +698,7 @@ def fetch_url(
                 "pod_identity": pod_identity,
                 "isolation_probe": isolation,
             }
-            return {
+            job_result = {
                 "bytes": content,
                 "content_type": result["content_type"],
                 "bronze_key": bronze_key,
@@ -701,7 +707,9 @@ def fetch_url(
                 "trace": trace_rows,
                 "egress_events": events,
                 "proof": proof,
+                "started_at": timestamp,
             }
+            return job_result
     finally:
         teardown = _cleanup_and_verify(proxy_name, pod_name, network)
         if trace_rows is not None:
@@ -719,5 +727,7 @@ def fetch_url(
                     teardown=teardown,
                 )
             )
+        if job_result is not None:
+            job_result["ended_at"] = datetime.now(UTC).isoformat()
         if not teardown["verified"]:
             raise CaptureError("sandbox teardown proof failed", trace_rows)

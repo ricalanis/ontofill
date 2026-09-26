@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 GOLD_KEY = re.compile(r"gold/[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+\Z")
 RUN_KEY = re.compile(
-    r"runs/[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+/(?:trace\.live\.jsonl|status\.json)|latest\.json)\Z"
+    r"runs/[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+/(?:trace\.live\.jsonl|jobs\.jsonl|status\.json)|latest\.json)\Z"
 )
 
 
