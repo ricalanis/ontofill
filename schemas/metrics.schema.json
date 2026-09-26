@@ -53,6 +53,19 @@
       }
     },
     "preview": {"type": "boolean"},
+    "loops": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["phase", "iterations", "stop_reason", "usd"],
+        "properties": {
+          "phase": {"oneOf": [{"type": "integer", "minimum": 1, "maximum": 5}, {"const": "outer"}]},
+          "iterations": {"type": "integer", "minimum": 0},
+          "stop_reason": {"enum": ["checks_passed", "budget", "human", "max_iterations"]},
+          "usd": {"type": "number", "minimum": 0}
+        }
+      }
+    },
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"}
   },
   "$defs": {
