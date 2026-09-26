@@ -192,9 +192,10 @@ class VultrDecisionClient:
         )
 
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
+        structured_request = purpose in {"phase1.prd", "phase2.schema", "phase2.dod_queries"}
         if purpose.startswith("critic."):
             model = self.critic_model
-        elif purpose == "phase1.prd":
+        elif structured_request:
             model = self.document_model
         elif purpose.startswith(("phase5.", "extract.")):
             model = self.extraction_model
@@ -210,6 +211,14 @@ class VultrDecisionClient:
                 "25 words per text field. Include every required key. For unknown source domains, "
                 "use an empty trusted publisher list; never invent evidence."
             )
+        if document_request:
+            max_completion_tokens = min(16384, 4096 + len(prompt) // 2000 * 2048)
+        elif purpose == "phase2.schema":
+            max_completion_tokens = 8192
+        elif structured_request:
+            max_completion_tokens = 4096
+        else:
+            max_completion_tokens = 16384
         request = {
             "messages": [
                 {
@@ -228,9 +237,7 @@ class VultrDecisionClient:
                 },
             ],
             "temperature": 0,
-            "max_completion_tokens": (
-                min(16384, 4096 + len(prompt) // 2000 * 2048) if document_request else 16384
-            ),
+            "max_completion_tokens": max_completion_tokens,
             "parallel_tool_calls": False,
             "tools": [
                 {
@@ -250,12 +257,14 @@ class VultrDecisionClient:
         retry_model: str | None = None
         for attempt in range(2):
             selected = retry_model or (
-                model if attempt == 0 or not self.fallback_model else self.fallback_model
+                model
+                if attempt == 0 or structured_request or not self.fallback_model
+                else self.fallback_model
             )
             body = {**request, "model": selected}
             if selected.startswith("glm-"):
                 body["reasoning_effort"] = "minimal" if selected == "glm-5.3-flash" else "low"
-            elif selected == "qwen3.8-flash-next" and document_request:
+            elif selected == "qwen3.8-flash-next" and structured_request:
                 body["reasoning"] = {"enabled": False}
             if use_json_schema:
                 body.pop("tools")
@@ -324,6 +333,8 @@ class VultrDecisionClient:
                     else "invalid_response"
                 )
                 last_error = exc
+                if record["status"] == "length" and structured_request:
+                    break
             else:
                 record["status"] = "ok"
                 self.decisions_by_backend["vultr"] += 1
@@ -332,7 +343,11 @@ class VultrDecisionClient:
             request["messages"][1]["content"] += (
                 "\nReturn one complete object matching the schema through the requested output method."
             )
-        raise TypeError("Vultr returned no valid typed decision after two attempts") from last_error
+        attempts = attempt + 1
+        noun = "attempt" if attempts == 1 else "attempts"
+        raise TypeError(
+            f"Vultr returned no valid typed decision after {attempts} {noun}"
+        ) from last_error
 
     def review_json(self, purpose: str, artifact: dict, criteria: str) -> dict:
         """Get an independent verdict from a different model family."""
