@@ -648,9 +648,21 @@ def run_case(
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
             raise
         except CaptureBlocked as exc:
-            for step in exc.trace:
-                step["event"] = "hard_stop"
-                feed.append_step(step)
+            if exc.trace:
+                dispatch = next(
+                    (
+                        step
+                        for step in exc.trace
+                        if step.get("evaluated", {}).get("proof_checkpoint") == "dispatch_result"
+                    ),
+                    exc.trace[0],
+                )
+                dispatch["event"] = "hard_stop"
+                dispatch["evaluated"] = {
+                    **dispatch.get("evaluated", {}),
+                    "reason": dispatch.get("evaluated", {}).get("reason", "blocked: dispatch"),
+                }
+            _publish_steps(feed, exc.trace)
             phase = feed.current_status["phase"] if feed.current_status else 1
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)

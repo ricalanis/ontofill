@@ -168,7 +168,9 @@ class SandboxWebSearchProvider:
         self.jobs.append(captured)
         self.capture_key = captured["html_key"]
         if captured["status"] in {202, 401, 403, 429}:
-            raise ToolFailure(FailureKind.BLOCKED, f"{self.name} blocked the query")
+            raise ToolFailure(
+                FailureKind.BLOCKED, f"{self.name} blocked: http_{captured['status']}"
+            )
         if captured["status"] >= 400:
             raise ToolFailure(FailureKind.NETWORK, f"{self.name} returned an error")
         page_snapshot(captured["html"], captured["url"])
@@ -203,9 +205,26 @@ class ProviderSearchClient:
                 found, outcome = (), "network"
                 failures.append(ToolFailure(FailureKind.NETWORK, str(exc)))
             fresh_trace = provider.trace[previous_trace:]
-            if outcome == "blocked":
-                for row in fresh_trace:
-                    row["event"] = "hard_stop"
+            if outcome == "blocked" and fresh_trace:
+                dispatch = next(
+                    (
+                        row
+                        for row in fresh_trace
+                        if row.get("evaluated", {}).get("proof_checkpoint") == "dispatch_result"
+                    ),
+                    fresh_trace[0],
+                )
+                reason = str(failures[-1]).lower()
+                if "captcha" in reason:
+                    reason = "blocked: captcha"
+                elif "http_403" in reason:
+                    reason = "blocked: http_403"
+                elif "bot" in reason or "human" in reason:
+                    reason = "blocked: bot_wall"
+                else:
+                    reason = "blocked: provider"
+                dispatch["event"] = "hard_stop"
+                dispatch["evaluated"] = {**dispatch.get("evaluated", {}), "reason": reason}
             self.trace.extend(fresh_trace)
             self.jobs.extend(provider.jobs[previous_jobs:])
             self.capture_key = provider.capture_key or self.capture_key

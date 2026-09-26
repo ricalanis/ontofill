@@ -69,6 +69,36 @@ def test_provider_block_falls_back_to_distinct_provider_and_keeps_attempts() -> 
     assert error.value.kind == FailureKind.BLOCKED
 
 
+def test_blocked_provider_marks_only_dispatch_with_reason() -> None:
+    class BlockedProofProvider(FakeProvider):
+        def search(self, query):
+            for checkpoint in (
+                "dispatch_result",
+                "host_check",
+                "pod_identity",
+                "isolation_probe",
+                "teardown",
+            ):
+                self.trace.append(
+                    {
+                        "step_id": f"step:{checkpoint}",
+                        "evaluated": {"proof_checkpoint": checkpoint},
+                    }
+                )
+            raise ToolFailure(FailureKind.BLOCKED, "captcha wall detected")
+
+    router = ProviderSearchClient(
+        [
+            BlockedProofProvider("blocked"),
+            FakeProvider("second", result=(SearchResult("https://example.test", "Result"),)),
+        ]
+    )
+    router.search("public records")
+    assert [step.get("event") for step in router.trace[:5]] == ["hard_stop", None, None, None, None]
+    assert router.trace[0]["evaluated"]["reason"] == "blocked: captcha"
+    assert all("reason" not in step["evaluated"] for step in router.trace[1:5])
+
+
 def test_web_provider_stops_on_captcha_after_sandbox_capture(tmp_path) -> None:
     lake = FileLake(tmp_path / "lake")
     calls = []
