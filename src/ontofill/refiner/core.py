@@ -17,6 +17,8 @@ from pyshacl import validate as shacl_validate
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
+from ontofill.refiner.provenance import validate_generated_by, validate_run_provenance
+
 CORE_FIELDS = (
     "legal_name",
     "tax_id",
@@ -47,6 +49,7 @@ class Observation:
     value: str
     evidence: dict[str, str]
     step_id: str
+    generated_by: dict[str, str]
     confidence: float = 1.0
     classified_as: tuple[str, ...] = ()
     value_id: str = field(default="")
@@ -187,9 +190,13 @@ class Refinement:
 
 
 def refine_observations(
-    observations: list[Observation], *, shapes_ttl: str | Path | None = None
+    observations: list[Observation],
+    *,
+    generated_by: dict[str, str],
+    shapes_ttl: str | Path | None = None,
 ) -> Refinement:
     """Refine observed values only; failed SHACL/provenance creates no gold value."""
+    run_provenance = validate_generated_by(generated_by)
     shapes = _shapes()
     if shapes_ttl is not None:
         external = Graph().parse(str(shapes_ttl), format="turtle")
@@ -204,6 +211,11 @@ def refine_observations(
     rejected: list[dict[str, str]] = []
     for observation in observations:
         try:
+            observation_provenance = validate_run_provenance(
+                observation.run_id, observation.generated_by
+            )
+            if observation_provenance["backend"] != run_provenance["backend"]:
+                raise ValueError("observation inference backend differs from run")
             if observation.field not in CORE_FIELDS:
                 raise ValueError("field is outside the approved core schema")
             if not observation.supplier_id.startswith("sup:"):
@@ -229,15 +241,17 @@ def refine_observations(
                                     "confidence": observation.confidence,
                                     "status": "gold",
                                     "evidence": [observation.evidence],
+                                    "generated_by": observation_provenance,
                                 }
                                 if name == observation.field
-                                else _missing()
+                                else _missing(run_provenance)
                             )
                             for name in CORE_FIELDS
                         },
                         "flags": [],
                         "links": [],
                         "contract_ids": [],
+                        "generated_by": run_provenance,
                     }
                 ),
                 None,
@@ -258,7 +272,7 @@ def refine_observations(
         for field_name in CORE_FIELDS:
             field_candidates = [item for item in candidates if item.field == field_name]
             if not field_candidates:
-                fields[field_name] = _missing()
+                fields[field_name] = _missing(run_provenance)
                 continue
             grouped: dict[str, list[Observation]] = defaultdict(list)
             for candidate in field_candidates:
@@ -279,6 +293,7 @@ def refine_observations(
                 "confidence": chosen.confidence,
                 "status": "gold" if len(grouped) == 1 else "conflict",
                 "evidence": evidence,
+                "generated_by": validate_generated_by(chosen.generated_by),
             }
         record = {
             "id": supplier_id,
@@ -287,11 +302,18 @@ def refine_observations(
             "flags": [],
             "links": [],
             "contract_ids": [],
+            "generated_by": run_provenance,
         }
         schema.validate(record)
         suppliers.append(record)
     return Refinement(suppliers=suppliers, rejected=rejected)
 
 
-def _missing() -> dict:
-    return {"value": None, "confidence": 0, "status": "missing", "evidence": []}
+def _missing(generated_by: dict[str, str]) -> dict:
+    return {
+        "value": None,
+        "confidence": 0,
+        "status": "missing",
+        "evidence": [],
+        "generated_by": generated_by.copy(),
+    }

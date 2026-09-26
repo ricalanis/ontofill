@@ -16,9 +16,11 @@ from ontofill.refiner import (
     refine_observations,
 )
 
-RUN_ID = "synthetic-run"
+RUN_ID = "mock-synthetic-run"
 SOURCE_ID = "synthetic-source"
 URL = "https://example.invalid/synthetic/supplier"
+RECORDED = {"backend": "recorded", "model": "synthetic-replay", "at": "2026-01-01T00:00:00Z"}
+VULTR = {"backend": "vultr", "model": "synthetic-vultr", "at": "2026-01-01T00:00:00Z"}
 
 
 def evidence(lake: FileLake, *, screenshot: bool = True) -> dict:
@@ -40,22 +42,27 @@ def evidence(lake: FileLake, *, screenshot: bool = True) -> dict:
 
 def observation(lake: FileLake, field: str, value: str, **kwargs) -> Observation:
     observed_evidence = kwargs.pop("evidence", None) or evidence(lake)
+    run_id = kwargs.pop("run_id", RUN_ID)
+    generated_by = kwargs.pop("generated_by", RECORDED)
     return Observation(
-        run_id=RUN_ID,
+        run_id=run_id,
         supplier_id="sup:synthetic-01",
         field=field,
         value=value,
         evidence=observed_evidence,
         step_id="step-1",
+        generated_by=generated_by,
         **kwargs,
     )
 
 
-def trace(value_ids: list[str]) -> list[dict]:
+def trace(
+    value_ids: list[str], *, run_id: str = RUN_ID, generated_by: dict = RECORDED
+) -> list[dict]:
     return [
         {
             "step_id": "step-1",
-            "run_id": RUN_ID,
+            "run_id": run_id,
             "phase": 5,
             "source_id": SOURCE_ID,
             "objective_id": "objective-synthetic",
@@ -68,11 +75,12 @@ def trace(value_ids: list[str]) -> list[dict]:
             "parent_step_id": None,
             "value_ids": value_ids,
             "ts": "2026-01-01T00:00:00Z",
+            "generated_by": generated_by,
         }
     ]
 
 
-def write_lineage(case_dir: Path) -> None:
+def write_lineage(case_dir: Path, *, generated_by: dict = RECORDED) -> None:
     def write(relative_path: str, document: dict) -> None:
         path = case_dir / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,9 +103,44 @@ def write_lineage(case_dir: Path) -> None:
             "definition_of_done": [
                 {"id": "d1", "metric": "suppliers_total", "operator": ">=", "target": 1}
             ],
+            "generated_by": generated_by,
         },
     )
-    write("02-ontology/ontology.json", {"version": "v1"})
+    factor = {
+        "id": "profile",
+        "label": "Synthetic profile",
+        "description": "Example category",
+        "kind": "conceptual",
+        "evidence": [],
+    }
+    write(
+        "02-ontology/ontology.json",
+        {
+            "version": "v1",
+            "prd_path": "01-scope/prd.json",
+            "factors": [factor],
+            "taxonomies": [
+                {
+                    "factor_id": "profile",
+                    "root_label": "Profile",
+                    "children": [
+                        {
+                            "id": "profile_local",
+                            "label": "Local",
+                            "level": 1,
+                            "critic_label": "Good-Exclusive",
+                        }
+                    ],
+                    "soundness": 1,
+                    "coverage": 1,
+                }
+            ],
+            "classes": [{"id": "Supplier", "aligned_to": "https://schema.org/Organization"}],
+            "properties": [{"id": "legal_name", "datatype": "string"}],
+            "shacl_path": "02-ontology/supplier-shape.ttl",
+            "generated_by": generated_by,
+        },
+    )
     write(
         "03-fanout/objectives.json",
         {
@@ -113,6 +156,7 @@ def write_lineage(case_dir: Path) -> None:
                     "expected_contribution": 1,
                 }
             ],
+            "generated_by": generated_by,
         },
     )
     prefix = "04-local/synthetic-source__objective-synthetic"
@@ -127,6 +171,7 @@ def write_lineage(case_dir: Path) -> None:
             "local_definition_of_done": [
                 {"metric": "legal_name_completeness", "operator": ">=", "target": 1}
             ],
+            "generated_by": generated_by,
         },
     )
     write(
@@ -154,6 +199,7 @@ def write_lineage(case_dir: Path) -> None:
                     "termination_predicate": "Observed name",
                 }
             ],
+            "generated_by": generated_by,
         },
     )
 
@@ -167,7 +213,7 @@ def test_partial_observations_export_missing_fields_and_verified_evidence(tmp_pa
     for item in (name, tax_id, invalid_date, name):
         store.add(item)
     assert len(store.list_for_run(RUN_ID)) == 3
-    result = refine_observations(store.list_for_run(RUN_ID))
+    result = refine_observations(store.list_for_run(RUN_ID), generated_by=RECORDED)
     assert len(result.rejected) == 1
     assert "SHACL" in result.rejected[0]["reason"]
     supplier = result.suppliers[0]
@@ -188,6 +234,7 @@ def test_partial_observations_export_missing_fields_and_verified_evidence(tmp_pa
         result.suppliers,
         trace=trace([name.value_id, tax_id.value_id]),
         taxonomy_levels={"profile": [["profile:local", "profile:other"]]},
+        generated_by=RECORDED,
     )
     assert metrics["suppliers_total"] == 1
     assert metrics["suppliers_at_80pct_core"] == 0
@@ -196,28 +243,37 @@ def test_partial_observations_export_missing_fields_and_verified_evidence(tmp_pa
     assert metrics["gold_values_without_evidence"] == 0
     assert metrics["level_ratio_coverage"]["profile"] == [0.5]
     assert metrics["mode_counts"]["S1"] == 1
-    assert json.loads(lake.read_key("gold/synthetic-case/latest.json"))["run_id"] == RUN_ID
+    assert metrics["inference_backend"] == "recorded"
+    assert not lake.exists("gold/synthetic-case/latest.json")
     assert json.loads(lake.read_key(f"gold/synthetic-case/{RUN_ID}/suppliers.jsonl")) == supplier
     assert lake.read_key(f"gold/synthetic-case/{RUN_ID}/contracts.jsonl") == b""
     assert (case_dir / "runs" / RUN_ID / "metrics.json").read_bytes() == lake.read_key(
         f"gold/synthetic-case/{RUN_ID}/metrics.json"
     )
-    assert (case_dir / "runs/latest/metrics.json").exists()
+    assert not (case_dir / "runs/latest/metrics.json").exists()
     assert not (case_dir / "runs" / RUN_ID / "suppliers.jsonl").exists()
 
 
 def test_export_rejects_untraced_value_and_missing_screenshot(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     name = observation(lake, "legal_name", "Proveedor Ejemplo 01")
-    supplier = refine_observations([name]).suppliers[0]
+    supplier = refine_observations([name], generated_by=RECORDED).suppliers[0]
     write_lineage(tmp_path / "case")
     with pytest.raises(ValueError, match="untraceable value"):
-        export_run(lake, tmp_path / "case", "synthetic-case", RUN_ID, [supplier], trace=trace([]))
+        export_run(
+            lake,
+            tmp_path / "case",
+            "synthetic-case",
+            RUN_ID,
+            [supplier],
+            trace=trace([]),
+            generated_by=RECORDED,
+        )
     assert not lake.exists("gold/synthetic-case/latest.json")
     broken = observation(
         lake, "legal_name", "Proveedor Ejemplo 02", evidence=evidence(lake, screenshot=False)
     )
-    broken_supplier = refine_observations([broken]).suppliers[0]
+    broken_supplier = refine_observations([broken], generated_by=RECORDED).suppliers[0]
     with pytest.raises(ValueError, match="evidence object absent"):
         export_run(
             lake,
@@ -226,6 +282,7 @@ def test_export_rejects_untraced_value_and_missing_screenshot(tmp_path: Path) ->
             RUN_ID,
             [broken_supplier],
             trace=trace([broken.value_id]),
+            generated_by=RECORDED,
         )
 
 
@@ -234,17 +291,78 @@ def test_export_rejects_broken_case_lineage(tmp_path: Path) -> None:
     name = observation(lake, "legal_name", "Proveedor Ejemplo 01")
     case_dir = tmp_path / "case"
     write_lineage(case_dir)
-    (case_dir / "02-ontology/ontology.json").write_text('{"version":"v2"}', encoding="utf-8")
+    ontology_path = case_dir / "02-ontology/ontology.json"
+    ontology = json.loads(ontology_path.read_text(encoding="utf-8"))
+    ontology["version"] = "v2"
+    ontology_path.write_text(json.dumps(ontology), encoding="utf-8")
     with pytest.raises(ValueError, match="ontology version"):
         export_run(
             lake,
             case_dir,
             "synthetic-case",
             RUN_ID,
-            refine_observations([name]).suppliers,
+            refine_observations([name], generated_by=RECORDED).suppliers,
             trace=trace([name.value_id]),
+            generated_by=RECORDED,
         )
     assert not lake.exists("gold/synthetic-case/latest.json")
+
+
+def test_recorded_value_cannot_be_labeled_live_or_satisfy_live_latest(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    recorded_name = observation(lake, "legal_name", "Proveedor Ejemplo 01")
+    result = refine_observations([recorded_name], generated_by=VULTR)
+    assert result.suppliers == []
+    assert "differs from run" in result.rejected[0]["reason"]
+    with pytest.raises(ValueError, match="mock- run ID"):
+        export_run(
+            lake,
+            tmp_path / "case",
+            "synthetic-case",
+            "synthetic-live",
+            [],
+            generated_by=RECORDED,
+        )
+    assert not lake.exists("gold/synthetic-case/latest.json")
+
+
+def test_synthetic_live_export_updates_latest_only_when_lineage_is_live(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    run_id = "synthetic-live"
+    name = observation(
+        lake,
+        "legal_name",
+        "Proveedor Ejemplo 01",
+        run_id=run_id,
+        generated_by=VULTR,
+    )
+    supplier = refine_observations([name], generated_by=VULTR).suppliers[0]
+    case_dir = tmp_path / "case"
+    write_lineage(case_dir, generated_by=RECORDED)
+    with pytest.raises(ValueError, match="artifact inference backend"):
+        export_run(
+            lake,
+            case_dir,
+            "synthetic-case",
+            run_id,
+            [supplier],
+            trace=trace([name.value_id], run_id=run_id, generated_by=VULTR),
+            generated_by=VULTR,
+        )
+    assert not lake.exists("gold/synthetic-case/latest.json")
+    write_lineage(case_dir, generated_by=VULTR)
+    metrics = export_run(
+        lake,
+        case_dir,
+        "synthetic-case",
+        run_id,
+        [supplier],
+        trace=trace([name.value_id], run_id=run_id, generated_by=VULTR),
+        generated_by=VULTR,
+    )
+    assert metrics["inference_backend"] == "vultr"
+    assert json.loads(lake.read_key("gold/synthetic-case/latest.json"))["run_id"] == run_id
+    assert (case_dir / "runs/latest/metrics.json").exists()
 
 
 def test_ontology_shacl_and_conflict_do_not_invent_winner(tmp_path: Path) -> None:
@@ -263,7 +381,7 @@ onto:SupplierShape a sh:NodeShape ; sh:targetClass onto:Supplier ;
     first = observation(lake, "legal_name", "Proveedor Ejemplo 01", confidence=0.7)
     second = observation(lake, "legal_name", "Proveedor Ejemplo 02", confidence=0.8)
     bad_tax = observation(lake, "tax_id", "INVALID")
-    result = refine_observations([first, second, bad_tax], shapes_ttl=shapes)
+    result = refine_observations([first, second, bad_tax], generated_by=RECORDED, shapes_ttl=shapes)
     assert len(result.rejected) == 1
     assert result.rejected[0]["value_id"] == bad_tax.value_id
     field = result.suppliers[0]["fields"]["legal_name"]

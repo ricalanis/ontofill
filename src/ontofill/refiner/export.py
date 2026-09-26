@@ -14,6 +14,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from ontofill.refiner.core import CORE_FIELDS, SCHEMA_ROOT
+from ontofill.refiner.provenance import validate_generated_by, validate_run_provenance
 
 
 class GoldLake(Protocol):
@@ -71,17 +72,23 @@ def _check_lineage(
     suppliers: Sequence[dict],
     trace: Sequence[dict],
     validators: dict[str, Draft202012Validator],
+    generated_by: dict[str, str],
 ) -> None:
     by_value: dict[str, list[dict]] = {}
     for step in trace:
         for value_id in step["value_ids"]:
             by_value.setdefault(value_id, []).append(step)
     objective_doc = _read_case_json(case_dir, "03-fanout/objectives.json", validators["objectives"])
-    ontology_doc = _read_case_json(case_dir, "02-ontology/ontology.json", None)
+    ontology_doc = _read_case_json(
+        case_dir, "02-ontology/ontology.json", validators.get("ontology")
+    )
     if objective_doc["ontology_version"] != ontology_doc.get("version"):
         raise ValueError("objectives ontology version does not match ontology artifact")
     prd_path = objective_doc["prd_path"]
     global_prd = _read_case_json(case_dir, prd_path, validators["global-prd"])
+    for artifact in (objective_doc, ontology_doc, global_prd):
+        if validate_generated_by(artifact["generated_by"])["backend"] != generated_by["backend"]:
+            raise ValueError("case lineage artifact inference backend differs from run")
     brief_path = global_prd["brief_path"]
     brief_file = (case_dir.resolve() / brief_path).resolve()
     if not brief_file.is_relative_to(case_dir.resolve()) or not brief_file.is_file():
@@ -120,6 +127,14 @@ def _check_lineage(
                         local_prd = _read_case_json(
                             case_dir, tdd["local_prd_path"], validators["local-prd"]
                         )
+                        for artifact in (tdd, local_prd):
+                            if (
+                                validate_generated_by(artifact["generated_by"])["backend"]
+                                != generated_by["backend"]
+                            ):
+                                raise ValueError(
+                                    "case lineage artifact inference backend differs from run"
+                                )
                         tdd_cache[tdd_path] = (tdd, local_prd)
                     tdd, local_prd = tdd_cache[tdd_path]
                     objective = objectives.get(step["objective_id"])
@@ -162,6 +177,7 @@ def _metrics(
     trace: Sequence[dict],
     taxonomy_levels: Mapping[str, Sequence[Sequence[str]]],
     jobs: dict | None,
+    generated_by: dict[str, str],
 ) -> dict:
     total = len(suppliers)
     per_field = {
@@ -213,6 +229,8 @@ def _metrics(
         "level_ratio_coverage": level_ratio,
         "mode_counts": {mode: mode_count[mode] for mode in ("D0", "D1", "S1", "S2")},
         "jobs": jobs or {"ok": len(completed_jobs), "failed_by_reason": {}},
+        "generated_by": generated_by.copy(),
+        "inference_backend": generated_by["backend"],
     }
 
 
@@ -227,12 +245,14 @@ def export_run(
     trace: Sequence[dict] = (),
     taxonomy_levels: Mapping[str, Sequence[Sequence[str]]] | None = None,
     jobs: dict | None = None,
+    generated_by: dict[str, str],
 ) -> dict:
     """Write an entire schema-valid run, then move latest.json as the final step."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case_id) or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]*", run_id
     ):
         raise ValueError("case_id and run_id must be safe lake path segments")
+    run_provenance = validate_run_provenance(run_id, generated_by)
     validators = _validators()
     sorted_suppliers = sorted(suppliers, key=lambda item: item["id"])
     sorted_contracts = sorted(contracts, key=lambda item: item["id"])
@@ -246,7 +266,17 @@ def export_run(
             validators[name].validate(record)
     if any(step["run_id"] != run_id for step in sorted_trace):
         raise ValueError("trace contains another run_id")
-    _check_lineage(case_dir, sorted_suppliers, sorted_trace, validators)
+    for supplier in sorted_suppliers:
+        records = [supplier, *supplier["fields"].values()]
+        if any(
+            validate_generated_by(record["generated_by"])["backend"] != run_provenance["backend"]
+            for record in records
+        ):
+            raise ValueError("gold supplier field inference backend differs from run")
+    for record in (*sorted_contracts, *sorted_trace):
+        if validate_generated_by(record["generated_by"])["backend"] != run_provenance["backend"]:
+            raise ValueError("contract or trace inference backend differs from run")
+    _check_lineage(case_dir, sorted_suppliers, sorted_trace, validators, run_provenance)
     supplier_ids = {supplier["id"] for supplier in sorted_suppliers}
     for supplier in sorted_suppliers:
         for field in supplier["fields"].values():
@@ -255,7 +285,9 @@ def export_run(
         if not set(contract["supplier_ids"]).issubset(supplier_ids):
             raise ValueError(f"contract {contract['id']} refers to an unknown supplier")
         _check_evidence(lake, contract["evidence"])
-    metrics = _metrics(run_id, sorted_suppliers, sorted_trace, taxonomy_levels or {}, jobs)
+    metrics = _metrics(
+        run_id, sorted_suppliers, sorted_trace, taxonomy_levels or {}, jobs, run_provenance
+    )
     validators["metrics"].validate(metrics)
     prefix = f"gold/{case_id}/{run_id}"
     lake.write_key(f"{prefix}/suppliers.jsonl", _jsonl_bytes(sorted_suppliers))
@@ -264,10 +296,14 @@ def export_run(
     metrics_bytes = _json_bytes(metrics)
     lake.write_key(f"{prefix}/metrics.json", metrics_bytes)
     runs_dir = Path(case_dir) / "runs"
-    for target in (runs_dir / run_id / "metrics.json", runs_dir / "latest" / "metrics.json"):
+    metric_targets = [runs_dir / run_id / "metrics.json"]
+    if run_provenance["backend"] == "vultr":
+        metric_targets.append(runs_dir / "latest" / "metrics.json")
+    for target in metric_targets:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".json.tmp")
         temporary.write_bytes(metrics_bytes)
         temporary.replace(target)
-    lake.write_key(f"gold/{case_id}/latest.json", _json_bytes({"run_id": run_id}))
+    if run_provenance["backend"] == "vultr":
+        lake.write_key(f"gold/{case_id}/latest.json", _json_bytes({"run_id": run_id}))
     return metrics
