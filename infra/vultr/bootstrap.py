@@ -43,13 +43,17 @@ def verify_peer(address: str, identity_file: str | None = None) -> str:
 def wait_for_p2p(
     control_address: str, sandbox_peer_ip: str, identity_file: str | None = None
 ) -> None:
+    ipaddress.ip_address(sandbox_peer_ip)
     for _ in range(18):
+        # Lazy connections stay Idle until traffic flows; open TCP 22 (allowed by policy) first.
+        # Client 0.79 prints "Connection type: P2P" and no longer prints a "Direct:" line.
         detail = ssh(
             control_address,
+            f"timeout 5 bash -c '</dev/tcp/{sandbox_peer_ip}/22' >/dev/null 2>&1; "
             f"netbird status -d --filter-by-ips {sandbox_peer_ip} --filter-by-status connected",
             identity_file=identity_file,
         )
-        if "Connection type: P2P" in detail and "Direct: true" in detail:
+        if "Connection type: P2P" in detail:
             return
         time.sleep(5)
     raise RuntimeError("NetBird control-to-sandbox peer is not directly connected (P2P)")
