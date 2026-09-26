@@ -20,6 +20,7 @@ from urllib.request import urlopen
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox.capture import (
+    _container_network_ip,
     _denied_probe_host,
     _docker,
     _domains,
@@ -159,7 +160,10 @@ def _ssh_prefix() -> list[str]:
             index += 2
         elif flag == "-o" and index + 1 < len(parts):
             option = parts[index + 1]
-            if option not in {"StrictHostKeyChecking=yes", "IdentitiesOnly=yes", "BatchMode=yes"}:
+            if option.startswith("UserKnownHostsFile="):
+                if not os.path.isabs(option.partition("=")[2]):
+                    raise CellError("Docker SSH known_hosts path must be absolute")
+            elif option not in {"StrictHostKeyChecking=yes", "IdentitiesOnly=yes", "BatchMode=yes"}:
                 raise CellError("unsupported DOCKER_SSH_COMMAND option")
             index += 2
         else:
@@ -178,12 +182,20 @@ def _cdp_url(port: int) -> str:
 
 
 def _wait_preflight(name: str) -> dict:
-    for _ in range(60):
+    timeout_s = max(15, min(300, int(os.environ.get("ONTOFILL_CELL_PREFLIGHT_TIMEOUT_S", "90"))))
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
         result = _docker("exec", name, "cat", "/out/preflight.json", check=False, timeout=5)
         if result.returncode == 0:
             return json.loads(result.stdout)
-        time.sleep(0.25)
-    raise CellError("hands pod did not produce a preflight proof")
+        state = _docker("inspect", "--format", "{{.State.Running}}", name, check=False, timeout=5)
+        if state.returncode == 0 and state.stdout.strip() != "true":
+            break
+        time.sleep(0.5)
+    logs = _docker("logs", "--tail", "10", name, check=False, timeout=10)
+    detail = (logs.stdout or logs.stderr).strip()[-600:]
+    suffix = f": {detail}" if detail else " (pod exited or timed out without a log)"
+    raise CellError("hands pod did not produce a preflight proof" + suffix)
 
 
 def _wait_cdp(port: int) -> str:
@@ -532,6 +544,49 @@ class CellManager:
         self._cells: dict[str, _Cell] = {}
         self._lock = threading.RLock()
 
+    def _start_control_cdp_relay(self, cell: _Cell, relay_image: str) -> int:
+        """Expose the hands' loopback CDP through one cell-only relay on host loopback."""
+        suffix = cell.cell_id.partition(":")[2]
+        cell.uplink_network = f"ontofill-cell-uplink-{suffix}"
+        cell.cdp_relay = f"ontofill-cell-cdp-{suffix}"
+        _docker("network", "create", cell.uplink_network)
+        hands_ip = _container_network_ip(cell.hands, cell.network)
+        _docker(
+            "run",
+            "-d",
+            "--name",
+            cell.cdp_relay,
+            "--network",
+            cell.uplink_network,
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "64",
+            "--memory",
+            "128m",
+            "--memory-swap",
+            "128m",
+            "--cpus",
+            "0.25",
+            "-p",
+            "127.0.0.1::9222",
+            "-e",
+            "RELAY_TARGET_HOST=" + hands_ip,
+            "-e",
+            "RELAY_TARGET_PORT=9223",
+            "-e",
+            "RELAY_LISTEN_PORT=9222",
+            relay_image,
+            "python",
+            "-u",
+            "/app/relay.py",
+        )
+        _docker("network", "connect", cell.network, cell.cdp_relay)
+        return _published_port(cell.cdp_relay)
+
     def create(
         self,
         backend: str,
@@ -621,6 +676,7 @@ class CellManager:
             )
             _docker("network", "connect", "bridge", cell.proxy)
             _wait_proxy(cell.proxy)
+            proxy_ip = _container_network_ip(cell.proxy, cell.network)
             _docker(
                 "run",
                 "-d",
@@ -630,6 +686,8 @@ class CellManager:
                 "runsc",
                 "--network",
                 cell.network,
+                "--add-host",
+                f"egress:{proxy_ip}",
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,nosuid,size=512m",
@@ -642,12 +700,14 @@ class CellManager:
                 *budget.docker_args(),
                 "--shm-size",
                 "256m",
-                "-p",
-                "127.0.0.1::9222",
                 "-e",
                 "PROBE_DENIED_HOST=" + _denied_probe_host(domains),
                 "-e",
                 "PROBE_MESH_IP=" + _mesh_probe_ip(),
+                "-e",
+                "XDG_CONFIG_HOME=/tmp/chromium-config",
+                "-e",
+                "XDG_CACHE_HOME=/tmp/chromium-cache",
                 agent_image,
                 "python",
                 "-u",
@@ -669,7 +729,7 @@ class CellManager:
                 ("secrets", cell.secrets),
             ):
                 self._emit(cell, checkpoint, detail, ok=True)
-            port, cell.tunnel = _open_tunnel(_published_port(cell.hands))
+            port, cell.tunnel = _open_tunnel(self._start_control_cdp_relay(cell, egress_image))
             cell.cdp_url = _wait_cdp(port)
             if brain_spec is not None:
                 self._start_skyvern(cell, brain_spec, egress_image)
@@ -696,13 +756,10 @@ class CellManager:
     def _start_skyvern(self, cell: _Cell, spec: SkyvernSpec, relay_image: str) -> None:
         suffix = cell.cell_id.partition(":")[2]
         cell.brain_network = f"ontofill-cell-brain-{suffix}"
-        cell.uplink_network = f"ontofill-cell-uplink-{suffix}"
-        cell.cdp_relay = f"ontofill-cell-cdp-{suffix}"
         cell.gateway_relay = f"ontofill-cell-gateway-{suffix}"
         cell.api_relay = f"ontofill-cell-api-{suffix}"
         cell.database = f"ontofill-cell-db-{suffix}"
         cell.brain = f"ontofill-cell-brain-{suffix}"
-        _docker("network", "create", cell.uplink_network)
         _docker(
             "network",
             "create",
@@ -726,25 +783,6 @@ class CellManager:
             "128m",
             "--cpus",
             "0.25",
-        )
-        _docker(
-            "run",
-            "-d",
-            "--name",
-            cell.cdp_relay,
-            "--network",
-            cell.network,
-            *relay_caps,
-            "-e",
-            "RELAY_TARGET_HOST=" + cell.hands,
-            "-e",
-            "RELAY_TARGET_PORT=9222",
-            "-e",
-            "RELAY_LISTEN_PORT=9222",
-            relay_image,
-            "python",
-            "-u",
-            "/app/relay.py",
         )
         _docker("network", "connect", "--alias", "cdp", cell.brain_network, cell.cdp_relay)
         _docker(

@@ -65,6 +65,9 @@ def test_cloud_init_joins_netbird_and_installs_runsc_without_public_ssh() -> Non
     assert "netbird up --setup-key-file /run/ontofill-netbird-setup-key" in script
     assert "runsc install" in script
     assert "--runtime=runsc" in script
+    assert "config['dns'] = ['108.61.10.10']" in script
+    dns_script = script.split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    compile(dns_script, "cloud-init-docker-dns", "exec")
     assert "/dev/kvm" in script
     assert script.index("ufw --force reset") < script.index("ufw default deny incoming")
     assert "ufw allow in on wt0 to any port 22" in script
@@ -232,6 +235,31 @@ def test_bootstrap_verifies_peer_identity(monkeypatch) -> None:
     peer_ip = bootstrap.verify_peer("100.64.0.2")
     assert peer_ip == "100.64.0.2"
     assert all(input_text == "" for _, _, input_text in calls)
+
+
+def test_bootstrap_configures_docker_ssh_identity(monkeypatch) -> None:
+    calls = []
+
+    def fake_ssh(address, command, *, input_text="", identity_file=None):
+        calls.append((address, command, input_text))
+        if command.endswith("ontofill_sandbox.pub"):
+            return "ssh-ed25519 SYNTHETIC_PUBLIC_KEY control"
+        if command == "cat /etc/ssh/ssh_host_ed25519_key.pub":
+            return "ssh-ed25519 SYNTHETIC_HOST_KEY sandbox"
+        return ""
+
+    monkeypatch.setattr(bootstrap, "ssh", fake_ssh)
+    assert bootstrap.link_docker_ssh("100.64.0.1", "100.64.0.2", "100.64.0.2") == (
+        "ssh://root@100.64.0.2"
+    )
+    config = next(
+        (command, data) for _, command, data in calls if "cat >> /root/.ssh/config" in command
+    )
+    assert "grep -qxF 'Host 100.64.0.2'" in config[0]
+    assert "IdentityFile /root/.ssh/ontofill_sandbox" in config[1]
+    assert "IdentitiesOnly yes" in config[1]
+    assert "StrictHostKeyChecking yes" in config[1]
+    assert any("docker --host ssh://root@100.64.0.2 info" in command for _, command, _ in calls)
 
 
 def test_existing_firewall_with_rules_is_rejected() -> None:

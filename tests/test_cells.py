@@ -15,6 +15,7 @@ import pytest
 from ontofill.lake import FileLake
 from ontofill.sandbox import CellError, CellManager, SandboxLimits
 from ontofill.sandbox import cells as cells_module
+from ontofill.sandbox.capture import CaptureError
 from ontofill.sandbox.cell_api import serve_cells
 
 
@@ -41,6 +42,7 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(cells_module, "_docker", fake)
+    monkeypatch.setattr(cells_module, "_container_network_ip", lambda _name, _network: "172.18.0.3")
     monkeypatch.setattr(cells_module, "_images", lambda: ("agent:test", "egress:test"))
     monkeypatch.setattr(cells_module, "_wait_proxy", lambda _name: None)
     monkeypatch.setattr(
@@ -127,8 +129,16 @@ def test_native_cell_lifecycle_enforces_network_caps_and_six_proofs(
     )
     assert "--network" in proxy_run and "--network" in hands_run
     assert hands_run[hands_run.index("--runtime") + 1] == "runsc"
+    assert hands_run[hands_run.index("--add-host") + 1] == "egress:172.18.0.3"
+    assert "XDG_CONFIG_HOME=/tmp/chromium-config" in hands_run
+    assert "XDG_CACHE_HOME=/tmp/chromium-cache" in hands_run
     assert hands_run[hands_run.index("--memory") + 1] == "512m"
-    assert hands_run[hands_run.index("-p") + 1] == "127.0.0.1::9222"
+    assert "-p" not in hands_run
+    relay_run = next(
+        call for call in calls if call[:2] == ("run", "-d") and "RELAY_LISTEN_PORT=9222" in call
+    )
+    assert relay_run[relay_run.index("-p") + 1] == "127.0.0.1::9222"
+    assert "RELAY_TARGET_PORT=9223" in relay_run
     assert not any("API_KEY" in item or "SETUP_KEY" in item for item in hands_run)
 
 
@@ -374,9 +384,34 @@ def test_remote_host_commands_use_the_dedicated_docker_ssh_identity(monkeypatch)
     prefix = cells_module._ssh_prefix()
     assert prefix[:3] == ["ssh", "-i", "/synthetic/sandbox-key"]
     assert prefix[-2:] == ["-o", "StrictHostKeyChecking=yes"]
+    monkeypatch.setenv(
+        "DOCKER_SSH_COMMAND",
+        "ssh -i /synthetic/sandbox-key -o UserKnownHostsFile=/synthetic/known_hosts",
+    )
+    assert "UserKnownHostsFile=/synthetic/known_hosts" in cells_module._ssh_prefix()
+    monkeypatch.setenv("DOCKER_SSH_COMMAND", "ssh -o UserKnownHostsFile=relative/known_hosts")
+    with pytest.raises(CellError, match="absolute"):
+        cells_module._ssh_prefix()
     monkeypatch.setenv("DOCKER_SSH_COMMAND", "ssh -o ProxyCommand=unsafe")
     with pytest.raises(CellError, match="unsupported"):
         cells_module._ssh_prefix()
+
+
+def test_preflight_failure_includes_bounded_pod_proof_log(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def docker(*args: str, **_kwargs) -> subprocess.CompletedProcess[str]:
+        calls.append(args[0])
+        if args[0] == "exec":
+            return subprocess.CompletedProcess(args, 1, "", "container stopped")
+        if args[0] == "inspect":
+            return subprocess.CompletedProcess(args, 0, "false\n", "")
+        return subprocess.CompletedProcess(args, 0, '{"preflight_failed":{"network":"dns"}}', "")
+
+    monkeypatch.setattr(cells_module, "_docker", docker)
+    with pytest.raises(CellError, match="preflight_failed.*dns"):
+        cells_module._wait_preflight("synthetic-hands")
+    assert calls == ["exec", "inspect", "logs"]
 
 
 def test_skyvern_firewall_failure_rolls_back_both_networks(monkeypatch) -> None:
@@ -480,6 +515,33 @@ def test_http_skyvern_request_forwards_only_the_two_brain_env_fields(monkeypatch
             "OPENAI_COMPATIBLE_API_BASE",
             "OPENAI_COMPATIBLE_API_KEY",
         }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_http_create_returns_json_when_docker_fails(monkeypatch) -> None:
+    manager = CellManager()
+
+    def fail(*_args, **_kwargs) -> dict:
+        raise CaptureError("synthetic remote Docker failure")
+
+    monkeypatch.setattr(manager, "create", fail)
+    server = serve_cells(manager, token="synthetic-token", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/cells",
+            method="POST",
+            data=b'{"backend":"native","allowed_domains":["example.invalid"]}',
+            headers={"Authorization": "Bearer synthetic-token"},
+        )
+        with pytest.raises(HTTPError) as raised:
+            urlopen(request, timeout=2)
+        assert raised.value.code == 409
+        assert json.load(raised.value)["error"] == "synthetic remote Docker failure"
     finally:
         server.shutdown()
         server.server_close()

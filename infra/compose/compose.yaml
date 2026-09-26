@@ -3,6 +3,7 @@ name: ontofill
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
@@ -19,6 +20,7 @@ services:
 
   oxigraph:
     image: oxigraph/oxigraph:0.5.9
+    restart: unless-stopped
     command: ["serve", "--location", "/data", "--bind", "0.0.0.0:7878"]
     ports:
       - "127.0.0.1:7878:7878"
@@ -29,6 +31,7 @@ services:
   # from this small companion rather than through a binary inside that image.
   oxigraph-health:
     image: curlimages/curl:8.12.1
+    restart: unless-stopped
     entrypoint: ["sh", "-c", "while true; do sleep 3600; done"]
     depends_on:
       - oxigraph

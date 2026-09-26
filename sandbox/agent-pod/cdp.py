@@ -3,13 +3,46 @@
 from __future__ import annotations
 
 import json
+import select
 import signal
+import socket
+import socketserver
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 from capture import isolation_probes, peak_memory_mb, pod_identity, secret_probes
 from playwright.sync_api import sync_playwright
+
+
+class _CDPBridgeHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        # Chromium binds its debugging socket to container loopback even when
+        # asked for 0.0.0.0. Expose only this fixed port to the cell network.
+        try:
+            upstream = socket.create_connection(("127.0.0.1", 9222), timeout=5)
+        except OSError:
+            return
+        with upstream:
+            sockets = (self.request, upstream)
+            while True:
+                try:
+                    readable, _, _ = select.select(sockets, [], [], 30)
+                    if not readable:
+                        return
+                    for source in readable:
+                        data = source.recv(65536)
+                        if not data:
+                            return
+                        (upstream if source is self.request else self.request).sendall(data)
+                except OSError:
+                    return
+
+
+class _CDPBridge(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 def main() -> int:
@@ -32,6 +65,21 @@ def main() -> int:
         or secrets["metadata_ip"] != "BLOCKED"
         or secrets["mesh"] != "BLOCKED"
     ):
+        # The container may exit before Docker-over-SSH can read its tmpfs.
+        # Print only proof results, never environment values or credentials.
+        print(
+            json.dumps(
+                {
+                    "preflight_failed": {
+                        "network": isolation["network"],
+                        "writes": isolation["writes"],
+                        "secret_probes": secrets,
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
         return 2
 
     with sync_playwright() as playwright:
@@ -52,6 +100,8 @@ def main() -> int:
         "about:blank",
     ]
     browser = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    bridge = _CDPBridge(("0.0.0.0", 9223), _CDPBridgeHandler)
+    threading.Thread(target=bridge.serve_forever, daemon=True).start()
 
     def stop(_signum: int, _frame: object) -> None:
         browser.terminate()
@@ -60,6 +110,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop)
     while browser.poll() is None:
         time.sleep(0.2)
+    bridge.shutdown()
+    bridge.server_close()
     return browser.returncode or 0
 
 

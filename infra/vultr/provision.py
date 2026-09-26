@@ -128,6 +128,17 @@ def cloud_init(role: str, setup_key: str) -> str:
             apt-get update
             apt-get install -y runsc
             runsc install
+            # NetBird points the host resolver at its mesh IP. Container access
+            # to mesh IPs is blocked, so use Vultr's public resolver in Docker.
+            python3 - <<'PY'
+            import json
+            from pathlib import Path
+
+            path = Path('/etc/docker/daemon.json')
+            config = json.loads(path.read_text()) if path.exists() else {}
+            config['dns'] = ['108.61.10.10']
+            path.write_text(json.dumps(config) + '\\n')
+            PY
             systemctl restart docker
             docker info --format '{{json .Runtimes}}' | grep -q runsc
             docker run --rm --runtime=runsc hello-world

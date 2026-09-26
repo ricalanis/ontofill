@@ -119,7 +119,18 @@ class DockerRepairExecutor:
                     (stage / "candidate.py", "candidate.py"),
                     (stage / "input.json", "input.json"),
                 ):
-                    _docker("cp", str(filename), f"{name}:/work/{target}", timeout=30)
+                    # Docker cp cannot see gVisor's tmpfs /work through the
+                    # remote daemon. Stream the file through the pod's stdin.
+                    _docker(
+                        "exec",
+                        "-i",
+                        name,
+                        "sh",
+                        "-c",
+                        f"cat > /work/{target}",
+                        input_text=filename.read_text(encoding="utf-8"),
+                        timeout=30,
+                    )
                 try:
                     result = _docker(
                         "exec",
@@ -148,8 +159,9 @@ class DockerRepairExecutor:
                     return RepairExecution(
                         (), "runner result exceeded 8 MiB", error="result_too_large"
                     )
-                _docker("cp", f"{name}:/work/output.json", str(stage / "output.json"), timeout=30)
-                document = json.loads((stage / "output.json").read_text(encoding="utf-8"))
+                document = json.loads(
+                    _docker("exec", name, "cat", "/work/output.json", timeout=30).stdout
+                )
                 return RepairExecution(
                     tuple(document["outputs"]), document["stderr"], document.get("error")
                 )

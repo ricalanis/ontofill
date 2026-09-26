@@ -56,7 +56,9 @@ class SandboxLimitExceeded(CaptureError):
         self.result: dict | None = None
 
 
-def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _docker(
+    *args: str, timeout: int = 120, check: bool = True, input_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     target = env.get("ONTOFILL_SANDBOX_DOCKER_HOST")
     if target:
@@ -66,6 +68,7 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
     try:
         result = subprocess.run(
             ["docker", *args],
+            input=input_text,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -80,6 +83,21 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
         detail = (result.stderr or result.stdout).strip()[-1500:]
         raise CaptureError(f"Docker {args[0]} failed: {detail}")
     return result
+
+
+def _container_network_ip(name: str, network: str) -> str:
+    """Resolve a proxy's per-job bridge IP for gVisor's explicit hosts entry."""
+    networks = json.loads(
+        _docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", name).stdout
+    )
+    address = networks.get(network, {}).get("IPAddress", "")
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError as exc:
+        raise CaptureError("egress proxy has no per-job IPv4 address") from exc
+    if not isinstance(parsed, ipaddress.IPv4Address) or not parsed.is_private:
+        raise CaptureError("egress proxy has no private per-job IPv4 address")
+    return address
 
 
 def _images() -> tuple[str, str]:
@@ -555,6 +573,7 @@ def capture_url(
         )
         _docker("network", "connect", "bridge", proxy_name)
         _wait_proxy(proxy_name)
+        proxy_ip = _container_network_ip(proxy_name, network)
         with tempfile.TemporaryDirectory(prefix="ontofill-capture-") as temp_dir:
             output = Path(temp_dir)
             output.chmod(0o777)
@@ -564,6 +583,8 @@ def capture_url(
                 *runtime_args,
                 "--network",
                 network,
+                "--add-host",
+                f"egress:{proxy_ip}",
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,nosuid,size=512m",
@@ -585,6 +606,10 @@ def capture_url(
                 "PROBE_MESH_IP=" + _mesh_probe_ip(),
                 "-e",
                 "CAPTURE_MAX_STEPS=" + str(budget.max_steps),
+                "-e",
+                "XDG_CONFIG_HOME=/tmp/chromium-config",
+                "-e",
+                "XDG_CACHE_HOME=/tmp/chromium-cache",
                 agent_image,
                 limits=budget,
             )

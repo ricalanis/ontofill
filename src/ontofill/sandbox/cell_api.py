@@ -7,6 +7,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
+from ontofill.sandbox.capture import CaptureError
 from ontofill.sandbox.cells import CellError, CellManager
 
 
@@ -95,7 +96,7 @@ def make_handler(manager: CellManager, token: str) -> type[BaseHTTPRequestHandle
                         raise ValueError("unknown endpoint")
             except (ValueError, KeyError, TypeError) as exc:
                 self._send(400, {"error": str(exc)})
-            except CellError as exc:
+            except (CellError, CaptureError) as exc:
                 self._send(409, {"error": str(exc)})
 
         def do_DELETE(self) -> None:

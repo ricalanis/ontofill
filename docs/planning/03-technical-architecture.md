@@ -138,3 +138,23 @@ question into a verified, evidence-backed dataset and an investigation app.
 substrate → 3. **first live run of the real case with human approvals (~20:00)** → 4. completeness push (DoD on
 live inference) + discovery + Skyvern cells → 5. deploy app behind NetBird + containment scenarios + bonus evidence
 (overnight) → 6. harden, cached full run, video, freeze Sun 10:00, submit by 12:00.
+
+## 13. Phase loops and the outer gap loop (user decision, 16:26 Sat)
+The harness stays deterministic (code owns phase order, budgets, stop rules and human gates), but each phase is a
+**bounded loop**, not a one-shot call, and the run as a whole is a loop. The model decides *within* typed options; it
+never owns control flow.
+- **One skeleton, reused by every phase:** `gather → propose (Best-of-N) → critique (other model family) → revise →
+  check (the phase's exit criteria compiled to code) → human gate`. Stop when the checks pass and the critic has no
+  blocking objection, or when the phase budget (iterations, $, wall-clock) runs out; then present with open issues listed.
+- **P1:** gather = a research ledger (public prior art, datasets, legal frame) from lead-only search confirmed by
+  sandbox capture; propose PRD; critic checks invented targets, feasibility against budget, brief coverage; DoD
+  criteria carry `basis: brief|human|proposed`.
+- **P2:** already Best-of-N + critic (Simula); add grounding: proposed properties must be observable in sampled
+  bronze captures, and every PRD DoD field must be covered.
+- **P3:** discovery loop: ontology gaps → queries → leads → capture-confirm → authority check → re-rank, until each
+  DoD field has ≥ 1 confirmed candidate source (≥ 2 for high-stakes fields) or budget.
+- **P4:** requester ⇄ source-engineer negotiation (two roles, ≤ N rounds) → TDD, validated by a dry run on one capture.
+- **Outer gap loop (the run itself):** after P5 → refine → gold metrics vs DoD → gap analysis → a typed decision:
+  reopen P3 (new sources), P4 (renegotiate a TDD), P2 (ontology recommend, human gate) or stop. Bounded by the run
+  budget; every iteration is a trace event, so the run view shows the engine arguing with itself and closing gaps.
+- Human denials feed the same loop as `human` revisions (CONTRACT v0.9.5); the loop never overrides a human basis.

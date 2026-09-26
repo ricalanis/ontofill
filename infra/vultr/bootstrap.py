@@ -66,6 +66,7 @@ def link_docker_ssh(
     identity_file: str | None = None,
 ) -> str:
     """Create a dedicated key on VM #1; install only its public half on VM #2."""
+    sandbox_peer_ip = str(ipaddress.ip_address(sandbox_peer_ip))
     key_path = "/root/.ssh/ontofill_sandbox"
     ssh(
         control_address,
@@ -103,10 +104,26 @@ def link_docker_ssh(
         input_text=known_host_line + "\n",
         identity_file=identity_file,
     )
+    # Docker's ssh:// transport invokes OpenSSH directly and ignores
+    # DOCKER_SSH_COMMAND. Pin the dedicated key in OpenSSH's own config.
     ssh(
         control_address,
-        f"ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i {key_path} "
-        f"root@{sandbox_peer_ip} 'docker info --format {{{{.Name}}}}' >/dev/null",
+        "touch /root/.ssh/config && chmod 600 /root/.ssh/config && "
+        f"if ! grep -qxF 'Host {sandbox_peer_ip}' /root/.ssh/config; then "
+        "cat >> /root/.ssh/config; fi",
+        input_text=(
+            f"Host {sandbox_peer_ip}\n"
+            "  User root\n"
+            f"  IdentityFile {key_path}\n"
+            "  IdentitiesOnly yes\n"
+            "  StrictHostKeyChecking yes\n"
+        ),
+        identity_file=identity_file,
+    )
+    ssh(
+        control_address,
+        f"docker --host ssh://root@{sandbox_peer_ip} "
+        "info --format '{{.ServerVersion}}' >/dev/null",
         identity_file=identity_file,
     )
     return f"ssh://root@{sandbox_peer_ip}"
