@@ -67,3 +67,27 @@ def test_recorded_default_pauses_at_first_checkpoint(tmp_path, capsys) -> None:
     )
     assert sorted(path.name for path in case.iterdir()) == ["brief.md"]
     assert not lake.exists(f"runs/{case.name}/latest.json")
+
+
+def test_prd_budget_exhausted_before_draft_pauses_without_artifact(tmp_path, capsys) -> None:
+    case = tmp_path / "tracked-case"
+    case.mkdir()
+    (case / "brief.md").write_text("Find public reading rooms.", encoding="utf-8")
+    run_id = "mock-" + uuid.uuid4().hex
+    assert (
+        run_case(
+            case,
+            run_id=run_id,
+            decision=_preview_decision("Find public reading rooms."),
+            budget_usd=0,
+        )
+        == 3
+    )
+    scratch, lake = _scratch_case(case, run_id)
+    assert not (scratch / "01-scope/prd.json").exists()
+    pending = (scratch / "01-scope/APPROVAL_PENDING.md").read_text()
+    assert "budget ended before" in pending
+    status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
+    assert status["state"] == "paused"
+    assert status["checkpoint_pending"] == "prd"
+    assert "budget exhausted" in capsys.readouterr().out

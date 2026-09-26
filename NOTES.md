@@ -40,3 +40,13 @@ Changed paths:
 The first Ruff pass flagged the candidate exception handler, and replacing `BaseException` with
 `Exception` still triggered BLE001. The repair runner must record arbitrary candidate failures;
 the narrow `# noqa: BLE001` on that handler documents this intentional boundary.
+
+# Brief 10 live PRD probe, 2026-09-26
+
+Two synthetic one-shot PRD calls on glm-5.3 hit `finish_reason=length` at the 16,384-token cap.
+The first used low reasoning, the second minimal; changing reasoning alone was a dead strategy.
+Three smaller typed section calls then completed a synthetic live PRD and independent critic pass.
+The brief 10b scratch denial probe passed after the grounding and pause fixes: two numeric clauses
+stayed human-grounded, the secondary cross-check reached the policy, and a critic objection was
+persisted as an open issue. Eight model calls cost an estimated $0.01958. The probe script and
+artifacts stayed under ignored `.cache/` and a temporary directory.

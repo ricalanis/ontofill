@@ -533,6 +533,23 @@ def test_prd_proposed_threshold_requires_basis_rationale_and_feasibility() -> No
     validate("global-prd", artifact)
 
 
+def test_prd_open_issues_and_secondary_publisher_tier_validate() -> None:
+    artifact = copy.deepcopy(EXAMPLES["global-prd"])
+    artifact["open_issues"] = ["Reviewer should inspect the remaining source gap"]
+    artifact["authority_policy"]["trusted_publishers"].append(
+        {
+            "kind": "Supplementary registry",
+            "tier": "secondary",
+            "domains": [],
+            "rationale": "Human requested a cross-check without naming a domain.",
+        }
+    )
+    validate("global-prd", artifact)
+    artifact["open_issues"] = []
+    with pytest.raises(ValidationError):
+        validate("global-prd", artifact)
+
+
 def test_ontology_requires_generic_class_and_rule_fields() -> None:
     artifact = copy.deepcopy(EXAMPLES["ontology"])
     del artifact["classes"][0]["identifier_property"]

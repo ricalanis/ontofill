@@ -38,11 +38,16 @@ def authority_result(url: str, *, policy: dict | None = None) -> tuple[bool, str
     else:
         if not address.is_global:
             return False, "private address is not a public authority"
+    matching = []
     for publisher in (policy or {}).get("trusted_publishers", []):
         for domain in publisher.get("domains", []):
             approved = domain.lower().rstrip(".")
             if host == approved or host.endswith("." + approved):
-                return True, f"approved publisher kind: {publisher['kind']}"
+                matching.append(publisher)
+    if any(publisher.get("tier") == "secondary" for publisher in matching):
+        return False, "secondary cross-check source needs authority review"
+    if matching:
+        return True, f"approved publisher kind: {matching[0]['kind']}"
     return False, "publisher authority needs human review"
 
 

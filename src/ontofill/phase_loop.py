@@ -166,7 +166,7 @@ class PhaseLoop(Generic[T]):
                 self._unknown_cost = True
         if last_usage is None:
             return {
-                "model": self.generated_by["model"],
+                "model": "none",
                 "backend": self.generated_by["backend"],
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -203,10 +203,11 @@ class PhaseLoop(Generic[T]):
             "phase": self.phase,
             "iteration": iteration,
             "role": role,
-            "model": usage["model"],
             "verdict": verdict,
             "objections": list(objections),
         }
+        if usage["model"] != "none":
+            loop["model"] = usage["model"]
         if stop_reason is not None:
             loop["stop_reason"] = stop_reason
         self.emit(

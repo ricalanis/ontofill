@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from ontofill.case.checkpoints import load_json, require_approval, write_json
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
 from ontofill.lake import FileLake, lake_for_case
-from ontofill.phases.p1_scope.phase import draft_prd
+from ontofill.phases.p1_scope.phase import PrdDraftUnavailable, draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
 from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
 from ontofill.phases.p3_fanout.phase import discover_objectives
@@ -415,13 +415,18 @@ def run_case(
                 feed.append_step(step)
                 trace.append(step)
 
-            prd = draft_prd(
-                case_dir,
-                decision,
-                budget_usd=budget_usd,
-                run_id=run_id,
-                emit=emit_prd_loop,
-            )
+            try:
+                prd = draft_prd(
+                    case_dir,
+                    decision,
+                    budget_usd=budget_usd,
+                    run_id=run_id,
+                    emit=emit_prd_loop,
+                )
+            except PrdDraftUnavailable:
+                feed.update_status(state="paused", phase=1, checkpoint_pending="prd")
+                print("state=paused checkpoint_pending=prd reason=PRD draft budget exhausted")
+                return 3
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")
             if from_phase <= 1:
                 _publish_steps(feed, [step])

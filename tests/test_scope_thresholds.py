@@ -6,7 +6,8 @@ import httpx
 
 from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
-from ontofill.phases.p1_scope.phase import draft_prd
+from ontofill.phases.p1_scope.phase import _ground_criteria, draft_prd
+from ontofill.phases.p3_fanout.authority import authority_result
 
 
 def _prd_response(criterion: dict | None = None) -> dict:
@@ -110,6 +111,162 @@ def test_unsupported_numeric_target_becomes_proposed(tmp_path) -> None:
     assert item["basis"] == "proposed"
     assert "$1.50" in item["feasibility"]
     assert "basis_quote" not in item
+
+
+def test_human_numbers_can_be_in_separate_clauses_and_percent_is_normalized() -> None:
+    reason = (
+        "At least 50 reading rooms should be linked; at least 80% of them need "
+        "a complete profile. Check the registry as a secondary cross-check."
+    )
+    revision = {"reason": reason}
+    document = _prd_response(
+        {
+            "id": "profiles",
+            "metric": "reading rooms with complete profiles",
+            "operator": ">=",
+            "target": 50,
+            "min_ratio": 0.8,
+            "basis": "human",
+            "basis_quote": "At least 50 reading rooms should be linked",
+        }
+    )
+    document["definition_of_done"].append(
+        {
+            "id": "percentage",
+            "metric": "percentage of reading rooms with complete profiles",
+            "operator": ">=",
+            "target": 80,
+            "min_ratio": 0.8,
+            "basis": "human",
+            "basis_quote": "at least 80% of them need a complete profile",
+        }
+    )
+    _ground_criteria(document, "Find reading rooms.", [revision], 2.0)
+    assert [item["basis"] for item in document["definition_of_done"]] == ["human", "human"]
+
+    document["definition_of_done"].append(
+        {
+            "id": "count",
+            "metric": "reading rooms total",
+            "operator": ">=",
+            "target": 80,
+            "basis": "human",
+            "basis_quote": "at least 80% of them need a complete profile",
+        }
+    )
+    _ground_criteria(document, "Find reading rooms.", [revision], 2.0)
+    assert document["definition_of_done"][-1]["basis"] == "proposed"
+
+
+def test_rejected_live_prd_persists_open_issues_and_human_cross_check(tmp_path) -> None:
+    brief = "Find public reading rooms and report a complete profile for each one."
+    (tmp_path / "brief.md").write_text(brief, encoding="utf-8")
+    old = draft_prd(tmp_path, RecordedDecisionClient({"phase1.prd": [_prd_response()]}))
+    scope = tmp_path / "01-scope"
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.json"],
+        generated_by=old["generated_by"],
+    )
+    denial = {
+        "approver": "Example Reviewer",
+        "date": "2026-09-26",
+        "checkpoint": "prd",
+        "decision": "deny",
+        "reason": (
+            "At least 50 reading rooms should be linked; at least 80% of them need "
+            "a complete profile. Keep the registry as a secondary cross-check."
+        ),
+    }
+    (scope / "APPROVED").write_text(json.dumps(denial), encoding="utf-8")
+    revised = _prd_response(
+        {
+            "id": "profiles",
+            "metric": "reading rooms with complete profiles",
+            "operator": ">=",
+            "target": 50,
+            "min_ratio": 0.8,
+            "basis": "human",
+            "basis_quote": "At least 50 reading rooms should be linked",
+            "rationale": "The reviewer specified the pilot size.",
+            "feasibility": "Source count and elapsed time remain unverified.",
+        }
+    )
+    revised["requirements"][0]["description"] = "Show evidence; basis=human, quote: reviewer"
+    revised["authority_policy"]["trusted_publishers"] = [
+        {
+            "kind": "Registry",
+            "tier": "secondary",
+            "domains": ["registry.example.test"],
+            "rationale": "Use as a supplementary cross-check only.",
+        }
+    ]
+    calls: list[dict] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if body["model"] == "minimax-m3":
+            return _tool_response({"accepted": False, "reason": "Verify the secondary cross-check"})
+        fields = body["tools"][0]["function"]["parameters"]["required"]
+        return _tool_response({name: revised[name] for name in fields})
+
+    decision = VultrDecisionClient(
+        api_key="test-only",
+        model="glm-5.3-flash",
+        prd_model="glm-5.3",
+        critic_model="minimax-m3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    steps: list[dict] = []
+    document = draft_prd(tmp_path, decision, budget_usd=2.0, emit=steps.append)
+    assert document["definition_of_done"][0]["basis"] == "human"
+    assert document["requirements"][0]["description"] == "Show evidence"
+    assert document["open_issues"] == ["Verify the secondary cross-check"]
+    assert (scope / "prd.json").exists()
+    assert "Open issues" in (scope / "prd.md").read_text()
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.json"],
+        generated_by=document["generated_by"],
+    )
+    pending = (scope / "APPROVAL_PENDING.md").read_text()
+    assert "Verify the secondary cross-check" in pending
+    assert "secondary" in pending
+    assert any(
+        item["tier"] == "secondary" for item in document["authority_policy"]["trusted_publishers"]
+    )
+    assert any(
+        denial["reason"] in item["rationale"]
+        for item in document["authority_policy"]["trusted_publishers"]
+        if item["tier"] == "secondary"
+    )
+    trusted, reason = authority_result(
+        "https://registry.example.test/rooms", policy=document["authority_policy"]
+    )
+    assert not trusted and "secondary" in reason
+    conflicting = {
+        "trusted_publishers": [
+            {"kind": "Primary", "domains": ["registry.example.test"]},
+            {"kind": "Cross-check", "tier": "secondary", "domains": ["registry.example.test"]},
+        ]
+    }
+    assert not authority_result("https://registry.example.test/rooms", policy=conflicting)[0]
+    critic_prompt = next(
+        body["messages"][1]["content"] for body in calls if body["model"] == "minimax-m3"
+    )
+    assert brief in critic_prompt
+    assert denial["reason"] in critic_prompt
+    assert steps[-1]["loop"]["stop_reason"] == "max_iterations"
+    assert all(
+        "model" not in step["loop"]
+        for step in steps
+        if step["loop"]["role"] in {"gather", "check", "decide"}
+    )
 
 
 def test_critic_objection_causes_one_revised_draft(tmp_path) -> None:

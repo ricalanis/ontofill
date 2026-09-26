@@ -62,6 +62,28 @@ def write_markdown(path: Path, body: str, generated_by: dict[str, str]) -> None:
     path.write_text(f"---\n{front_matter}---\n{body}", encoding="utf-8")
 
 
+def write_prd_budget_pending(directory: Path, generated_by: dict[str, str]) -> None:
+    """Pause cleanly when the loop budget is exhausted before a draft exists."""
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "phase": 1,
+        "checkpoint": "prd",
+        "requested_at": datetime.now(UTC).isoformat(),
+        "reason": "PRD loop budget exhausted before a draft was produced",
+        "artifact_paths": ["brief.md"],
+        "generated_by": generated_by,
+    }
+    validate_document("approval-pending", metadata)
+    (directory / "APPROVAL_PENDING.md").write_text(
+        "---\n"
+        + yaml.safe_dump(metadata, sort_keys=False)
+        + "---\n# PRD draft unavailable\n\n"
+        + "The PRD budget ended before the model produced a draft. Increase the run budget "
+        + "and rerun this phase; there is no PRD to approve yet.\n",
+        encoding="utf-8",
+    )
+
+
 def require_approval(
     directory: Path,
     *,
@@ -124,6 +146,20 @@ def require_approval(
                             else ""
                         )
                         for item in document["definition_of_done"]
+                    )
+                    + "\n"
+                )
+                if document.get("open_issues"):
+                    review_details += (
+                        "\n## Open issues for human review\n\n"
+                        + "\n".join(f"- {issue}" for issue in document["open_issues"])
+                        + "\n"
+                    )
+                review_details += (
+                    "\n## Authority policy\n\n"
+                    + "\n".join(
+                        f"- {item['kind']} [{item.get('tier', 'primary')}]: {item['rationale']}"
+                        for item in document["authority_policy"]["trusted_publishers"]
                     )
                     + "\n"
                 )
