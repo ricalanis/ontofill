@@ -27,7 +27,9 @@ class OntofillHttpProvider:
     name = "ontofill-http"
 
     def __init__(self, base_url: str | None = None, token: str | None = None, http: httpx.Client | None = None,
-                 timeout_s: float = 120.0):
+                 timeout_s: float | None = None):
+        # A first create on a fresh sandbox host builds the hands/egress images there: allow minutes, not seconds.
+        timeout_s = timeout_s or float(os.environ.get("BA_CELLS_TIMEOUT_S", "600"))
         self.base_url = (base_url or os.environ.get(URL_ENV) or "http://127.0.0.1:8766").rstrip("/")
         token = token or os.environ.get(TOKEN_ENV)
         if not token:

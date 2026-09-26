@@ -130,6 +130,14 @@ itself (a minimal viewer), `/stream` (MJPEG, `multipart/x-mixed-replace`) and `/
 - Screencast frames are sent only when the page changes, so an idle page shows its last frame. Measured on a local
   docker-stub cell: first frame immediately (a seed screenshot), about 26 ms from a DOM change to its frame.
 
+## Deployment (CONTRACT v0.9.4)
+
+On the control VM the gateway binds the control plane's NetBird IP so Skyvern brains on the sandbox host can reach
+it (and nothing else; the sandbox's narrow brain → gateway rule is the substrate's): `BA_GATEWAY_HOST=<control NetBird
+IP>`, `BA_GATEWAY_PORT=8700`; brains get `OPENAI_COMPATIBLE_API_BASE=http://<control NetBird IP>:8700/v1`. The engine's
+cell API (`serve_cells`) and the live view stay on loopback; publish a live view with `netbird expose` and set
+`BA_LIVEVIEW_PUBLIC_BASE`. `BA_CELLS_TIMEOUT_S` (default 600) bounds a cell create, which builds images on a fresh host.
+
 ## Environment
 
 See `shared/config.py`. Only the gateway reads `VULTR_INFERENCE_API_KEY` and `JEV_API_KEY`. The gateway listens on
