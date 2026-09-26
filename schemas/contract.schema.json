@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/contract.schema.json",
+  "title": "Gold contract JSONL record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "amount", "currency", "date", "buyer", "procedure_type", "supplier_ids", "evidence"],
+  "properties": {
+    "id": {"$ref": "common.schema.json#/$defs/contract_id"},
+    "title": {"type": "string", "minLength": 1},
+    "amount": {"type": "number", "minimum": 0},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "date": {"type": "string", "format": "date"},
+    "buyer": {"type": "string", "minLength": 1},
+    "procedure_type": {"type": "string", "minLength": 1},
+    "supplier_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/supplier_id"}},
+    "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "common.schema.json#/$defs/evidence"}}
+  }
+}

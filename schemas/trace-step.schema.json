@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/trace-step.schema.json",
+  "title": "Execution trace JSONL step",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["step_id", "run_id", "phase", "source_id", "objective_id", "tdd_path", "mode", "observed", "requested", "executed", "evaluated", "parent_step_id", "value_ids", "ts"],
+  "properties": {
+    "step_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "phase": {"type": "integer", "minimum": 1, "maximum": 5},
+    "source_id": {"type": ["string", "null"], "minLength": 1},
+    "objective_id": {"type": ["string", "null"], "minLength": 1},
+    "tdd_path": {"type": ["string", "null"], "minLength": 1},
+    "mode": {"enum": ["D0", "D1", "S1", "S2"]},
+    "observed": {"$ref": "#/$defs/log_item"},
+    "requested": {"$ref": "#/$defs/log_item"},
+    "executed": {"$ref": "#/$defs/log_item"},
+    "evaluated": {"$ref": "#/$defs/log_item"},
+    "parent_step_id": {"type": ["string", "null"], "minLength": 1},
+    "value_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/value_id"}},
+    "ts": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "log_item": {"oneOf": [{"type": "object"}, {"type": "string", "minLength": 1}]}
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/tdd.schema.json",
+  "title": "Phase 4 technical definition document",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_id", "objective_id", "local_prd_path", "ontology_version", "source_url", "allowed_domains", "target_fields", "extraction_method", "validation_rules", "rate_limit_per_minute", "budget_usd", "steps"],
+  "properties": {
+    "source_id": {"type": "string", "minLength": 1},
+    "objective_id": {"type": "string", "minLength": 1},
+    "local_prd_path": {"type": "string", "minLength": 1},
+    "ontology_version": {"type": "string", "minLength": 1},
+    "source_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+    "allowed_domains": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$"}},
+    "target_fields": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "target_entities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "target_volume": {"type": "integer", "minimum": 1},
+    "extraction_method": {"enum": ["dom", "vision", "pdf", "download", "api"]},
+    "validation_rules": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "rate_limit_per_minute": {"type": "integer", "minimum": 1},
+    "budget_usd": {"type": "number", "minimum": 0},
+    "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}},
+    "allowed_tools": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {
+    "step": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "description", "starting_mode", "allowed_modes", "observation_channel", "risk_tier", "termination_predicate"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "starting_mode": {"enum": ["D0", "D1", "S1", "S2"]},
+        "allowed_modes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["D0", "D1", "S1", "S2"]}},
+        "observation_channel": {"enum": ["programmatic", "text_structure", "pixels", "hybrid"]},
+        "risk_tier": {"enum": ["SAFE", "LOW"]},
+        "termination_predicate": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

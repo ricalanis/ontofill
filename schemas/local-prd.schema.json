@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/local-prd.schema.json",
+  "title": "Phase 4 local product requirements",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_id", "objective_id", "global_prd_path", "global_requirement_ids", "target_fields", "local_definition_of_done"],
+  "properties": {
+    "source_id": {"type": "string", "minLength": 1},
+    "objective_id": {"type": "string", "minLength": 1},
+    "global_prd_path": {"type": "string", "minLength": 1},
+    "global_requirement_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "target_fields": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "local_definition_of_done": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/criterion"}},
+    "ontology_recommendations": {"type": "array", "items": {"$ref": "#/$defs/recommendation"}}
+  },
+  "$defs": {
+    "criterion": {
+      "type": "object", "additionalProperties": false, "required": ["metric", "operator", "target"],
+      "properties": {
+        "metric": {"type": "string", "minLength": 1},
+        "operator": {"enum": [">=", ">", "=", "<=", "<"]},
+        "target": {"type": "number", "minimum": 0}
+      }
+    },
+    "recommendation": {
+      "type": "object", "additionalProperties": false, "required": ["description", "bronze_key"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1},
+        "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"}
+      }
+    }
+  }
+}

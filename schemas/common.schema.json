@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/common.schema.json",
+  "title": "Ontofill shared contract types",
+  "$defs": {
+    "supplier_id": {"type": "string", "pattern": "^sup:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "contract_id": {"type": "string", "pattern": "^con:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "value_id": {"type": "string", "pattern": "^val:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "bronze_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nonempty": {"type": "string", "minLength": 1},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "bronze_key", "selector", "screenshot_key", "captured_at", "source_id", "source_type"],
+      "properties": {
+        "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "bronze_key": {"$ref": "#/$defs/bronze_key"},
+        "selector": {"$ref": "#/$defs/nonempty"},
+        "screenshot_key": {"$ref": "#/$defs/bronze_key"},
+        "captured_at": {"type": "string", "format": "date-time"},
+        "source_id": {"$ref": "#/$defs/nonempty"},
+        "source_type": {"$ref": "#/$defs/nonempty"}
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "confidence", "status", "evidence"],
+      "properties": {
+        "value_id": {"$ref": "#/$defs/value_id"},
+        "value": {"type": ["string", "number", "boolean", "null"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "status": {"enum": ["gold", "conflict", "missing"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["gold", "conflict"]}}, "required": ["status"]},
+          "then": {
+            "required": ["value_id"],
+            "properties": {
+              "value": {"not": {"type": "null"}},
+              "evidence": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "missing"}}, "required": ["status"]},
+          "then": {"properties": {"value": {"type": "null"}, "evidence": {"maxItems": 0}}}
+        }
+      ]
+    }
+  }
+}

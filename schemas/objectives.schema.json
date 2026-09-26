@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/objectives.schema.json",
+  "title": "Phase 3 discovered source objectives",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ontology_version", "prd_path", "objectives"],
+  "properties": {
+    "ontology_version": {"type": "string", "minLength": 1},
+    "prd_path": {"type": "string", "minLength": 1},
+    "objectives": {
+      "type": "array", "items": {"$ref": "#/$defs/objective"}
+    }
+  },
+  "$defs": {
+    "objective": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source_id", "source_url", "target_fields", "priority", "expected_contribution"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "source_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "target_fields": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "taxonomy_node_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "priority": {"type": "integer", "minimum": 1},
+        "expected_contribution": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}

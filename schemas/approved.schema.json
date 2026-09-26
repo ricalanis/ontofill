@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/approved.schema.json",
+  "title": "APPROVED checkpoint file",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approver", "date"],
+  "properties": {
+    "approver": {"type": "string", "minLength": 1},
+    "date": {"type": "string", "format": "date"},
+    "checkpoint": {"enum": ["prd", "factors", "ontology"]}
+  }
+}

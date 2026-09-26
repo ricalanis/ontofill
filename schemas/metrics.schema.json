@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/metrics.schema.json",
+  "title": "Gold run metrics",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "suppliers_total", "suppliers_at_80pct_core", "per_field_completeness", "distinct_source_types", "gold_values_without_evidence", "level_ratio_coverage", "mode_counts", "jobs"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "suppliers_total": {"type": "integer", "minimum": 0},
+    "suppliers_at_80pct_core": {"type": "integer", "minimum": 0},
+    "per_field_completeness": {
+      "type": "object",
+      "required": ["legal_name", "tax_id", "address", "founding_date", "tax_list_status", "sanction_status"],
+      "additionalProperties": {"$ref": "#/$defs/ratio"}
+    },
+    "distinct_source_types": {"type": "integer", "minimum": 0},
+    "gold_values_without_evidence": {"type": "integer", "minimum": 0},
+    "level_ratio_coverage": {
+      "type": "object", "additionalProperties": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ratio"}}
+    },
+    "mode_counts": {
+      "type": "object", "additionalProperties": false, "required": ["D0", "D1", "S1", "S2"],
+      "properties": {
+        "D0": {"type": "integer", "minimum": 0},
+        "D1": {"type": "integer", "minimum": 0},
+        "S1": {"type": "integer", "minimum": 0},
+        "S2": {"type": "integer", "minimum": 0}
+      }
+    },
+    "jobs": {
+      "type": "object", "additionalProperties": false, "required": ["ok", "failed_by_reason"],
+      "properties": {
+        "ok": {"type": "integer", "minimum": 0},
+        "failed_by_reason": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    }
+  },
+  "$defs": {"ratio": {"type": "number", "minimum": 0, "maximum": 1}}
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/run-request.schema.json",
+  "title": "Ontofill CLI invocation, after argument parsing",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command", "case_dir"],
+  "properties": {
+    "command": {"enum": ["run", "refine", "export"]},
+    "case_dir": {"type": "string", "minLength": 1},
+    "from_phase": {"type": "integer", "minimum": 1, "maximum": 5},
+    "to_phase": {"type": "integer", "minimum": 1, "maximum": 5},
+    "run_id": {"type": "string", "minLength": 1},
+    "budget_usd": {"type": "number", "minimum": 0}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"command": {"enum": ["refine", "export"]}}, "required": ["command"]},
+      "then": {"not": {"anyOf": [{"required": ["from_phase"]}, {"required": ["to_phase"]}, {"required": ["budget_usd"]}]}}
+    }
+  ]
+}

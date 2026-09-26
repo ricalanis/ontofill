@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/lake-pointer.schema.json",
+  "title": "Case lake.yaml, after YAML parsing",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bronze", "silver", "gold"],
+  "properties": {
+    "bronze": {"oneOf": [{"$ref": "#/$defs/bronze_s3"}, {"$ref": "#/$defs/bronze_filesystem"}]},
+    "silver": {
+      "type": "object", "additionalProperties": false,
+      "required": ["postgres_url_env", "rdf_store_url_env"],
+      "properties": {
+        "postgres_url_env": {"$ref": "#/$defs/env_name"},
+        "rdf_store_url_env": {"$ref": "#/$defs/env_name"}
+      }
+    },
+    "gold": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rdf_store_url_env", "export"],
+      "properties": {
+        "rdf_store_url_env": {"$ref": "#/$defs/env_name"},
+        "export": {
+          "type": "array", "uniqueItems": true, "minItems": 1,
+          "items": {"enum": ["jsonl", "csv", "rdf", "ocds-json"]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "env_name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+    "bronze_s3": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "bucket", "endpoint"],
+      "properties": {
+        "kind": {"const": "s3"},
+        "bucket": {"type": "string", "minLength": 1},
+        "endpoint": {"type": "string", "minLength": 1},
+        "access_key_env": {"$ref": "#/$defs/env_name"},
+        "secret_key_env": {"$ref": "#/$defs/env_name"}
+      }
+    },
+    "bronze_filesystem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "root"],
+      "properties": {
+        "kind": {"const": "filesystem"},
+        "root": {"type": "string", "format": "uri", "pattern": "^file:///"}
+      }
+    }
+  }
+}

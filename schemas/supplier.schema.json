@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/supplier.schema.json",
+  "title": "Gold supplier JSONL record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "classified_as", "fields", "flags", "links", "contract_ids"],
+  "properties": {
+    "id": {"$ref": "common.schema.json#/$defs/supplier_id"},
+    "classified_as": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "fields": {
+      "type": "object",
+      "required": ["legal_name", "tax_id", "address", "founding_date", "tax_list_status", "sanction_status"],
+      "additionalProperties": {"$ref": "common.schema.json#/$defs/field"}
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["rule_id", "label", "explanation", "evidence_value_ids"],
+        "properties": {
+          "rule_id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "explanation": {"type": "string", "minLength": 1},
+          "evidence_value_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/value_id"}}
+        }
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["type", "target", "via_value_id"],
+        "properties": {
+          "type": {"enum": ["shared_address", "shared_representative", "same_procedure"]},
+          "target": {"$ref": "common.schema.json#/$defs/supplier_id"},
+          "via_value_id": {"$ref": "common.schema.json#/$defs/value_id"}
+        }
+      }
+    },
+    "contract_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "common.schema.json#/$defs/contract_id"}}
+  }
+}
