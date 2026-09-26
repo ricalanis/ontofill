@@ -24,7 +24,8 @@ def broker(tmp_path):
         return gw
 
     b = server.Broker(admin=admin, gateway_factory=gateway_factory, backend_factory=lambda cdp: FakeBackend(),
-                      steps_dir=tmp_path / "steps", captures_dir=tmp_path / "lake", case_dir=tmp_path / "case")
+                      steps_dir=tmp_path / "steps", captures_dir=tmp_path / "lake", case_dir=tmp_path / "case",
+                      liveview=False)
     b.gateways = gateways
     server.set_broker(b)
     yield b

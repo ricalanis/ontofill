@@ -19,6 +19,7 @@ from controller.backend import CALL_ERRORS, ActResult
 from controller.captures import LocalCaptureStore
 from controller.cells import Cell, CellError, CellPool, pool_from_env
 from controller.gateway import ScreenedGatewayClient
+from controller.liveview import LiveViewHub, RecordingCaptures
 from controller.loop import Limits, Session
 from shared import config
 from shared.gateway_client import GatewayAdmin
@@ -30,24 +31,28 @@ CASE_DIR_ENV = "BA_CASE_DIR"  # the case package: action approvals go to <case>/
 CDP_URL_ENV = "BA_CDP_URL"  # a browser pod's CDP endpoint (until the cell substrate hands one out per session)
 
 
-def _default_backend(cdp_url: str | None):
+def _default_backend(cdp_url: str | None, debug_port: bool = False):
     from backends.native.backend import NativeBackend
 
-    return NativeBackend(cdp_url=cdp_url)
+    return NativeBackend(cdp_url=cdp_url, debug_port=debug_port)
 
 
 class Broker:
     """Holds live sessions. Factories are injectable so tests run without a gateway or a browser."""
 
     def __init__(self, *, admin=None, gateway_factory=None, backend_factory=None, steps_dir: Path | None = None,
-                 captures_dir: Path | None = None, case_dir: Path | None = None, pool: CellPool | None | bool = None):
+                 captures_dir: Path | None = None, case_dir: Path | None = None, pool: CellPool | None | bool = None,
+                 liveview: LiveViewHub | None | bool = None):
         gateway_url = config.env(config.GATEWAY_URL_ENV)
         admin_token = os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV)
         if admin is None and admin_token:
             admin = GatewayAdmin(gateway_url, admin_token)
         self.admin = admin
         self.gateway_factory = gateway_factory or (lambda token: ScreenedGatewayClient(gateway_url, token))
-        self.backend_factory = backend_factory or _default_backend
+        # Live view (read-only screencast per session); None = from BA_LIVEVIEW_PORT (default 8702, 0 = off).
+        self.liveview = LiveViewHub.from_env() if liveview is None else (liveview or None)
+        self.backend_factory = backend_factory or (
+            lambda cdp_url: _default_backend(cdp_url, debug_port=self.liveview is not None and not cdp_url))
         self.steps_dir = Path(steps_dir or os.environ.get(STEPS_DIR_ENV) or "runs/browser-agent/steps")
         self.captures_dir = Path(captures_dir or os.environ.get(CAPTURES_DIR_ENV) or "runs/browser-agent/captures")
         case = case_dir or os.environ.get(CASE_DIR_ENV)
@@ -97,9 +102,10 @@ class Broker:
         backend = self.backend_factory(cdp_url)
         if cell is not None:
             backend = CellCountedBackend(backend, self.pool, cell)
+        captures = RecordingCaptures(LocalCaptureStore(self.captures_dir))
         session = Session(session_id=session_id, backend=backend,
                           gateway=self.gateway_factory(token), steps=steps,
-                          captures=LocalCaptureStore(self.captures_dir), allowed_domains=allowed_domains,
+                          captures=captures, allowed_domains=allowed_domains,
                           case_dir=case_dir, job_id=str(tdd.get("job_id") or f"job:{session_id}"), limits=lim,
                           source_id=tdd.get("source_id"),
                           artifact_paths=[tdd["tdd_path"]] if tdd.get("tdd_path") else None, admin=self.admin,
@@ -113,11 +119,15 @@ class Broker:
             if cell is not None:
                 self.pool.release(cell)
             raise
+        live_view_url = None
+        if self.liveview is not None:  # the URL (with its view token) goes to the caller only, never into steps
+            live_view_url, source = self.liveview.register(session_id, cdp_url or getattr(backend, "cdp_endpoint", None))
+            captures.source = source
         with self._lock:
             self.sessions[session_id] = session
             if cell is not None:
                 self.cells[session_id] = cell
-        return {"session_id": session_id, "live_view_url": None, "url": opened.get("url"),
+        return {"session_id": session_id, "live_view_url": live_view_url, "url": opened.get("url"),
                 "steps_path": str(steps.path),
                 **({"cell_id": cell_info["cell_id"], "isolation": cell_info["isolation"]} if cell_info else {})}
 
@@ -140,6 +150,8 @@ class Broker:
             cell = self.cells.pop(session_id, None)
         if session is None:
             return {"closed": False, "error": f"unknown session {session_id!r}"}
+        if self.liveview is not None:  # the view dies with the session: screencast stopped, streams ended
+            self.liveview.unregister(session_id)
         cell_result = None
         outcomes = self.results.pop(session_id, [])
         try:

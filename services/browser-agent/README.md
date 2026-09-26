@@ -108,6 +108,28 @@ that cell's Chromium over its `cdp_url` instead of a browser on the control plan
   create 0.42 s, warm lease ~0 ms, destroy 0.32 s, hands memory 149 MiB idle / 163 MiB during a task.
 - `uv run pytest -q -m docker` runs a real stub cell end to end and checks that nothing is left behind.
 
+## Live view
+
+Each session gets a read-only live view of its browser (architecture §8: per-cell live-view URLs that die with the
+cell). `session.open` returns `live_view_url` = `http://127.0.0.1:<BA_LIVEVIEW_PORT>/live/<session_id>?t=<view
+token>` (or `BA_LIVEVIEW_PUBLIC_BASE/live/...`, e.g. the `netbird expose` URL of the control plane). Routes: the page
+itself (a minimal viewer), `/stream` (MJPEG, `multipart/x-mixed-replace`) and `/frame.jpg` (latest frame).
+
+- Frames come from a second CDP client on the session's own browser (the cell's `cdp_url`; for a locally launched
+  development browser, a loopback DevTools port opened only when the live view is on): `Page.startScreencast`
+  (JPEG, quality 60, max width 1280) on the newest page with content, each frame acked, only the latest kept. The
+  viewer receives images only: no input is forwarded and no CDP endpoint is exposed. With no CDP endpoint the view
+  shows the session's latest screenshot capture and says "latest capture, not live".
+- Every route needs the session's random view token (constant-time compare); a wrong or missing token, an unknown
+  session or a closed one is a `404`. Responses are `Cache-Control: no-store`, `Referrer-Policy: no-referrer`; framing
+  is allowed so the investigation app can embed the view.
+- `session.close` stops the screencast, disconnects the viewer's CDP client and ends open streams within about a
+  second. The URL and its token are returned to the caller only; they never go into trace steps.
+- `BA_LIVEVIEW_PORT` (default 8702; `0` disables it). The server binds loopback only and is shared by all sessions in
+  the process; if the port is taken, sessions run without a live view.
+- Screencast frames are sent only when the page changes, so an idle page shows its last frame. Measured on a local
+  docker-stub cell: first frame immediately (a seed screenshot), about 26 ms from a DOM change to its frame.
+
 ## Environment
 
 See `shared/config.py`. Only the gateway reads `VULTR_INFERENCE_API_KEY` and `JEV_API_KEY`. The gateway listens on

@@ -9,6 +9,7 @@ All calls must come from one thread: the controller's Session guarantees that.
 from __future__ import annotations
 
 import contextlib
+import socket
 from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
@@ -83,10 +84,20 @@ def is_search_form(info: dict) -> bool:
                 or any(SEARCH_WORDS.search(n) for n in info.get("submit_names") or []))
 
 
+
+def _free_port() -> int:
+    with contextlib.closing(socket.socket()) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
 class NativeBackend:
     def __init__(self, cdp_url: str | None = None, headless: bool = True, viewport: tuple[int, int] = (1280, 800),
-                 text_limit: int = 12000, timeout_ms: int = 15000):
+                 text_limit: int = 12000, timeout_ms: int = 15000, debug_port: bool = False):
         self.cdp_url = cdp_url
+        # Local launch only: also open a loopback DevTools port so a second, read-only client (the live view) can
+        # screencast this browser. A cell's browser is already reached over its own cdp_url.
+        self.debug_port = debug_port
+        self.cdp_endpoint: str | None = None
         self.headless = headless
         self.viewport = viewport
         self.text_limit = text_limit
@@ -107,6 +118,12 @@ class NativeBackend:
         self._pw = sync_playwright().start()
         if cdp_url:
             self._browser = self._pw.chromium.connect_over_cdp(cdp_url, timeout=self.timeout_ms)
+            self.cdp_endpoint = cdp_url
+        elif self.debug_port:
+            port = _free_port()
+            self._browser = self._pw.chromium.launch(
+                headless=self.headless, args=["--remote-debugging-address=127.0.0.1", f"--remote-debugging-port={port}"])
+            self.cdp_endpoint = f"http://127.0.0.1:{port}"
         else:
             self._browser = self._pw.chromium.launch(headless=self.headless)
         self._context = self._browser.new_context(
