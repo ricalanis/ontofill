@@ -17,6 +17,8 @@ def test_file_lake_keeps_bronze_content_addressed_and_gold_layout(tmp_path) -> N
     assert set(metadata) == {"content_type", "url", "captured_at", "source_id", "step_id"}
     lake.write_key("gold/example/r1/suppliers.jsonl", b"{}\n")
     assert (tmp_path / "gold/example/r1/suppliers.jsonl").read_bytes() == b"{}\n"
+    lake.write_key("runs/example/r1/trace.live.jsonl", b"{}\n")
+    assert lake.read_key("runs/example/r1/trace.live.jsonl") == b"{}\n"
 
 
 def test_lake_rejects_path_escape(tmp_path) -> None:

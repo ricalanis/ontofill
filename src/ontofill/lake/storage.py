@@ -16,10 +16,13 @@ from botocore.exceptions import ClientError
 
 BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 GOLD_KEY = re.compile(r"gold/[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+\Z")
+RUN_KEY = re.compile(
+    r"runs/[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+/(?:trace\.live\.jsonl|status\.json)|latest\.json)\Z"
+)
 
 
 def validate_key(key: str) -> str:
-    if not (BRONZE_KEY.fullmatch(key) or GOLD_KEY.fullmatch(key)) or any(
+    if not (BRONZE_KEY.fullmatch(key) or GOLD_KEY.fullmatch(key) or RUN_KEY.fullmatch(key)) or any(
         part in (".", "..") for part in key.split("/")
     ):
         raise ValueError(f"invalid lake object key: {key!r}")
