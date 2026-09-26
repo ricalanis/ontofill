@@ -29,7 +29,12 @@ from ontofill.phases.p4_local_scoping.phase import draft_local_scope
 from ontofill.phases.p5_execute import execute_objective
 from ontofill.refiner import Observation, export_run, refine_observations, silver_store_from_env
 from ontofill.runfeed import RunFeed
-from ontofill.sandbox import CaptureBlocked, append_job_record, build_job_record
+from ontofill.sandbox import (
+    CaptureBlocked,
+    SandboxLimitExceeded,
+    append_job_record,
+    build_job_record,
+)
 
 
 def _preview_decision(brief: str) -> RecordedDecisionClient:
@@ -630,6 +635,18 @@ def run_case(
             else:
                 print("state=done checkpoint_pending=none")
             return 3 if pending else 0
+        except SandboxLimitExceeded as exc:
+            fresh = [
+                step for step in exc.trace if step["step_id"] not in {s["step_id"] for s in trace}
+            ]
+            _publish_steps(feed, fresh)
+            trace.extend(fresh)
+            if exc.result is not None:
+                append_job_record(lake, case_id, build_job_record(exc.result))
+            phase = feed.current_status["phase"] if feed.current_status else 1
+            _publish_unreported_decisions(feed, trace, decision, run_id, phase)
+            feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
+            raise
         except CaptureBlocked as exc:
             for step in exc.trace:
                 step["event"] = "hard_stop"

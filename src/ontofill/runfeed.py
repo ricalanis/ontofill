@@ -25,6 +25,9 @@ def _json_bytes(document: dict) -> bytes:
     return (json.dumps(document, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+_UNSET = object()
+
+
 class RunFeed:
     """Append steps immediately and refresh status on transitions or every interval."""
 
@@ -78,8 +81,12 @@ class RunFeed:
         self._validators["trace-step"].validate(record)
         if record["run_id"] != self.run_id:
             raise ValueError("trace step run_id differs from feed")
-        if validate_generated_by(record["generated_by"])["backend"] != self.generated_by["backend"]:
+        step_backend = validate_generated_by(record["generated_by"])["backend"]
+        run_backend = self.generated_by["backend"]
+        if step_backend != run_backend and not (run_backend == "vultr" and step_backend == "jev"):
             raise ValueError("trace step inference backend differs from feed")
+        if step_backend == "jev" and record["value_ids"]:
+            raise ValueError("Jev trace cannot ground gold values")
         if record.get("screenshot_key") and not self.lake.exists(record["screenshot_key"]):
             raise ValueError("trace screenshot is absent from bronze")
         with self._lock:
@@ -101,13 +108,14 @@ class RunFeed:
         checkpoint_pending: str | None = None,
         sources: Sequence[Mapping] | None = None,
         metrics: Mapping | None = None,
+        live_view_url: str | None | object = _UNSET,
     ) -> dict:
         """Write immediately on state/phase/checkpoint changes, then at least every 10 s."""
         if state not in {"running", "paused", "done", "failed"}:
             raise ValueError("invalid run state")
         if phase not in range(1, 6):
             raise ValueError("phase must be 1..5")
-        if checkpoint_pending not in {None, "prd", "factors", "ontology", "source"}:
+        if checkpoint_pending not in {None, "prd", "factors", "ontology", "source", "action"}:
             raise ValueError("invalid checkpoint")
         with self._lock:
             self._check_ready()
@@ -131,9 +139,21 @@ class RunFeed:
                 "generated_by": self.generated_by.copy(),
                 "preview": self.preview,
             }
-            changed = previous is None or any(
-                previous[key] != self._status[key]
-                for key in ("state", "phase", "checkpoint_pending")
+            if live_view_url is not _UNSET:
+                if live_view_url is not None:
+                    self._status["live_view_url"] = live_view_url
+            elif previous and "live_view_url" in previous:
+                self._status["live_view_url"] = previous["live_view_url"]
+            changed = (
+                previous is None
+                or any(
+                    previous[key] != self._status[key]
+                    for key in ("state", "phase", "checkpoint_pending")
+                )
+                or (
+                    previous is not None
+                    and previous.get("live_view_url") != self._status.get("live_view_url")
+                )
             )
             self._write_status_if_due(self.clock(), force=changed)
             if self._start_heartbeat and self._thread is None and state == "running":

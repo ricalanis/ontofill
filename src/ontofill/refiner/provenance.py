@@ -8,8 +8,8 @@ from datetime import datetime
 def validate_generated_by(generated_by: dict[str, str]) -> dict[str, str]:
     if not isinstance(generated_by, dict) or set(generated_by) != {"backend", "model", "at"}:
         raise ValueError("generated_by requires backend, model, and at")
-    if generated_by["backend"] not in {"recorded", "vultr"}:
-        raise ValueError("generated_by backend must be recorded or vultr")
+    if generated_by["backend"] not in {"recorded", "vultr", "jev"}:
+        raise ValueError("generated_by backend must be recorded, vultr, or jev")
     if not isinstance(generated_by["model"], str) or not generated_by["model"].strip():
         raise ValueError("generated_by model must be nonempty")
     if not isinstance(generated_by["at"], str):
@@ -25,6 +25,8 @@ def validate_generated_by(generated_by: dict[str, str]) -> dict[str, str]:
 
 def validate_run_provenance(run_id: str, generated_by: dict[str, str]) -> dict[str, str]:
     valid = validate_generated_by(generated_by)
+    if valid["backend"] == "jev":
+        raise ValueError("Jev cannot be the primary run backend")
     if valid["backend"] == "recorded" and not run_id.startswith("mock-"):
         raise ValueError("recorded output requires a mock- run ID")
     if valid["backend"] == "vultr" and run_id.startswith("mock-"):

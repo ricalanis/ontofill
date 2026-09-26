@@ -508,8 +508,13 @@ def export_run(
         validators["trace-step"].validate(step)
         if step["run_id"] != run_id:
             raise ValueError("trace contains another run_id")
-        if validate_generated_by(step["generated_by"])["backend"] != run_provenance["backend"]:
+        step_backend = validate_generated_by(step["generated_by"])["backend"]
+        if step_backend != run_provenance["backend"] and not (
+            run_provenance["backend"] == "vultr" and step_backend == "jev"
+        ):
             raise ValueError("trace inference backend differs from run")
+        if step_backend == "jev" and step["value_ids"]:
+            raise ValueError("Jev trace cannot ground gold values")
     _validate_entities(sorted_entities, ontology, lake)
     _check_lineage(
         case_dir, sorted_entities, sorted_trace, ontology, dod_queries, validators, run_provenance

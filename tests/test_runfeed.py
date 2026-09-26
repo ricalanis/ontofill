@@ -14,6 +14,7 @@ from ontofill.runfeed import RunFeed
 
 RECORDED = {"backend": "recorded", "model": "synthetic-replay", "at": "2026-01-01T00:00:00Z"}
 VULTR = {"backend": "vultr", "model": "synthetic-vultr", "at": "2026-01-01T00:00:00Z"}
+JEV = {"backend": "jev", "model": "synthetic-jev", "at": "2026-01-01T00:00:00Z"}
 
 
 class CountingLake(FileLake):
@@ -144,9 +145,62 @@ def test_live_feed_latest_survives_later_recorded_run(tmp_path: Path) -> None:
     assert json.loads(lake.read_key(pointer))["run_id"] == "synthetic-live-2"
 
 
+def test_live_view_url_follows_cell_lifecycle_and_action_pause(tmp_path: Path) -> None:
+    lake = CountingLake(tmp_path / "lake")
+    feed = RunFeed(lake, "synthetic-case", "synthetic-live", VULTR, start_heartbeat=False)
+    key = "runs/synthetic-case/synthetic-live/status.json"
+    feed.update_status(state="running", phase=5, live_view_url="https://cell.example.test/live")
+    feed.update_status(state="paused", phase=5, checkpoint_pending="action")
+    status = json.loads(lake.read_key(key))
+    assert status["checkpoint_pending"] == "action"
+    assert status["live_view_url"] == "https://cell.example.test/live"
+    feed.update_status(state="running", phase=5, live_view_url=None)
+    assert "live_view_url" not in json.loads(lake.read_key(key))
+    feed.close()
+
+
+def test_live_feed_accepts_supporting_jev_quarantine_step(tmp_path: Path) -> None:
+    lake = CountingLake(tmp_path / "lake")
+    screenshot = lake.put_bytes(b"screened screenshot")
+    live = RunFeed(lake, "synthetic-case", "synthetic-live", VULTR, start_heartbeat=False)
+    live.update_status(state="running", phase=5)
+    step = {
+        **trace("synthetic-live", JEV),
+        "session_id": "browser-session",
+        "event": "quarantine",
+        "screenshot_key": screenshot,
+        "observed": {"page_withheld": True},
+        "screen": {
+            "flagged": True,
+            "jev_choice": "injection",
+            "jev_confidence": 0.95,
+            "safety_verdict": "unavailable",
+            "reason": "Possible injection",
+            "by": "controller",
+        },
+    }
+    live.append_step(step)
+    assert (
+        json.loads(lake.read_key("runs/synthetic-case/synthetic-live/trace.live.jsonl"))[
+            "session_id"
+        ]
+        == "browser-session"
+    )
+    with pytest.raises(ValueError, match="cannot ground gold"):
+        live.append_step({**step, "value_ids": ["val:unsupported"]})
+    live.close()
+    mock = RunFeed(lake, "synthetic-case", "mock-synthetic", RECORDED, start_heartbeat=False)
+    mock.update_status(state="running", phase=5)
+    with pytest.raises(ValueError, match="backend differs"):
+        mock.append_step({**step, "run_id": "mock-synthetic"})
+    mock.close()
+
+
 def test_feed_rejects_recorded_run_without_mock_prefix(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="mock- run ID"):
         RunFeed(FileLake(tmp_path / "lake"), "synthetic-case", "ordinary-run", RECORDED)
+    with pytest.raises(ValueError, match="Jev cannot be the primary run backend"):
+        RunFeed(FileLake(tmp_path / "lake"), "synthetic-case", "ordinary-run", JEV)
 
 
 def test_status_heartbeat_continues_during_a_quiet_run(tmp_path: Path) -> None:
