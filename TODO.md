@@ -1,5 +1,17 @@
 # Work list
 
+## Current delivery gate: live cells and brief 10b PRD steering
+- [x] Push the runsc cell relay, preflight diagnostics, control-VM SSH bootstrap and repair-pod stdin transport; deploy the cell service on the control VM.
+- [x] Prove the destructive loop stays inside a capped runsc pod and that the repair path emits a limit stop.
+- [ ] Complete native cell create → CDP browser action → six checkpoints → destroy on the live sandbox VM; the full check is paused under the two-attempt progress guard.
+- [ ] Close three independent-review PRD regressions: human secondary publisher must not auto-trust, revised policy must invalidate old auto authority, and denied/percent numbers must not become human-grounded counts.
+- [ ] Rerun brief 10b combined tests and scratch live denial, then push the PRD fix for the user's rerun.
+- [ ] Complete the narrow brain-to-gateway live probes (CONTRACT v0.9.4), then resume brief 11 outer/P3/P2/P4 loops in order.
+FILES: `src/ontofill/sandbox/`, `sandbox/`, `infra/vultr/`, `src/ontofill/phases/p1_scope/`, `src/ontofill/phases/p3_fanout/`, `src/ontofill/workflow.py`, `schemas/`, `tests/`.
+TASK: Make the live browser substrate and user-steered PRD safe and reviewable before widening phase loops.
+DONE: `uv run pytest -q` and Ruff gates pass, a scratch Vultr denial writes an approvable revised PRD with human-grounded DoD, and the live native cell records its six checkpoints and teardown.
+FORMAT: `uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox`.
+
 ## G1/G2: generic brief-to-export engine (brief 04, active priority)
 - [x] Infer case authority policy in PRD and classes/properties/relations/rules/DoD queries in ontology; no fixed domain vocabulary.
 - [x] Derive source classes and target properties from approved artifacts; infer and crystallize source-column mappings, then emit observed values generically.
