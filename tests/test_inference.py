@@ -174,6 +174,71 @@ def test_tool_schema_preserves_recursive_definition_without_looping() -> None:
     assert result["$defs"] == schema["$defs"]
 
 
+def test_phase2_structured_decisions_use_qwen_without_reasoning() -> None:
+    bodies = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "emit", "arguments": '{"choice":"first"}'}}
+                            ]
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    client = VultrDecisionClient(
+        api_key="test-only",
+        model="glm-5.3-flash",
+        document_model="qwen3.8-flash-next",
+        fallback_model="glm-5.3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    assert client.complete_json("phase2.schema", "design", SCHEMA) == {"choice": "first"}
+    assert client.complete_json("phase2.dod_queries", "compile", SCHEMA) == {"choice": "first"}
+    assert [body["model"] for body in bodies] == ["qwen3.8-flash-next"] * 2
+    assert [body["max_completion_tokens"] for body in bodies] == [8192, 4096]
+    assert all(body["reasoning"] == {"enabled": False} for body in bodies)
+    assert all(body["parallel_tool_calls"] is False for body in bodies)
+
+
+def test_phase2_schema_length_stops_before_known_bad_fallback() -> None:
+    bodies = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "length", "message": {"tool_calls": []}}],
+                "usage": {"prompt_tokens": 200, "completion_tokens": 8192},
+            },
+        )
+
+    client = VultrDecisionClient(
+        api_key="test-only",
+        model="glm-5.3-flash",
+        document_model="qwen3.8-flash-next",
+        fallback_model="glm-5.3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(TypeError, match="after 1 attempt"):
+        client.complete_json("phase2.schema", "design", SCHEMA)
+    assert len(bodies) == 1
+    assert bodies[0]["model"] == "qwen3.8-flash-next"
+    assert client.call_log[0]["status"] == "length"
+    assert client.call_log[0]["usage"]["output_tokens"] == 8192
+
+
 def test_truncated_extraction_is_logged_and_escalates_to_stronger_model() -> None:
     calls = []
 
@@ -266,7 +331,7 @@ def test_both_invalid_attempts_fail_closed_and_keep_cost_records() -> None:
         model="glm-5.3-flash",
         client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
-    with pytest.raises(TypeError, match="after two attempts"):
+    with pytest.raises(TypeError, match="after 2 attempts"):
         client.complete_json("phase1.prd", "draft", SCHEMA)
     assert [record["status"] for record in client.call_log] == [
         "invalid_response",
