@@ -148,7 +148,11 @@ def _check_lineage(
                     requirement_ids = {item["id"] for item in global_prd["requirements"]}
                     if not set(local_prd["global_requirement_ids"]).issubset(requirement_ids):
                         raise ValueError(f"local PRD has unknown global requirement for {value_id}")
-                    if urlparse(evidence["url"]).hostname not in tdd["allowed_domains"]:
+                    hostname = urlparse(evidence["url"]).hostname or ""
+                    if not any(
+                        hostname == domain or hostname.endswith(f".{domain}")
+                        for domain in tdd["allowed_domains"]
+                    ):
                         raise ValueError(f"evidence URL is outside TDD domains for {value_id}")
 
 
