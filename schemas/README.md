@@ -6,7 +6,10 @@ line of `suppliers.jsonl`, `contracts.jsonl`, and `trace.jsonl` is validated as 
 separate JSON object. `metrics.json` and `gold/<case_id>/latest.json` are single
 objects. `lake-pointer.schema.json` validates `lake.yaml` **after YAML parsing**;
 the YAML file contains environment variable names, never credential values.
-Bronze can point to an S3 API or a local `file:///` root for development.
+Its `case_id` is a safe path segment. Bronze can point to an S3 API or a local
+directory with `kind: file`; both use `bronze/sha256/<hex>` for the object and
+`bronze/sha256/<hex>.meta.json` for its sidecar. S3 credentials use the standard
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables.
 
 | File | Document |
 | --- | --- |
@@ -23,6 +26,7 @@ Bronze can point to an S3 API or a local `file:///` root for development.
 | `metrics.schema.json` | Gold metrics snapshot |
 | `latest.schema.json` | Current gold run pointer |
 | `lake-pointer.schema.json` | Parsed lake configuration |
+| `bronze-sidecar.schema.json` | Metadata alongside each content-addressed bronze object |
 
 `common.schema.json` holds shared IDs, evidence, and field shapes. Gold and
 conflict values require a `val:` ID and a bronze capture with a screenshot.

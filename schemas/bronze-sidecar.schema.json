@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/bronze-sidecar.schema.json",
+  "title": "Bronze object .meta.json sidecar",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["content_type", "url", "captured_at", "source_id", "step_id"],
+  "properties": {
+    "content_type": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "source_id": {"type": "string", "minLength": 1},
+    "step_id": {"type": "string", "minLength": 1}
+  }
+}

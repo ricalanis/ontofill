@@ -86,6 +86,13 @@ def supplier() -> dict:
 
 
 EXAMPLES = {
+    "bronze-sidecar": {
+        "content_type": "text/html",
+        "url": "https://example.invalid/public/supplier/1",
+        "captured_at": "2026-01-01T00:00:00Z",
+        "source_id": "source-example",
+        "step_id": "step-1",
+    },
     "approved": {"approver": "Example Reviewer", "date": "2026-01-01"},
     "approval-pending": {
         "phase": 1,
@@ -126,6 +133,7 @@ EXAMPLES = {
         ],
     },
     "lake-pointer": {
+        "case_id": "example-case",
         "bronze": {
             "kind": "s3",
             "bucket": "synthetic-test-bucket",
@@ -283,7 +291,21 @@ def test_approval_requires_approver_and_date() -> None:
         validate("approved", {"approver": "Example Reviewer"})
 
 
-def test_local_filesystem_lake_pointer_validates() -> None:
+def test_local_file_lake_pointer_validates() -> None:
     pointer = copy.deepcopy(EXAMPLES["lake-pointer"])
-    pointer["bronze"] = {"kind": "filesystem", "root": "file:///tmp/example-bronze"}
+    pointer["bronze"] = {"kind": "file", "root": "/tmp/example-bronze"}
     validate("lake-pointer", pointer)
+
+
+def test_lake_pointer_requires_case_id() -> None:
+    pointer = copy.deepcopy(EXAMPLES["lake-pointer"])
+    del pointer["case_id"]
+    with pytest.raises(ValidationError):
+        validate("lake-pointer", pointer)
+
+
+def test_bronze_sidecar_requires_step_id() -> None:
+    sidecar = copy.deepcopy(EXAMPLES["bronze-sidecar"])
+    del sidecar["step_id"]
+    with pytest.raises(ValidationError):
+        validate("bronze-sidecar", sidecar)
