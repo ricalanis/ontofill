@@ -144,10 +144,14 @@ Skyvern (open source, AGPL-3.0) is an LLM- and vision-driven browser agent. It h
 - **Same rules:** its output comes back as *candidate observations* through `emit.observation`, with the same evidence, SHACL validation and critics. Its login, 2FA and password-manager features are not used, and its captcha solving is cloud-only and out of scope anyway.
 - **Optional:** the engine and toolkit run fully without it. It's a fallback the adapter interface allows, not a dependency.
 
-## Inference: Vultr only
-**All inference runs on Vultr Serverless Inference** (a Track 1 requirement: every agent LLM call goes through it). That covers planning, the agentic loop's next-action choices, extraction, critics (including the double critic), classification, the Simula taxonomy work and the negotiation agents. Vultr's models (glm-5.3, qwen3.8, deepseek-v4.1-flash, nemotron omni for vision, nemotron content-safety, the retriever and reranker) cover all of it. The engine exposes one **decision interface** for typed judgments (choice, score, yes/no), backed by a Vultr model with constrained output. Live model list: `https://api.vultrinference.com/v1/chat/models`.
+## Inference: Vultr first, Jev as a supporting resource
+**All agent inference runs on Vultr Serverless Inference** (Track 1 requirement; the judges confirmed other providers may be used *in addition*). That covers planning, the agentic loop's next-action choices, extraction, critics (including the double critic), classification, the Simula taxonomy work and the negotiation agents. Vultr's models (glm-5.3, qwen3.8, deepseek-v4.1-flash, nemotron omni for vision, nemotron content-safety, the retriever and reranker) cover all of it. The engine exposes one **decision interface** for typed judgments (choice, score, yes/no), backed by a Vultr model with constrained output. Model list: `https://api.vultrinference.com/v1/models`.
 
-High-volume, low-stakes pre-checks (prompt-injection screening before a model reads a page, a first-pass "same supplier?" screen) use the smallest adequate Vultr model or the content-safety model behind the same interface. Dates, counting, arithmetic and multi-hop checks stay in code.
+**Jev (TypeSafe AI) is a supporting backend** behind that same decision interface: a decision-only model (no text output) with fast, cheap typed answers. It's used as a helper for high-volume, low-stakes pre-checks, such as:
+- pre-filtering pages for prompt-injection text before a Vultr model reads them
+- a first-pass "same supplier?" screen before the Vultr model confirms matches
+
+It is never the final word on a gold value and never drives the agent loop; every call is logged with `generated_by.backend = "jev"`, and the engine runs fully without it. Its known weak spots (dates, counting, arithmetic, multi-hop reasoning) stay with code or Vultr models.
 
 ## Phase 2 method: Simula's ontology construction, replicated
 Reference: Davidson et al., *Reasoning-Driven Synthetic Data Generation and Evaluation* (Simula), TMLR 03/2026, openreview NALsdGEPhB, arXiv 2603.29791. The file is at `docs/reference/simula-2603.29791v1.pdf`. Section numbers below refer to the paper.
