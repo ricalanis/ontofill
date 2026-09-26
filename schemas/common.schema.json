@@ -13,7 +13,7 @@
       "additionalProperties": false,
       "required": ["backend", "model", "at"],
       "properties": {
-        "backend": {"enum": ["recorded", "vultr"]},
+        "backend": {"enum": ["recorded", "vultr", "jev"]},
         "model": {"type": "string", "minLength": 1},
         "at": {
           "type": "string",

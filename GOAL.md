@@ -1,9 +1,13 @@
 # Goal
-Deliver C4: provider-pluggable sandbox discovery with authority review, multi-source evidence and gap recovery, plus dry-run Vultr infrastructure plans.
+Deliver C4 and brief 03: provider-pluggable discovery, multi-source evidence and gap recovery, live Vultr inference, and real zero-inbound Vultr/NetBird infrastructure.
 
 DONE local: `uv run pytest -q && uv run ruff check src tests && uv run ruff format --check src tests` plus a `mock-` real-brief run (expected exit 3) followed by `ontofill export --run-id mock-...` (exit 0); no latest pointer moves.
 
-DONE live (pending credentials and approvals): `ontofill run ../proveedor-abierto/case` resumes through all three human checkpoints with Vultr inference, exports evidence-backed gold, and passes the app's DoD. Recorded output never counts toward this check.
+DONE L1: forced-tool Vultr decisions use model IDs from live `/v1/models`, generator and critic use different families, and a scratch live phase 1–2 run regenerates recorded PRD/factors with Vultr provenance.
+
+DONE L2: tagged two-VM Vultr deployment has zero inbound firewall rules, NetBird peers, remote `runsc` sandbox proof and Object Storage; verify account-side sandbox group policy and metadata/VPC egress protection.
+
+DONE live case (app-owned approvals): `ontofill run ../proveedor-abierto/case` resumes through all three human checkpoints with Vultr inference, exports evidence-backed gold, and passes the app's DoD. Recorded output never counts toward this check.
 
 DONE C4: `uv run pytest -q && uv run ruff check src tests packages infra && uv run ruff format --check src tests packages infra` plus `uv run pytest -q tests/test_discovery_providers.py tests/test_multisource_workflow.py tests/test_vultr_plan.py`; the multi-source check must show at least 3 distinct synthetic source types and a traced gap-triggered fan-out, while infra dry-run succeeds without credentials.
 

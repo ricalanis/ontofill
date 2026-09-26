@@ -179,6 +179,7 @@ def _metrics(
     jobs: dict | None,
     generated_by: dict[str, str],
     preview: bool = False,
+    decisions_by_backend: dict[str, int] | None = None,
 ) -> dict:
     total = len(suppliers)
     per_field = {
@@ -212,7 +213,7 @@ def _metrics(
         and isinstance(step["evaluated"], dict)
         and step["evaluated"].get("status") == "ok"
     }
-    return {
+    metrics = {
         "run_id": run_id,
         "suppliers_total": total,
         "suppliers_at_80pct_core": sum(
@@ -234,6 +235,9 @@ def _metrics(
         "inference_backend": generated_by["backend"],
         "preview": preview,
     }
+    if decisions_by_backend is not None:
+        metrics["decisions_by_backend"] = decisions_by_backend.copy()
+    return metrics
 
 
 def export_run(
@@ -249,6 +253,7 @@ def export_run(
     jobs: dict | None = None,
     generated_by: dict[str, str],
     preview: bool = False,
+    decisions_by_backend: dict[str, int] | None = None,
 ) -> dict:
     """Write an entire schema-valid run, then move latest.json as the final step."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case_id) or not re.fullmatch(
@@ -289,7 +294,14 @@ def export_run(
             raise ValueError(f"contract {contract['id']} refers to an unknown supplier")
         _check_evidence(lake, contract["evidence"])
     metrics = _metrics(
-        run_id, sorted_suppliers, sorted_trace, taxonomy_levels or {}, jobs, run_provenance, preview
+        run_id,
+        sorted_suppliers,
+        sorted_trace,
+        taxonomy_levels or {},
+        jobs,
+        run_provenance,
+        preview,
+        decisions_by_backend,
     )
     validators["metrics"].validate(metrics)
     prefix = f"gold/{case_id}/{run_id}"

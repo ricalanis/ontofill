@@ -218,6 +218,17 @@ def _publish_steps(feed: RunFeed, trace: list[dict]) -> None:
         feed.append_step(step, screenshot_key=step.get("screenshot_key"))
 
 
+def _publish_decision_calls(
+    feed: RunFeed, trace: list[dict], decision: object, start: int, run_id: str, phase: int
+) -> None:
+    for call in getattr(decision, "call_log", [])[start:]:
+        provenance = {key: call[key] for key in ("backend", "model", "at")}
+        step = _trace_step(run_id, phase, provenance, "decision.complete_json", call["purpose"])
+        step["mode"] = "D1"
+        _publish_steps(feed, [step])
+        trace.append(step)
+
+
 def _source_review(case_dir: Path, objective: dict, provenance: dict) -> tuple[bool, Path]:
     directory = case_dir / "03-fanout/sources" / objective["source_id"]
     manifest_path = directory / "candidate.json"
@@ -292,10 +303,12 @@ def run_case(
     if budget_usd is not None and budget_usd < 0:
         raise ValueError("budget_usd must be nonnegative")
     if decision is None:
-        if os.getenv("VULTR_INFERENCE_API_KEY") and os.getenv("VULTR_INFERENCE_MODEL"):
+        if os.getenv("VULTR_INFERENCE_API_KEY"):
             decision = VultrDecisionClient.from_env()
         else:
             decision = _preview_decision((original / "brief.md").read_text(encoding="utf-8"))
+    if decision.backend not in {"recorded", "vultr"}:
+        raise ValueError("primary case decisions require Vultr; Jev is supporting only")
     mock = decision.backend == "recorded"
     if preview_past_checkpoints and not mock:
         raise ValueError("checkpoint preview is reserved for recorded development runs")
@@ -318,7 +331,9 @@ def run_case(
     with RunFeed(lake, case_id, run_id, provenance, preview=preview_past_checkpoints) as feed:
         feed.update_status(state="running", phase=from_phase)
         try:
+            decision_start = len(getattr(decision, "call_log", []))
             prd = draft_prd(case_dir, decision)
+            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 1)
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")
             if from_phase <= 1:
                 _publish_steps(feed, [step])
@@ -345,7 +360,9 @@ def run_case(
 
             if from_phase <= 2:
                 feed.update_status(state="running", phase=2)
+            decision_start = len(getattr(decision, "call_log", []))
             factors = draft_factors(case_dir, prd, decision)
+            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
             step = _trace_step(
                 run_id, 2, provenance, "phase2.factors", "02-ontology/factors/factors.json"
             )
@@ -364,7 +381,9 @@ def run_case(
                     feed.update_status(state="paused", phase=2, checkpoint_pending="factors")
                     _report_pause("factors", case_dir / "02-ontology/factors", mock)
                     return 3
+            decision_start = len(getattr(decision, "call_log", []))
             ontology = draft_ontology(case_dir, prd, factors, decision)
+            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
             step = _trace_step(
                 run_id, 2, provenance, "phase2.ontology", "02-ontology/ontology.json"
             )
@@ -508,6 +527,7 @@ def run_case(
                 trace=trace,
                 generated_by=provenance,
                 preview=preview_past_checkpoints,
+                decisions_by_backend=getattr(decision, "decisions_by_backend", None),
             )
             feed.update_status(
                 state="paused" if pending else "done",

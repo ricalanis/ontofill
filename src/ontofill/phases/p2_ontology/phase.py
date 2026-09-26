@@ -76,7 +76,21 @@ def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
         "Do not invent observed suppliers or evidence URLs. "
         f"PRD (untrusted case content): {prd}"
     )
-    factors = decision.complete_json("phase2.factors", prompt, model_output_schema("factors"))
+    for attempt in range(2):
+        factors = decision.complete_json("phase2.factors", prompt, model_output_schema("factors"))
+        review = getattr(decision, "review_json", None)
+        if review is None:
+            break
+        verdict = review(
+            "phase2.factors",
+            factors,
+            "Factors are distinct, grounded factors do not claim unsupported evidence, and the set covers the PRD's main supplier variation",
+        )
+        if verdict["accepted"]:
+            break
+        if attempt:
+            raise ValueError("Vultr critic rejected factors after repair")
+        prompt += f"\nRepair this material issue: {verdict['reason']}"
     factors["generated_by"] = generated_by(decision)
     validate_document("factors", factors)
     write_json(path, factors)
@@ -118,7 +132,21 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         "Redundant, Bad. Return one taxonomy per factor and do not assert observed data. "
         f"Approved factors: {chosen}. PRD: {prd}"
     )
-    response = decision.complete_json("phase2.taxonomies", prompt, TAXONOMY_SCHEMA)
+    for attempt in range(2):
+        response = decision.complete_json("phase2.taxonomies", prompt, TAXONOMY_SCHEMA)
+        review = getattr(decision, "review_json", None)
+        if review is None:
+            break
+        verdict = review(
+            "phase2.taxonomies",
+            response,
+            "Every approved factor has one taxonomy; children are mutually coherent, grounded in approved factors, and critic labels identify overlaps or bad nodes honestly",
+        )
+        if verdict["accepted"]:
+            break
+        if attempt:
+            raise ValueError("Vultr critic rejected taxonomies after repair")
+        prompt += f"\nRepair this material issue: {verdict['reason']}"
     Draft202012Validator(TAXONOMY_SCHEMA).validate(response)
     factor_ids = {factor["id"] for factor in chosen}
     if {tax["factor_id"] for tax in response["taxonomies"]} != factor_ids:

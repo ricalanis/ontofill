@@ -6,9 +6,23 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 from ontofill_scrape import SearchResult
 
 from ontofill.workflow import _preview_decision, export_case, run_case
+
+
+def test_jev_cannot_be_primary_checkpoint_backend(tmp_path) -> None:
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "brief.md").write_text("Synthetic supplier brief", encoding="utf-8")
+
+    class JevOnly:
+        backend = "jev"
+        model = "jev-test"
+
+    with pytest.raises(ValueError, match="Jev is supporting only"):
+        run_case(case, decision=JevOnly())
 
 
 class SyntheticSearch:

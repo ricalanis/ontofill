@@ -9,6 +9,7 @@
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "preview": {"type": "boolean"},
     "inference_backend": {"enum": ["recorded", "vultr"]},
+    "decisions_by_backend": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
     "run_id": {"type": "string", "minLength": 1},
     "suppliers_total": {"type": "integer", "minimum": 0},
     "suppliers_at_80pct_core": {"type": "integer", "minimum": 0},
