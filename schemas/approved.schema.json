@@ -8,6 +8,17 @@
   "properties": {
     "approver": {"type": "string", "minLength": 1},
     "date": {"type": "string", "format": "date"},
-    "checkpoint": {"enum": ["prd", "factors", "ontology"]}
-  }
+    "checkpoint": {"enum": ["prd", "factors", "ontology"]},
+    "decisions": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"enum": ["accept", "reject"]}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["decisions"]},
+      "then": {"required": ["checkpoint"], "properties": {"checkpoint": {"const": "factors"}}}
+    }
+  ]
 }

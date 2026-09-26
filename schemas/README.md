@@ -15,6 +15,8 @@ directory with `kind: file`; both use `bronze/sha256/<hex>` for the object and
 | --- | --- |
 | `run-request.schema.json` | Parsed `ontofill run`, `refine`, or `export` arguments |
 | `global-prd.schema.json` | Phase 1 PRD |
+| `factors.schema.json` | Phase 2 proposed factors with kind and evidence |
+| `ontology.schema.json` | Phase 2 taxonomies, critic scores, classes, properties, and SHACL path |
 | `objectives.schema.json` | Phase 3 discovered source objectives |
 | `local-prd.schema.json` | Phase 4 requirements for a source and objective |
 | `tdd.schema.json` | Phase 4 technical definition document |
@@ -23,6 +25,7 @@ directory with `kind: file`; both use `bronze/sha256/<hex>` for the object and
 | `supplier.schema.json` | One gold supplier row |
 | `contract.schema.json` | One gold contract row |
 | `trace-step.schema.json` | One trace step row |
+| `run-status.schema.json` | Live run status and partial metric snapshot |
 | `metrics.schema.json` | Gold metrics snapshot |
 | `latest.schema.json` | Current gold run pointer |
 | `lake-pointer.schema.json` | Parsed lake configuration |
@@ -37,7 +40,12 @@ references (value → step → TDD → objective → ontology → PRD → brief)
 metric counts, and whether a step's starting mode belongs to its allowed modes
 require a separate semantic check; JSON Schema cannot establish them alone.
 
-`APPROVAL_PENDING.md` remains a human-readable Markdown file. The pending
-schema validates the metadata used to render it. `APPROVED` can contain the
-JSON object validated by `approved.schema.json`, including the two required
-items from the contract: approver and date.
+`APPROVAL_PENDING.md` starts with YAML front matter validated by the pending
+schema and then continues with human-readable Markdown. `APPROVED` contains a
+JSON object with approver and date; factor approvals may also include a
+`decisions` map of factor IDs to `accept` or `reject`.
+
+During a run, each `trace.live.jsonl` row uses `trace-step.schema.json` and may
+include `screenshot_key`. `status.json` uses `run-status.schema.json`: its
+`metrics` object may contain any subset of the final metrics while work is in
+progress. `runs/<case_id>/latest.json` uses `latest.schema.json`.

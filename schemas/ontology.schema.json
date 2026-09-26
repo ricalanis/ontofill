@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/ontology.schema.json",
+  "title": "Phase 2 reviewed taxonomy and data schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "prd_path", "factors", "taxonomies", "classes", "properties", "shacl_path"],
+  "properties": {
+    "version": {"type": "string", "minLength": 1},
+    "prd_path": {"type": "string", "minLength": 1},
+    "factors": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "factors.schema.json#/$defs/factor"}
+    },
+    "taxonomies": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/taxonomy"}},
+    "classes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/class"}},
+    "properties": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/property"}},
+    "shacl_path": {"type": "string", "pattern": "\\.ttl$"}
+  },
+  "$defs": {
+    "taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["factor_id", "root_label", "children", "soundness", "coverage"],
+      "properties": {
+        "factor_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "root_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "root_label": {"type": "string", "minLength": 1},
+        "children": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/node"}},
+        "soundness": {"type": "number", "minimum": 0, "maximum": 1},
+        "coverage": {"type": "number", "minimum": 0}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "level", "critic_label"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "label": {"type": "string", "minLength": 1},
+        "level": {"type": "integer", "minimum": 1},
+        "critic_label": {"enum": ["Good-Overlapping", "Good-Exclusive", "Redundant", "Bad"]},
+        "parent_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/node"}}
+      }
+    },
+    "class": {
+      "type": "object", "additionalProperties": false, "required": ["id", "aligned_to"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "aligned_to": {"type": "string", "format": "uri"}
+      }
+    },
+    "property": {
+      "type": "object", "additionalProperties": false, "required": ["id", "datatype"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "datatype": {"type": "string", "minLength": 1},
+        "aligned_to": {"type": "string", "format": "uri"}
+      }
+    }
+  }
+}

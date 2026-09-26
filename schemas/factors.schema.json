@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/factors.schema.json",
+  "title": "Phase 2 factors of variation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["factors"],
+  "properties": {
+    "factors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/factor"}}
+  },
+  "$defs": {
+    "factor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "description", "kind", "evidence"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "label": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["grounded", "conceptual"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "description"],
+      "properties": {
+        "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "description": {"type": "string", "minLength": 1},
+        "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"}
+      }
+    }
+  }
+}

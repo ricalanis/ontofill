@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/run-status.schema.json",
+  "title": "Live run status.json snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "state", "phase", "checkpoint_pending", "updated_at", "sources", "metrics"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "state": {"enum": ["running", "paused", "done", "failed"]},
+    "phase": {"type": "integer", "minimum": 1, "maximum": 5},
+    "checkpoint_pending": {"enum": [null, "prd", "factors", "ontology"]},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+    "metrics": {"$ref": "#/$defs/partial_metrics"}
+  },
+  "$defs": {
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_id", "source_type", "health"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "source_type": {"type": "string", "minLength": 1},
+        "health": {
+          "type": "object", "additionalProperties": false,
+          "required": ["ok", "failed", "yield"],
+          "properties": {
+            "ok": {"type": "integer", "minimum": 0},
+            "failed": {"type": "integer", "minimum": 0},
+            "yield": {"type": "number", "minimum": 0}
+          }
+        }
+      }
+    },
+    "partial_metrics": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "suppliers_total": {"type": "integer", "minimum": 0},
+        "suppliers_at_80pct_core": {"type": "integer", "minimum": 0},
+        "per_field_completeness": {
+          "type": "object", "additionalProperties": {"$ref": "#/$defs/ratio"}
+        },
+        "distinct_source_types": {"type": "integer", "minimum": 0},
+        "gold_values_without_evidence": {"type": "integer", "minimum": 0},
+        "level_ratio_coverage": {
+          "type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/ratio"}}
+        },
+        "mode_counts": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "D0": {"type": "integer", "minimum": 0},
+            "D1": {"type": "integer", "minimum": 0},
+            "S1": {"type": "integer", "minimum": 0},
+            "S2": {"type": "integer", "minimum": 0}
+          }
+        },
+        "jobs": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "ok": {"type": "integer", "minimum": 0},
+            "failed_by_reason": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+          }
+        }
+      }
+    },
+    "ratio": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

@@ -85,6 +85,21 @@ def supplier() -> dict:
     }
 
 
+FACTOR = {
+    "id": "supplier_type",
+    "label": "Supplier type",
+    "description": "A synthetic distinction between supplier profiles",
+    "kind": "conceptual",
+    "evidence": [
+        {
+            "url": "https://example.invalid/public/research",
+            "description": "Synthetic research note",
+            "bronze_key": "sha256:" + "c" * 64,
+        }
+    ],
+}
+
+
 EXAMPLES = {
     "bronze-sidecar": {
         "content_type": "text/html",
@@ -112,6 +127,7 @@ EXAMPLES = {
         "supplier_ids": ["sup:example-1"],
         "evidence": [evidence()],
     },
+    "factors": {"factors": [FACTOR]},
     "global-prd": {
         "version": "v1",
         "brief_path": "brief.md",
@@ -187,6 +203,31 @@ EXAMPLES = {
             }
         ],
     },
+    "ontology": {
+        "version": "1",
+        "prd_path": "01-scope/prd.json",
+        "factors": [FACTOR],
+        "taxonomies": [
+            {
+                "factor_id": "supplier_type",
+                "root_id": "supplier_type_root",
+                "root_label": "Supplier type",
+                "children": [
+                    {
+                        "id": "company",
+                        "label": "Company",
+                        "level": 1,
+                        "critic_label": "Good-Exclusive",
+                    }
+                ],
+                "soundness": 1.0,
+                "coverage": 1.25,
+            }
+        ],
+        "classes": [{"id": "Supplier", "aligned_to": "https://example.invalid/Supplier"}],
+        "properties": [{"id": "legal_name", "datatype": "xsd:string"}],
+        "shacl_path": "02-ontology/supplier-shape.ttl",
+    },
     "run-request": {
         "command": "run",
         "case_dir": "../example-case",
@@ -194,6 +235,21 @@ EXAMPLES = {
         "to_phase": 5,
         "run_id": "example-run",
         "budget_usd": 1.5,
+    },
+    "run-status": {
+        "run_id": "example-run",
+        "state": "running",
+        "phase": 3,
+        "checkpoint_pending": None,
+        "updated_at": "2026-01-01T00:00:00Z",
+        "sources": [
+            {
+                "source_id": "source-example",
+                "source_type": "public_registry",
+                "health": {"ok": 1, "failed": 0, "yield": 0.5},
+            }
+        ],
+        "metrics": {"suppliers_total": 1, "per_field_completeness": {"legal_name": 0.5}},
     },
     "supplier": supplier(),
     "tdd": {
@@ -307,3 +363,55 @@ def test_bronze_sidecar_requires_step_id() -> None:
     del sidecar["step_id"]
     with pytest.raises(ValidationError):
         validate("bronze-sidecar", sidecar)
+
+
+def test_factor_decisions_are_optional_for_factors_approval() -> None:
+    marker = {
+        "approver": "Example Reviewer",
+        "date": "2026-01-01",
+        "checkpoint": "factors",
+        "decisions": {"supplier_type": "accept"},
+    }
+    validate("approved", marker)
+    marker["decisions"]["supplier_type"] = "maybe"
+    with pytest.raises(ValidationError):
+        validate("approved", marker)
+
+
+def test_factor_decisions_rejected_for_other_checkpoint() -> None:
+    marker = {
+        "approver": "Example Reviewer",
+        "date": "2026-01-01",
+        "checkpoint": "prd",
+        "decisions": {"supplier_type": "accept"},
+    }
+    with pytest.raises(ValidationError):
+        validate("approved", marker)
+
+
+def test_factor_kind_and_ontology_critic_are_bounded() -> None:
+    factors = copy.deepcopy(EXAMPLES["factors"])
+    factors["factors"][0]["kind"] = "invented"
+    with pytest.raises(ValidationError):
+        validate("factors", factors)
+    ontology = copy.deepcopy(EXAMPLES["ontology"])
+    ontology["taxonomies"][0]["children"][0]["critic_label"] = "Unknown"
+    with pytest.raises(ValidationError):
+        validate("ontology", ontology)
+
+
+def test_live_trace_accepts_screenshot_key_and_rejects_bad_hash() -> None:
+    row = copy.deepcopy(EXAMPLES["trace-step"])
+    row["screenshot_key"] = "sha256:" + "d" * 64
+    validate("trace-step", row)
+    row["screenshot_key"] = "sha256:bad"
+    with pytest.raises(ValidationError):
+        validate("trace-step", row)
+
+
+def test_run_status_accepts_partial_metrics_but_rejects_bad_health() -> None:
+    status = copy.deepcopy(EXAMPLES["run-status"])
+    validate("run-status", status)
+    status["sources"][0]["health"]["failed"] = -1
+    with pytest.raises(ValidationError):
+        validate("run-status", status)
