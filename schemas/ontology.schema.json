@@ -4,7 +4,7 @@
   "title": "Phase 2 reviewed taxonomy and data schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "prd_path", "factors", "taxonomies", "classes", "properties", "shacl_path", "generated_by"],
+  "required": ["version", "prd_path", "factors", "taxonomies", "primary_class", "classes", "properties", "relations", "rules", "shacl_path", "generated_by"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "version": {"type": "string", "minLength": 1},
@@ -14,8 +14,13 @@
       "items": {"$ref": "factors.schema.json#/$defs/factor"}
     },
     "taxonomies": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/taxonomy"}},
+    "primary_class": {"type": "string", "minLength": 1},
     "classes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/class"}},
     "properties": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/property"}},
+    "relations": {"type": "array", "items": {"$ref": "#/$defs/relation"}},
+    "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+    "source_classes": {"type": "array", "items": {"$ref": "#/$defs/source_class"}},
+    "dod_queries_path": {"type": "string", "pattern": "\\.json$"},
     "shacl_path": {"type": "string", "pattern": "\\.ttl$"}
   },
   "$defs": {
@@ -46,18 +51,64 @@
       }
     },
     "class": {
-      "type": "object", "additionalProperties": false, "required": ["id", "aligned_to"],
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "label_plural", "description", "title_property", "identifier_property", "aligned_to"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
-        "aligned_to": {"type": "string", "format": "uri"}
+        "label": {"type": "string", "minLength": 1},
+        "label_plural": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "title_property": {"type": "string", "minLength": 1},
+        "identifier_property": {"type": "string", "minLength": 1},
+        "aligned_to": {"oneOf": [{"type": "string", "format": "uri"}, {"type": "null"}]}
       }
     },
     "property": {
-      "type": "object", "additionalProperties": false, "required": ["id", "datatype"],
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "domain", "datatype", "dod", "order", "description", "aligned_to"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1},
         "datatype": {"type": "string", "minLength": 1},
-        "aligned_to": {"type": "string", "format": "uri"}
+        "dod": {"type": "boolean"},
+        "order": {"type": "integer", "minimum": 0},
+        "description": {"type": "string", "minLength": 1},
+        "aligned_to": {"oneOf": [{"type": "string", "format": "uri"}, {"type": "null"}]}
+      }
+    },
+    "relation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "domain", "range", "symmetric"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1},
+        "range": {"type": "string", "minLength": 1},
+        "symmetric": {"type": "boolean"}
+      }
+    },
+    "rule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "checks", "verify"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "checks": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+          ]
+        },
+        "verify": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "shacl_shape": {"type": "string", "minLength": 1}
+      }
+    },
+    "source_class": {
+      "type": "object", "additionalProperties": false, "required": ["id", "label"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1}
       }
     }
   }

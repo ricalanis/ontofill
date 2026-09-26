@@ -43,7 +43,7 @@ def evidence() -> dict:
     }
 
 
-def field(name: str, value: str) -> dict:
+def field(name: str, value: str | float | bool) -> dict:
     return {
         "value_id": f"val:{name}-1",
         "value": value,
@@ -93,6 +93,42 @@ def supplier() -> dict:
     }
 
 
+def entity() -> dict:
+    return {
+        "id": "LibraryBranch:example-1",
+        "class": "LibraryBranch",
+        "classified_as": ["branch_type:neighborhood"],
+        "properties": {
+            "name": field("library-name", "Example Branch"),
+            "has_internet": field("internet", True),
+            "seats": field("seats", 12),
+            "open_hours": {
+                "value": None,
+                "confidence": 0,
+                "status": "missing",
+                "evidence": [],
+                "generated_by": dict(PROVENANCE),
+            },
+        },
+        "links": [
+            {
+                "property": "part_of",
+                "target": "LibrarySystem:example-1",
+                "via_value_id": "val:library-name-1",
+            }
+        ],
+        "flags": [
+            {
+                "rule_id": "needs_hours_review",
+                "label": "Hours not found",
+                "explanation": "Synthetic source did not publish opening hours",
+                "evidence_value_ids": ["val:library-name-1"],
+            }
+        ],
+        "generated_by": dict(PROVENANCE),
+    }
+
+
 FACTOR = {
     "id": "supplier_type",
     "label": "Supplier type",
@@ -135,6 +171,25 @@ EXAMPLES = {
         "supplier_ids": ["sup:example-1"],
         "evidence": [evidence()],
     },
+    "dod-queries": {
+        "prd_path": "01-scope/prd.json",
+        "ontology_version": "v1",
+        "queries": [
+            {
+                "criterion_id": "dod-1",
+                "aggregate": "count_entities_with_properties",
+                "class_id": "LibraryBranch",
+                "properties": ["name", "has_internet"],
+                "conditions": [
+                    {"property": "has_internet", "operator": "eq", "value": True},
+                    {"property": "name", "operator": "exists"},
+                ],
+                "target": 1,
+                "operator": ">=",
+            }
+        ],
+    },
+    "entity": entity(),
     "factors": {"factors": [FACTOR]},
     "global-prd": {
         "version": "v1",
@@ -149,6 +204,17 @@ EXAMPLES = {
         ],
         "requirements": [{"id": "req-1", "job_id": "job-1", "description": "Show source evidence"}],
         "constraints": ["Public sources only"],
+        "authority_policy": {
+            "jurisdiction": "Example City",
+            "trusted_publishers": [
+                {
+                    "kind": "public_library",
+                    "domains": ["example.invalid"],
+                    "rationale": "Synthetic public directory for the example",
+                }
+            ],
+            "unknown_source_action": "review",
+        },
         "non_goals": [],
         "definition_of_done": [
             {"id": "dod-1", "metric": "suppliers_total", "operator": ">=", "target": 1}
@@ -181,20 +247,25 @@ EXAMPLES = {
     },
     "metrics": {
         "run_id": "example-run",
-        "suppliers_total": 1,
-        "suppliers_at_80pct_core": 1,
-        "per_field_completeness": {
-            "legal_name": 1,
-            "tax_id": 1,
-            "address": 1,
-            "founding_date": 1,
-            "tax_list_status": 1,
-            "sanction_status": 0,
+        "entities_total": {"LibraryBranch": 1},
+        "entities_meeting_dod": {"LibraryBranch": 1},
+        "per_property_completeness": {
+            "LibraryBranch": {"name": 1, "has_internet": 1, "open_hours": 0}
         },
-        "distinct_source_types": 1,
-        "gold_values_without_evidence": 0,
-        "level_ratio_coverage": {"supplier_profile": [1, 0.5]},
+        "distinct_source_classes": 1,
+        "values_without_evidence": 0,
+        "level_ratio_coverage": {"branch_type": [1, 0.5]},
         "mode_counts": {"D0": 0, "D1": 0, "S1": 1, "S2": 0},
+        "decisions_by_backend": {"recorded": 1},
+        "dod": [
+            {
+                "criterion_id": "dod-1",
+                "query": "Count branches with name and internet access",
+                "target": 1,
+                "actual": 1,
+                "met": True,
+            }
+        ],
         "jobs": {"ok": 1, "failed_by_reason": {}},
     },
     "objectives": {
@@ -205,6 +276,12 @@ EXAMPLES = {
                 "id": "objective-example",
                 "source_id": "source-example",
                 "source_url": "https://example.invalid/public",
+                "discovered_by": {
+                    "provider": "synthetic-search",
+                    "at": "2026-01-01T00:00:00Z",
+                    "query": "synthetic public directory",
+                    "evidence_key": "sha256:" + "d" * 64,
+                },
                 "target_fields": ["legal_name"],
                 "priority": 1,
                 "expected_contribution": 0.5,
@@ -232,9 +309,50 @@ EXAMPLES = {
                 "coverage": 1.25,
             }
         ],
-        "classes": [{"id": "Supplier", "aligned_to": "https://example.invalid/Supplier"}],
-        "properties": [{"id": "legal_name", "datatype": "xsd:string"}],
-        "shacl_path": "02-ontology/supplier-shape.ttl",
+        "primary_class": "LibraryBranch",
+        "classes": [
+            {
+                "id": "LibraryBranch",
+                "label": "Library branch",
+                "label_plural": "Library branches",
+                "description": "A public reading location in the synthetic example",
+                "title_property": "name",
+                "identifier_property": "branch_code",
+                "aligned_to": "https://example.invalid/LibraryBranch",
+            }
+        ],
+        "properties": [
+            {
+                "id": "name",
+                "label": "Name",
+                "domain": "LibraryBranch",
+                "datatype": "xsd:string",
+                "dod": True,
+                "order": 0,
+                "description": "Displayed branch name",
+                "aligned_to": None,
+            }
+        ],
+        "relations": [
+            {
+                "id": "part_of",
+                "label": "Part of",
+                "domain": "LibraryBranch",
+                "range": "LibrarySystem",
+                "symmetric": False,
+            }
+        ],
+        "rules": [
+            {
+                "id": "needs_hours_review",
+                "label": "Hours missing",
+                "checks": ["open_hours is missing"],
+                "verify": ["Compare with the published branch page"],
+            }
+        ],
+        "source_classes": [{"id": "public_directory", "label": "Public directory"}],
+        "dod_queries_path": "02-ontology/dod-queries.json",
+        "shacl_path": "02-ontology/branch-shape.ttl",
     },
     "run-request": {
         "command": "run",
@@ -254,10 +372,17 @@ EXAMPLES = {
             {
                 "source_id": "source-example",
                 "source_type": "public_registry",
+                "discovered_by": {
+                    "provider": "synthetic-search",
+                    "at": "2026-01-01T00:00:00Z",
+                },
                 "health": {"ok": 1, "failed": 0, "yield": 0.5},
             }
         ],
-        "metrics": {"suppliers_total": 1, "per_field_completeness": {"legal_name": 0.5}},
+        "metrics": {
+            "entities_total": {"LibraryBranch": 1},
+            "per_property_completeness": {"LibraryBranch": {"name": 0.5}},
+        },
     },
     "supplier": supplier(),
     "tdd": {
@@ -292,6 +417,13 @@ EXAMPLES = {
         "objective_id": "objective-example",
         "tdd_path": "04-local/example/tdd.json",
         "mode": "S1",
+        "usage": {
+            "model": "recorded-test-double",
+            "backend": "recorded",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "est_usd": 0,
+        },
         "observed": {"url": "https://example.invalid/public"},
         "requested": {"tool": "page.snapshot"},
         "executed": {"tool": "page.snapshot", "status": "ok"},
@@ -305,6 +437,7 @@ EXAMPLES = {
 for artifact_name in (
     "approval-pending",
     "contract",
+    "dod-queries",
     "factors",
     "global-prd",
     "local-prd",
@@ -359,9 +492,82 @@ def test_unapproved_execution_mode_is_rejected() -> None:
 
 def test_invalid_metric_ratio_is_rejected() -> None:
     record = copy.deepcopy(EXAMPLES["metrics"])
-    record["per_field_completeness"]["legal_name"] = 1.5
+    record["per_property_completeness"]["LibraryBranch"]["name"] = 1.5
     with pytest.raises(ValidationError):
         validate("metrics", record)
+
+
+def test_authority_policy_requires_review_for_unknown_sources() -> None:
+    artifact = copy.deepcopy(EXAMPLES["global-prd"])
+    artifact["authority_policy"]["unknown_source_action"] = "trust"
+    with pytest.raises(ValidationError):
+        validate("global-prd", artifact)
+    artifact = copy.deepcopy(EXAMPLES["global-prd"])
+    del artifact["authority_policy"]["trusted_publishers"][0]["rationale"]
+    with pytest.raises(ValidationError):
+        validate("global-prd", artifact)
+
+
+def test_ontology_requires_generic_class_and_rule_fields() -> None:
+    artifact = copy.deepcopy(EXAMPLES["ontology"])
+    del artifact["classes"][0]["identifier_property"]
+    with pytest.raises(ValidationError):
+        validate("ontology", artifact)
+    artifact = copy.deepcopy(EXAMPLES["ontology"])
+    artifact["rules"][0]["checks"] = []
+    with pytest.raises(ValidationError):
+        validate("ontology", artifact)
+
+
+def test_entity_null_requires_missing_status_and_evidence_for_gold() -> None:
+    artifact = entity()
+    artifact["properties"]["name"]["value"] = None
+    with pytest.raises(ValidationError):
+        validate("entity", artifact)
+    artifact = entity()
+    artifact["properties"]["name"]["evidence"] = []
+    with pytest.raises(ValidationError):
+        validate("entity", artifact)
+
+
+@pytest.mark.parametrize("operator", ["eq", "ne"])
+def test_dod_comparison_requires_value(operator: str) -> None:
+    artifact = copy.deepcopy(EXAMPLES["dod-queries"])
+    artifact["queries"][0]["conditions"][0] = {"property": "name", "operator": operator}
+    with pytest.raises(ValidationError):
+        validate("dod-queries", artifact)
+
+
+def test_dod_exists_condition_rejects_value() -> None:
+    artifact = copy.deepcopy(EXAMPLES["dod-queries"])
+    artifact["queries"][0]["conditions"][1]["value"] = True
+    with pytest.raises(ValidationError):
+        validate("dod-queries", artifact)
+
+
+def test_dod_rejects_executable_query_and_missing_property_list() -> None:
+    artifact = copy.deepcopy(EXAMPLES["dod-queries"])
+    artifact["queries"][0]["query"] = "SELECT * FROM entities"
+    with pytest.raises(ValidationError):
+        validate("dod-queries", artifact)
+    artifact = copy.deepcopy(EXAMPLES["dod-queries"])
+    del artifact["queries"][0]["properties"]
+    with pytest.raises(ValidationError):
+        validate("dod-queries", artifact)
+
+
+def test_trace_usage_rejects_negative_tokens() -> None:
+    artifact = copy.deepcopy(EXAMPLES["trace-step"])
+    artifact["usage"]["input_tokens"] = -1
+    with pytest.raises(ValidationError):
+        validate("trace-step", artifact)
+
+
+def test_discovered_by_rejects_bad_evidence_key() -> None:
+    artifact = copy.deepcopy(EXAMPLES["objectives"])
+    artifact["objectives"][0]["discovered_by"]["evidence_key"] = "sha256:bad"
+    with pytest.raises(ValidationError):
+        validate("objectives", artifact)
 
 
 def test_approval_requires_approver_and_date() -> None:
@@ -446,6 +652,8 @@ def test_run_status_accepts_partial_metrics_but_rejects_bad_health() -> None:
     (
         "approval-pending",
         "contract",
+        "dod-queries",
+        "entity",
         "factors",
         "global-prd",
         "local-prd",
