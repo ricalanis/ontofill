@@ -1,4 +1,4 @@
-"""Synthetic gold refinement preserves missing values and checks real bronze lineage."""
+"""Generic refinement keeps typed values, lineage, and declarative DoD honest."""
 
 from __future__ import annotations
 
@@ -9,47 +9,163 @@ import pytest
 
 from ontofill.lake import FileLake
 from ontofill.refiner import (
-    CORE_FIELDS,
     MemorySilverStore,
     Observation,
     export_run,
     refine_observations,
+    stable_value_id,
 )
+from ontofill.refiner.export import _query_actual
 
-RUN_ID = "mock-synthetic-run"
-SOURCE_ID = "synthetic-source"
-URL = "https://example.invalid/synthetic/supplier"
-RECORDED = {"backend": "recorded", "model": "synthetic-replay", "at": "2026-01-01T00:00:00Z"}
-VULTR = {"backend": "vultr", "model": "synthetic-vultr", "at": "2026-01-01T00:00:00Z"}
+RUN_ID = "mock-books"
+SOURCE_ID = "synthetic-catalog"
+URL = "https://example.invalid/catalog"
+RECORDED = {"backend": "recorded", "model": "synthetic", "at": "2026-01-01T00:00:00Z"}
+VULTR = {"backend": "vultr", "model": "synthetic-live", "at": "2026-01-01T00:00:00Z"}
 
 
-def evidence(lake: FileLake, *, screenshot: bool = True) -> dict:
-    bronze_key = lake.put_bytes(
-        b"<html><p>Proveedor Ejemplo 01</p></html>",
-        {"content_type": "text/html", "url": URL, "source_id": SOURCE_ID, "step_id": "step-1"},
-    )
-    screenshot_key = lake.put_bytes(b"synthetic screenshot") if screenshot else "sha256:" + "b" * 64
+def ontology(generated_by: dict = RECORDED) -> dict:
+    def property_record(name: str, domain: str, datatype: str, *, dod: bool = False) -> dict:
+        return {
+            "id": name,
+            "label": name.replace("_", " ").title(),
+            "domain": domain,
+            "datatype": datatype,
+            "dod": dod,
+            "order": 1,
+            "description": f"Synthetic {name}",
+            "aligned_to": None,
+        }
+
+    def class_record(name: str, title: str, identifier: str) -> dict:
+        return {
+            "id": name,
+            "label": name,
+            "label_plural": f"{name}s",
+            "description": f"Synthetic {name}",
+            "title_property": title,
+            "identifier_property": identifier,
+            "aligned_to": None,
+        }
+
     return {
-        "url": URL,
-        "bronze_key": bronze_key,
-        "selector": "p:first-child",
-        "screenshot_key": screenshot_key,
-        "captured_at": "2026-01-01T00:00:00Z",
-        "source_id": SOURCE_ID,
-        "source_type": "synthetic_registry",
+        "version": "v1",
+        "prd_path": "01-scope/prd.json",
+        "factors": [
+            {
+                "id": "edition",
+                "label": "Edition",
+                "description": "Synthetic grouping",
+                "kind": "conceptual",
+                "evidence": [],
+            }
+        ],
+        "taxonomies": [
+            {
+                "factor_id": "edition",
+                "root_label": "Edition",
+                "children": [
+                    {
+                        "id": "local",
+                        "label": "Local",
+                        "level": 1,
+                        "critic_label": "Good-Exclusive",
+                    }
+                ],
+                "soundness": 1,
+                "coverage": 1,
+            }
+        ],
+        "primary_class": "Book",
+        "classes": [
+            class_record("Book", "title", "book_id"),
+            class_record("Library", "name", "library_id"),
+        ],
+        "properties": [
+            property_record("book_id", "Book", "string", dod=True),
+            property_record("title", "Book", "string", dod=True),
+            property_record("copies", "Book", "integer", dod=True),
+            property_record("available", "Book", "boolean"),
+            property_record("published", "Book", "date"),
+            property_record("library_code", "Book", "string"),
+            property_record("library_id", "Library", "string", dod=True),
+            property_record("name", "Library", "string", dod=True),
+        ],
+        "relations": [
+            {
+                "id": "held_by",
+                "label": "Held by",
+                "domain": "Book",
+                "range": "Library",
+                "symmetric": False,
+            }
+        ],
+        "rules": [],
+        "source_classes": [{"id": "catalog", "label": "Catalog"}],
+        "dod_queries_path": "02-ontology/dod-queries.json",
+        "shacl_path": "02-ontology/book-shape.ttl",
+        "generated_by": generated_by,
     }
 
 
-def observation(lake: FileLake, field: str, value: str, **kwargs) -> Observation:
-    observed_evidence = kwargs.pop("evidence", None) or evidence(lake)
-    run_id = kwargs.pop("run_id", RUN_ID)
-    generated_by = kwargs.pop("generated_by", RECORDED)
+def dod_queries(generated_by: dict = RECORDED) -> dict:
+    return {
+        "prd_path": "01-scope/prd.json",
+        "ontology_version": "v1",
+        "queries": [
+            {
+                "criterion_id": "books_with_core",
+                "aggregate": "count_entities_with_properties",
+                "class_id": "Book",
+                "properties": ["book_id", "title", "copies"],
+                "target": 1,
+                "operator": ">=",
+            },
+            {
+                "criterion_id": "unavailable",
+                "aggregate": "count_entities",
+                "class_id": "Book",
+                "conditions": [{"property": "available", "operator": "eq", "value": False}],
+                "target": 1,
+                "operator": ">=",
+            },
+        ],
+        "generated_by": generated_by,
+    }
+
+
+def evidence(lake: FileLake, *, screenshot: bool = True) -> dict:
+    bronze = lake.put_bytes(b"<html>synthetic book</html>")
+    image = lake.put_bytes(b"synthetic screenshot") if screenshot else "sha256:" + "b" * 64
+    return {
+        "url": URL,
+        "bronze_key": bronze,
+        "selector": "tr:first-child",
+        "screenshot_key": image,
+        "captured_at": "2026-01-01T00:00:00Z",
+        "source_id": SOURCE_ID,
+        "source_type": "catalog",
+    }
+
+
+def observed(
+    lake: FileLake,
+    property_id: str,
+    value: str | int | bool,
+    *,
+    entity_id: str = "Book:one",
+    entity_class: str = "Book",
+    run_id: str = RUN_ID,
+    generated_by: dict = RECORDED,
+    **kwargs,
+) -> Observation:
     return Observation(
         run_id=run_id,
-        supplier_id="sup:synthetic-01",
-        field=field,
+        entity_id=entity_id,
+        entity_class=entity_class,
+        property_id=property_id,
         value=value,
-        evidence=observed_evidence,
+        evidence=kwargs.pop("evidence", evidence(lake)),
         step_id="step-1",
         generated_by=generated_by,
         **kwargs,
@@ -65,8 +181,8 @@ def trace(
             "run_id": run_id,
             "phase": 5,
             "source_id": SOURCE_ID,
-            "objective_id": "objective-synthetic",
-            "tdd_path": "04-local/synthetic-source__objective-synthetic/tdd.json",
+            "objective_id": "read-catalog",
+            "tdd_path": "04-local/synthetic-catalog__read-catalog/tdd.json",
             "mode": "S1",
             "observed": {"url": URL},
             "requested": {"tool": "emit.observation"},
@@ -80,67 +196,39 @@ def trace(
     ]
 
 
-def write_lineage(case_dir: Path, *, generated_by: dict = RECORDED) -> None:
-    def write(relative_path: str, document: dict) -> None:
-        path = case_dir / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(document), encoding="utf-8")
+def write_lineage(case_dir: Path, model: dict, queries: dict, generated_by: dict) -> None:
+    def write(path: str, value: dict) -> None:
+        target = case_dir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(value), encoding="utf-8")
 
     case_dir.mkdir(parents=True, exist_ok=True)
-    (case_dir / "brief.md").write_text("# Synthetic public supplier brief\n", encoding="utf-8")
+    (case_dir / "brief.md").write_text("# Synthetic library brief\n", encoding="utf-8")
     write(
         "01-scope/prd.json",
         {
             "version": "v1",
             "brief_path": "brief.md",
-            "personas": [{"id": "p1", "description": "Synthetic investigator"}],
-            "jobs_to_be_done": [
-                {"id": "j1", "persona_id": "p1", "description": "Review supplier evidence"}
-            ],
-            "requirements": [{"id": "r1", "job_id": "j1", "description": "Show observed fields"}],
+            "personas": [{"id": "p1", "description": "Reader"}],
+            "jobs_to_be_done": [{"id": "j1", "persona_id": "p1", "description": "Find a book"}],
+            "requirements": [{"id": "r1", "job_id": "j1", "description": "Show availability"}],
             "constraints": [],
+            "authority_policy": {
+                "jurisdiction": "Synthetic",
+                "trusted_publishers": [],
+                "unknown_source_action": "review",
+            },
             "non_goals": [],
             "definition_of_done": [
-                {"id": "d1", "metric": "suppliers_total", "operator": ">=", "target": 1}
+                {"id": "books_with_core", "metric": "book coverage", "operator": ">=", "target": 1},
+                {"id": "unavailable", "metric": "unavailable books", "operator": ">=", "target": 1},
             ],
             "generated_by": generated_by,
         },
     )
-    factor = {
-        "id": "profile",
-        "label": "Synthetic profile",
-        "description": "Example category",
-        "kind": "conceptual",
-        "evidence": [],
-    }
-    write(
-        "02-ontology/ontology.json",
-        {
-            "version": "v1",
-            "prd_path": "01-scope/prd.json",
-            "factors": [factor],
-            "taxonomies": [
-                {
-                    "factor_id": "profile",
-                    "root_label": "Profile",
-                    "children": [
-                        {
-                            "id": "profile_local",
-                            "label": "Local",
-                            "level": 1,
-                            "critic_label": "Good-Exclusive",
-                        }
-                    ],
-                    "soundness": 1,
-                    "coverage": 1,
-                }
-            ],
-            "classes": [{"id": "Supplier", "aligned_to": "https://schema.org/Organization"}],
-            "properties": [{"id": "legal_name", "datatype": "string"}],
-            "shacl_path": "02-ontology/supplier-shape.ttl",
-            "generated_by": generated_by,
-        },
-    )
+    write("02-ontology/ontology.json", model)
+    write("02-ontology/dod-queries.json", queries)
+    target_fields = [prop["id"] for prop in model["properties"]]
     write(
         "03-fanout/objectives.json",
         {
@@ -148,10 +236,10 @@ def write_lineage(case_dir: Path, *, generated_by: dict = RECORDED) -> None:
             "prd_path": "01-scope/prd.json",
             "objectives": [
                 {
-                    "id": "objective-synthetic",
+                    "id": "read-catalog",
                     "source_id": SOURCE_ID,
                     "source_url": URL,
-                    "target_fields": list(CORE_FIELDS),
+                    "target_fields": target_fields,
                     "priority": 1,
                     "expected_contribution": 1,
                 }
@@ -159,17 +247,17 @@ def write_lineage(case_dir: Path, *, generated_by: dict = RECORDED) -> None:
             "generated_by": generated_by,
         },
     )
-    prefix = "04-local/synthetic-source__objective-synthetic"
+    prefix = "04-local/synthetic-catalog__read-catalog"
     write(
         f"{prefix}/local-prd.json",
         {
             "source_id": SOURCE_ID,
-            "objective_id": "objective-synthetic",
+            "objective_id": "read-catalog",
             "global_prd_path": "01-scope/prd.json",
             "global_requirement_ids": ["r1"],
-            "target_fields": list(CORE_FIELDS),
+            "target_fields": target_fields,
             "local_definition_of_done": [
-                {"metric": "legal_name_completeness", "operator": ">=", "target": 1}
+                {"metric": "book coverage", "operator": ">=", "target": 1}
             ],
             "generated_by": generated_by,
         },
@@ -178,25 +266,25 @@ def write_lineage(case_dir: Path, *, generated_by: dict = RECORDED) -> None:
         f"{prefix}/tdd.json",
         {
             "source_id": SOURCE_ID,
-            "objective_id": "objective-synthetic",
+            "objective_id": "read-catalog",
             "local_prd_path": f"{prefix}/local-prd.json",
             "ontology_version": "v1",
             "source_url": URL,
             "allowed_domains": ["example.invalid"],
-            "target_fields": list(CORE_FIELDS),
+            "target_fields": target_fields,
             "extraction_method": "dom",
-            "validation_rules": ["Observed public evidence"],
+            "validation_rules": ["Evidence required"],
             "rate_limit_per_minute": 1,
             "budget_usd": 1,
             "steps": [
                 {
                     "id": "step-1",
-                    "description": "Read synthetic supplier",
+                    "description": "Read synthetic catalog",
                     "starting_mode": "S1",
                     "allowed_modes": ["S1"],
                     "observation_channel": "text_structure",
                     "risk_tier": "SAFE",
-                    "termination_predicate": "Observed name",
+                    "termination_predicate": "Observed row",
                 }
             ],
             "generated_by": generated_by,
@@ -204,187 +292,310 @@ def write_lineage(case_dir: Path, *, generated_by: dict = RECORDED) -> None:
     )
 
 
-def test_partial_observations_export_missing_fields_and_verified_evidence(tmp_path: Path) -> None:
+def test_refinement_preserves_typed_values_missing_and_conflict(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     store = MemorySilverStore()
-    name = observation(lake, "legal_name", "Proveedor Ejemplo 01", classified_as=("profile:local",))
-    tax_id = observation(lake, "tax_id", "FAKE010101AAA")
-    invalid_date = observation(lake, "founding_date", "not a date")
-    for item in (name, tax_id, invalid_date, name):
-        store.add(item)
-    assert len(store.list_for_run(RUN_ID)) == 3
-    result = refine_observations(store.list_for_run(RUN_ID), generated_by=RECORDED)
-    assert len(result.rejected) == 1
-    assert "SHACL" in result.rejected[0]["reason"]
-    supplier = result.suppliers[0]
-    assert supplier["fields"]["founding_date"]["status"] == "missing"
-    assert supplier["fields"]["founding_date"]["value"] is None
-    assert supplier["fields"]["sanction_status"]["status"] == "missing"
-    assert (
-        supplier["fields"]["legal_name"]["evidence"][0]["screenshot_key"]
-        == name.evidence["screenshot_key"]
+    entries = [
+        observed(lake, "book_id", "B-1"),
+        observed(lake, "title", "First", classified_as=("edition:local",), confidence=0.7),
+        observed(lake, "title", "Second", confidence=0.8),
+        observed(lake, "copies", 0),
+        observed(lake, "available", False),
+        observed(lake, "published", "not-a-date"),
+        observed(lake, "library_id", "L-1", entity_id="Library:one", entity_class="Library"),
+        observed(lake, "name", "Main", entity_id="Library:one", entity_class="Library"),
+    ]
+    for entry in [*entries, entries[0]]:
+        store.add(entry)
+    assert len(store.list_for_run(RUN_ID)) == len(entries)
+    result = refine_observations(
+        store.list_for_run(RUN_ID), ontology=ontology(), generated_by=RECORDED
     )
+    assert len(result.rejected) == 1
+    assert "ISO date" in result.rejected[0]["reason"]
+    book, library = result.entities
+    assert book["class"] == "Book" and library["class"] == "Library"
+    assert book["properties"]["copies"]["value"] == 0
+    assert book["properties"]["available"]["value"] is False
+    assert book["properties"]["title"]["status"] == "conflict"
+    assert book["properties"]["title"]["value"] == "Second"
+    assert book["properties"]["published"]["status"] == "missing"
+    assert book["classified_as"] == ["edition:local"]
+    assert stable_value_id("Book:one", "copies", 0) != stable_value_id("Book:one", "copies", False)
+    assert (
+        _query_actual(
+            [book],
+            {
+                "aggregate": "count_entities",
+                "conditions": [{"property": "copies", "operator": "eq", "value": False}],
+            },
+        )
+        == 0
+    )
+
+
+def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    entries = [
+        observed(lake, "book_id", "B-1"),
+        observed(lake, "title", "First", classified_as=("edition:local",)),
+        observed(lake, "copies", 0),
+        observed(lake, "available", False),
+    ]
+    model, queries = ontology(), dod_queries()
+    book = refine_observations(entries, ontology=model, generated_by=RECORDED).entities[0]
     case_dir = tmp_path / "case"
-    write_lineage(case_dir)
+    write_lineage(case_dir, model, queries, RECORDED)
     metrics = export_run(
         lake,
         case_dir,
-        "synthetic-case",
+        "books",
         RUN_ID,
-        result.suppliers,
-        trace=trace([name.value_id, tax_id.value_id]),
-        taxonomy_levels={"profile": [["profile:local", "profile:other"]]},
+        [book],
+        ontology=model,
+        dod_queries=queries,
+        trace=trace([item.value_id for item in entries]),
+        taxonomy_levels={"edition": [["edition:local", "edition:other"]]},
         generated_by=RECORDED,
     )
-    assert metrics["suppliers_total"] == 1
-    assert metrics["suppliers_at_80pct_core"] == 0
-    assert metrics["per_field_completeness"]["founding_date"] == 0
-    assert metrics["per_field_completeness"]["legal_name"] == 1
-    assert metrics["gold_values_without_evidence"] == 0
-    assert metrics["level_ratio_coverage"]["profile"] == [0.5]
-    assert metrics["mode_counts"]["S1"] == 1
-    assert metrics["inference_backend"] == "recorded"
-    assert not lake.exists("gold/synthetic-case/latest.json")
-    assert json.loads(lake.read_key(f"gold/synthetic-case/{RUN_ID}/suppliers.jsonl")) == supplier
-    assert lake.read_key(f"gold/synthetic-case/{RUN_ID}/contracts.jsonl") == b""
-    assert (case_dir / "runs" / RUN_ID / "metrics.json").read_bytes() == lake.read_key(
-        f"gold/synthetic-case/{RUN_ID}/metrics.json"
-    )
-    assert not (case_dir / "runs/latest/metrics.json").exists()
-    assert not (case_dir / "runs" / RUN_ID / "suppliers.jsonl").exists()
+    assert metrics["entities_total"] == {"Book": 1, "Library": 0}
+    assert metrics["entities_meeting_dod"]["Book"] == 0
+    assert metrics["per_property_completeness"]["Book"]["copies"] == 1
+    assert metrics["per_property_completeness"]["Book"]["published"] == 0
+    assert metrics["distinct_source_classes"] == 1
+    assert metrics["values_without_evidence"] == 0
+    assert metrics["level_ratio_coverage"]["edition"] == [0.5]
+    assert [(row["actual"], row["met"]) for row in metrics["dod"]] == [(1, False), (1, False)]
+    assert json.loads(lake.read_key(f"gold/books/{RUN_ID}/entities.jsonl")) == book
+    assert json.loads(lake.read_key(f"gold/books/{RUN_ID}/ontology.json")) == model
+    assert not lake.exists("gold/books/latest.json")
+    assert not lake.exists(f"gold/books/{RUN_ID}/suppliers.jsonl")
+    assert (case_dir / "runs" / RUN_ID / "metrics.json").is_file()
 
 
-def test_export_rejects_untraced_value_and_missing_screenshot(tmp_path: Path) -> None:
+def test_export_rejects_missing_bronze_and_untraced_value(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
-    name = observation(lake, "legal_name", "Proveedor Ejemplo 01")
-    supplier = refine_observations([name], generated_by=RECORDED).suppliers[0]
-    write_lineage(tmp_path / "case")
+    item = observed(lake, "title", "First")
+    model, queries = ontology(), dod_queries()
+    entity = refine_observations([item], ontology=model, generated_by=RECORDED).entities[0]
+    case_dir = tmp_path / "case"
+    write_lineage(case_dir, model, queries, RECORDED)
     with pytest.raises(ValueError, match="untraceable value"):
         export_run(
             lake,
-            tmp_path / "case",
-            "synthetic-case",
+            case_dir,
+            "books",
             RUN_ID,
-            [supplier],
+            [entity],
+            ontology=model,
+            dod_queries=queries,
             trace=trace([]),
             generated_by=RECORDED,
         )
-    assert not lake.exists("gold/synthetic-case/latest.json")
-    broken = observation(
-        lake, "legal_name", "Proveedor Ejemplo 02", evidence=evidence(lake, screenshot=False)
-    )
-    broken_supplier = refine_observations([broken], generated_by=RECORDED).suppliers[0]
+    broken = observed(lake, "title", "Second", evidence=evidence(lake, screenshot=False))
+    broken_entity = refine_observations([broken], ontology=model, generated_by=RECORDED).entities[0]
     with pytest.raises(ValueError, match="evidence object absent"):
         export_run(
             lake,
-            tmp_path / "case",
-            "synthetic-case",
+            case_dir,
+            "books",
             RUN_ID,
-            [broken_supplier],
+            [broken_entity],
+            ontology=model,
+            dod_queries=queries,
             trace=trace([broken.value_id]),
             generated_by=RECORDED,
         )
+    assert not lake.exists("gold/books/latest.json")
 
 
-def test_export_rejects_broken_case_lineage(tmp_path: Path) -> None:
+def test_live_export_requires_matching_lineage_and_updates_latest(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
-    name = observation(lake, "legal_name", "Proveedor Ejemplo 01")
+    entries = [
+        observed(lake, "book_id", "B-1", run_id="live", generated_by=VULTR),
+        observed(lake, "title", "First", run_id="live", generated_by=VULTR),
+        observed(lake, "copies", 0, run_id="live", generated_by=VULTR),
+        observed(lake, "available", False, run_id="live", generated_by=VULTR),
+    ]
+    model, queries = ontology(VULTR), dod_queries(VULTR)
+    entity = refine_observations(entries, ontology=model, generated_by=VULTR).entities[0]
     case_dir = tmp_path / "case"
-    write_lineage(case_dir)
-    ontology_path = case_dir / "02-ontology/ontology.json"
-    ontology = json.loads(ontology_path.read_text(encoding="utf-8"))
-    ontology["version"] = "v2"
-    ontology_path.write_text(json.dumps(ontology), encoding="utf-8")
-    with pytest.raises(ValueError, match="ontology version"):
+    write_lineage(case_dir, ontology(), dod_queries(), RECORDED)
+    with pytest.raises(ValueError, match="approved case artifact"):
         export_run(
             lake,
             case_dir,
-            "synthetic-case",
+            "books",
+            "live",
+            [entity],
+            ontology=model,
+            dod_queries=queries,
+            trace=trace([item.value_id for item in entries], run_id="live", generated_by=VULTR),
+            generated_by=VULTR,
+        )
+    write_lineage(case_dir, model, queries, VULTR)
+    metrics = export_run(
+        lake,
+        case_dir,
+        "books",
+        "live",
+        [entity],
+        ontology=model,
+        dod_queries=queries,
+        trace=trace([item.value_id for item in entries], run_id="live", generated_by=VULTR),
+        generated_by=VULTR,
+    )
+    assert all(row["met"] for row in metrics["dod"])
+    assert metrics["entities_meeting_dod"]["Book"] == 1
+    assert json.loads(lake.read_key("gold/books/latest.json"))["run_id"] == "live"
+    assert (case_dir / "runs/latest/metrics.json").is_file()
+
+
+def test_invalid_property_datatype_and_shacl_are_rejected(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    shape = tmp_path / "shape.ttl"
+    shape.write_text(
+        """@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix onto: <https://ontofill.dev/ontology/> .
+onto:BookShape a sh:NodeShape ; sh:targetClass onto:Book ;
+  sh:property [ sh:path onto:title ; sh:minCount 1 ; sh:pattern "^Good" ] .
+""",
+        encoding="utf-8",
+    )
+    entries = [
+        observed(lake, "copies", True),
+        observed(lake, "title", "Bad title"),
+        observed(lake, "published", "2026-02-31"),
+        observed(lake, "name", "Wrong domain"),
+        observed(lake, "title", "Good title"),
+    ]
+    result = refine_observations(
+        entries, ontology=ontology(), generated_by=RECORDED, shapes_ttl=shape
+    )
+    assert len(result.rejected) == 4
+    assert result.entities[0]["properties"]["title"]["value"] == "Good title"
+    assert result.entities[0]["properties"]["copies"]["status"] == "missing"
+
+
+def test_links_require_declared_relation_target_and_value(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    entries = [
+        observed(lake, "library_code", "L-1"),
+        observed(lake, "library_id", "L-1", entity_id="Library:one", entity_class="Library"),
+    ]
+    model, queries = ontology(), dod_queries()
+    entities = refine_observations(entries, ontology=model, generated_by=RECORDED).entities
+    entities[0]["links"] = [
+        {"property": "held_by", "target": "Library:one", "via_value_id": entries[0].value_id}
+    ]
+    case_dir = tmp_path / "case"
+    write_lineage(case_dir, model, queries, RECORDED)
+    export_run(
+        lake,
+        case_dir,
+        "books",
+        RUN_ID,
+        entities,
+        ontology=model,
+        dod_queries=queries,
+        trace=trace([item.value_id for item in entries]),
+        generated_by=RECORDED,
+    )
+    entities[0]["links"][0]["target"] = "Library:absent"
+    with pytest.raises(ValueError, match="entity link"):
+        export_run(
+            lake,
+            case_dir,
+            "books",
             RUN_ID,
-            refine_observations([name], generated_by=RECORDED).suppliers,
-            trace=trace([name.value_id]),
+            entities,
+            ontology=model,
+            dod_queries=queries,
+            trace=trace([item.value_id for item in entries]),
             generated_by=RECORDED,
         )
-    assert not lake.exists("gold/synthetic-case/latest.json")
 
 
-def test_recorded_value_cannot_be_labeled_live_or_satisfy_live_latest(tmp_path: Path) -> None:
+def test_backend_mismatch_and_recorded_run_id(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
-    recorded_name = observation(lake, "legal_name", "Proveedor Ejemplo 01")
-    result = refine_observations([recorded_name], generated_by=VULTR)
-    assert result.suppliers == []
+    item = observed(lake, "title", "First")
+    result = refine_observations([item], ontology=ontology(), generated_by=VULTR)
+    assert result.entities == []
     assert "differs from run" in result.rejected[0]["reason"]
     with pytest.raises(ValueError, match="mock- run ID"):
         export_run(
             lake,
             tmp_path / "case",
-            "synthetic-case",
-            "synthetic-live",
+            "books",
+            "live",
             [],
+            ontology=ontology(),
+            dod_queries=dod_queries(),
             generated_by=RECORDED,
         )
-    assert not lake.exists("gold/synthetic-case/latest.json")
 
 
-def test_synthetic_live_export_updates_latest_only_when_lineage_is_live(tmp_path: Path) -> None:
+def test_export_rejects_duplicate_entities_and_tampered_typed_value(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
-    run_id = "synthetic-live"
-    name = observation(
-        lake,
-        "legal_name",
-        "Proveedor Ejemplo 01",
-        run_id=run_id,
-        generated_by=VULTR,
-    )
-    supplier = refine_observations([name], generated_by=VULTR).suppliers[0]
+    item = observed(lake, "copies", 0)
+    model, queries = ontology(), dod_queries()
+    entity = refine_observations([item], ontology=model, generated_by=RECORDED).entities[0]
     case_dir = tmp_path / "case"
-    write_lineage(case_dir, generated_by=RECORDED)
-    with pytest.raises(ValueError, match="artifact inference backend"):
+    write_lineage(case_dir, model, queries, RECORDED)
+    with pytest.raises(ValueError, match="duplicate entity ID"):
         export_run(
             lake,
             case_dir,
-            "synthetic-case",
-            run_id,
-            [supplier],
-            trace=trace([name.value_id], run_id=run_id, generated_by=VULTR),
-            generated_by=VULTR,
+            "books",
+            RUN_ID,
+            [entity, entity],
+            ontology=model,
+            dod_queries=queries,
+            trace=trace([item.value_id]),
+            generated_by=RECORDED,
         )
-    assert not lake.exists("gold/synthetic-case/latest.json")
-    write_lineage(case_dir, generated_by=VULTR)
-    metrics = export_run(
-        lake,
-        case_dir,
-        "synthetic-case",
-        run_id,
-        [supplier],
-        trace=trace([name.value_id], run_id=run_id, generated_by=VULTR),
-        generated_by=VULTR,
-    )
-    assert metrics["inference_backend"] == "vultr"
-    assert json.loads(lake.read_key("gold/synthetic-case/latest.json"))["run_id"] == run_id
-    assert (case_dir / "runs/latest/metrics.json").exists()
+    entity["properties"]["copies"]["value"] = 1
+    with pytest.raises(ValueError, match="value_id does not match"):
+        export_run(
+            lake,
+            case_dir,
+            "books",
+            RUN_ID,
+            [entity],
+            ontology=model,
+            dod_queries=queries,
+            trace=trace([item.value_id]),
+            generated_by=RECORDED,
+        )
 
 
-def test_ontology_shacl_and_conflict_do_not_invent_winner(tmp_path: Path) -> None:
+def test_export_rejects_changed_approved_dod_target(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
-    shapes = tmp_path / "supplier-shape.ttl"
-    shapes.write_text(
-        """@prefix sh: <http://www.w3.org/ns/shacl#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix onto: <https://ontofill.dev/ontology/> .
-onto:SupplierShape a sh:NodeShape ; sh:targetClass onto:Supplier ;
-  sh:property [ sh:path onto:legal_name ; sh:minCount 1 ; sh:datatype xsd:string ] ;
-  sh:property [ sh:path onto:tax_id ; sh:minCount 1 ; sh:pattern "^FAKE" ] .
-""",
-        encoding="utf-8",
-    )
-    first = observation(lake, "legal_name", "Proveedor Ejemplo 01", confidence=0.7)
-    second = observation(lake, "legal_name", "Proveedor Ejemplo 02", confidence=0.8)
-    bad_tax = observation(lake, "tax_id", "INVALID")
-    result = refine_observations([first, second, bad_tax], generated_by=RECORDED, shapes_ttl=shapes)
-    assert len(result.rejected) == 1
-    assert result.rejected[0]["value_id"] == bad_tax.value_id
-    field = result.suppliers[0]["fields"]["legal_name"]
-    assert field["status"] == "conflict"
-    assert field["value"] == second.value
-    assert result.suppliers[0]["fields"]["tax_id"]["status"] == "missing"
+    item = observed(lake, "title", "First")
+    model, queries = ontology(), dod_queries()
+    entity = refine_observations([item], ontology=model, generated_by=RECORDED).entities[0]
+    case_dir = tmp_path / "case"
+    write_lineage(case_dir, model, queries, RECORDED)
+    queries["queries"][0]["target"] = 2
+    (case_dir / "02-ontology/dod-queries.json").write_text(json.dumps(queries), encoding="utf-8")
+    with pytest.raises(ValueError, match="approved PRD criterion"):
+        export_run(
+            lake,
+            case_dir,
+            "books",
+            RUN_ID,
+            [entity],
+            ontology=model,
+            dod_queries=queries,
+            trace=trace([item.value_id]),
+            generated_by=RECORDED,
+        )
+
+
+def test_valid_ontology_date_survives_without_string_coercion(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    entries = [observed(lake, "published", "2024-02-29"), observed(lake, "copies", 0)]
+    result = refine_observations(entries, ontology=ontology(), generated_by=RECORDED)
+    assert result.rejected == []
+    assert result.entities[0]["properties"]["published"]["value"] == "2024-02-29"
+    assert type(result.entities[0]["properties"]["copies"]["value"]) is int
