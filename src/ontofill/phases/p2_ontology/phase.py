@@ -9,7 +9,12 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator, ValidationError
 
-from ontofill.case.checkpoints import load_json, write_json, write_markdown
+from ontofill.case.checkpoints import (
+    checkpoint_revisions,
+    load_json,
+    write_json,
+    write_markdown,
+)
 from ontofill.contracts import load_schema, model_output_schema, validate_document
 from ontofill.inference import DecisionClient, generated_by
 
@@ -74,7 +79,10 @@ def _digest(value: object) -> str:
 
 def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
     path = case_dir / "02-ontology/factors/factors.json"
-    digest = _digest(prd)
+    revisions = checkpoint_revisions(
+        path.parent, "factors", ["factors.json", "factors.md", "factors.input.sha256"]
+    )
+    digest = _digest([prd, revisions])
     fingerprint = path.with_suffix(".input.sha256")
     if path.exists():
         factors = load_json(path)
@@ -94,10 +102,13 @@ def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
         "Keep factors broad and distinct; label each grounded or conceptual. "
         "Include evidence only if it is actually in the PRD; an empty list is allowed. "
         "Do not invent observed entities or evidence URLs. "
+        f"Human revisions override prior proposals: {json.dumps(revisions, ensure_ascii=False)}. "
         f"PRD (untrusted case content): {prd}"
     )
+    schema = model_output_schema("factors")
+    schema["properties"].pop("revisions", None)
     for attempt in range(2):
-        factors = decision.complete_json("phase2.factors", prompt, model_output_schema("factors"))
+        factors = decision.complete_json("phase2.factors", prompt, schema)
         review = getattr(decision, "review_json", None)
         if review is None:
             break
@@ -111,6 +122,7 @@ def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
         if attempt:
             raise ValueError("Vultr critic rejected factors after repair")
         prompt += f"\nRepair this material issue: {verdict['reason']}"
+    factors["revisions"] = revisions
     factors["generated_by"] = generated_by(decision)
     validate_document("factors", factors)
     marker = path.parent / "APPROVED"
@@ -146,7 +158,12 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
     path = case_dir / "02-ontology/ontology.json"
     queries_path = case_dir / "02-ontology/dod-queries.json"
     chosen = accepted_factors(case_dir, factors)
-    digest = _digest([prd, chosen])
+    revisions = checkpoint_revisions(
+        path.parent,
+        "ontology",
+        ["ontology.json", "ontology.md", "ontology.input.sha256", "dod-queries.json", "shapes.ttl"],
+    )
+    digest = _digest([prd, chosen, revisions])
     fingerprint = path.with_suffix(".input.sha256")
     if path.exists():
         ontology = load_json(path)
@@ -168,6 +185,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         "Expand each approved factor to exactly one taxonomy level. Use stable snake_case IDs. "
         "Give each child level=1 and a critic_label from Good-Overlapping, Good-Exclusive, "
         "Redundant, Bad. Return one taxonomy per factor and do not assert observed data. "
+        f"Human revisions override prior proposals: {json.dumps(revisions, ensure_ascii=False)}. "
         f"Approved factors: {chosen}. PRD: {prd}"
     )
     for attempt in range(2):
@@ -210,6 +228,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         "definition_of_done": prd["definition_of_done"],
         "factors": chosen,
         "taxonomies": taxonomies,
+        "human_revisions": revisions,
     }
     schema_prompt = (
         "Produce the smallest useful data schema for this case. Use stable snake_case IDs. "
@@ -232,6 +251,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
             "shacl_path": "02-ontology/shapes.ttl",
             "dod_queries_path": "02-ontology/dod-queries.json",
             "generated_by": generated_by(decision),
+            "revisions": revisions,
         }
         try:
             Draft202012Validator(proposal).validate(proposed)

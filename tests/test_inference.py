@@ -109,12 +109,14 @@ def test_vultr_discovers_models_and_routes_by_decision_role(monkeypatch) -> None
     monkeypatch.delenv("VULTR_INFERENCE_CRITIC_MODEL", raising=False)
     monkeypatch.delenv("VULTR_INFERENCE_EXTRACTION_MODEL", raising=False)
     monkeypatch.delenv("VULTR_INFERENCE_DOCUMENT_MODEL", raising=False)
+    monkeypatch.delenv("VULTR_INFERENCE_PRD_MODEL", raising=False)
     client = VultrDecisionClient.from_env(
         client=httpx.Client(transport=httpx.MockTransport(handle))
     )
     assert client.model == "glm-5.3-flash"
     assert client.extraction_model == "qwen3.8-flash-next"
     assert client.document_model == "qwen3.8-flash-next"
+    assert client.prd_model == "glm-5.3"
     assert client.critic_model == "minimax-m3"
     assert client.fallback_model == "glm-5.3"
     client.complete_json("phase2.classify", "classify", SCHEMA)
@@ -124,19 +126,18 @@ def test_vultr_discovers_models_and_routes_by_decision_role(monkeypatch) -> None
     bodies = [json.loads(request.content) for request in calls[1:]]
     assert [body["model"] for body in bodies] == [
         "glm-5.3-flash",
-        "qwen3.8-flash-next",
+        "glm-5.3",
         "qwen3.8-flash-next",
         "minimax-m3",
     ]
     assert bodies[0]["reasoning_effort"] == "minimal"
-    assert bodies[1]["reasoning"] == {"enabled": False}
-    assert bodies[1]["max_completion_tokens"] == 4096
+    assert bodies[1]["reasoning_effort"] == "low"
+    assert bodies[1]["max_completion_tokens"] == 16384
     assert "Schema:" not in bodies[1]["messages"][1]["content"]
-    assert "reasoning_effort" not in bodies[1]
     assert "reasoning_effort" not in bodies[2]
     assert "reasoning_effort" not in bodies[3]
     assert client.call_log[0]["usage"]["est_usd"] == pytest.approx(0.00017)
-    assert client.call_log[1]["usage"]["est_usd"] == pytest.approx(0.00014)
+    assert client.call_log[1]["usage"]["est_usd"] == pytest.approx(0.00135)
     assert client.call_log[2]["usage"]["est_usd"] == pytest.approx(0.00014)
     assert client.call_log[3]["usage"]["est_usd"] == pytest.approx(0.00038)
 

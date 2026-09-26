@@ -220,8 +220,24 @@ def write_lineage(case_dir: Path, model: dict, queries: dict, generated_by: dict
             },
             "non_goals": [],
             "definition_of_done": [
-                {"id": "books_with_core", "metric": "book coverage", "operator": ">=", "target": 1},
-                {"id": "unavailable", "metric": "unavailable books", "operator": ">=", "target": 1},
+                {
+                    "id": "books_with_core",
+                    "metric": "book coverage",
+                    "operator": ">=",
+                    "target": 1,
+                    "basis": "proposed",
+                    "rationale": "One is the test threshold.",
+                    "feasibility": "The test budget and run time fit one entity.",
+                },
+                {
+                    "id": "unavailable",
+                    "metric": "unavailable books",
+                    "operator": ">=",
+                    "target": 1,
+                    "basis": "proposed",
+                    "rationale": "One exercises the unavailable branch.",
+                    "feasibility": "The test budget and run time fit one entity.",
+                },
             ],
             "generated_by": generated_by,
         },
@@ -408,6 +424,9 @@ def test_export_applies_per_entity_min_ratio_from_approved_query(tmp_path: Path)
             "operator": ">=",
             "target": 1,
             "min_ratio": 2 / 3,
+            "basis": "proposed",
+            "rationale": "The threshold exercises partial completeness.",
+            "feasibility": "The synthetic test has enough budget and run time.",
         }
     )
     prd_path.write_text(json.dumps(prd))

@@ -33,12 +33,18 @@ def library_decisions() -> RecordedDecisionClient:
                             "metric": "libraries_with_access_and_hours",
                             "operator": ">=",
                             "target": 1,
+                            "basis": "proposed",
+                            "rationale": "One library proves the end-to-end example.",
+                            "feasibility": "One record fits the synthetic test budget and run time.",
                         },
                         {
                             "id": "evidence_integrity",
                             "metric": "values_without_evidence",
                             "operator": "=",
                             "target": 0,
+                            "basis": "proposed",
+                            "rationale": "Every exported value needs evidence.",
+                            "feasibility": "A small synthetic case can verify every value in its run time.",
                         },
                     ],
                     "authority_policy": {

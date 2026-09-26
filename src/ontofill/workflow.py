@@ -72,12 +72,18 @@ def _preview_decision(brief: str) -> RecordedDecisionClient:
                             "metric": "records_total",
                             "operator": ">=",
                             "target": 1,
+                            "basis": "proposed",
+                            "rationale": "One record is a minimal preview target.",
+                            "feasibility": "Preview budget and run time are not measured.",
                         },
                         {
                             "id": "evidence_integrity",
                             "metric": "values_without_evidence",
                             "operator": "=",
                             "target": 0,
+                            "basis": "proposed",
+                            "rationale": "A preview should show only evidenced values.",
+                            "feasibility": "Preview budget and run time are not measured.",
                         },
                     ],
                     "authority_policy": {
@@ -396,7 +402,7 @@ def run_case(
         feed.update_status(state="running", phase=from_phase)
         try:
             decision_start = len(getattr(decision, "call_log", []))
-            prd = draft_prd(case_dir, decision)
+            prd = draft_prd(case_dir, decision, budget_usd=budget_usd)
             _publish_decision_calls(feed, trace, decision, decision_start, run_id, 1)
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")
             if from_phase <= 1:

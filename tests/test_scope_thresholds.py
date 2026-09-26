@@ -1,29 +1,33 @@
+"""PRD targets identify their source and ungrounded numbers stay proposed."""
+
 import json
 
 import httpx
-import pytest
 
+from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
 from ontofill.phases.p1_scope.phase import draft_prd
 
 
-def _prd_response() -> dict:
+def _prd_response(criterion: dict | None = None) -> dict:
     return {
         "version": "1",
         "brief_path": "brief.md",
         "personas": [{"id": "reader", "description": "Reads public data"}],
-        "jobs_to_be_done": [
-            {"id": "find", "persona_id": "reader", "description": "Find reading rooms"}
-        ],
+        "jobs_to_be_done": [{"id": "find", "persona_id": "reader", "description": "Find rooms"}],
         "requirements": [{"id": "evidence", "job_id": "find", "description": "Show evidence"}],
         "constraints": ["Read-only sources"],
         "non_goals": [],
         "definition_of_done": [
-            {
+            criterion
+            or {
                 "id": "complete-rooms",
-                "metric": "Reading rooms with 80% of required fields",
+                "metric": "Rooms with 80% of required fields",
                 "operator": ">=",
                 "target": 5,
+                "min_ratio": 0.8,
+                "basis": "brief",
+                "basis_quote": "5 reading rooms, with 80% of required fields",
             }
         ],
         "authority_policy": {
@@ -53,82 +57,158 @@ def _tool_response(value: dict) -> httpx.Response:
     )
 
 
-def test_prd_threshold_is_inferred_by_separate_small_vultr_call(tmp_path) -> None:
+def test_prd_uses_planning_model_and_independent_critic(tmp_path) -> None:
     (tmp_path / "brief.md").write_text(
-        "At least 80% of required fields per reading room need public evidence.", encoding="utf-8"
+        "At least 5 reading rooms, with 80% of required fields per room need evidence.",
+        encoding="utf-8",
     )
     calls = []
 
     def handle(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        calls.append(body)
-        if len(calls) == 1:
-            criterion_schema = body["tools"][0]["function"]["parameters"]["properties"][
-                "definition_of_done"
-            ]["items"]
-            assert "min_ratio" not in criterion_schema["properties"]
-            return _tool_response(_prd_response())
-        assert len(calls) == 2
-        assert "phase1.dod_thresholds" in body["messages"][1]["content"]
+        calls.append(json.loads(request.content))
         return _tool_response(
-            {
-                "ratios": [
-                    {
-                        "criterion_id": "complete-rooms",
-                        "min_ratio": 0.8,
-                        "evidence_quote": "80%",
-                    }
-                ]
-            }
+            _prd_response()
+            if len(calls) == 1
+            else {"accepted": True, "reason": "Grounded in the brief"}
         )
 
     decision = VultrDecisionClient(
         api_key="test-only",
         model="glm-5.3-flash",
-        document_model="qwen3.8-flash-next",
+        prd_model="glm-5.3",
+        critic_model="minimax-m3",
         client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
-    document = draft_prd(tmp_path, decision)
-    assert document["definition_of_done"][0]["min_ratio"] == 0.8
-    assert document["generated_by"]["model"] == "qwen3.8-flash-next"
-    assert [body["model"] for body in calls] == ["qwen3.8-flash-next", "glm-5.3-flash"]
-    assert [call["status"] for call in decision.call_log] == ["ok", "ok"]
+    document = draft_prd(tmp_path, decision, budget_usd=2.0)
+    criterion = document["definition_of_done"][0]
+    assert (criterion["basis"], criterion["min_ratio"]) == ("brief", 0.8)
+    assert document["generated_by"]["model"] == "glm-5.3"
+    assert [body["model"] for body in calls] == ["glm-5.3", "minimax-m3"]
+    assert calls[0]["max_completion_tokens"] == 16384
+    assert [call["usage"]["model"] for call in decision.call_log] == ["glm-5.3", "minimax-m3"]
 
 
-def test_recorded_prd_without_explicit_ratio_needs_no_second_fixture(tmp_path) -> None:
+def test_unsupported_numeric_target_becomes_proposed(tmp_path) -> None:
     (tmp_path / "brief.md").write_text("Find public reading rooms.", encoding="utf-8")
-    response = _prd_response()
-    response["definition_of_done"][0]["metric"] = "Number of reading rooms"
-    decision = RecordedDecisionClient({"phase1.prd": [response]})
-    document = draft_prd(tmp_path, decision)
-    assert "min_ratio" not in document["definition_of_done"][0]
-    assert [purpose for purpose, _ in decision.calls] == ["phase1.prd"]
+    criterion = {
+        "id": "volume",
+        "metric": "reading rooms",
+        "operator": ">=",
+        "target": 1000,
+        "basis": "brief",
+        "basis_quote": "Find public reading rooms.",
+    }
+    decision = RecordedDecisionClient({"phase1.prd": [_prd_response(criterion)]})
+    item = draft_prd(tmp_path, decision, budget_usd=1.5)["definition_of_done"][0]
+    assert item["basis"] == "proposed"
+    assert "$1.50" in item["feasibility"]
+    assert "basis_quote" not in item
 
 
-def test_explicit_ratio_requires_second_recorded_fixture(tmp_path) -> None:
-    (tmp_path / "brief.md").write_text("80% of fields must have evidence.", encoding="utf-8")
-    decision = RecordedDecisionClient({"phase1.prd": [_prd_response()]})
-    with pytest.raises(AssertionError, match="phase1.dod_thresholds"):
-        draft_prd(tmp_path, decision)
-
-
-def test_ratio_without_matching_quote_is_rejected(tmp_path) -> None:
-    (tmp_path / "brief.md").write_text("80% of fields must have evidence.", encoding="utf-8")
-    decision = RecordedDecisionClient(
+def test_critic_objection_causes_one_revised_draft(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Find public reading rooms.", encoding="utf-8")
+    first = _prd_response(
         {
-            "phase1.prd": [_prd_response()],
-            "phase1.dod_thresholds": [
-                {
-                    "ratios": [
-                        {
-                            "criterion_id": "complete-rooms",
-                            "min_ratio": 0.9,
-                            "evidence_quote": "90%",
-                        }
-                    ]
-                }
-            ],
+            "id": "volume",
+            "metric": "rooms",
+            "operator": ">=",
+            "target": 1000,
+            "basis": "proposed",
+            "rationale": "A large draft target.",
+            "feasibility": "Unknown under the available budget and run time.",
         }
     )
-    with pytest.raises(ValueError, match="threshold evidence"):
-        draft_prd(tmp_path, decision)
+    second = _prd_response(
+        {
+            "id": "evidence",
+            "metric": "rooms with evidence",
+            "operator": ">=",
+            "target": 1,
+            "basis": "proposed",
+            "rationale": "Small pilot target.",
+            "feasibility": "One room may fit the available budget and run time.",
+        }
+    )
+    replies = [first, {"accepted": False, "reason": "Target is unfeasible"}, second]
+    calls = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return _tool_response(replies[len(calls) - 1])
+
+    decision = VultrDecisionClient(
+        api_key="test-only",
+        model="glm-5.3-flash",
+        prd_model="glm-5.3",
+        critic_model="minimax-m3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    result = draft_prd(tmp_path, decision)
+    assert result["definition_of_done"][0]["id"] == "evidence"
+    assert [body["model"] for body in calls] == ["glm-5.3", "minimax-m3", "glm-5.3"]
+    assert "Target is unfeasible" in calls[2]["messages"][1]["content"]
+
+
+def test_denied_prd_is_archived_and_human_reason_regenerates(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Find public reading rooms.", encoding="utf-8")
+    first = _prd_response(
+        {
+            "id": "volume",
+            "metric": "rooms",
+            "operator": ">=",
+            "target": 1000,
+            "basis": "proposed",
+            "rationale": "A broad target.",
+            "feasibility": "The source count is unknown for this budget and run time.",
+        }
+    )
+    second = _prd_response(
+        {
+            "id": "evidence",
+            "metric": "rooms with evidence",
+            "operator": ">=",
+            "target": 1,
+            "basis": "human",
+            "basis_quote": "at least 1 room with evidence",
+        }
+    )
+    decision = RecordedDecisionClient({"phase1.prd": [first, second]})
+    old = draft_prd(tmp_path, decision)
+    scope = tmp_path / "01-scope"
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.json"],
+        generated_by=old["generated_by"],
+    )
+    denial = {
+        "approver": "Example Reviewer",
+        "date": "2026-09-26",
+        "checkpoint": "prd",
+        "decision": "deny",
+        "reason": "Use at least 1 room with evidence; 1000 is unsupported.",
+    }
+    (scope / "APPROVED").write_text(json.dumps(denial), encoding="utf-8")
+    new = draft_prd(tmp_path, decision)
+    assert new["definition_of_done"][0]["id"] == "evidence"
+    assert new["definition_of_done"][0]["basis"] == "human"
+    assert new["revisions"] == [
+        {"n": 1, **{k: denial[k] for k in ("decision", "reason", "approver", "date")}}
+    ]
+    assert json.loads((scope / "revisions/1/prd.json").read_text()) == old
+    assert (scope / "revisions/1/APPROVED").exists()
+    assert not (scope / "APPROVED").exists()
+    assert "1000 is unsupported" in decision.calls[1][1]
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.json"],
+        generated_by=new["generated_by"],
+    )
+    pending = (scope / "APPROVAL_PENDING.md").read_text()
+    assert "1000 is unsupported" in pending
+    assert "**human**" in pending
+    assert draft_prd(tmp_path, decision) == new
+    assert len(decision.calls) == 2

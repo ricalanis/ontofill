@@ -7,6 +7,7 @@
   "required": ["version", "prd_path", "factors", "taxonomies", "primary_class", "classes", "properties", "relations", "rules", "shacl_path", "generated_by"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "revisions": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/revision"}},
     "version": {"type": "string", "minLength": 1},
     "prd_path": {"type": "string", "minLength": 1},
     "factors": {

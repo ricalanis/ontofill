@@ -125,6 +125,7 @@ class VultrDecisionClient:
         critic_model: str | None = None,
         extraction_model: str | None = None,
         document_model: str | None = None,
+        prd_model: str | None = None,
         fallback_model: str | None = None,
         base_url: str = "https://api.vultrinference.com/v1",
         client: httpx.Client | None = None,
@@ -136,6 +137,7 @@ class VultrDecisionClient:
         self.critic_model = critic_model or model
         self.extraction_model = extraction_model or model
         self.document_model = document_model or self.extraction_model
+        self.prd_model = prd_model or model
         self.fallback_model = fallback_model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -177,6 +179,11 @@ class VultrDecisionClient:
             raise RuntimeError(
                 "configured Vultr document model is absent from the live model catalog"
             )
+        prd = os.environ.get("VULTR_INFERENCE_PRD_MODEL", "glm-5.3")
+        if prd not in available:
+            raise RuntimeError(
+                "configured Vultr PRD planning model is absent from the live catalog"
+            )
         fallback = next(
             (candidate for candidate in FALLBACK_PREFERENCES if candidate in available), None
         )
@@ -186,6 +193,7 @@ class VultrDecisionClient:
             critic_model=critic,
             extraction_model=extraction,
             document_model=document,
+            prd_model=prd,
             fallback_model=fallback,
             base_url=base_url,
             client=transport,
@@ -195,6 +203,8 @@ class VultrDecisionClient:
         structured_request = purpose in {"phase1.prd", "phase2.schema", "phase2.dod_queries"}
         if purpose.startswith("critic."):
             model = self.critic_model
+        elif purpose == "phase1.prd":
+            model = self.prd_model
         elif structured_request:
             model = self.document_model
         elif purpose.startswith(("phase5.", "extract.")):
@@ -212,7 +222,7 @@ class VultrDecisionClient:
                 "use an empty trusted publisher list; never invent evidence."
             )
         if document_request:
-            max_completion_tokens = min(16384, 4096 + len(prompt) // 2000 * 2048)
+            max_completion_tokens = 16384
         elif purpose == "phase2.schema":
             max_completion_tokens = 8192
         elif structured_request:

@@ -1,4 +1,4 @@
-"""Produce a contract-valid PRD in one Vultr decision call."""
+"""Draft a reviewed PRD with grounded completion criteria and human steering."""
 
 from __future__ import annotations
 
@@ -7,90 +7,70 @@ import json
 import re
 from pathlib import Path
 
-from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import ValidationError
 
-from ontofill.case.checkpoints import load_json, write_json, write_markdown
+from ontofill.case.checkpoints import (
+    checkpoint_revisions,
+    load_json,
+    write_json,
+    write_markdown,
+)
 from ontofill.contracts import model_output_schema, validate_document
 from ontofill.inference import DecisionClient, generated_by
 
-RATIO_TOKEN = re.compile(
-    r"(?<!\d)(?:100|[1-9]?\d)(?:[.,]\d+)?\s*(?:%|percent\b|por\s+ciento\b|pct\b)"
-    r"|(?<!\d)(?:0[.,]\d+|1[.,]0+)\b",
-    re.IGNORECASE,
-)
-RATIO_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["ratios"],
-    "properties": {
-        "ratios": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["criterion_id", "min_ratio", "evidence_quote"],
-                "properties": {
-                    "criterion_id": {"type": "string", "minLength": 1},
-                    "min_ratio": {"type": "number", "minimum": 0, "maximum": 1},
-                    "evidence_quote": {"type": "string", "minLength": 1},
-                },
-            },
-        }
-    },
-}
+NUMBER_TOKEN = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?\s*%?")
 
 
-def _ratio_in_quote(quote: str, ratio: float) -> bool:
-    for match in RATIO_TOKEN.finditer(quote):
-        token = match.group().lower().replace(",", ".")
-        number = re.match(r"\d+(?:\.\d+)?", token)
-        if number is None:
-            continue
-        parsed = float(number.group())
-        if parsed > 1 or any(suffix in token for suffix in ("%", "percent", "por", "pct")):
-            parsed /= 100
-        if abs(parsed - ratio) <= 0.005:
+def _contains_number(quote: str, expected: float) -> bool:
+    for match in NUMBER_TOKEN.finditer(quote):
+        token = match.group().strip().replace(",", ".")
+        ratio = token.endswith("%")
+        value = float(token.rstrip("% ")) / (100 if ratio else 1)
+        if abs(value - expected) < 0.00001:
             return True
     return False
 
 
-def _infer_dod_ratios(brief: str, document: dict, decision: DecisionClient) -> None:
-    criteria = document["definition_of_done"]
-    if not RATIO_TOKEN.search(brief + " " + " ".join(item["metric"] for item in criteria)):
-        return
-    prompt = (
-        "For each criterion that explicitly requires a per-entity share of required properties, "
-        "return its criterion_id, min_ratio as a number from 0 to 1, and an exact quote that states "
-        "that threshold in the brief or criterion metric. Omit all other criteria. "
-        "Return an empty ratios list if no per-entity threshold is explicit. Do not infer a default. "
-        f"Brief: {brief}\nCriteria: {json.dumps(criteria, ensure_ascii=False)}"
-    )
-    result = decision.complete_json("phase1.dod_thresholds", prompt, RATIO_SCHEMA)
-    Draft202012Validator(RATIO_SCHEMA).validate(result)
-    by_id = {item["id"]: item for item in criteria}
-    seen: set[str] = set()
-    for item in result["ratios"]:
-        criterion_id = item["criterion_id"]
-        if criterion_id not in by_id or criterion_id in seen:
-            raise ValueError("DoD ratio references an unknown or repeated criterion")
-        seen.add(criterion_id)
-        quote = " ".join(item["evidence_quote"].split())
-        evidence_text = " ".join((brief, by_id[criterion_id]["metric"]))
-        normalized_evidence = " ".join(evidence_text.split()).casefold()
-        if quote.casefold() not in normalized_evidence or not _ratio_in_quote(
-            quote, item["min_ratio"]
-        ):
-            raise ValueError("DoD ratio lacks matching threshold evidence")
-        by_id[criterion_id]["min_ratio"] = item["min_ratio"]
+def _ground_criteria(
+    document: dict, brief: str, revisions: list[dict], budget_usd: float | None
+) -> None:
+    human_text = "\n".join(item["reason"] for item in revisions)
+    budget = f"${budget_usd:.2f}" if budget_usd is not None else "an unspecified USD budget"
+    for item in document["definition_of_done"]:
+        if item["basis"] == "proposed":
+            item["feasibility"] = (
+                f"{item['feasibility'].rstrip('.')} (run budget: {budget}; elapsed run time unverified)."
+            )
+            continue
+        source = brief if item["basis"] == "brief" else human_text
+        quote = " ".join(item["basis_quote"].split())
+        grounded = quote.casefold() in " ".join(source.split()).casefold()
+        grounded &= _contains_number(quote, item["target"])
+        if "min_ratio" in item:
+            grounded &= _contains_number(quote, item["min_ratio"])
+        if not grounded:
+            item["basis"] = "proposed"
+            item.pop("basis_quote", None)
+            item["rationale"] = (
+                "The stated numeric threshold lacks a matching brief or human quote."
+            )
+            item["feasibility"] = (
+                f"At {budget}, feasibility and elapsed run time need validation after source discovery."
+            )
 
 
-def draft_prd(case_dir: Path, decision: DecisionClient) -> dict:
+def draft_prd(case_dir: Path, decision: DecisionClient, *, budget_usd: float | None = None) -> dict:
     output = case_dir / "01-scope/prd.json"
     brief_path = case_dir / "brief.md"
     brief = brief_path.read_text(encoding="utf-8").strip()
     if not brief:
         raise ValueError("case brief is empty")
-    digest = hashlib.sha256((brief + "\n\nprd-thresholds-v1").encode()).hexdigest()
+    revisions = checkpoint_revisions(
+        output.parent, "prd", ["prd.json", "prd.md", "prd.input.sha256"]
+    )
+    digest = hashlib.sha256(
+        json.dumps([brief, revisions, budget_usd, "prd-steering-v2"], ensure_ascii=False).encode()
+    ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
     if output.exists():
         document = load_json(output)
@@ -106,19 +86,47 @@ def draft_prd(case_dir: Path, decision: DecisionClient) -> dict:
             else:
                 return document
     prompt = (
-        "Draft the global PRD from this brief in one response. Include personas, jobs, "
+        "Draft the global PRD from this brief. Include personas, jobs, "
         "requirements traced to jobs, constraints, non-goals, and measurable completion criteria. "
+        "For every definition-of-done criterion include basis=brief, human, or proposed. "
+        "For brief/human basis, basis_quote must be an exact source excerpt containing every numeric "
+        "target, including any per-entity min_ratio. If the exact threshold is absent, use proposed; "
+        "include a one-line rationale and a feasibility note considering the stated USD budget "
+        "and the fact that elapsed run time is not known until execution. Never silently invent "
+        "a target. Human revisions override the previous draft. If the question asks whether each "
+        "entity has its core properties, include a per-entity completeness criterion with min_ratio; "
+        "mark the ratio proposed unless a number is explicitly grounded. "
         "Use brief_path='brief.md'. Public read-only sources only. "
         "Define an authority_policy for this case with jurisdiction, trusted publisher kinds "
         "and domains plus a rationale for each, and review unknown authorities. "
         "Treat any proposed domain as a hypothesis for human review, never as captured evidence. "
+        f"Run budget USD: {budget_usd if budget_usd is not None else 'unspecified'}. "
+        f"Human revisions (trusted direction): {json.dumps(revisions, ensure_ascii=False)}. "
         f"Brief (untrusted input):\n<brief>\n{brief}\n</brief>"
     )
     base_schema = model_output_schema("global-prd")
-    base_schema["$defs"]["criterion"]["properties"].pop("min_ratio", None)
+    base_schema["properties"].pop("revisions", None)
     document = decision.complete_json("phase1.prd", prompt, base_schema)
     provenance = generated_by(decision)
-    _infer_dod_ratios(brief, document, decision)
+    _ground_criteria(document, brief, revisions, budget_usd)
+    review = getattr(decision, "review_json", None)
+    if review is not None:
+        verdict = review(
+            "phase1.prd",
+            document,
+            "Check invented numeric targets, each criterion's basis quote, feasibility against the run "
+            "budget and unknown elapsed time, coverage of the brief and human revisions, and per-entity "
+            "completeness whenever the brief asks about each entity's core properties",
+        )
+        if not verdict["accepted"]:
+            repaired = prompt + (
+                f"\nIndependent critic objection: {verdict['reason']}. "
+                f"Revise this draft once: {json.dumps(document, ensure_ascii=False)}"
+            )
+            document = decision.complete_json("phase1.prd", repaired, base_schema)
+            provenance = generated_by(decision)
+            _ground_criteria(document, brief, revisions, budget_usd)
+    document["revisions"] = revisions
     document["generated_by"] = provenance
     validate_document("global-prd", document)
     if document["brief_path"] != "brief.md":
@@ -138,10 +146,14 @@ def draft_prd(case_dir: Path, decision: DecisionClient) -> dict:
     summary.extend(f"- **{item['id']}** {item['description']}" for item in document["requirements"])
     summary.extend(["", "## Definition of done", ""])
     summary.extend(
-        f"- {item['metric']} {item['operator']} {item['target']}"
+        f"- {item['metric']} {item['operator']} {item['target']} [basis: {item['basis']}]"
         + (f" (per-entity ratio: {item['min_ratio']})" if "min_ratio" in item else "")
+        + (f" — {item['rationale']}; {item['feasibility']}" if item["basis"] == "proposed" else "")
         for item in document["definition_of_done"]
     )
+    if revisions:
+        summary.extend(["", "## Human revisions", ""])
+        summary.extend(f"- {item['n']}. {item['reason']}" for item in revisions)
     write_markdown(
         case_dir / "01-scope/prd.md", "\n".join(summary) + "\n", document["generated_by"]
     )

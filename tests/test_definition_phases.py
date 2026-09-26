@@ -24,7 +24,15 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
         "constraints": ["Public read-only sources"],
         "non_goals": ["Private records"],
         "definition_of_done": [
-            {"id": "dod-1", "metric": "room_count", "operator": ">=", "target": 1}
+            {
+                "id": "dod-1",
+                "metric": "room_count",
+                "operator": ">=",
+                "target": 1,
+                "basis": "proposed",
+                "rationale": "A single record demonstrates the flow.",
+                "feasibility": "The one-record target fits the small recorded test budget and run time.",
+            }
         ],
         "authority_policy": {
             "jurisdiction": "Example City",

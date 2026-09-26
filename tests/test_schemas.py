@@ -217,7 +217,15 @@ EXAMPLES = {
         },
         "non_goals": [],
         "definition_of_done": [
-            {"id": "dod-1", "metric": "suppliers_total", "operator": ">=", "target": 1}
+            {
+                "id": "dod-1",
+                "metric": "suppliers_total",
+                "operator": ">=",
+                "target": 1,
+                "basis": "proposed",
+                "rationale": "A single synthetic entity tests the schema.",
+                "feasibility": "The synthetic test has enough budget and run time for one entity.",
+            }
         ],
     },
     "lake-pointer": {

@@ -7,6 +7,7 @@
   "required": ["factors", "generated_by"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "revisions": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/revision"}},
     "factors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/factor"}}
   },
   "$defs": {

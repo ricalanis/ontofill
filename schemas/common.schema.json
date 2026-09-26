@@ -8,6 +8,17 @@
     "value_id": {"type": "string", "pattern": "^val:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
     "bronze_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "nonempty": {"type": "string", "minLength": 1},
+    "revision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["n", "decision", "reason", "approver", "date"],
+      "properties": {
+        "n": {"type": "integer", "minimum": 1},
+        "decision": {"const": "deny"},
+        "reason": {"type": "string", "minLength": 1},
+        "approver": {"type": "string", "minLength": 1},
+        "date": {"type": "string", "format": "date"}
+      }
+    },
     "generated_by": {
       "type": "object",
       "additionalProperties": false,

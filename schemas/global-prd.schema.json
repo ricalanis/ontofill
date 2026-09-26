@@ -7,6 +7,7 @@
   "required": ["version", "brief_path", "personas", "jobs_to_be_done", "requirements", "constraints", "non_goals", "definition_of_done", "authority_policy", "generated_by"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "revisions": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/revision"}},
     "version": {"type": "string", "minLength": 1},
     "brief_path": {"type": "string", "minLength": 1},
     "personas": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/persona"}},
@@ -52,14 +53,24 @@
       "properties": {"id": {"type": "string", "minLength": 1}, "job_id": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}}
     },
     "criterion": {
-      "type": "object", "additionalProperties": false, "required": ["id", "metric", "operator", "target"],
+      "type": "object", "additionalProperties": false, "required": ["id", "metric", "operator", "target", "basis"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "metric": {"type": "string", "minLength": 1},
         "operator": {"enum": [">=", ">", "=", "<=", "<"]},
         "target": {"type": "number", "minimum": 0},
-        "min_ratio": {"type": "number", "minimum": 0, "maximum": 1}
-      }
+        "min_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "basis": {"enum": ["brief", "human", "proposed"]},
+        "basis_quote": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "feasibility": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"basis": {"const": "proposed"}}, "required": ["basis"]},
+         "then": {"required": ["rationale", "feasibility"]}},
+        {"if": {"properties": {"basis": {"enum": ["brief", "human"]}}, "required": ["basis"]},
+         "then": {"required": ["basis_quote"]}}
+      ]
     }
   }
 }
