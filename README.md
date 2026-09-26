@@ -16,3 +16,9 @@ Code only. No data, no lake, no case content lives here.
 | `docs/` | Definition docs (copied from planning) |
 
 License: Apache-2.0. See `docs/planning/01-engine-definition.md`.
+
+## Built during the event
+
+Before the event, this repository contained the definition documents and empty package scaffold.
+During the event, the engine implementation, runnable services, schemas, tests, and case execution
+were added in dated local commits. The Git history records each build slice.

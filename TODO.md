@@ -4,7 +4,7 @@
 - [ ] Initialize Git, install full Apache-2.0 license, commit scaffold.
 - [ ] Build uv workspace, CLI skeleton, schemas, local compose, tests and dev commands.
 - [ ] Check: `uv run pytest -q`; `docker compose -f infra/compose/compose.yaml up -d` and service health.
-FILES: `LICENSE`, `pyproject.toml`, `packages/ontofill-scrape/`, `src/ontofill/cli/`, `schemas/`, `tests/`, `infra/compose/`, `.env.example`, `CLAUDE.md`, `AGENTS.md`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+FILES: `LICENSE`, `pyproject.toml`, `packages/ontofill-scrape/`, `src/ontofill/cli/`, `schemas/`, `tests/`, `infra/compose/`, `.env.example`, `.gitignore`, `CLAUDE.md`, `AGENTS.md`, `README.md`, `GOAL.md`, `TODO.md`, `NOTES.md`.
 TASK: Make the engine installable with contract-valid documents and healthy local services.
 DONE: `uv run pytest -q && docker compose -f infra/compose/compose.yaml up -d`.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
