@@ -144,17 +144,13 @@ Skyvern (open source, AGPL-3.0) is an LLM- and vision-driven browser agent. It h
 - **Same rules:** its output comes back as *candidate observations* through `emit.observation`, with the same evidence, SHACL validation and critics. Its login, 2FA and password-manager features are not used, and its captcha solving is cloud-only and out of scope anyway.
 - **Optional:** the engine and toolkit run fully without it. It's a fallback the adapter interface allows, not a dependency.
 
-## Inference: Vultr first, Jev as a supporting resource
-**All main inference runs on Vultr Serverless Inference.** That covers planning, the agentic loop's next-action choices, extraction, critics (including the double critic), classification, the Simula taxonomy work and the negotiation agents. Vultr's models (glm-5.3, qwen3.8, deepseek-v4.1-flash, nemotron omni for vision, nemotron content-safety, the retriever and reranker) cover all of it. The engine exposes one **decision interface** for typed judgments (choice, score, yes/no), backed by a Vultr model with constrained output.
+## Inference: Vultr only
+**All inference runs on Vultr Serverless Inference** (a Track 1 requirement: every agent LLM call goes through it). That covers planning, the agentic loop's next-action choices, extraction, critics (including the double critic), classification, the Simula taxonomy work and the negotiation agents. Vultr's models (glm-5.3, qwen3.8, deepseek-v4.1-flash, nemotron omni for vision, nemotron content-safety, the retriever and reranker) cover all of it. The engine exposes one **decision interface** for typed judgments (choice, score, yes/no), backed by a Vultr model with constrained output. Live model list: `https://api.vultrinference.com/v1/chat/models`.
 
-**Jev (TypeSafe AI) is an optional supporting backend** behind that same interface. It's a decision-only model (no text output) with fast, cheap typed answers. Use it only as a helper for a few high-volume, low-stakes pre-checks, such as:
-- pre-filtering pages for prompt-injection text before a Vultr model reads them
-- a first-pass "same supplier?" screen before the Vultr model confirms matches
-
-It is never the final word on a gold value, it's never in the main agent loop, and the engine runs fully without it. Every call is logged like any other decision. Its known weak spots (dates, counting, arithmetic, multi-hop reasoning) stay with code or Vultr models.
+High-volume, low-stakes pre-checks (prompt-injection screening before a model reads a page, a first-pass "same supplier?" screen) use the smallest adequate Vultr model or the content-safety model behind the same interface. Dates, counting, arithmetic and multi-hop checks stay in code.
 
 ## Phase 2 method: Simula's ontology construction, replicated
-Reference: Davidson et al., *Reasoning-Driven Synthetic Data Generation and Evaluation* (Simula), TMLR 03/2026, openreview NALsdGEPhB, arXiv 2603.29791. The file is at `/mnt/project-files/reference/simula-2603.29791v1.pdf`. Section numbers below refer to the paper.
+Reference: Davidson et al., *Reasoning-Driven Synthetic Data Generation and Evaluation* (Simula), TMLR 03/2026, openreview NALsdGEPhB, arXiv 2603.29791. The file is at `docs/reference/simula-2603.29791v1.pdf`. Section numbers below refer to the paper.
 
 **Core idea:** we replicate Simula's taxonomy-first definition of a domain as faithfully as possible. Simula uses it to decide what coverage a synthetic dataset needs, then generates data. Ontofill uses the identical construction to decide what coverage the **real** data needs, then sends agents to find it. That makes the engine "Simula for the real web". The engine is **taxonomy first, schema second**.
 
@@ -196,7 +192,7 @@ Once the taxonomies define *which varieties* of entities must be found, the sche
 | Calibrated attribute scoring with Elo (§2.3, App. E.3) | Score the difficulty of sources and objectives. This sets the starting execution mode in the technical definition document. |
 
 ## Grounding in the computer-use ontology
-Reference: `/mnt/project-files/reference/computer-use-ontology.md` (Ric's computer-use taxonomy). The engine uses its vocabulary as the standard terms for describing and logging execution.
+Reference: `docs/reference/computer-use-ontology.md` (Ric's computer-use taxonomy). The engine uses its vocabulary as the standard terms for describing and logging execution.
 
 **The execution spectrum mapped onto the action ladder (Axis B) and control loop (Axis C):**
 | Mode | Rungs (Axis B) | Observation (Axis A) | Control loop (Axis C) |
@@ -244,5 +240,4 @@ Reference: `/mnt/project-files/reference/computer-use-ontology.md` (Ric's comput
 
 ## Open questions
 
-- Minor: whether Jev, as an optional helper outside Vultr, is acceptable under the Track 1 inference rule. The engine doesn't depend on it.
 - Lake layout: my default is bronze in Vultr Object Storage and silver and gold in Postgres plus an RDF store, with gold exported as Parquet, CSV and RDF for publishing.
