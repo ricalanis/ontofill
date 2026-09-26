@@ -8,7 +8,14 @@ import uuid
 import pytest
 
 from ontofill.lake import FileLake
-from ontofill.workflow import _persisted_run_trace, _preview_decision, _scratch_case, run_case
+from ontofill.phases.p3_fanout.authority import source_fingerprint
+from ontofill.workflow import (
+    _persisted_run_trace,
+    _preview_decision,
+    _scratch_case,
+    _source_review,
+    run_case,
+)
 
 
 def test_export_trace_includes_steps_from_prior_checkpoint_runs(tmp_path) -> None:
@@ -21,6 +28,77 @@ def test_export_trace_includes_steps_from_prior_checkpoint_runs(tmp_path) -> Non
         "before-approval",
         "after-approval",
     ]
+
+
+def test_retained_auto_source_is_rechecked_against_revised_authority_policy(tmp_path) -> None:
+    url = "https://community.example.test/rooms"
+    primary_policy = {
+        "trusted_publishers": [{"kind": "Community listing", "domains": ["community.example.test"]}]
+    }
+    secondary_policy = {
+        "trusted_publishers": [
+            {
+                "kind": "Community listing",
+                "tier": "secondary",
+                "domains": ["community.example.test"],
+            }
+        ]
+    }
+    old_fingerprint = source_fingerprint(
+        url=url,
+        title="Reading room list",
+        snippet="A public directory",
+        provider="synthetic",
+        capture_key=None,
+        authority_policy=primary_policy,
+    )
+    objective = {
+        "id": "objective-one",
+        "source_id": "source-one",
+        "source_url": url,
+        "source_fingerprint": old_fingerprint,
+    }
+    sources = tmp_path / "03-fanout/sources/source-one"
+    sources.mkdir(parents=True)
+    (sources / "candidate.json").write_text(
+        json.dumps(
+            {
+                "url": url,
+                "title": "Reading room list",
+                "snippet": "A public directory",
+                "provider": "synthetic",
+                "capture_key": None,
+                "fingerprint": old_fingerprint,
+                "authority": "auto",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sources / "APPROVED").write_text(
+        json.dumps(
+            {
+                "approver": "Example Reviewer",
+                "date": "2026-09-26",
+                "checkpoint": "source",
+                "source_fingerprint": old_fingerprint,
+            }
+        ),
+        encoding="utf-8",
+    )
+    objectives_path = tmp_path / "03-fanout/objectives.json"
+    objectives_path.write_text(json.dumps({"objectives": [objective]}), encoding="utf-8")
+    provenance = {"backend": "vultr", "model": "synthetic-test", "at": "2026-09-26T00:00:00Z"}
+    approved, directory = _source_review(tmp_path, objective, provenance, secondary_policy)
+    assert not approved and directory == sources
+    manifest = json.loads((sources / "candidate.json").read_text())
+    assert manifest["authority"] == "review"
+    assert manifest["fingerprint"] != old_fingerprint
+    assert objective["source_fingerprint"] == manifest["fingerprint"]
+    assert (
+        json.loads(objectives_path.read_text())["objectives"][0]["source_fingerprint"]
+        == manifest["fingerprint"]
+    )
+    assert "APPROVAL_PENDING" in {path.stem for path in sources.iterdir()}
 
 
 def test_jev_cannot_be_primary_checkpoint_backend(tmp_path) -> None:

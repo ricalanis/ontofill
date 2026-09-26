@@ -6,7 +6,11 @@ import httpx
 
 from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
-from ontofill.phases.p1_scope.phase import _ground_criteria, draft_prd
+from ontofill.phases.p1_scope.phase import (
+    _apply_human_authority_revisions,
+    _ground_criteria,
+    draft_prd,
+)
 from ontofill.phases.p3_fanout.authority import authority_result
 
 
@@ -156,6 +160,83 @@ def test_human_numbers_can_be_in_separate_clauses_and_percent_is_normalized() ->
     )
     _ground_criteria(document, "Find reading rooms.", [revision], 2.0)
     assert document["definition_of_done"][-1]["basis"] == "proposed"
+
+
+def test_denied_number_and_embedded_percent_cannot_ground_a_count() -> None:
+    document = _prd_response(
+        {
+            "id": "rejected",
+            "metric": "reading rooms total",
+            "operator": ">=",
+            "target": 1000,
+            "basis": "human",
+            "basis_quote": "1000 is unsupported",
+        }
+    )
+    document["definition_of_done"].append(
+        {
+            "id": "percentage-as-count",
+            "metric": "Rooms with 80% of core fields",
+            "operator": ">=",
+            "target": 80,
+            "basis": "human",
+            "basis_quote": "at least 80% of rooms need complete fields",
+        }
+    )
+    _ground_criteria(
+        document,
+        "The old target was 1000 rooms.",
+        [{"reason": "1000 is unsupported; at least 80% of rooms need complete fields."}],
+        2.0,
+    )
+    assert [item["basis"] for item in document["definition_of_done"]] == [
+        "proposed",
+        "proposed",
+    ]
+
+
+def test_human_secondary_revision_downgrades_named_model_domain() -> None:
+    document = _prd_response()
+    publishers = document["authority_policy"]["trusted_publishers"]
+    publishers.extend(
+        [
+            {
+                "kind": "Community listing",
+                "domains": ["community.example.test"],
+                "rationale": "A public directory of reading rooms.",
+            },
+            {
+                "kind": "University archive",
+                "domains": ["archive.example.test"],
+                "rationale": "Official university data.",
+            },
+        ]
+    )
+    _apply_human_authority_revisions(
+        document,
+        [{"reason": "Keep the community listing as a secondary cross-check."}],
+    )
+    assert publishers[0]["tier"] == "secondary"
+    assert publishers[1]["tier"] == "review"
+    assert not authority_result(
+        "https://community.example.test/rooms", policy=document["authority_policy"]
+    )[0]
+    assert not authority_result(
+        "https://archive.example.test/rooms", policy=document["authority_policy"]
+    )[0]
+
+    unknown = _prd_response()
+    unknown_publisher = publishers[1].copy()
+    unknown_publisher.pop("tier")
+    unknown["authority_policy"]["trusted_publishers"] = [unknown_publisher]
+    _apply_human_authority_revisions(
+        unknown,
+        [{"reason": "Keep the unnamed supplementary list as a secondary cross-check."}],
+    )
+    assert unknown["authority_policy"]["trusted_publishers"][0]["tier"] == "review"
+    assert not authority_result(
+        "https://archive.example.test/rooms", policy=unknown["authority_policy"]
+    )[0]
 
 
 def test_rejected_live_prd_persists_open_issues_and_human_cross_check(tmp_path) -> None:

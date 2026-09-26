@@ -23,8 +23,34 @@ from ontofill.inference import DecisionClient, generated_by
 from ontofill.phase_loop import LoopBudget, PhaseLoop
 
 NUMBER_TOKEN = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?\s*%?")
-PERCENT_METRIC = re.compile(r"%|percent|porcent|ratio|proportion|share", re.IGNORECASE)
+PERCENT_METRIC = re.compile(
+    r"^(?:%|percent(?:age)?|porcentaje|ratio|proportion|share)\b|(?:_|\s)(?:pct|percent|ratio|share)$",
+    re.IGNORECASE,
+)
 SECONDARY_REQUEST = re.compile(r"secondary|secundari|cross[ -]?check|contraste", re.IGNORECASE)
+SECONDARY_STOPWORDS = {
+    "check",
+    "cross",
+    "keep",
+    "list",
+    "lists",
+    "only",
+    "secondary",
+    "secundaria",
+    "secundario",
+    "source",
+    "sources",
+    "the",
+    "them",
+    "these",
+    "with",
+}
+REJECTED_THRESHOLD = re.compile(
+    r"\b(?:unsupported|unfounded|invented|unjustified|incorrect|wrong|rejected?|"
+    r"discard(?:ed)?|drop|remove|do not use|not supported|not grounded|"
+    r"sin sustento|no sustentad[oa]|inventad[oa]|rechazad[oa])\b",
+    re.IGNORECASE,
+)
 GROUNDING_NOTE = re.compile(
     r"\s*[,;—–(\[]?\s*(?:basis\s*[:=]|basis_quote\s*[:=]|quote\s*:)", re.IGNORECASE
 )
@@ -49,10 +75,23 @@ def _contains_number(text: str, expected: float, *, percent_metric: bool = False
     return False
 
 
+def _number_clauses(text: str) -> tuple[str, str]:
+    """Keep supported and rejected numeric clauses separate for human revisions."""
+    clauses = re.split(r";\s*|(?<=[.!?])\s+|,\s+|\n+", text)
+    supported, rejected = [], []
+    for clause in clauses:
+        if REJECTED_THRESHOLD.search(clause):
+            rejected.append(clause)
+        else:
+            supported.append(clause)
+    return "\n".join(supported), "\n".join(rejected)
+
+
 def _ground_criteria(
     document: dict, brief: str, revisions: list[dict], budget_usd: float | None
 ) -> None:
     human_text = "\n".join(item["reason"] for item in revisions)
+    human_supported, human_rejected = _number_clauses(human_text)
     budget = f"${budget_usd:.2f}" if budget_usd is not None else "an unspecified USD budget"
     for item in document["definition_of_done"]:
         if item["basis"] == "proposed":
@@ -61,16 +100,32 @@ def _ground_criteria(
             )
             continue
         quote_source = brief if item["basis"] == "brief" else human_text
-        number_source = brief if item["basis"] == "brief" else human_text + "\n" + brief
+        number_source = brief if item["basis"] == "brief" else human_supported + "\n" + brief
         quote = " ".join(item.get("basis_quote", "").split())
         grounded = bool(quote) and quote.casefold() in " ".join(quote_source.split()).casefold()
+        quote_supported, _ = _number_clauses(quote)
+        percent_metric = bool(PERCENT_METRIC.search(item["metric"].strip()))
+        grounded &= _contains_number(
+            quote_supported, item["target"], percent_metric=percent_metric
+        ) or (
+            "min_ratio" in item
+            and _contains_number(quote_supported, item["min_ratio"], percent_metric=True)
+        )
         grounded &= _contains_number(
             number_source,
             item["target"],
-            percent_metric=bool(PERCENT_METRIC.search(item["metric"])),
+            percent_metric=percent_metric,
         )
         if "min_ratio" in item:
             grounded &= _contains_number(number_source, item["min_ratio"], percent_metric=True)
+        if item["basis"] == "human":
+            grounded &= not _contains_number(
+                human_rejected, item["target"], percent_metric=percent_metric
+            )
+            if "min_ratio" in item:
+                grounded &= not _contains_number(
+                    human_rejected, item["min_ratio"], percent_metric=True
+                )
         if not grounded:
             item["basis"] = "proposed"
             item.pop("basis_quote", None)
@@ -86,7 +141,36 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
     publishers = document["authority_policy"]["trusted_publishers"]
     for revision in revisions:
         reason = revision["reason"]
-        if SECONDARY_REQUEST.search(reason) and not any(
+        if not SECONDARY_REQUEST.search(reason):
+            continue
+        subject = {
+            token[:5]
+            for token in re.findall(r"\w{3,}", reason.casefold())
+            if token not in SECONDARY_STOPWORDS
+        }
+        primary = [item for item in publishers if item.get("tier", "primary") == "primary"]
+        matched = [
+            item
+            for item in primary
+            if any(domain.casefold() in reason.casefold() for domain in item["domains"])
+            or subject
+            & {
+                token[:5]
+                for token in re.findall(
+                    r"\w{3,}",
+                    f"{item['kind']} {item['rationale']} {' '.join(item['domains'])}".casefold(),
+                )
+                if token not in SECONDARY_STOPWORDS
+            }
+        ]
+        # A named match is a secondary cross-check. Other model-proposed
+        # primary domains remain ambiguous until source-level human review.
+        for item in matched:
+            item["tier"] = "secondary"
+        for item in primary:
+            if item not in matched:
+                item["tier"] = "review"
+        if not any(
             item.get("tier") == "secondary" and reason.casefold() in item["rationale"].casefold()
             for item in publishers
         ):
@@ -158,8 +242,9 @@ def draft_prd(
         "Use brief_path='brief.md'. Public read-only sources only. "
         "Define an authority_policy for this case with jurisdiction, trusted publisher kinds "
         "and domains plus a rationale for each, and review unknown authorities. "
-        "Mark authoritative publishers tier=primary and supplementary human-requested "
-        "cross-check lists tier=secondary. Secondary publishers are never auto authority; "
+        "Mark authoritative publishers tier=primary, supplementary human-requested "
+        "cross-check lists tier=secondary, and uncertain domains tier=review. "
+        "Secondary and review publishers are never auto authority; "
         "use domains=[] when the brief or human revision provides no exact domain. "
         "Keep grounding metadata such as basis and basis_quote out of persona, job, "
         "requirement and constraint descriptions. "

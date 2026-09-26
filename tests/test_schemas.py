@@ -545,6 +545,8 @@ def test_prd_open_issues_and_secondary_publisher_tier_validate() -> None:
         }
     )
     validate("global-prd", artifact)
+    artifact["authority_policy"]["trusted_publishers"][-1]["tier"] = "review"
+    validate("global-prd", artifact)
     artifact["open_issues"] = []
     with pytest.raises(ValidationError):
         validate("global-prd", artifact)

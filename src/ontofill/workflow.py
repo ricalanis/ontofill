@@ -333,10 +333,32 @@ def _source_review(
             "generated_by": provenance,
         }
         write_json(manifest_path, manifest)
-    fingerprint = objective.get("source_fingerprint", manifest["fingerprint"])
-    trusted, _ = authority_result(objective["source_url"], policy=authority_policy)
-    if manifest.get("authority") == "auto" and manifest["fingerprint"] == fingerprint:
-        trusted = True
+    fingerprint = source_fingerprint(
+        url=objective["source_url"],
+        title=manifest.get("title", ""),
+        snippet=manifest.get("snippet", ""),
+        provider=manifest["provider"],
+        capture_key=manifest.get("capture_key"),
+        authority_policy=authority_policy,
+    )
+    trusted, reason = authority_result(objective["source_url"], policy=authority_policy)
+    current_authority = "auto" if trusted else "review"
+    if manifest.get("fingerprint") != fingerprint or manifest.get("authority") != current_authority:
+        manifest.update(
+            fingerprint=fingerprint,
+            authority=current_authority,
+            authority_reason=reason,
+        )
+        write_json(manifest_path, manifest)
+    if objective.get("source_fingerprint") != fingerprint:
+        objective["source_fingerprint"] = fingerprint
+        objectives_path = case_dir / "03-fanout/objectives.json"
+        if objectives_path.exists():
+            objectives = load_json(objectives_path)
+            for item in objectives["objectives"]:
+                if item["id"] == objective["id"]:
+                    item["source_fingerprint"] = fingerprint
+            write_json(objectives_path, objectives)
     if trusted:
         return True, directory
     approved = require_approval(
