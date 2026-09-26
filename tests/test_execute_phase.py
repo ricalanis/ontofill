@@ -1,4 +1,4 @@
-"""A synthetic page and CSV exercise literal cell evidence through the S1 channel."""
+"""A captured table maps typed cells to ontology properties through D1."""
 
 from __future__ import annotations
 
@@ -12,15 +12,37 @@ from ontofill.refiner import MemorySilverStore
 
 def test_execute_emits_only_observed_cells(tmp_path) -> None:
     lake = FileLake(tmp_path / "lake")
-    decision = RecordedDecisionClient({"phase5.select_download": [{"index": 0}]})
+    decision = RecordedDecisionClient(
+        {
+            "phase5.select_download": [{"index": 0}],
+            "phase5.map_columns": [
+                {
+                    "class_id": "library",
+                    "columns": [
+                        {"header": "name", "property_id": "name"},
+                        {"header": "open", "property_id": "open"},
+                        {"header": "capacity", "property_id": "capacity"},
+                    ],
+                }
+            ],
+        }
+    )
     provenance = generated_by(decision)
-    page_url = "https://registry.example.test/dataset"
-    data_url = "https://registry.example.test/data.csv"
+    page_url = "https://directory.example.test/dataset"
+    data_url = "https://directory.example.test/data.csv"
     html = '<html><a href="/data.csv">Download CSV</a></html>'
-    csv = b"name,tax_id,address\nProveedor Ejemplo 01,FAKE010101AAA,1 Test Street\n"
+    csv = b"name,open,capacity\nNorth Branch,false,0\n"
     screenshot = lake.put_bytes(b"synthetic screenshot")
     html_key = lake.put_bytes(html.encode())
     csv_key = lake.put_bytes(csv)
+    ontology = {
+        "classes": [{"id": "library", "identifier_property": "name", "title_property": "name"}],
+        "properties": [
+            {"id": "name", "domain": "library", "datatype": "string"},
+            {"id": "open", "domain": "library", "datatype": "boolean"},
+            {"id": "capacity", "domain": "library", "datatype": "integer"},
+        ],
+    }
 
     def trace(step_id, url, bronze_key):
         return [
@@ -64,8 +86,19 @@ def test_execute_emits_only_observed_cells(tmp_path) -> None:
 
     store = MemorySilverStore()
     result = execute_objective(
-        objective={"source_id": "source-test", "id": "objective-test", "source_url": page_url},
-        tdd={"allowed_domains": ["registry.example.test"]},
+        case_dir=tmp_path,
+        objective={
+            "source_id": "source-test",
+            "id": "objective-test",
+            "source_url": page_url,
+            "source_type": "city_directory",
+        },
+        ontology=ontology,
+        tdd={
+            "allowed_domains": ["directory.example.test"],
+            "target_fields": ["name", "open", "capacity"],
+            "target_volume": 2,
+        },
         lake=lake,
         run_id="mock-test",
         decision=decision,
@@ -74,15 +107,14 @@ def test_execute_emits_only_observed_cells(tmp_path) -> None:
         capture=capture,
         fetch=fetch,
     )
-    assert {item.field for item in result.observations} == {"legal_name", "tax_id", "address"}
-    assert {item.value for item in result.observations} == {
-        "Proveedor Ejemplo 01",
-        "FAKE010101AAA",
-        "1 Test Street",
+    assert {item.property_id: item.value for item in result.observations} == {
+        "name": "North Branch",
+        "open": False,
+        "capacity": 0,
     }
     assert all(item.evidence["bronze_key"] == csv_key for item in result.observations)
-    assert all(item.evidence["source_type"] == "supplier website" for item in result.observations)
+    assert all(item.evidence["source_type"] == "city_directory" for item in result.observations)
     assert all(item.evidence["format"] == "csv" for item in result.observations)
-    assert result.trace[-1]["mode"] == "D0"
+    assert [step["mode"] for step in result.trace[-2:]] == ["D1", "D0"]
     assert result.trace[-1]["value_ids"] == [item.value_id for item in result.observations]
     assert len(store.list_for_run("mock-test")) == 3

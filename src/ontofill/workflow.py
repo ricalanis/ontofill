@@ -33,14 +33,14 @@ from ontofill.sandbox import CaptureBlocked, append_job_record, build_job_record
 
 
 def _preview_decision(brief: str) -> RecordedDecisionClient:
-    """Deterministic scaffolding for a labeled preview; it contains no source or supplier data."""
+    """Shape-based scaffolding for a labeled preview of any brief."""
     subject = (
         " ".join(
             line.strip()
             for line in brief.splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         )[:160]
-        or "Public supplier investigation"
+        or "Public information question"
     )
     return RecordedDecisionClient(
         {
@@ -56,46 +56,39 @@ def _preview_decision(brief: str) -> RecordedDecisionClient:
                         {
                             "id": "evidence",
                             "job_id": "review",
-                            "description": "Trace supplier fields to public evidence",
+                            "description": "Trace observed values to public evidence",
                         }
                     ],
                     "constraints": ["Read-only public sources"],
                     "non_goals": ["Unaudited assertions"],
                     "definition_of_done": [
                         {
-                            "id": "supplier_volume",
-                            "metric": "suppliers_total",
+                            "id": "record_volume",
+                            "metric": "records_total",
                             "operator": ">=",
-                            "target": 50,
-                        },
-                        {
-                            "id": "core_coverage",
-                            "metric": "suppliers_at_80pct_core",
-                            "operator": ">=",
-                            "target": 50,
-                        },
-                        {
-                            "id": "source_diversity",
-                            "metric": "distinct_source_types",
-                            "operator": ">=",
-                            "target": 4,
+                            "target": 1,
                         },
                         {
                             "id": "evidence_integrity",
-                            "metric": "gold_values_without_evidence",
+                            "metric": "values_without_evidence",
                             "operator": "=",
                             "target": 0,
                         },
                     ],
+                    "authority_policy": {
+                        "jurisdiction": "As stated in the brief",
+                        "trusted_publishers": [],
+                        "unknown_source_action": "review",
+                    },
                 }
             ],
             "phase2.factors": [
                 {
                     "factors": [
                         {
-                            "id": "supplier_identity",
-                            "label": "Supplier identity",
-                            "description": "Observed public supplier identity fields",
+                            "id": "record_identity",
+                            "label": "Record identity",
+                            "description": "Observed public record labels",
                             "kind": "conceptual",
                             "evidence": [],
                         }
@@ -106,12 +99,12 @@ def _preview_decision(brief: str) -> RecordedDecisionClient:
                 {
                     "taxonomies": [
                         {
-                            "factor_id": "supplier_identity",
-                            "root_label": "Supplier identity",
+                            "factor_id": "record_identity",
+                            "root_label": "Record identity",
                             "children": [
                                 {
-                                    "id": "identified_supplier",
-                                    "label": "Identified supplier",
+                                    "id": "identified_record",
+                                    "label": "Identified record",
                                     "level": 1,
                                     "critic_label": "Good-Exclusive",
                                 }
@@ -120,25 +113,76 @@ def _preview_decision(brief: str) -> RecordedDecisionClient:
                     ]
                 }
             ],
+            "phase2.schema": [
+                {
+                    "primary_class": "record",
+                    "classes": [
+                        {
+                            "id": "record",
+                            "label": "Record",
+                            "label_plural": "Records",
+                            "description": "A public observation relevant to the brief",
+                            "title_property": "title",
+                            "identifier_property": "title",
+                            "aligned_to": None,
+                        }
+                    ],
+                    "properties": [
+                        {
+                            "id": "title",
+                            "label": "Title",
+                            "domain": "record",
+                            "datatype": "string",
+                            "dod": True,
+                            "order": 0,
+                            "description": "Observed title",
+                            "aligned_to": None,
+                        }
+                    ],
+                    "relations": [],
+                    "rules": [],
+                    "source_classes": [{"id": "public_page", "label": "Public page"}],
+                }
+            ],
+            "phase2.dod_queries": [
+                {
+                    "queries": [
+                        {
+                            "criterion_id": "record_volume",
+                            "aggregate": "count_entities",
+                            "class_id": "record",
+                            "operator": ">=",
+                            "target": 1,
+                        },
+                        {
+                            "criterion_id": "evidence_integrity",
+                            "aggregate": "count_values_without_evidence",
+                            "operator": "=",
+                            "target": 0,
+                        },
+                    ]
+                }
+            ],
             "phase4.local_scope": [
                 {
                     "global_requirement_ids": ["evidence"],
                     "local_definition_of_done": [
-                        {"metric": "suppliers_total", "operator": ">=", "target": 1}
+                        {"metric": "records_total", "operator": ">=", "target": 1}
                     ],
                     "extraction_method": "download",
                     "validation_rules": ["Emit literal observed cells with bronze evidence"],
                     "rate_limit_per_minute": 6,
                     "budget_usd": 0,
+                    "target_volume": 1,
                     "steps": [
                         {
                             "id": "read_source",
-                            "description": "Read public source and emit evidenced supplier cells",
+                            "description": "Read public source and emit evidenced cells",
                             "starting_mode": "S1",
                             "allowed_modes": ["S1"],
                             "observation_channel": "text_structure",
                             "risk_tier": "SAFE",
-                            "termination_predicate": "One supplier row observed or no accessible row remains",
+                            "termination_predicate": "One row observed or no accessible row remains",
                         }
                     ],
                 }
@@ -225,11 +269,25 @@ def _publish_decision_calls(
         provenance = {key: call[key] for key in ("backend", "model", "at")}
         step = _trace_step(run_id, phase, provenance, "decision.complete_json", call["purpose"])
         step["mode"] = "D1"
+        if call.get("usage") is not None:
+            step["usage"] = call["usage"]
+        step["evaluated"] = {"status": call.get("status", "ok")}
         _publish_steps(feed, [step])
         trace.append(step)
 
 
-def _source_review(case_dir: Path, objective: dict, provenance: dict) -> tuple[bool, Path]:
+def _publish_unreported_decisions(
+    feed: RunFeed, trace: list[dict], decision: object, run_id: str, phase: int
+) -> None:
+    published = sum(
+        step.get("requested", {}).get("tool") == "decision.complete_json" for step in trace
+    )
+    _publish_decision_calls(feed, trace, decision, published, run_id, phase)
+
+
+def _source_review(
+    case_dir: Path, objective: dict, provenance: dict, authority_policy: dict
+) -> tuple[bool, Path]:
     directory = case_dir / "03-fanout/sources" / objective["source_id"]
     manifest_path = directory / "candidate.json"
     if manifest_path.exists():
@@ -242,11 +300,12 @@ def _source_review(case_dir: Path, objective: dict, provenance: dict) -> tuple[b
             snippet="",
             provider="legacy",
             capture_key=None,
+            authority_policy=authority_policy,
         )
         manifest = {
             "source_id": objective["source_id"],
             "url": objective["source_url"],
-            "source_type": objective.get("source_type", "supplier website"),
+            "source_type": objective.get("source_type"),
             "provider": "legacy",
             "capture_key": None,
             "fingerprint": fingerprint,
@@ -255,7 +314,7 @@ def _source_review(case_dir: Path, objective: dict, provenance: dict) -> tuple[b
         }
         write_json(manifest_path, manifest)
     fingerprint = objective.get("source_fingerprint", manifest["fingerprint"])
-    trusted, _ = authority_result(objective["source_url"])
+    trusted, _ = authority_result(objective["source_url"], policy=authority_policy)
     if manifest.get("authority") == "auto" and manifest["fingerprint"] == fingerprint:
         trusted = True
     if trusted:
@@ -412,13 +471,20 @@ def run_case(
 
             if from_phase <= 3:
                 feed.update_status(state="running", phase=3)
-            search_client = search_client or ProviderSearchClient(
-                [
-                    SandboxSearchClient(lake, run_id, provenance),
-                    SandboxWebSearchProvider("bing_html", lake, run_id, provenance),
-                    SandboxWebSearchProvider("duckduckgo_html", lake, run_id, provenance),
-                ]
-            )
+            if search_client is None:
+                providers = []
+                if catalog := os.getenv("ONTOFILL_CATALOG_URL"):
+                    providers.append(
+                        SandboxSearchClient(lake, run_id, provenance, endpoint=catalog)
+                    )
+                providers.extend(
+                    [
+                        SandboxWebSearchProvider("bing_html", lake, run_id, provenance),
+                        SandboxWebSearchProvider("duckduckgo_html", lake, run_id, provenance),
+                    ]
+                )
+                search_client = ProviderSearchClient(providers)
+            decision_start = len(getattr(decision, "call_log", []))
             trace_before = len(getattr(search_client, "trace", []))
             jobs_before = len(getattr(search_client, "jobs", []))
             try:
@@ -426,6 +492,7 @@ def run_case(
                     case_dir, ontology, decision, search_client, max_sources=1
                 )
             finally:
+                _publish_decision_calls(feed, trace, decision, decision_start, run_id, 3)
                 fresh_trace = getattr(search_client, "trace", [])[trace_before:]
                 _publish_steps(feed, fresh_trace)
                 trace.extend(fresh_trace)
@@ -439,7 +506,9 @@ def run_case(
                 _publish_steps(feed, [step])
                 trace.append(step)
             for discovered in objectives["objectives"]:
-                approved, directory = _source_review(case_dir, discovered, provenance)
+                approved, directory = _source_review(
+                    case_dir, discovered, provenance, prd["authority_policy"]
+                )
                 if not approved:
                     pending = pending or "source"
                     if not preview_past_checkpoints:
@@ -457,9 +526,11 @@ def run_case(
             if from_phase <= 4:
                 feed.update_status(state="running", phase=4)
             objective = objectives["objectives"][0]
+            decision_start = len(getattr(decision, "call_log", []))
             _, tdd = draft_local_scope(
                 case_dir, prd, ontology, objective, decision, budget_usd=budget_usd
             )
+            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 4)
             step = _trace_step(
                 run_id,
                 4,
@@ -484,7 +555,8 @@ def run_case(
                 sources=[
                     {
                         "source_id": objective["source_id"],
-                        "source_type": objective.get("source_type", "supplier website"),
+                        "source_type": objective["source_type"],
+                        "discovered_by": objective.get("discovered_by"),
                         "health": {"ok": 0, "failed": 0, "yield": 0},
                     }
                 ],
@@ -494,8 +566,11 @@ def run_case(
                 kwargs["capture"] = capture
             if fetch is not None:
                 kwargs["fetch"] = fetch
+            decision_start = len(getattr(decision, "call_log", []))
             execution = execute_objective(
+                case_dir=case_dir,
                 objective=objective,
+                ontology=ontology,
                 tdd=tdd,
                 lake=lake,
                 run_id=run_id,
@@ -504,6 +579,7 @@ def run_case(
                 provenance=provenance,
                 **kwargs,
             )
+            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 5)
             _publish_steps(feed, execution.trace)
             trace.extend(execution.trace)
             observations = store.list_for_run(run_id)
@@ -517,13 +593,18 @@ def run_case(
                     )
                     append_job_record(lake, case_id, build_job_record(job, value_ids=ids))
             shapes = case_dir / ontology["shacl_path"]
-            refined = refine_observations(observations, generated_by=provenance, shapes_ttl=shapes)
+            refined = refine_observations(
+                observations, ontology=ontology, generated_by=provenance, shapes_ttl=shapes
+            )
+            dod_queries = load_json(case_dir / "02-ontology/dod-queries.json")
             metrics = export_run(
                 lake,
                 case_dir,
                 case_id,
                 run_id,
-                refined.suppliers,
+                refined.entities,
+                ontology=ontology,
+                dod_queries=dod_queries,
                 trace=trace,
                 generated_by=provenance,
                 preview=preview_past_checkpoints,
@@ -537,9 +618,10 @@ def run_case(
                 sources=[
                     {
                         "source_id": objective["source_id"],
-                        "source_type": objective.get("source_type", "supplier website"),
+                        "source_type": objective["source_type"],
+                        "discovered_by": objective.get("discovered_by"),
                         "format": execution.format,
-                        "health": {"ok": 1, "failed": 0, "yield": len(refined.suppliers)},
+                        "health": {"ok": 1, "failed": 0, "yield": len(refined.entities)},
                     }
                 ],
             )
@@ -553,10 +635,12 @@ def run_case(
                 step["event"] = "hard_stop"
                 feed.append_step(step)
             phase = feed.current_status["phase"] if feed.current_status else 1
+            _publish_unreported_decisions(feed, trace, decision, run_id, phase)
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
             raise
         except Exception:
             phase = feed.current_status["phase"] if feed.current_status else 1
+            _publish_unreported_decisions(feed, trace, decision, run_id, phase)
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
             raise
 
@@ -586,6 +670,7 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
         raise RuntimeError(f"no silver observations for {run_id}; refusing to overwrite gold")
     refined = refine_observations(
         observations,
+        ontology=ontology,
         generated_by=provenance,
         shapes_ttl=case_dir / ontology["shacl_path"],
     )
@@ -596,7 +681,9 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
         case_dir,
         case_id,
         run_id,
-        refined.suppliers,
+        refined.entities,
+        ontology=ontology,
+        dod_queries=load_json(case_dir / "02-ontology/dod-queries.json"),
         trace=trace,
         generated_by=provenance,
         preview=status.get("preview", False),

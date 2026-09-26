@@ -71,18 +71,34 @@ def _normalize(value: str) -> str:
 def entity_lookup(
     entities: Sequence[Mapping[str, Any]],
     *,
-    tax_id: str | None = None,
-    name: str | None = None,
+    identifier_property: str,
+    identifier: str | None = None,
+    title_property: str | None = None,
+    title: str | None = None,
 ) -> Mapping[str, Any] | None:
-    if not tax_id and not name:
-        raise ToolFailure(FailureKind.VALIDATION_FAILED, "tax_id or name is required")
-    for key, wanted in (("tax_id", tax_id), ("legal_name", name)):
+    """Resolve by ontology-declared identity, then a unique noncontradictory title."""
+    if not identifier and not title:
+        raise ToolFailure(FailureKind.VALIDATION_FAILED, "identifier or title is required")
+
+    def value_of(entity: Mapping[str, Any], key: str) -> Any:
+        value = entity.get("properties", {}).get(key, entity.get(key))
+        return value.get("value") if isinstance(value, Mapping) else value
+
+    for key, wanted in ((identifier_property, identifier), (title_property, title)):
         if not wanted:
             continue
         matches = [
             entity
             for entity in entities
-            if entity.get(key) and _normalize(str(entity[key])) == _normalize(wanted)
+            if key
+            and value_of(entity, key)
+            and _normalize(str(value_of(entity, key))) == _normalize(wanted)
+            and (
+                key == identifier_property
+                or not identifier
+                or not value_of(entity, identifier_property)
+                or _normalize(str(value_of(entity, identifier_property))) == _normalize(identifier)
+            )
         ]
         if len(matches) > 1:
             raise ToolFailure(FailureKind.CONFLICT, f"multiple entities match {key}")

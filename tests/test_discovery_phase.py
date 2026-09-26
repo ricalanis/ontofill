@@ -3,6 +3,7 @@ from ontofill_scrape import SearchResult
 from ontofill.inference import RecordedDecisionClient
 from ontofill.phases.p3_fanout.phase import discover_objective
 from ontofill.phases.p3_fanout.search import parse_search_results
+from tests.genericity.fixtures.discovery import discovery_case
 
 
 class SyntheticSearch:
@@ -12,22 +13,19 @@ class SyntheticSearch:
 
     def search(self, query: str):
         self.queries.append(query)
-        return [
-            SearchResult("https://index.example.test/", "General index"),
-            SearchResult("https://registry.example.test/suppliers", "Public supplier register"),
-        ]
+        return [SearchResult("https://directory.example.test/rooms", "Public room directory")]
 
 
 def test_discovery_uses_brief_and_records_selected_result(tmp_path) -> None:
-    (tmp_path / "brief.md").write_text("Who supplies Example City?", encoding="utf-8")
+    ontology = discovery_case(tmp_path)
     search = SyntheticSearch()
     decision = RecordedDecisionClient({})
-    document = discover_objective(tmp_path, {"version": "1"}, decision, search)
+    document = discover_objective(tmp_path, ontology, decision, search)
     assert "Example City" in search.queries[0]
-    assert document["objectives"][0]["source_url"] == "https://registry.example.test/suppliers"
+    assert document["objectives"][0]["source_url"] == "https://directory.example.test/rooms"
     assert (tmp_path / "03-fanout/objectives.yaml").exists()
     assert decision.calls == []
-    assert discover_objective(tmp_path, {"version": "1"}, decision, search) == document
+    assert discover_objective(tmp_path, ontology, decision, search) == document
     assert len(search.queries) == 1
 
 

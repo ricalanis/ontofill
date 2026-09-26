@@ -1,4 +1,4 @@
-"""Discover public procurement datasets from a live, sandboxed catalog."""
+"""Discover captured public sources through pluggable sandbox providers."""
 
 from __future__ import annotations
 
@@ -19,10 +19,9 @@ from ontofill.sandbox import capture_url
 
 
 class SandboxSearchClient:
-    """The search endpoint is fixed; every candidate source URL comes from its results."""
+    """Search a case-configured public catalog through the sandbox."""
 
-    name = "ocds_catalog"
-    trusted_origin = "data.open-contracting.org"
+    name = "catalog"
 
     def __init__(
         self,
@@ -30,8 +29,14 @@ class SandboxSearchClient:
         run_id: str,
         generated_by: dict,
         *,
+        endpoint: str,
         capture=capture_url,
     ) -> None:
+        parsed = urlsplit(endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("catalog endpoint must be a public HTTP(S) URL")
+        self.endpoint = endpoint
+        self.trusted_origin = parsed.hostname
         self.lake = lake
         self.run_id = run_id
         self.generated_by = generated_by
@@ -41,11 +46,11 @@ class SandboxSearchClient:
         self.capture = capture
 
     def search(self, query: str) -> tuple[SearchResult, ...]:
-        url = "https://data.open-contracting.org/en/search/"
+        url = self.endpoint
         try:
             capture = self.capture(
                 url,
-                allowed_domains=["data.open-contracting.org"],
+                allowed_domains=[self.trusted_origin],
                 lake=self.lake,
                 run_id=self.run_id,
                 source_id="search-provider",
@@ -245,13 +250,6 @@ def _words(value: str) -> set[str]:
             "data",
             "source",
             "official",
-            "supplier",
-            "suppliers",
-            "contract",
-            "contracts",
-            "procurement",
-            "proveedores",
-            "proveedor",
             "datos",
             "publicos",
             "fuente",
@@ -259,14 +257,12 @@ def _words(value: str) -> set[str]:
     }
 
 
-def parse_search_results(
-    html: str, query: str, *, base_url: str = "https://data.open-contracting.org/en/search/"
-) -> tuple[SearchResult, ...]:
+def parse_search_results(html: str, query: str, *, base_url: str) -> tuple[SearchResult, ...]:
     soup = BeautifulSoup(html, "html.parser")
     terms = _words(query)
     results: list[tuple[int, SearchResult]] = []
     for article in soup.select("article"):
-        anchor = article.select_one('a[href*="/publication/"]')
+        anchor = article.select_one("a[href]")
         if anchor is None:
             continue
         href = urljoin(base_url, anchor.get("href", ""))

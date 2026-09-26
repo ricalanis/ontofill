@@ -21,6 +21,7 @@ from ontofill.phases.p3_fanout.search import (
     SandboxWebSearchProvider,
     parse_web_results,
 )
+from tests.genericity.fixtures.discovery import discovery_case
 
 
 def test_web_result_links_are_decoded_only_from_captured_html() -> None:
@@ -117,11 +118,11 @@ class CapturedSearch:
 
 
 def test_unrecognized_source_is_queued_with_stale_approval_rejected(tmp_path) -> None:
-    (tmp_path / "brief.md").write_text("Who supplies Example City?", encoding="utf-8")
+    ontology = discovery_case(tmp_path)
     search = CapturedSearch()
     decision = RecordedDecisionClient({})
     document = discover_objectives(
-        tmp_path, {"version": "1"}, decision, search, gaps=("legal_name", "tax_id"), max_sources=1
+        tmp_path, ontology, decision, search, gaps=("name", "opening_hours"), max_sources=1
     )
     objective = document["objectives"][0]
     directory = tmp_path / "03-fanout/sources" / objective["source_id"]
@@ -167,24 +168,21 @@ def test_unrecognized_source_is_queued_with_stale_approval_rejected(tmp_path) ->
         generated_by=live,
         source_fingerprint=objective["source_fingerprint"],
     )
-    assert authority_result("https://agency.example.gov/list")[0]
+    policy = json.loads((tmp_path / "01-scope/prd.json").read_text())["authority_policy"]
+    assert authority_result("https://city.example.test/list", policy=policy)[0]
     assert not authority_result("https://registry.example.test/list")[0]
 
 
 def test_gap_query_is_not_truncated_or_served_from_stale_cache(tmp_path) -> None:
-    (tmp_path / "brief.md").write_text("Map Example City public suppliers", encoding="utf-8")
+    ontology = discovery_case(tmp_path)
     search = CapturedSearch()
     decision = RecordedDecisionClient({})
-    discover_objectives(
-        tmp_path, {"version": "1"}, decision, search, gaps=("legal_name",), max_sources=1
-    )
+    discover_objectives(tmp_path, ontology, decision, search, gaps=("name",), max_sources=1)
+    assert len(search.queries) == 1
+    discover_objectives(tmp_path, ontology, decision, search, gaps=("name",), max_sources=1)
     assert len(search.queries) == 1
     discover_objectives(
-        tmp_path, {"version": "1"}, decision, search, gaps=("legal_name",), max_sources=1
-    )
-    assert len(search.queries) == 1
-    discover_objectives(
-        tmp_path, {"version": "1"}, decision, search, gaps=("sanction_status",), max_sources=1
+        tmp_path, ontology, decision, search, gaps=("opening_hours",), max_sources=1
     )
     assert len(search.queries) == 2
-    assert "sanction status" in search.queries[-1]
+    assert "Opening hours" in search.queries[-1]

@@ -1,45 +1,30 @@
-"""Conservative authority screening for URLs observed in source discovery."""
+"""Conservative source classification and case-approved authority checks."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
-GOVERNMENT_SUFFIXES = (
-    ".gov",
-    ".gov.mx",
-    ".gob.mx",
-    ".gob.es",
-    ".gov.br",
-    ".gouv.fr",
-    ".gc.ca",
-    ".europa.eu",
-)
+
+def _tokens(value: str) -> set[str]:
+    text = unicodedata.normalize("NFKD", value.casefold())
+    plain = "".join(char for char in text if not unicodedata.combining(char))
+    return set(re.findall(r"[a-z0-9]{3,}", plain))
 
 
-def source_class(title: str, snippet: str, provider: str) -> str:
-    """Classify only the result text actually captured by the provider."""
-    if provider == "ocds_catalog":
-        return "open-contracting publication"
-    text = f"{title} {snippet}".casefold()
-    if any(word in text for word in ("sanction", "sancion", "debar")):
-        return "sanction registry"
-    if any(word in text for word in ("tax authority", "tributaria", "fiscal", "revenue")):
-        return "tax-authority list"
-    if any(word in text for word in ("gazette", "diario oficial", "boletín oficial")):
-        return "official gazette"
-    if any(word in text for word in ("company registry", "registro mercantil", "companies house")):
-        return "company registry"
-    if any(word in text for word in ("procurement", "licitaci", "contrataci")):
-        return "procurement portal"
-    if any(word in text for word in ("open data", "datos abiertos", "data catalog")):
-        return "open-data catalog"
-    return "supplier website"
+def source_class(title: str, snippet: str, classes: list[dict]) -> str:
+    """Pick only among source classes in the approved case ontology."""
+    if not classes:
+        raise ValueError("the case ontology defines no source classes")
+    observed = _tokens(f"{title} {snippet}")
+    return max(classes, key=lambda item: len(observed & _tokens(item["label"])))["id"]
 
 
-def authority_result(url: str, *, trusted_origin: str | None = None) -> tuple[bool, str]:
+def authority_result(url: str, *, policy: dict | None = None) -> tuple[bool, str]:
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")
     if parsed.scheme not in {"https", "http"} or not host or parsed.username or parsed.password:
@@ -53,10 +38,11 @@ def authority_result(url: str, *, trusted_origin: str | None = None) -> tuple[bo
     else:
         if not address.is_global:
             return False, "private address is not a public authority"
-    if trusted_origin and host == trusted_origin:
-        return True, "recognized open-data publisher from captured catalog"
-    if any(host.endswith(suffix) for suffix in GOVERNMENT_SUFFIXES):
-        return True, "government domain"
+    for publisher in (policy or {}).get("trusted_publishers", []):
+        for domain in publisher.get("domains", []):
+            approved = domain.lower().rstrip(".")
+            if host == approved or host.endswith("." + approved):
+                return True, f"approved publisher kind: {publisher['kind']}"
     return False, "publisher authority needs human review"
 
 
@@ -67,6 +53,7 @@ def source_fingerprint(
     snippet: str,
     provider: str,
     capture_key: str | None,
+    authority_policy: dict | None = None,
 ) -> str:
     evidence = {
         "url": url,
@@ -74,6 +61,7 @@ def source_fingerprint(
         "snippet": snippet,
         "provider": provider,
         "capture_key": capture_key,
+        "authority_policy": authority_policy or {},
     }
     return hashlib.sha256(
         json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()

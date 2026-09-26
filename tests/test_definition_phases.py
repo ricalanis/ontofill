@@ -10,13 +10,13 @@ from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
 
 
 def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
-    (tmp_path / "brief.md").write_text("Map suppliers in Example City.", encoding="utf-8")
+    (tmp_path / "brief.md").write_text("Map reading rooms in Example City.", encoding="utf-8")
     prd_response = {
         "version": "1",
         "brief_path": "brief.md",
         "personas": [{"id": "persona-1", "description": "Researcher"}],
         "jobs_to_be_done": [
-            {"id": "job-1", "persona_id": "persona-1", "description": "Inspect public suppliers"}
+            {"id": "job-1", "persona_id": "persona-1", "description": "Inspect public rooms"}
         ],
         "requirements": [
             {"id": "req-1", "job_id": "job-1", "description": "Show evidence for each value"}
@@ -24,8 +24,13 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
         "constraints": ["Public read-only sources"],
         "non_goals": ["Private records"],
         "definition_of_done": [
-            {"id": "dod-1", "metric": "supplier_count", "operator": ">=", "target": 1}
+            {"id": "dod-1", "metric": "room_count", "operator": ">=", "target": 1}
         ],
+        "authority_policy": {
+            "jurisdiction": "Example City",
+            "trusted_publishers": [],
+            "unknown_source_action": "review",
+        },
     }
     decisions = RecordedDecisionClient(
         {
@@ -34,9 +39,9 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                 {
                     "factors": [
                         {
-                            "id": "supplier_type",
-                            "label": "Supplier type",
-                            "description": "How suppliers differ",
+                            "id": "room_type",
+                            "label": "Room type",
+                            "description": "How rooms differ",
                             "kind": "conceptual",
                             "evidence": [],
                         },
@@ -54,8 +59,8 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                 {
                     "taxonomies": [
                         {
-                            "factor_id": "supplier_type",
-                            "root_label": "Supplier type",
+                            "factor_id": "room_type",
+                            "root_label": "Room type",
                             "children": [
                                 {
                                     "id": "company",
@@ -64,6 +69,50 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                                     "critic_label": "Good-Exclusive",
                                 }
                             ],
+                        }
+                    ]
+                }
+            ],
+            "phase2.schema": [
+                {
+                    "primary_class": "room",
+                    "classes": [
+                        {
+                            "id": "room",
+                            "label": "Room",
+                            "label_plural": "Rooms",
+                            "description": "Public room",
+                            "title_property": "name",
+                            "identifier_property": "name",
+                            "aligned_to": None,
+                        }
+                    ],
+                    "properties": [
+                        {
+                            "id": "name",
+                            "label": "Name",
+                            "domain": "room",
+                            "datatype": "string",
+                            "dod": True,
+                            "order": 0,
+                            "description": "Displayed name",
+                            "aligned_to": None,
+                        }
+                    ],
+                    "relations": [],
+                    "rules": [],
+                    "source_classes": [{"id": "directory", "label": "Public directory"}],
+                }
+            ],
+            "phase2.dod_queries": [
+                {
+                    "queries": [
+                        {
+                            "criterion_id": "dod-1",
+                            "aggregate": "count_entities",
+                            "class_id": "room",
+                            "target": 1,
+                            "operator": ">=",
                         }
                     ]
                 }
@@ -104,7 +153,7 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
         generated_by=live_provenance,
     )
     factors = draft_factors(tmp_path, prd, decisions)
-    assert factors["factors"][0]["id"] == "supplier_type"
+    assert factors["factors"][0]["id"] == "room_type"
     factor_dir = tmp_path / "02-ontology/factors"
     (factor_dir / "APPROVED").write_text(
         json.dumps(
@@ -112,14 +161,14 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                 "approver": "Test Reviewer",
                 "date": "2026-09-26",
                 "checkpoint": "factors",
-                "decisions": {"supplier_type": "accept", "unneeded_factor": "reject"},
+                "decisions": {"room_type": "accept", "unneeded_factor": "reject"},
             }
         ),
         encoding="utf-8",
     )
     ontology = draft_ontology(tmp_path, prd, factors, decisions)
     assert ontology["taxonomies"][0]["children"][0]["id"] == "company"
-    assert [factor["id"] for factor in ontology["factors"]] == ["supplier_type"]
+    assert [factor["id"] for factor in ontology["factors"]] == ["room_type"]
     assert ontology["taxonomies"][0]["soundness"] == 1
-    shape = Graph().parse(tmp_path / "02-ontology/supplier-shape.ttl", format="turtle")
+    shape = Graph().parse(tmp_path / "02-ontology/shapes.ttl", format="turtle")
     assert len(shape) > 0

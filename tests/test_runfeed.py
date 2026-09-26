@@ -74,7 +74,9 @@ def test_recorded_feed_appends_steps_and_refreshes_status_without_latest(tmp_pat
         "source_type": "synthetic_registry",
         "health": {"ok": 1, "failed": 0, "yield": 1},
     }
-    feed.update_status(state="running", phase=1, sources=[source], metrics={"suppliers_total": 0})
+    feed.update_status(
+        state="running", phase=1, sources=[source], metrics={"entities_total": {"record": 0}}
+    )
     status_key = "runs/synthetic-case/mock-synthetic-run/status.json"
     assert lake.written.count(status_key) == 1
     assert not lake.exists("runs/synthetic-case/latest.json")

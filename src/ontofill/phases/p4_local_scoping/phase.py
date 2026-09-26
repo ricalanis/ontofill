@@ -67,6 +67,7 @@ def _response_schema() -> dict:
             "validation_rules",
             "rate_limit_per_minute",
             "budget_usd",
+            "target_volume",
             "steps",
         ],
         "properties": {
@@ -79,6 +80,7 @@ def _response_schema() -> dict:
             },
             "rate_limit_per_minute": tdd["properties"]["rate_limit_per_minute"],
             "budget_usd": tdd["properties"]["budget_usd"],
+            "target_volume": {"type": "integer", "minimum": 1, "maximum": 300},
             "steps": tdd["properties"]["steps"],
         },
         "$defs": {
@@ -180,7 +182,8 @@ def draft_local_scope(
         raise ValueError("global PRD has no requirements")
     prompt = (
         "Create one focused local PRD and technical definition for this discovered source. "
-        "Use only target fields from the objective and requirement IDs from the PRD. "
+        "Use only target ontology properties from the objective and requirement IDs from the PRD. "
+        "Choose a bounded target_volume from the approved completion criteria and source yield. "
         "The source URL and domain allowlist are fixed by code. Do not propose additional domains. "
         "Use read-only SAFE or LOW steps. Never use login, captcha bypass, or write actions. "
         f"Global PRD: {prd}. Ontology version: {ontology['version']}. "
@@ -215,7 +218,7 @@ def draft_local_scope(
         "source_url": source_url,
         "allowed_domains": [source_host],
         "target_fields": target_fields,
-        "target_volume": 1,
+        "target_volume": response["target_volume"],
         "extraction_method": response["extraction_method"],
         "validation_rules": response["validation_rules"],
         "rate_limit_per_minute": response["rate_limit_per_minute"],

@@ -1,5 +1,26 @@
 # Work list
 
+## G1/G2: generic brief-to-export engine (brief 04, active priority)
+- [x] Infer case authority policy in PRD and classes/properties/relations/rules/DoD queries in ontology; no fixed domain vocabulary.
+- [x] Derive source classes and target properties from approved artifacts; infer and crystallize source-column mappings, then emit observed values generically.
+- [x] Refine and export entities.jsonl plus ontology.json and generic metrics.dod[] with full evidence/trace lineage.
+- [x] Add a failing case-vocabulary guard and a second unrelated brief-only test under tests/genericity that reaches P5 in recorded scratch.
+- [x] Apply brief 05 model routing and put per-call token usage/est_usd on inference trace steps.
+FILES: `src/ontofill/`, `packages/ontofill-scrape/src/`, `schemas/`, `tests/genericity/`, `tests/test_no_case_vocabulary.py`, `tests/test_inference.py`, `GOAL.md`, `TODO.md`.
+TASK: Make phases and gold export driven by each case's approved PRD/ontology rather than embedded domain assumptions.
+DONE: `uv run pytest -q tests/genericity tests/test_no_case_vocabulary.py` and full suite with generic entity export and no banned source terms.
+FORMAT: `uv run ruff check src tests packages/ontofill-scrape/src && uv run ruff format --check src tests packages/ontofill-scrape/src`.
+
+## Track acceptance (brief 06; immediately after G1/G2, before 03b/C4b)
+- [ ] Probe zero pod secrets, blocked metadata/mesh access, and publish proof in jobs.jsonl.
+- [ ] Enforce memory, CPU, pids, wall-clock and step limits on every pod; record limits and hard stops.
+- [ ] Verify each browser action's screenshot with Vultr vision inference, and gate non-SAFE/LOW actions before submit.
+- [ ] Show bounded sandbox code write/test/repair attempts; script hostile-page and destructive-loop containment proofs.
+FILES: `sandbox/`, `src/ontofill/sandbox/`, `src/ontofill/workflow.py`, `schemas/`, `tests/`, `docs/reference/track-blast-radius-zero.md`.
+TASK: Satisfy the official track requirement table with inspectable runtime proof.
+DONE: targeted sandbox tests plus on-demand containment scenarios prove blocked egress, zero secrets and enforced limits.
+FORMAT: Ruff check/format across edited engine and sandbox files.
+
 ## C1: tooling and contract
 - [x] Initialize Git, install full Apache-2.0 license, commit scaffold.
 - [x] Build uv workspace, CLI skeleton, schemas, local Postgres/Oxigraph compose, tests and dev commands.

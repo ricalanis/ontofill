@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -13,36 +14,31 @@ from ontofill_scrape import SearchClient, source_discover
 from ontofill.case.checkpoints import load_json, require_approval, write_json
 from ontofill.contracts import validate_document
 from ontofill.inference import DecisionClient, generated_by
-from ontofill.phases.p2_ontology.phase import CORE_FIELDS
 from ontofill.phases.p3_fanout.authority import authority_result, source_class, source_fingerprint
 
-SOURCE_FIELDS = {
-    "tax-authority list": {"tax_list_status"},
-    "sanction registry": {"sanction_status"},
-    "company registry": {"founding_date", "address"},
-    "official gazette": {"founding_date", "sanction_status"},
-    "open-contracting publication": {"legal_name", "tax_id", "address"},
-    "procurement portal": {"legal_name", "tax_id", "address"},
-}
+
+def _dod_properties(ontology: dict) -> tuple[str, ...]:
+    selected = tuple(item["id"] for item in ontology["properties"] if item["dod"])
+    return selected or tuple(item["id"] for item in ontology["properties"])
 
 
 def _fingerprint_request(
-    brief: str, ontology: dict, gaps: tuple[str, ...], decision, client
+    brief: str, ontology: dict, prd: dict, gaps: tuple[str, ...], decision, client
 ) -> str:
     providers = [item.name for item in getattr(client, "providers", [])]
     providers = providers or [getattr(client, "name", type(client).__name__)]
-    data = [brief, ontology["version"], sorted(gaps), providers, decision.backend]
+    data = [brief, ontology, prd.get("authority_policy"), sorted(gaps), providers, decision.backend]
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def _queries(brief: str, gaps: tuple[str, ...], decision: DecisionClient) -> tuple[str, ...]:
+def _queries(brief: str, gap_labels: tuple[str, ...], decision: DecisionClient) -> tuple[str, ...]:
     summary = " ".join(
         line.strip()
         for line in brief.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     )[:140]
     if decision.backend == "recorded":
-        return (" ".join((summary, *(field.replace("_", " ") for field in gaps))),)
+        return (" ".join((summary, *gap_labels)),)
     schema = {
         "type": "object",
         "additionalProperties": False,
@@ -60,7 +56,7 @@ def _queries(brief: str, gaps: tuple[str, ...], decision: DecisionClient) -> tup
         "phase3.plan_search",
         "Propose public web search queries from these ontology gaps. Use the brief's geography. "
         "Do not propose or invent any source URL. "
-        f"Brief: {summary}. Gaps: {list(gaps)}.",
+        f"Brief: {summary}. Gaps: {list(gap_labels)}.",
         schema,
     )
     Draft202012Validator(schema).validate(result)
@@ -78,24 +74,34 @@ def _metadata(client, url: str) -> dict:
     }
 
 
-def _candidate(candidate, metadata: dict, gaps: tuple[str, ...]) -> tuple[dict, dict, bool]:
+def _candidate(
+    candidate, metadata: dict, gaps: tuple[str, ...], ontology: dict, prd: dict
+) -> tuple[dict, dict, bool]:
     provider = metadata["provider"]
-    source_type = source_class(candidate.title, candidate.snippet, provider)
-    trusted, reason = authority_result(candidate.url, trusted_origin=metadata.get("trusted_origin"))
+    source_type = source_class(candidate.title, candidate.snippet, ontology["source_classes"])
+    policy = prd["authority_policy"]
+    trusted, reason = authority_result(candidate.url, policy=policy)
     fingerprint = source_fingerprint(
         url=candidate.url,
         title=candidate.title,
         snippet=candidate.snippet,
         provider=provider,
         capture_key=metadata.get("capture_key"),
+        authority_policy=policy,
     )
     source_id = "source-" + hashlib.sha256(candidate.url.encode()).hexdigest()[:12]
-    targets = [name for name in CORE_FIELDS if name in gaps or name in {"legal_name", "tax_id"}]
+    primary = next(item for item in ontology["classes"] if item["id"] == ontology["primary_class"])
+    targets = list(
+        dict.fromkeys([*gaps, primary["identifier_property"], primary["title_property"]])
+    )
     objective_id = (
         "objective-"
         + hashlib.sha256((source_id + ":" + ",".join(targets)).encode()).hexdigest()[:12]
     )
-    predicted = SOURCE_FIELDS.get(source_type, set()).intersection(gaps)
+    property_labels = {item["id"]: item["label"].casefold() for item in ontology["properties"]}
+    observed = f"{candidate.title} {candidate.snippet}".casefold()
+    predicted = [property_id for property_id in gaps if property_labels[property_id] in observed]
+    discovered_by = {"provider": provider, "at": datetime.now(UTC).isoformat()}
     objective = {
         "id": objective_id,
         "source_id": source_id,
@@ -103,6 +109,7 @@ def _candidate(candidate, metadata: dict, gaps: tuple[str, ...]) -> tuple[dict, 
         "source_type": source_type,
         "source_fingerprint": fingerprint,
         "discovery_provider": provider,
+        "discovered_by": discovered_by,
         "target_fields": targets,
         "priority": 1,
         "expected_contribution": round(len(predicted) / len(gaps), 3),
@@ -113,6 +120,7 @@ def _candidate(candidate, metadata: dict, gaps: tuple[str, ...]) -> tuple[dict, 
         "title": candidate.title,
         "snippet": candidate.snippet,
         "provider": provider,
+        "discovered_by": discovered_by,
         "capture_key": metadata.get("capture_key"),
         "source_type": source_type,
         "authority": "auto" if trusted else "review",
@@ -124,11 +132,8 @@ def _candidate(candidate, metadata: dict, gaps: tuple[str, ...]) -> tuple[dict, 
 
 def _choose(entries: list[tuple], gaps: tuple[str, ...], decision, max_sources: int) -> list[tuple]:
     def score(item: tuple) -> int:
-        candidate, objective, _, trusted = item
-        expected = SOURCE_FIELDS.get(objective["source_type"], set())
-        title = candidate.title.casefold()
-        identity_hint = int(any(word in title for word in ("supplier", "proveedor", "company")))
-        return 20 * len(expected.intersection(gaps)) + (8 if trusted else 0) + identity_hint
+        _, objective, _, trusted = item
+        return int(100 * objective["expected_contribution"]) + (8 if trusted else 0)
 
     ranked = sorted(entries, key=score, reverse=True)
     if decision.backend == "recorded":
@@ -187,15 +192,17 @@ def discover_objectives(
     max_sources: int = 4,
 ) -> dict:
     """Accumulate objectives across gap rounds and review unrecognized authorities."""
-    gaps = tuple(dict.fromkeys(gaps or CORE_FIELDS))
-    if not gaps or any(field not in CORE_FIELDS for field in gaps):
-        raise ValueError("discovery gaps must be known core fields")
+    allowed = {item["id"] for item in ontology["properties"]}
+    gaps = tuple(dict.fromkeys(gaps or _dod_properties(ontology)))
+    if not gaps or any(field not in allowed for field in gaps):
+        raise ValueError("discovery gaps must be ontology properties")
     if max_sources not in range(1, 9):
         raise ValueError("max_sources must be between 1 and 8")
     path = case_dir / "03-fanout/objectives.json"
     surface = path.parent / "surface-map/discovery.json"
     brief = (case_dir / "brief.md").read_text(encoding="utf-8")
-    request_key = _fingerprint_request(brief, ontology, gaps, decision, search_client)
+    prd = load_json(case_dir / "01-scope/prd.json")
+    request_key = _fingerprint_request(brief, ontology, prd, gaps, decision, search_client)
     previous = load_json(path) if path.exists() else None
     ledger = load_json(surface) if surface.exists() else {}
     if (
@@ -207,13 +214,16 @@ def discover_objectives(
         return previous
 
     candidates = {}
-    queries = _queries(brief, gaps, decision)
+    labels = {item["id"]: item["label"] for item in ontology["properties"]}
+    queries = _queries(brief, tuple(labels[property_id] for property_id in gaps), decision)
     for query in queries:
         for found in source_discover(brief, search_client, limit=30, query=query):
             candidates.setdefault(found.url, found)
     entries = []
     for found in candidates.values():
-        objective, manifest, trusted = _candidate(found, _metadata(search_client, found.url), gaps)
+        objective, manifest, trusted = _candidate(
+            found, _metadata(search_client, found.url), gaps, ontology, prd
+        )
         entries.append((found, objective, manifest, trusted))
     if not entries:
         raise ValueError("search captured no usable source candidates")

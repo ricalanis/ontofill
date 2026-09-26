@@ -35,7 +35,7 @@
         "backend": {"enum": ["recorded", "vultr", "jev"]},
         "input_tokens": {"type": "integer", "minimum": 0},
         "output_tokens": {"type": "integer", "minimum": 0},
-        "est_usd": {"type": "number", "minimum": 0}
+        "est_usd": {"type": ["number", "null"], "minimum": 0}
       }
     }
   }

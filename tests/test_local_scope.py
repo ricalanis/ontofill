@@ -21,6 +21,7 @@ RESPONSE = {
     "validation_rules": ["A supplier name is present"],
     "rate_limit_per_minute": 12,
     "budget_usd": 1.0,
+    "target_volume": 2,
     "steps": [
         {
             "id": "read-page",
