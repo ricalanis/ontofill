@@ -200,10 +200,13 @@ class VultrDecisionClient:
         )
 
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
-        structured_request = purpose in {"phase1.prd", "phase2.schema", "phase2.dod_queries"}
+        structured_request = purpose.startswith("phase1.prd") or purpose in {
+            "phase2.schema",
+            "phase2.dod_queries",
+        }
         if purpose.startswith("critic."):
             model = self.critic_model
-        elif purpose == "phase1.prd":
+        elif purpose.startswith("phase1.prd"):
             model = self.prd_model
         elif structured_request:
             model = self.document_model
@@ -212,7 +215,7 @@ class VultrDecisionClient:
         else:
             model = self.model
         tool_schema = _tool_schema(schema)
-        document_request = purpose == "phase1.prd"
+        document_request = purpose.startswith("phase1.prd")
         compact_instruction = ""
         if document_request:
             max_items = min(8, max(2, len(prompt) // 1600 + 2))
@@ -221,7 +224,9 @@ class VultrDecisionClient:
                 "25 words per text field. Include every required key. For unknown source domains, "
                 "use an empty trusted publisher list; never invent evidence."
             )
-        if document_request:
+        if purpose == "phase1.prd.section":
+            max_completion_tokens = 4096
+        elif document_request:
             max_completion_tokens = 16384
         elif purpose == "phase2.schema":
             max_completion_tokens = 8192
@@ -273,7 +278,9 @@ class VultrDecisionClient:
             )
             body = {**request, "model": selected}
             if selected.startswith("glm-"):
-                body["reasoning_effort"] = "minimal" if selected == "glm-5.3-flash" else "low"
+                body["reasoning_effort"] = (
+                    "minimal" if selected == "glm-5.3-flash" or document_request else "low"
+                )
             elif selected == "qwen3.8-flash-next" and structured_request:
                 body["reasoning"] = {"enabled": False}
             if use_json_schema:

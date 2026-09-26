@@ -268,6 +268,15 @@ def _read_silver_cache(case_id: str, run_id: str) -> list[Observation]:
     ]
 
 
+def _persisted_run_trace(
+    lake: object, case_id: str, run_id: str, current: list[dict]
+) -> list[dict]:
+    key = f"runs/{case_id}/{run_id}/trace.live.jsonl"
+    if not lake.exists(key):
+        return current
+    return [json.loads(line) for line in lake.read_key(key).splitlines()]
+
+
 def _publish_steps(feed: RunFeed, trace: list[dict]) -> None:
     for step in trace:
         feed.append_step(step, screenshot_key=step.get("screenshot_key"))
@@ -401,9 +410,18 @@ def run_case(
     with RunFeed(lake, case_id, run_id, provenance, preview=preview_past_checkpoints) as feed:
         feed.update_status(state="running", phase=from_phase)
         try:
-            decision_start = len(getattr(decision, "call_log", []))
-            prd = draft_prd(case_dir, decision, budget_usd=budget_usd)
-            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 1)
+
+            def emit_prd_loop(step: dict) -> None:
+                feed.append_step(step)
+                trace.append(step)
+
+            prd = draft_prd(
+                case_dir,
+                decision,
+                budget_usd=budget_usd,
+                run_id=run_id,
+                emit=emit_prd_loop,
+            )
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")
             if from_phase <= 1:
                 _publish_steps(feed, [step])
@@ -608,6 +626,7 @@ def run_case(
                 observations, ontology=ontology, generated_by=provenance, shapes_ttl=shapes
             )
             dod_queries = load_json(case_dir / "02-ontology/dod-queries.json")
+            export_trace = _persisted_run_trace(lake, case_id, run_id, trace)
             metrics = export_run(
                 lake,
                 case_dir,
@@ -616,7 +635,7 @@ def run_case(
                 refined.entities,
                 ontology=ontology,
                 dod_queries=dod_queries,
-                trace=trace,
+                trace=export_trace,
                 generated_by=provenance,
                 preview=preview_past_checkpoints,
                 decisions_by_backend=getattr(decision, "decisions_by_backend", None),

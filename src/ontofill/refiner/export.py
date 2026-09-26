@@ -385,7 +385,19 @@ def _metrics(
         ]
         for taxonomy, levels in taxonomy_levels.items()
     }
-    mode_count = Counter(step["mode"] for step in trace)
+    mode_count = Counter(step["mode"] for step in trace if step.get("event") != "loop")
+    loops = [
+        {
+            "phase": step["loop"]["phase"],
+            "iterations": step["loop"]["iteration"],
+            "stop_reason": step["loop"]["stop_reason"],
+            "usd": step["evaluated"]["usd"],
+        }
+        for step in trace
+        if step.get("event") == "loop"
+        and step.get("loop", {}).get("role") == "decide"
+        and "stop_reason" in step["loop"]
+    ]
     completed_jobs = {
         step["tdd_path"]
         for step in trace
@@ -464,6 +476,7 @@ def _metrics(
         "inference_backend": generated_by["backend"],
         "preview": preview,
         "decisions_by_backend": decisions_by_backend or {},
+        "loops": loops,
         "dod": dod,
     }
     return metrics

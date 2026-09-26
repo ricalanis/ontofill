@@ -459,6 +459,22 @@ def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None
     book = refine_observations(entries, ontology=model, generated_by=RECORDED).entities[0]
     case_dir = tmp_path / "case"
     write_lineage(case_dir, model, queries, RECORDED)
+    steps = trace([item.value_id for item in entries])
+    steps.append(
+        {
+            **steps[0],
+            "step_id": "loop-1-final",
+            "value_ids": [],
+            "event": "loop",
+            "loop": {
+                "phase": 1,
+                "iteration": 2,
+                "role": "decide",
+                "stop_reason": "checks_passed",
+            },
+            "evaluated": {"usd": 0.002},
+        }
+    )
     metrics = export_run(
         lake,
         case_dir,
@@ -467,7 +483,7 @@ def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None
         [book],
         ontology=model,
         dod_queries=queries,
-        trace=trace([item.value_id for item in entries]),
+        trace=steps,
         taxonomy_levels={"edition": [["edition:local", "edition:other"]]},
         generated_by=RECORDED,
     )
@@ -479,6 +495,9 @@ def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None
     assert metrics["values_without_evidence"] == 0
     assert metrics["level_ratio_coverage"]["edition"] == [0.5]
     assert [(row["actual"], row["met"]) for row in metrics["dod"]] == [(1, False), (1, False)]
+    assert metrics["loops"] == [
+        {"phase": 1, "iterations": 2, "stop_reason": "checks_passed", "usd": 0.002}
+    ]
     assert json.loads(lake.read_key(f"gold/books/{RUN_ID}/entities.jsonl")) == book
     assert json.loads(lake.read_key(f"gold/books/{RUN_ID}/ontology.json")) == model
     assert not lake.exists("gold/books/latest.json")

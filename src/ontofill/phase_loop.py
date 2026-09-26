@@ -7,6 +7,7 @@ the stopping rules, budget accounting, and trace shape.
 from __future__ import annotations
 
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -146,15 +147,21 @@ class PhaseLoop(Generic[T]):
 
     def _usage(self, calls: list[Mapping]) -> dict:
         last_usage: Mapping | None = None
+        input_tokens = 0
+        output_tokens = 0
+        stage_usd = 0.0
         for call in calls:
             usage = call.get("usage")
             if not isinstance(usage, Mapping):
                 self._unknown_cost = True
                 continue
             last_usage = usage
+            input_tokens += usage.get("input_tokens", 0)
+            output_tokens += usage.get("output_tokens", 0)
             cost = usage.get("est_usd")
             if isinstance(cost, (int, float)) and cost >= 0:
                 self.usd += float(cost)
+                stage_usd += float(cost)
             else:
                 self._unknown_cost = True
         if last_usage is None:
@@ -165,7 +172,12 @@ class PhaseLoop(Generic[T]):
                 "output_tokens": 0,
                 "est_usd": 0,
             }
-        return dict(last_usage)
+        return {
+            **last_usage,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "est_usd": None if self._unknown_cost else stage_usd,
+        }
 
     def _emit(
         self,
@@ -199,7 +211,7 @@ class PhaseLoop(Generic[T]):
             loop["stop_reason"] = stop_reason
         self.emit(
             {
-                "step_id": f"loop-{self.phase}-{iteration}-{role}",
+                "step_id": f"loop-{self.phase}-{iteration}-{role}-{uuid.uuid4().hex[:12]}",
                 "run_id": self.run_id,
                 "phase": 5 if self.phase == "outer" else self.phase,
                 "source_id": None,
@@ -267,7 +279,8 @@ class PhaseLoop(Generic[T]):
             if self._budget_reached():
                 return self._finish(artifact, iteration, "budget", objections)
             critic = self._stage(
-                "critique", iteration,
+                "critique",
+                iteration,
                 lambda draft=artifact, value=context, n=iteration: _critique(
                     critique(draft, value, n)
                 ),
@@ -277,7 +290,8 @@ class PhaseLoop(Generic[T]):
             if self._budget_reached():
                 return self._finish(artifact, iteration, "budget", critic.objections)
             artifact = self._stage(
-                "revise", iteration,
+                "revise",
+                iteration,
                 lambda draft=artifact, review=critic, value=context, n=iteration: revise(
                     draft, review, value, n
                 ),
@@ -285,7 +299,8 @@ class PhaseLoop(Generic[T]):
             if self._budget_reached():
                 return self._finish(artifact, iteration, "budget", critic.objections)
             checked = self._stage(
-                "check", iteration,
+                "check",
+                iteration,
                 lambda draft=artifact, value=context, n=iteration: _check(check(draft, value, n)),
                 verdict=lambda result: "passed" if result.passed else "failed",
                 objections=lambda result: result.objections,

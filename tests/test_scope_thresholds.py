@@ -28,6 +28,8 @@ def _prd_response(criterion: dict | None = None) -> dict:
                 "min_ratio": 0.8,
                 "basis": "brief",
                 "basis_quote": "5 reading rooms, with 80% of required fields",
+                "rationale": "The pilot size follows the brief.",
+                "feasibility": "Five rooms appear feasible within the test budget and time.",
             }
         ],
         "authority_policy": {
@@ -65,12 +67,12 @@ def test_prd_uses_planning_model_and_independent_critic(tmp_path) -> None:
     calls = []
 
     def handle(request: httpx.Request) -> httpx.Response:
-        calls.append(json.loads(request.content))
-        return _tool_response(
-            _prd_response()
-            if len(calls) == 1
-            else {"accepted": True, "reason": "Grounded in the brief"}
-        )
+        body = json.loads(request.content)
+        calls.append(body)
+        if len(calls) <= 3:
+            fields = body["tools"][0]["function"]["parameters"]["required"]
+            return _tool_response({name: _prd_response()[name] for name in fields})
+        return _tool_response({"accepted": True, "reason": "Grounded in the brief"})
 
     decision = VultrDecisionClient(
         api_key="test-only",
@@ -83,9 +85,14 @@ def test_prd_uses_planning_model_and_independent_critic(tmp_path) -> None:
     criterion = document["definition_of_done"][0]
     assert (criterion["basis"], criterion["min_ratio"]) == ("brief", 0.8)
     assert document["generated_by"]["model"] == "glm-5.3"
-    assert [body["model"] for body in calls] == ["glm-5.3", "minimax-m3"]
-    assert calls[0]["max_completion_tokens"] == 16384
-    assert [call["usage"]["model"] for call in decision.call_log] == ["glm-5.3", "minimax-m3"]
+    assert [body["model"] for body in calls] == ["glm-5.3", "glm-5.3", "glm-5.3", "minimax-m3"]
+    assert calls[0]["max_completion_tokens"] == 4096
+    assert [call["usage"]["model"] for call in decision.call_log] == [
+        "glm-5.3",
+        "glm-5.3",
+        "glm-5.3",
+        "minimax-m3",
+    ]
 
 
 def test_unsupported_numeric_target_becomes_proposed(tmp_path) -> None:
@@ -129,12 +136,23 @@ def test_critic_objection_causes_one_revised_draft(tmp_path) -> None:
             "feasibility": "One room may fit the available budget and run time.",
         }
     )
-    replies = [first, {"accepted": False, "reason": "Target is unfeasible"}, second]
     calls = []
 
     def handle(request: httpx.Request) -> httpx.Response:
-        calls.append(json.loads(request.content))
-        return _tool_response(replies[len(calls) - 1])
+        body = json.loads(request.content)
+        calls.append(body)
+        if len(calls) in {4, 8}:
+            return _tool_response(
+                {
+                    "accepted": len(calls) == 8,
+                    "reason": "Revision fixes the target"
+                    if len(calls) == 8
+                    else "Target is unfeasible",
+                }
+            )
+        fields = body["tools"][0]["function"]["parameters"]["required"]
+        source = first if len(calls) < 4 else second
+        return _tool_response({name: source[name] for name in fields})
 
     decision = VultrDecisionClient(
         api_key="test-only",
@@ -145,8 +163,17 @@ def test_critic_objection_causes_one_revised_draft(tmp_path) -> None:
     )
     result = draft_prd(tmp_path, decision)
     assert result["definition_of_done"][0]["id"] == "evidence"
-    assert [body["model"] for body in calls] == ["glm-5.3", "minimax-m3", "glm-5.3"]
-    assert "Target is unfeasible" in calls[2]["messages"][1]["content"]
+    assert [body["model"] for body in calls] == [
+        "glm-5.3",
+        "glm-5.3",
+        "glm-5.3",
+        "minimax-m3",
+        "glm-5.3",
+        "glm-5.3",
+        "glm-5.3",
+        "minimax-m3",
+    ]
+    assert "Target is unfeasible" in calls[4]["messages"][1]["content"]
 
 
 def test_denied_prd_is_archived_and_human_reason_regenerates(tmp_path) -> None:

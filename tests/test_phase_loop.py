@@ -49,9 +49,7 @@ def test_rejected_draft_gets_revised_and_rechecked_with_live_trace(tmp_path: Pat
         calls.append("check")
         return CheckResult(passed=True)
 
-    result = loop.run(
-        gather=gather, propose=propose, critique=critique, revise=revise, check=check
-    )
+    result = loop.run(gather=gather, propose=propose, critique=critique, revise=revise, check=check)
     assert result.stop_reason == "checks_passed"
     assert result.iterations == 2
     assert result.usd == 0
@@ -67,7 +65,12 @@ def test_rejected_draft_gets_revised_and_rechecked_with_live_trace(tmp_path: Pat
         for line in lake.read_key("runs/example-case/mock-loop/trace.live.jsonl").splitlines()
     ]
     assert [step["loop"]["role"] for step in steps] == [
-        "gather", "propose", "critique", "revise", "check", "decide"
+        "gather",
+        "propose",
+        "critique",
+        "revise",
+        "check",
+        "decide",
     ] * 2
     assert steps[2]["loop"]["objections"] == ["unsupported target"]
     assert steps[-1]["loop"]["stop_reason"] == "checks_passed"
@@ -93,8 +96,11 @@ def test_live_spend_budget_stops_before_next_model_stage() -> None:
         call_log.append(
             {
                 "usage": {
-                    "model": "glm-5.3", "backend": "vultr", "input_tokens": 10,
-                    "output_tokens": 10, "est_usd": 0.02,
+                    "model": "glm-5.3",
+                    "backend": "vultr",
+                    "input_tokens": 10,
+                    "output_tokens": 10,
+                    "est_usd": 0.02,
                 }
             }
         )
@@ -115,9 +121,51 @@ def test_live_spend_budget_stops_before_next_model_stage() -> None:
     assert steps[1]["usage"]["est_usd"] == 0.02
 
 
+def test_stage_usage_sums_multiple_typed_calls() -> None:
+    call_log: list[dict] = []
+    steps: list[dict] = []
+
+    def propose(_context: object, _iteration: int) -> dict:
+        for tokens, cost in [(10, 0.001), (20, 0.002)]:
+            call_log.append(
+                {
+                    "usage": {
+                        "model": "glm-5.3",
+                        "backend": "vultr",
+                        "input_tokens": tokens,
+                        "output_tokens": tokens // 2,
+                        "est_usd": cost,
+                    }
+                }
+            )
+        return {"draft": True}
+
+    result = PhaseLoop[dict](
+        phase=1,
+        run_id="live-staged",
+        generated_by=VULTR,
+        budget=LoopBudget(max_usd=1),
+        emit=steps.append,
+        call_log=call_log,
+    ).run(
+        gather=lambda *_args: {},
+        propose=propose,
+        critique=lambda *_args: True,
+        revise=lambda artifact, *_args: artifact,
+        check=lambda *_args: True,
+    )
+    usage = next(step["usage"] for step in steps if step["loop"]["role"] == "propose")
+    assert usage["input_tokens"] == 30
+    assert usage["output_tokens"] == 15
+    assert usage["est_usd"] == 0.003
+    assert result.usd == 0.003
+
+
 def test_human_gate_and_max_iterations_have_distinct_stop_reasons() -> None:
     common = {
-        "phase": 1, "run_id": "mock-example", "generated_by": RECORDED,
+        "phase": 1,
+        "run_id": "mock-example",
+        "generated_by": RECORDED,
         "budget": LoopBudget(max_iterations=2),
     }
     hooks = {
@@ -145,26 +193,46 @@ def test_wall_budget_and_unpriced_live_call_fail_closed() -> None:
     time_values = iter([0, 0, 10])
     clock = lambda: next(time_values)
     wall = PhaseLoop[dict](
-        phase=1, run_id="mock-wall", generated_by=RECORDED,
-        budget=LoopBudget(wall_seconds=5), monotonic=clock,
+        phase=1,
+        run_id="mock-wall",
+        generated_by=RECORDED,
+        budget=LoopBudget(wall_seconds=5),
+        monotonic=clock,
     ).run(
-        gather=lambda *_args: {}, propose=lambda *_args: pytest.fail("propose after wall budget"),
-        critique=lambda *_args: {}, revise=lambda *_args: {}, check=lambda *_args: True,
+        gather=lambda *_args: {},
+        propose=lambda *_args: pytest.fail("propose after wall budget"),
+        critique=lambda *_args: {},
+        revise=lambda *_args: {},
+        check=lambda *_args: True,
     )
     assert wall.stop_reason == "budget"
 
     call_log: list[dict] = []
     unpriced = PhaseLoop[dict](
-        phase=1, run_id="live-unpriced", generated_by=VULTR,
-        budget=LoopBudget(max_usd=1), call_log=call_log,
+        phase=1,
+        run_id="live-unpriced",
+        generated_by=VULTR,
+        budget=LoopBudget(max_usd=1),
+        call_log=call_log,
     ).run(
         gather=lambda *_args: {},
-        propose=lambda *_args: call_log.append(
-            {"usage": {"model": "glm-5.3", "backend": "vultr", "input_tokens": 1,
-                       "output_tokens": 1, "est_usd": None}}
-        ) or {"draft": True},
+        propose=lambda *_args: (
+            call_log.append(
+                {
+                    "usage": {
+                        "model": "glm-5.3",
+                        "backend": "vultr",
+                        "input_tokens": 1,
+                        "output_tokens": 1,
+                        "est_usd": None,
+                    }
+                }
+            )
+            or {"draft": True}
+        ),
         critique=lambda *_args: pytest.fail("critic after unpriced call"),
-        revise=lambda *_args: {}, check=lambda *_args: True,
+        revise=lambda *_args: {},
+        check=lambda *_args: True,
     )
     assert unpriced.stop_reason == "budget"
     with pytest.raises(ValueError, match="call log"):
@@ -177,11 +245,16 @@ def test_loop_schema_and_metrics_reject_invalid_rows() -> None:
     metrics_schema = json.loads((schema_dir / "metrics.schema.json").read_text())
     trace = []
     result = PhaseLoop[dict](
-        phase=1, run_id="mock-schema", generated_by=RECORDED,
-        budget=LoopBudget(max_iterations=1), emit=trace.append,
+        phase=1,
+        run_id="mock-schema",
+        generated_by=RECORDED,
+        budget=LoopBudget(max_iterations=1),
+        emit=trace.append,
     ).run(
-        gather=lambda *_args: {}, propose=lambda *_args: {},
-        critique=lambda *_args: True, revise=lambda artifact, *_args: artifact,
+        gather=lambda *_args: {},
+        propose=lambda *_args: {},
+        critique=lambda *_args: True,
+        revise=lambda artifact, *_args: artifact,
         check=lambda *_args: True,
     )
     Draft202012Validator(trace_schema["$defs"]["loop"]).validate(trace[-1]["loop"])

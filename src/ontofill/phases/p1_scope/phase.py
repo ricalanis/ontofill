@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 
 from jsonschema import ValidationError
@@ -17,6 +19,7 @@ from ontofill.case.checkpoints import (
 )
 from ontofill.contracts import model_output_schema, validate_document
 from ontofill.inference import DecisionClient, generated_by
+from ontofill.phase_loop import LoopBudget, PhaseLoop
 
 NUMBER_TOKEN = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?\s*%?")
 
@@ -43,7 +46,7 @@ def _ground_criteria(
             )
             continue
         source = brief if item["basis"] == "brief" else human_text
-        quote = " ".join(item["basis_quote"].split())
+        quote = " ".join(item.get("basis_quote", "").split())
         grounded = quote.casefold() in " ".join(source.split()).casefold()
         grounded &= _contains_number(quote, item["target"])
         if "min_ratio" in item:
@@ -59,7 +62,14 @@ def _ground_criteria(
             )
 
 
-def draft_prd(case_dir: Path, decision: DecisionClient, *, budget_usd: float | None = None) -> dict:
+def draft_prd(
+    case_dir: Path,
+    decision: DecisionClient,
+    *,
+    budget_usd: float | None = None,
+    run_id: str = "draft-prd",
+    emit: Callable[[dict], None] | None = None,
+) -> dict:
     output = case_dir / "01-scope/prd.json"
     brief_path = case_dir / "brief.md"
     brief = brief_path.read_text(encoding="utf-8").strip()
@@ -106,29 +116,94 @@ def draft_prd(case_dir: Path, decision: DecisionClient, *, budget_usd: float | N
     )
     base_schema = model_output_schema("global-prd")
     base_schema["properties"].pop("revisions", None)
-    document = decision.complete_json("phase1.prd", prompt, base_schema)
-    provenance = generated_by(decision)
-    _ground_criteria(document, brief, revisions, budget_usd)
+    sections = (
+        ("personas", "jobs_to_be_done", "requirements"),
+        ("constraints", "non_goals", "authority_policy"),
+        ("definition_of_done",),
+    )
+
+    def complete(task: str) -> dict:
+        if decision.backend == "vultr":
+            result = {"version": "1", "brief_path": "brief.md"}
+            for names in sections:
+                section_schema = {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": list(names),
+                    "properties": {name: base_schema["properties"][name] for name in names},
+                    "$defs": base_schema["$defs"],
+                }
+                if "definition_of_done" in names:
+                    section_schema["$defs"] = deepcopy(base_schema["$defs"])
+                    criterion = section_schema["$defs"]["criterion"]
+                    criterion.pop("allOf", None)
+                    criterion["required"] = [
+                        "id",
+                        "metric",
+                        "operator",
+                        "target",
+                        "basis",
+                        "rationale",
+                        "feasibility",
+                    ]
+                section_prompt = (
+                    f"{task}\nProduce only these PRD sections: {', '.join(names)}. "
+                    f"Sections already drafted: {json.dumps(result, ensure_ascii=False)}"
+                )
+                result.update(
+                    decision.complete_json("phase1.prd.section", section_prompt, section_schema)
+                )
+        else:
+            result = decision.complete_json("phase1.prd", task, base_schema)
+        _ground_criteria(result, brief, revisions, budget_usd)
+        result["revisions"] = revisions
+        result["generated_by"] = generated_by(decision)
+        return result
+
     review = getattr(decision, "review_json", None)
-    if review is not None:
-        verdict = review(
+
+    def critique(artifact: dict, _context: dict, _iteration: int) -> dict:
+        if review is None:
+            return {"accepted": True, "reason": "Recorded fixture has no independent critic"}
+        return review(
             "phase1.prd",
-            document,
+            artifact,
             "Check invented numeric targets, each criterion's basis quote, feasibility against the run "
             "budget and unknown elapsed time, coverage of the brief and human revisions, and per-entity "
             "completeness whenever the brief asks about each entity's core properties",
         )
-        if not verdict["accepted"]:
-            repaired = prompt + (
-                f"\nIndependent critic objection: {verdict['reason']}. "
-                f"Revise this draft once: {json.dumps(document, ensure_ascii=False)}"
-            )
-            document = decision.complete_json("phase1.prd", repaired, base_schema)
-            provenance = generated_by(decision)
-            _ground_criteria(document, brief, revisions, budget_usd)
-    document["revisions"] = revisions
-    document["generated_by"] = provenance
-    validate_document("global-prd", document)
+
+    def revise(artifact: dict, verdict, _context: dict, iteration: int) -> dict:
+        if verdict.passed or iteration > 1:
+            return artifact
+        repaired = prompt + (
+            f"\nIndependent critic objection: {verdict.objections[0]}. "
+            f"Revise this draft once: {json.dumps(artifact, ensure_ascii=False)}"
+        )
+        return complete(repaired)
+
+    def check(artifact: dict, _context: dict, _iteration: int) -> bool:
+        validate_document("global-prd", artifact)
+        return artifact["brief_path"] == "brief.md"
+
+    loop = PhaseLoop[dict](
+        phase=1,
+        run_id=run_id,
+        generated_by=generated_by(decision),
+        budget=LoopBudget(max_iterations=2, max_usd=budget_usd, wall_seconds=300),
+        emit=emit,
+        call_log=getattr(decision, "call_log", None),
+    )
+    result = loop.run(
+        gather=lambda _iteration, previous: {"previous": previous},
+        propose=lambda context, _iteration: context["previous"] or complete(prompt),
+        critique=critique,
+        revise=revise,
+        check=check,
+    )
+    if result.stop_reason != "checks_passed" or result.artifact is None:
+        raise ValueError(f"PRD loop stopped: {result.stop_reason}; {result.objections}")
+    document = result.artifact
     if document["brief_path"] != "brief.md":
         raise ValueError("PRD brief_path must be brief.md")
     marker = output.parent / "APPROVED"

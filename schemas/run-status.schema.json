@@ -71,6 +71,7 @@
           "propertyNames": {"enum": ["recorded", "vultr", "jev"]},
           "additionalProperties": {"type": "integer", "minimum": 0}
         },
+        "loops": {"$ref": "metrics.schema.json#/properties/loops"},
         "dod": {"type": "array", "items": {"$ref": "metrics.schema.json#/$defs/dod_result"}},
         "jobs": {
           "type": "object", "additionalProperties": false,

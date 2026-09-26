@@ -7,7 +7,20 @@ import uuid
 
 import pytest
 
-from ontofill.workflow import _preview_decision, _scratch_case, run_case
+from ontofill.lake import FileLake
+from ontofill.workflow import _persisted_run_trace, _preview_decision, _scratch_case, run_case
+
+
+def test_export_trace_includes_steps_from_prior_checkpoint_runs(tmp_path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    lake.write_key(
+        "runs/example/run-1/trace.live.jsonl",
+        b'{"step_id":"before-approval"}\n{"step_id":"after-approval"}\n',
+    )
+    assert [step["step_id"] for step in _persisted_run_trace(lake, "example", "run-1", [])] == [
+        "before-approval",
+        "after-approval",
+    ]
 
 
 def test_jev_cannot_be_primary_checkpoint_backend(tmp_path) -> None:

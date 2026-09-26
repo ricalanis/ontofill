@@ -131,7 +131,7 @@ def test_vultr_discovers_models_and_routes_by_decision_role(monkeypatch) -> None
         "minimax-m3",
     ]
     assert bodies[0]["reasoning_effort"] == "minimal"
-    assert bodies[1]["reasoning_effort"] == "low"
+    assert bodies[1]["reasoning_effort"] == "minimal"
     assert bodies[1]["max_completion_tokens"] == 16384
     assert "Schema:" not in bodies[1]["messages"][1]["content"]
     assert "reasoning_effort" not in bodies[2]

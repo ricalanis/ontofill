@@ -516,6 +516,23 @@ def test_authority_policy_requires_review_for_unknown_sources() -> None:
         validate("global-prd", artifact)
 
 
+def test_prd_proposed_threshold_requires_basis_rationale_and_feasibility() -> None:
+    artifact = copy.deepcopy(EXAMPLES["global-prd"])
+    criterion = artifact["definition_of_done"][0]
+    for missing in ("basis", "rationale", "feasibility"):
+        changed = copy.deepcopy(artifact)
+        del changed["definition_of_done"][0][missing]
+        with pytest.raises(ValidationError):
+            validate("global-prd", changed)
+    criterion["basis"] = "brief"
+    criterion.pop("rationale")
+    criterion.pop("feasibility")
+    with pytest.raises(ValidationError):
+        validate("global-prd", artifact)
+    criterion["basis_quote"] = "at least 1 item"
+    validate("global-prd", artifact)
+
+
 def test_ontology_requires_generic_class_and_rule_fields() -> None:
     artifact = copy.deepcopy(EXAMPLES["ontology"])
     del artifact["classes"][0]["identifier_property"]
