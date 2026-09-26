@@ -57,7 +57,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.send_error(400, "invalid port")
             return
-        if not allowed(host):
+        if not allowed(host) or port != 443:
             self.reject(host)
             return
         try:
@@ -96,7 +96,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.forward()
 
     def do_POST(self) -> None:
+        self.decision("block", urlsplit(self.path).hostname or "", self.command)
         self.send_error(405, "write methods are disabled")
+
+    do_PUT = do_POST
+    do_PATCH = do_POST
+    do_DELETE = do_POST
 
     def forward(self) -> None:
         parsed = urlsplit(self.path)

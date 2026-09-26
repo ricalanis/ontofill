@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from urllib.request import ProxyHandler, Request, build_opener
 
 from playwright.async_api import async_playwright
 
@@ -21,7 +22,15 @@ async def capture() -> None:
             args=["--no-sandbox"],
         )
         try:
-            context = await browser.new_context(ignore_https_errors=False)
+            context = await browser.new_context(ignore_https_errors=False, service_workers="block")
+
+            async def read_only(route) -> None:
+                if route.request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+                    await route.continue_()
+                else:
+                    await route.abort()
+
+            await context.route("**/*", read_only)
             page = await context.new_page()
             response = await page.goto(target, wait_until="load", timeout=30000)
             html = await page.content()
@@ -38,5 +47,27 @@ async def capture() -> None:
             await browser.close()
 
 
+def fetch() -> None:
+    target = os.environ["CAPTURE_URL"]
+    proxy_url = os.environ["PROXY_URL"]
+    opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    request = Request(target, headers={"User-Agent": "Ontofill/0.1"}, method="GET")
+    with opener.open(request, timeout=30) as response:
+        payload = response.read(20 * 1024 * 1024 + 1)
+        if len(payload) > 20 * 1024 * 1024:
+            raise ValueError("download exceeds the 20 MiB capture limit")
+        result = {
+            "url": response.geturl(),
+            "status": response.status,
+            "content_type": response.headers.get_content_type(),
+        }
+    output = Path("/out")
+    (output / "payload.bin").write_bytes(payload)
+    (output / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+
 if __name__ == "__main__":
-    asyncio.run(capture())
+    if os.environ.get("CAPTURE_MODE", "page") == "fetch":
+        fetch()
+    else:
+        asyncio.run(capture())

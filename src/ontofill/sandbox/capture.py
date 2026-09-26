@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -51,9 +52,19 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
 
 
 def _images() -> tuple[str, str]:
-    agent = os.environ.get("ONTOFILL_AGENT_IMAGE", "ontofill-agent-pod:local")
-    egress = os.environ.get("ONTOFILL_EGRESS_IMAGE", "ontofill-egress:local")
     assets = Path(os.environ.get("ONTOFILL_SANDBOX_ASSETS", _REPO_ROOT / "sandbox"))
+
+    def image_name(directory: str, override: str, base_name: str) -> str:
+        if os.environ.get(override):
+            return os.environ[override]
+        asset_dir = assets / directory
+        digest = hashlib.sha256(
+            b"".join(path.read_bytes() for path in sorted(asset_dir.iterdir()) if path.is_file())
+        ).hexdigest()[:12]
+        return f"{base_name}:{digest}"
+
+    agent = image_name("agent-pod", "ONTOFILL_AGENT_IMAGE", "ontofill-agent-pod")
+    egress = image_name("egress", "ONTOFILL_EGRESS_IMAGE", "ontofill-egress")
     with _IMAGE_LOCK:
         for image, directory in ((egress, "egress"), (agent, "agent-pod")):
             if _docker("image", "inspect", image, check=False).returncode:
@@ -91,6 +102,7 @@ def _trace(
     executed: dict,
     evaluated: dict,
     ts: str,
+    mode: str = "S1",
 ) -> dict:
     return {
         "step_id": step_id,
@@ -99,7 +111,7 @@ def _trace(
         "source_id": source_id,
         "objective_id": objective_id,
         "tdd_path": tdd_path,
-        "mode": "S1",
+        "mode": mode,
         "observed": observed,
         "requested": requested,
         "executed": executed,
@@ -269,6 +281,156 @@ def capture_url(
             return {
                 **keys,
                 "html": html_bytes.decode("utf-8"),
+                "url": final_url,
+                "status": result["status"],
+                "trace": [row],
+                "egress_events": events,
+            }
+    finally:
+        _docker("rm", "-f", proxy_name, check=False)
+        _docker("network", "rm", network, check=False)
+
+
+def fetch_url(
+    url: str,
+    *,
+    allowed_domains: list[str],
+    lake: FileLake | S3Lake,
+    run_id: str,
+    source_id: str,
+    objective_id: str | None,
+    tdd_path: str,
+    phase: int = 5,
+) -> dict:
+    """Fetch a discovered file inside the same contained network and store raw bytes."""
+    domains = _domains(allowed_domains)
+    step_id = f"step:{uuid.uuid4().hex}"
+    timestamp = datetime.now(UTC).isoformat()
+    request = {"url": url, "allowed_domains": domains, "fetch": "bytes"}
+    if not _allowed_host(url, domains):
+        row = _trace(
+            step_id=step_id,
+            run_id=run_id,
+            phase=phase,
+            source_id=source_id,
+            objective_id=objective_id,
+            tdd_path=tdd_path,
+            observed={"url": url},
+            requested=request,
+            executed={"network_request": False},
+            evaluated={"status": "blocked", "reason": "domain_not_allowed"},
+            ts=timestamp,
+            mode="D0",
+        )
+        raise CaptureBlocked("URL domain is not allowed by the TDD", [row])
+
+    agent_image, egress_image = _images()
+    suffix = uuid.uuid4().hex[:12]
+    network = f"ontofill-sandbox-{suffix}"
+    proxy_name = f"ontofill-egress-{suffix}"
+    pod_name = f"ontofill-fetch-{suffix}"
+    _docker("network", "create", "--internal", network)
+    try:
+        _docker(
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            proxy_name,
+            "--network",
+            network,
+            "--network-alias",
+            "egress",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "64",
+            "--memory",
+            "128m",
+            "-e",
+            "ALLOWED_DOMAINS=" + ",".join(domains),
+            egress_image,
+        )
+        _docker("network", "connect", "bridge", proxy_name)
+        _wait_proxy(proxy_name)
+        with tempfile.TemporaryDirectory(prefix="ontofill-fetch-") as temp_dir:
+            output = Path(temp_dir)
+            output.chmod(0o777)
+            pod = _docker(
+                "run",
+                "--rm",
+                "--name",
+                pod_name,
+                "--network",
+                network,
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,nosuid,size=512m",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "256",
+                "--memory",
+                "1g",
+                "--shm-size",
+                "256m",
+                "-v",
+                f"{output}:/out:rw",
+                "-e",
+                "CAPTURE_URL=" + url,
+                "-e",
+                "PROXY_URL=http://egress:8888",
+                "-e",
+                "CAPTURE_MODE=fetch",
+                agent_image,
+                timeout=90,
+                check=False,
+            )
+            events = _events(proxy_name)
+            if pod.returncode:
+                detail = (pod.stderr or pod.stdout).strip()[-2000:]
+                raise CaptureError(f"fetch pod failed: {detail}; egress={events}")
+            result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            final_url = result["url"]
+            if not _allowed_host(final_url, domains):
+                raise CaptureError("fetch redirected outside the TDD allowlist")
+            content = (output / "payload.bin").read_bytes()
+            captured_at = datetime.now(UTC).isoformat()
+            bronze_key = lake.put_bytes(
+                content,
+                {
+                    "content_type": result["content_type"],
+                    "url": final_url,
+                    "captured_at": captured_at,
+                    "source_id": source_id,
+                    "step_id": step_id,
+                },
+            )
+            row = _trace(
+                step_id=step_id,
+                run_id=run_id,
+                phase=phase,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                observed={"url": final_url, "status": result["status"]},
+                requested=request,
+                executed={"network_request": True, "bronze_key": bronze_key},
+                evaluated={"status": "captured", "bronze_objects": 1},
+                ts=captured_at,
+                mode="D0",
+            )
+            return {
+                "bytes": content,
+                "content_type": result["content_type"],
+                "bronze_key": bronze_key,
                 "url": final_url,
                 "status": result["status"],
                 "trace": [row],

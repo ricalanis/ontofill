@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from ontofill.lake import FileLake
-from ontofill.sandbox import CaptureBlocked, capture_url
+from ontofill.sandbox import CaptureBlocked, capture_url, fetch_url
 from ontofill.sandbox.capture import _allowed_host
 
 
@@ -19,9 +19,19 @@ class SyntheticPage(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:
+        if self.path == "/data.csv":
+            body = b"name\nProveedor Ejemplo 01\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = (
             b"<!doctype html><html><body><h1>Proveedor Ejemplo 01</h1>"
-            b'<img src="http://blocked.invalid/private.png"></body></html>'
+            b'<img src="http://blocked.invalid/private.png">'
+            b"<script>fetch('/submit', {method: 'POST', body: 'x'}).catch(() => {})</script>"
+            b"</body></html>"
         )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -106,9 +116,29 @@ def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp
         event["decision"] == "block" and event["host"] == "blocked.invalid"
         for event in result["egress_events"]
     )
+    assert not any(event["method"] == "POST" for event in result["egress_events"])
 
     trace = result["trace"]
     assert len(trace) == 1
     assert trace[0]["mode"] == "S1"
     assert all(trace[0][field] for field in ("observed", "requested", "executed", "evaluated"))
     assert trace[0]["executed"]["html_key"] == result["html_key"]
+
+
+def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> None:
+    lake = FileLake(tmp_path)
+    result = fetch_url(
+        synthetic_server + "data.csv",
+        allowed_domains=["host.docker.internal"],
+        lake=lake,
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id="synthetic-objective",
+        tdd_path="04-local/synthetic-tdd.json",
+    )
+    assert result["bytes"] == b"name\nProveedor Ejemplo 01\n"
+    assert result["content_type"] == "text/csv"
+    assert lake.read_key(result["bronze_key"]) == result["bytes"]
+    assert lake.read_metadata(result["bronze_key"])["content_type"] == "text/csv"
+    assert result["trace"][0]["mode"] == "D0"
+    assert any(event["decision"] == "allow" for event in result["egress_events"])
