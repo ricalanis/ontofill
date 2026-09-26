@@ -2,8 +2,8 @@
 
 - Read `docs/planning/01-engine-definition.md` (what) and `docs/planning/ontofill-plan.md` (how/when) first.
 - Engine repo is **code only**. Case content lives in the application repo; data lives in the external lake.
-- All main inference goes to Vultr Serverless Inference (OpenAI-compatible, tool calling).
-  Model list: https://api.vultrinference.com/v1/models. Jev is an optional helper behind the decision interface only.
+- All inference goes to Vultr Serverless Inference (OpenAI-compatible, tool calling).
+  Model list: https://api.vultrinference.com/v1/models.
 - Browsers and spiders run in sandboxes (containers/throwaway instances), never in-process.
 - Data completion is read-only: no writes, SAFE/LOW edges only, captcha or login wall = stop.
 - Every step logs observed / requested / executed / evaluated. `emit.observation` is the only output channel.
@@ -20,3 +20,27 @@
 ## Coordination
 This repo is one of two built in parallel. The cross-repo interface (CLI, lake layout, gold export,
 metrics) is in `../coord/CONTRACT.md`; report progress in `../coord/status/codex-ontofill.md`.
+
+## Commands
+
+From the `ontofill/` repository root, copy `.env.example` to the ignored `.env`
+and fill the names in it. Local service URLs are
+`postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@127.0.0.1:5432/<POSTGRES_DB>`
+and `http://127.0.0.1:7878` (Oxigraph). Set `LAKE_ROOT` to a directory outside
+the checkout for the `file://` lake. S3 names are for Vultr Object Storage.
+
+```sh
+docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait
+uv sync
+uv run pytest -q
+uv run ruff check .
+uv run ruff format --check .
+uv run ontofill run ../proveedor-abierto/case
+uv run ontofill refine ../proveedor-abierto/case
+uv run ontofill export ../proveedor-abierto/case
+docker compose --env-file .env -f infra/compose/compose.yaml down
+```
+
+`oxigraph-health` probes Oxigraph HTTP readiness from outside its distroless
+image. `docker compose ... ps` reports the stack state. Keep `.env` and lake
+data out of Git.

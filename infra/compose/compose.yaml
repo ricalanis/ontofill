@@ -1,0 +1,43 @@
+name: ontofill
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  oxigraph:
+    image: oxigraph/oxigraph:0.5.9
+    command: ["serve", "--location", "/data", "--bind", "0.0.0.0:7878"]
+    ports:
+      - "127.0.0.1:7878:7878"
+    volumes:
+      - oxigraph_data:/data
+
+  # The official Oxigraph image is distroless, so HTTP readiness is probed
+  # from this small companion rather than through a binary inside that image.
+  oxigraph-health:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c", "while true; do sleep 3600; done"]
+    depends_on:
+      - oxigraph
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://oxigraph:7878/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
+  oxigraph_data:
