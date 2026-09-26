@@ -1,0 +1,4 @@
+# Placeholder. Python package `ontofill`; depends on the local `packages/ontofill-scrape`.
+[project]
+name = "ontofill"
+version = "0.0.0"
