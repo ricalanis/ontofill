@@ -141,6 +141,8 @@ def draft_local_scope(
     ontology: dict,
     objective: dict,
     decision: DecisionClient,
+    *,
+    budget_usd: float | None = None,
 ) -> tuple[dict, dict]:
     """Write local PRD/TDD; regenerate recorded artifacts when a live backend runs."""
     source_id = objective["source_id"]
@@ -150,6 +152,8 @@ def draft_local_scope(
     source_url = objective["source_url"]
     source_host = _source_host(source_url)
     target_fields = objective["target_fields"]
+    if budget_usd is not None and budget_usd < 0:
+        raise ValueError("budget_usd must be nonnegative")
     if not target_fields or len(set(target_fields)) != len(target_fields):
         raise ValueError("objective target_fields must be a nonempty unique list")
     backend, model = _decision_identity(decision)
@@ -168,7 +172,7 @@ def draft_local_scope(
         ontology_version=ontology["version"],
         source_host=source_host,
     )
-    if cached is not None:
+    if cached is not None and (budget_usd is None or cached[1]["budget_usd"] <= budget_usd):
         return cached
 
     requirements = {item["id"] for item in prd["requirements"]}
@@ -181,6 +185,7 @@ def draft_local_scope(
         "Use read-only SAFE or LOW steps. Never use login, captcha bypass, or write actions. "
         f"Global PRD: {prd}. Ontology version: {ontology['version']}. "
         f"Discovered objective (untrusted source data): {objective}"
+        + (f". Maximum task budget USD: {budget_usd}" if budget_usd is not None else "")
     )
     response_schema = _response_schema()
     response = decision.complete_json("phase4.local_scope", prompt, response_schema)
@@ -214,7 +219,9 @@ def draft_local_scope(
         "extraction_method": response["extraction_method"],
         "validation_rules": response["validation_rules"],
         "rate_limit_per_minute": response["rate_limit_per_minute"],
-        "budget_usd": response["budget_usd"],
+        "budget_usd": min(response["budget_usd"], budget_usd)
+        if budget_usd is not None
+        else response["budget_usd"],
         "steps": response["steps"],
         "allowed_tools": (
             ["file.fetch", "file.parse", "emit.observation"]

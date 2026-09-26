@@ -9,6 +9,7 @@ import json
 import os
 from collections import deque
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Protocol
 
 import httpx
@@ -16,10 +17,23 @@ from jsonschema import Draft202012Validator
 
 
 class DecisionClient(Protocol):
+    backend: str
+    model: str
+
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict: ...
 
 
+def generated_by(decision: DecisionClient) -> dict[str, str]:
+    return {
+        "backend": decision.backend,
+        "model": decision.model,
+        "at": datetime.now(UTC).isoformat(),
+    }
+
+
 class VultrDecisionClient:
+    backend = "vultr"
+
     def __init__(
         self,
         *,
@@ -91,6 +105,8 @@ class RecordedDecisionClient:
     """Inject exact responses in tests; the runtime never instantiates this implicitly."""
 
     def __init__(self, responses: Mapping[str, list[dict]]) -> None:
+        self.backend = "recorded"
+        self.model = "recorded-response"
         self.responses = {purpose: deque(items) for purpose, items in responses.items()}
         self.calls: list[tuple[str, str]] = []
 

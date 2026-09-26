@@ -47,3 +47,9 @@ docker compose --env-file .env -f infra/compose/compose.yaml down
 `oxigraph-health` probes Oxigraph HTTP readiness from outside its distroless
 image. `docker compose ... ps` reports the stack state. Keep `.env` and lake
 data out of Git.
+
+Without Vultr inference credentials, `ontofill run` creates a `mock-` run under
+ignored `.cache/case-mock/` and exits 3 because recorded artifacts cannot satisfy
+human checkpoints. `ontofill export` for a mock run requires its explicit run ID.
+With Vultr credentials in `.env`, live artifacts replace recorded ones and each
+checkpoint pauses until an authorized reviewer creates `APPROVED` in the case.

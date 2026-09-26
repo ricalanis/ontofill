@@ -17,6 +17,7 @@ dependencies = [
   "ontofill-scrape",
   "psycopg[binary]>=3.2",
   "pyshacl>=0.30",
+  "python-dotenv>=1.2.3",
   "pyyaml>=6.0",
   "rdflib>=7.0",
 ]

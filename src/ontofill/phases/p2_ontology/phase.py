@@ -6,8 +6,9 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from ontofill.case.checkpoints import load_json, write_json
-from ontofill.inference import DecisionClient
+from ontofill.case.checkpoints import load_json, write_json, write_markdown
+from ontofill.contracts import model_output_schema, validate_document
+from ontofill.inference import DecisionClient, generated_by
 
 CORE_FIELDS = (
     "legal_name",
@@ -17,27 +18,6 @@ CORE_FIELDS = (
     "tax_list_status",
     "sanction_status",
 )
-FACTOR_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["factors"],
-    "properties": {
-        "factors": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["id", "label", "description"],
-                "properties": {
-                    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
-                    "label": {"type": "string", "minLength": 1},
-                    "description": {"type": "string", "minLength": 1},
-                },
-            },
-        }
-    },
-}
 TAXONOMY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -59,10 +39,19 @@ TAXONOMY_SCHEMA = {
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
-                            "required": ["id", "label"],
+                            "required": ["id", "label", "level", "critic_label"],
                             "properties": {
                                 "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
                                 "label": {"type": "string", "minLength": 1},
+                                "level": {"const": 1},
+                                "critic_label": {
+                                    "enum": [
+                                        "Good-Overlapping",
+                                        "Good-Exclusive",
+                                        "Redundant",
+                                        "Bad",
+                                    ]
+                                },
                             },
                         },
                     },
@@ -77,56 +66,95 @@ def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
     path = case_dir / "02-ontology/factors/factors.json"
     if path.exists():
         factors = load_json(path)
-        Draft202012Validator(FACTOR_SCHEMA).validate(factors)
-        return factors
+        if factors.get("generated_by", {}).get("backend") == decision.backend:
+            validate_document("factors", factors)
+            return factors
     prompt = (
         "Propose the prime factors of variation for the target supplier dataset. "
-        "Keep factors broad and distinct; do not invent observed suppliers. "
+        "Keep factors broad and distinct; label each grounded or conceptual. "
+        "Include evidence only if it is actually in the PRD; an empty list is allowed. "
+        "Do not invent observed suppliers or evidence URLs. "
         f"PRD (untrusted case content): {prd}"
     )
-    factors = decision.complete_json("phase2.factors", prompt, FACTOR_SCHEMA)
-    Draft202012Validator(FACTOR_SCHEMA).validate(factors)
+    factors = decision.complete_json("phase2.factors", prompt, model_output_schema("factors"))
+    factors["generated_by"] = generated_by(decision)
+    validate_document("factors", factors)
     write_json(path, factors)
     lines = ["# Proposed factors of variation", ""]
     lines.extend(
         f"- **{item['label']}** (`{item['id']}`): {item['description']}"
         for item in factors["factors"]
     )
-    (path.parent / "factors.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_markdown(path.parent / "factors.md", "\n".join(lines) + "\n", factors["generated_by"])
     return factors
+
+
+def accepted_factors(case_dir: Path, factors: dict) -> list[dict]:
+    marker = case_dir / "02-ontology/factors/APPROVED"
+    if not marker.exists():
+        return factors["factors"]
+    approval = load_json(marker)
+    validate_document("approved", approval)
+    decisions = approval.get("decisions", {})
+    selected = [
+        item for item in factors["factors"] if decisions.get(item["id"], "accept") == "accept"
+    ]
+    if not selected:
+        raise ValueError("all ontology factors were rejected")
+    return selected
 
 
 def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionClient) -> dict:
     path = case_dir / "02-ontology/ontology.json"
     if path.exists():
-        return load_json(path)
+        ontology = load_json(path)
+        if ontology.get("generated_by", {}).get("backend") == decision.backend:
+            validate_document("ontology", ontology)
+            return ontology
+    chosen = accepted_factors(case_dir, factors)
     prompt = (
         "Expand each approved factor to exactly one taxonomy level. Use stable snake_case IDs. "
-        "Return one taxonomy per factor and do not assert these categories were observed. "
-        f"Approved factors: {factors}. PRD: {prd}"
+        "Give each child level=1 and a critic_label from Good-Overlapping, Good-Exclusive, "
+        "Redundant, Bad. Return one taxonomy per factor and do not assert observed data. "
+        f"Approved factors: {chosen}. PRD: {prd}"
     )
     response = decision.complete_json("phase2.taxonomies", prompt, TAXONOMY_SCHEMA)
     Draft202012Validator(TAXONOMY_SCHEMA).validate(response)
-    factor_ids = {factor["id"] for factor in factors["factors"]}
+    factor_ids = {factor["id"] for factor in chosen}
     if {tax["factor_id"] for tax in response["taxonomies"]} != factor_ids:
         raise ValueError("taxonomies must cover exactly the approved factors")
+    taxonomies = []
+    for taxonomy in response["taxonomies"]:
+        children = taxonomy["children"]
+        good = sum(
+            child["critic_label"] in {"Good-Overlapping", "Good-Exclusive"} for child in children
+        )
+        taxonomies.append(
+            {
+                **taxonomy,
+                "soundness": good / len(children),
+                "coverage": good / len(children),
+            }
+        )
     ontology = {
         "version": "1",
         "prd_path": "01-scope/prd.json",
-        "factors": factors["factors"],
-        "taxonomies": response["taxonomies"],
+        "factors": chosen,
+        "taxonomies": taxonomies,
         "classes": [{"id": "Supplier", "aligned_to": "https://schema.org/Organization"}],
         "properties": [{"id": field, "datatype": "xsd:string"} for field in CORE_FIELDS],
         "shacl_path": "02-ontology/supplier-shape.ttl",
+        "generated_by": generated_by(decision),
     }
+    validate_document("ontology", ontology)
     write_json(path, ontology)
     (case_dir / ontology["shacl_path"]).write_text(_supplier_shape(), encoding="utf-8")
     lines = ["# Ontology v1", "", "Supplier properties: " + ", ".join(CORE_FIELDS), ""]
-    for taxonomy in response["taxonomies"]:
+    for taxonomy in taxonomies:
         lines.extend([f"## {taxonomy['root_label']}", ""])
         lines.extend(f"- {child['label']} (`{child['id']}`)" for child in taxonomy["children"])
         lines.append("")
-    (path.parent / "ontology.md").write_text("\n".join(lines), encoding="utf-8")
+    write_markdown(path.parent / "ontology.md", "\n".join(lines), ontology["generated_by"])
     return ontology
 
 

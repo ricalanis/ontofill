@@ -18,9 +18,10 @@ DONE: `uv run pytest -q tests/test_sandbox.py`.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
 
 ## C3: five-phase walking skeleton
-- [ ] Brief to PRD, ontology, discovered source, local TDD, S1 extraction, silver, SHACL, gold and export.
-- [ ] Check: case run yields one evidenced supplier and valid export metrics.
+- [x] Brief to PRD, ontology, discovered source, local TDD, S1 extraction, silver, SHACL, gold and export in a labeled recorded scratch run.
+- [x] Local check: 107 tests; real-brief `mock-` run yielded one evidenced supplier with 3 of 6 core fields, valid metrics, jobs proof and replayable export; remained paused and never advanced latest.
+- [ ] Live C3 check: Vultr inference/S3 credentials, three human approvals, and app-owned real export with the required core-field coverage.
 FILES: `src/ontofill/`, `packages/ontofill-scrape/`, `pyproject.toml`, `uv.lock`, `schemas/`, `tests/`, `.env.example`, `.gitignore`, `README.md`.
 TASK: Run one source end to end using discovered sources and evidence-backed gold values.
-DONE: `uv run pytest -q && uv run ontofill run ../proveedor-abierto/case --run-id c3-check && uv run ontofill export ../proveedor-abierto/case --run-id c3-check`.
+DONE: local synthetic and real-brief mock check above; live check remains pending credentials and approvals and cannot be replaced by recorded metrics.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.

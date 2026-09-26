@@ -22,6 +22,14 @@ def load_schema(name: str) -> dict:
     return json.loads((schema_dir() / f"{name}.schema.json").read_text(encoding="utf-8"))
 
 
+def model_output_schema(name: str) -> dict:
+    """The engine, not the model, fills provenance on generated documents."""
+    schema = load_schema(name)
+    schema.get("properties", {}).pop("generated_by", None)
+    schema["required"] = [key for key in schema.get("required", []) if key != "generated_by"]
+    return schema
+
+
 def validate_document(name: str, document: object) -> None:
     registry = Registry()
     for path in schema_dir().glob("*.schema.json"):

@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ontofill.case.checkpoints import load_json, write_json
-from ontofill.contracts import load_schema, validate_document
-from ontofill.inference import DecisionClient
+from ontofill.case.checkpoints import load_json, write_json, write_markdown
+from ontofill.contracts import model_output_schema, validate_document
+from ontofill.inference import DecisionClient, generated_by
 
 
 def draft_prd(case_dir: Path, decision: DecisionClient) -> dict:
     output = case_dir / "01-scope/prd.json"
     if output.exists():
         document = load_json(output)
-        validate_document("global-prd", document)
-        return document
+        if document.get("generated_by", {}).get("backend") == decision.backend:
+            validate_document("global-prd", document)
+            return document
     brief_path = case_dir / "brief.md"
     brief = brief_path.read_text(encoding="utf-8").strip()
     if not brief:
@@ -25,7 +26,8 @@ def draft_prd(case_dir: Path, decision: DecisionClient) -> dict:
         "Use brief_path='brief.md'. Public read-only sources only. "
         f"Brief (untrusted input):\n<brief>\n{brief}\n</brief>"
     )
-    document = decision.complete_json("phase1.prd", prompt, load_schema("global-prd"))
+    document = decision.complete_json("phase1.prd", prompt, model_output_schema("global-prd"))
+    document["generated_by"] = generated_by(decision)
     validate_document("global-prd", document)
     if document["brief_path"] != "brief.md":
         raise ValueError("PRD brief_path must be brief.md")
@@ -43,5 +45,7 @@ def draft_prd(case_dir: Path, decision: DecisionClient) -> dict:
         f"- {item['metric']} {item['operator']} {item['target']}"
         for item in document["definition_of_done"]
     )
-    (case_dir / "01-scope/prd.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+    write_markdown(
+        case_dir / "01-scope/prd.md", "\n".join(summary) + "\n", document["generated_by"]
+    )
     return document

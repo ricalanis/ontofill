@@ -1,5 +1,6 @@
 import json
 
+import yaml
 from rdflib import Graph
 
 from ontofill.case.checkpoints import require_approval
@@ -36,7 +37,16 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                             "id": "supplier_type",
                             "label": "Supplier type",
                             "description": "How suppliers differ",
-                        }
+                            "kind": "conceptual",
+                            "evidence": [],
+                        },
+                        {
+                            "id": "unneeded_factor",
+                            "label": "Unneeded factor",
+                            "description": "Rejected during review",
+                            "kind": "conceptual",
+                            "evidence": [],
+                        },
                     ]
                 }
             ],
@@ -46,7 +56,14 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                         {
                             "factor_id": "supplier_type",
                             "root_label": "Supplier type",
-                            "children": [{"id": "company", "label": "Company"}],
+                            "children": [
+                                {
+                                    "id": "company",
+                                    "label": "Company",
+                                    "level": 1,
+                                    "critic_label": "Good-Exclusive",
+                                }
+                            ],
                         }
                     ]
                 }
@@ -58,17 +75,51 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
     assert [purpose for purpose, _ in decisions.calls] == ["phase1.prd"]
     scope = tmp_path / "01-scope"
     assert not require_approval(
-        scope, phase=1, checkpoint="prd", artifact_paths=["01-scope/prd.md"]
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.md"],
+        generated_by=prd["generated_by"],
     )
     assert (scope / "APPROVAL_PENDING.md").exists()
+    front_matter = (scope / "APPROVAL_PENDING.md").read_text().split("---", 2)[1]
+    assert yaml.safe_load(front_matter)["generated_by"]["backend"] == "recorded"
     (scope / "APPROVED").write_text(
         json.dumps({"approver": "Test Reviewer", "date": "2026-09-26", "checkpoint": "prd"}),
         encoding="utf-8",
     )
-    assert require_approval(scope, phase=1, checkpoint="prd", artifact_paths=["01-scope/prd.md"])
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.md"],
+        generated_by=prd["generated_by"],
+    )
+    live_provenance = {"backend": "vultr", "model": "test-model", "at": "2026-09-26T14:00:00Z"}
+    assert require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.md"],
+        generated_by=live_provenance,
+    )
     factors = draft_factors(tmp_path, prd, decisions)
     assert factors["factors"][0]["id"] == "supplier_type"
+    factor_dir = tmp_path / "02-ontology/factors"
+    (factor_dir / "APPROVED").write_text(
+        json.dumps(
+            {
+                "approver": "Test Reviewer",
+                "date": "2026-09-26",
+                "checkpoint": "factors",
+                "decisions": {"supplier_type": "accept", "unneeded_factor": "reject"},
+            }
+        ),
+        encoding="utf-8",
+    )
     ontology = draft_ontology(tmp_path, prd, factors, decisions)
     assert ontology["taxonomies"][0]["children"][0]["id"] == "company"
+    assert [factor["id"] for factor in ontology["factors"]] == ["supplier_type"]
+    assert ontology["taxonomies"][0]["soundness"] == 1
     shape = Graph().parse(tmp_path / "02-ontology/supplier-shape.ttl", format="turtle")
     assert len(shape) > 0
