@@ -159,9 +159,10 @@ def test_extraction_lookup_gaps_and_observation_channel() -> None:
         "legal_name": "Proveedor Ejemplo 01"
     }
     entities = [{"id": "sup:1", "tax_id": "EXM010101AAA", "legal_name": "Proveedor Ejemplo 01"}]
-    assert entity_lookup(
-        entities, identifier_property="tax_id", identifier="EXM-010101-AAA"
-    )["id"] == "sup:1"
+    assert (
+        entity_lookup(entities, identifier_property="tax_id", identifier="EXM-010101-AAA")["id"]
+        == "sup:1"
+    )
     assert ontology_gaps(["legal_name", "tax_id"], {"sup:1": {"legal_name": "x"}}) == {
         "sup:1": ("tax_id",)
     }

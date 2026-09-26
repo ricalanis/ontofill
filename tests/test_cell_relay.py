@@ -36,8 +36,10 @@ def test_fixed_destination_relay_round_trip() -> None:
             "RELAY_LISTEN_PORT": str(relay_port),
         }
         process = subprocess.Popen(
-            [sys.executable, str(script)], env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [sys.executable, str(script)],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         try:
             for _ in range(40):

@@ -112,9 +112,12 @@ def test_proxy_rejects_metadata_mesh_and_rebound_addresses(monkeypatch) -> None:
     assert module._resolved_address("allowed.example", 443) is None
 
     monkeypatch.setattr(module, "ALLOWED", frozenset({"host.docker.internal"}))
-    monkeypatch.setattr(module.Path, "read_text", lambda *_args, **_kwargs: "172.17.0.1 host.docker.internal\n")
     monkeypatch.setattr(
-        module.socket, "getaddrinfo",
+        module.Path, "read_text", lambda *_args, **_kwargs: "172.17.0.1 host.docker.internal\n"
+    )
+    monkeypatch.setattr(
+        module.socket,
+        "getaddrinfo",
         lambda *_args, **_kwargs: [(2, 1, 6, "", ("172.17.0.1", 80))],
     )
     assert module._resolved_address("host.docker.internal", 80) == "172.17.0.1"

@@ -67,6 +67,7 @@ def test_cells_serve_reads_env_and_stops_cleanly(monkeypatch: pytest.MonkeyPatch
         ("session-control-token", ""),
         ("session-control-token", "tcp://127.0.0.1:2375"),
         ("session-control-token", "ssh://user:password@100.64.0.8"),
+        ("session-control-token", "ssh://user@100.64.0.8:22"),
     ],
 )
 def test_cells_serve_requires_token_and_ssh_host(

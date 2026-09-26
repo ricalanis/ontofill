@@ -62,7 +62,9 @@ class SkyvernSpec:
         if not isinstance(value, Mapping) or set(value) != expected_config:
             raise CellError("skyvern config requires pinned images and expiry")
         if not isinstance(brain_env, Mapping) or set(brain_env) != expected_env:
-            raise CellError("brain_env requires exactly OpenAI-compatible gateway URL and session key")
+            raise CellError(
+                "brain_env requires exactly OpenAI-compatible gateway URL and session key"
+            )
         try:
             spec = cls(
                 **value,
@@ -71,10 +73,7 @@ class SkyvernSpec:
             )
         except TypeError as exc:
             raise CellError("invalid skyvern config") from exc
-        if any(
-            not isinstance(getattr(spec, name), str)
-            for name in cls.__dataclass_fields__
-        ):
+        if any(not isinstance(getattr(spec, name), str) for name in cls.__dataclass_fields__):
             raise CellError("skyvern config fields must be strings")
         if not _SKYVERN_IMAGE.fullmatch(spec.image):
             raise CellError("Skyvern image must be the upstream sha256-pinned image")
@@ -257,8 +256,18 @@ def _host_iptables(*args: str, check: bool = True) -> subprocess.CompletedProces
     if target is None:
         raise CellError("Skyvern gateway firewall needs remote sandbox SSH")
     command = [
-        *_ssh_prefix(), "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target,
-        "sudo", "-n", "iptables", "-w", "5", *args,
+        *_ssh_prefix(),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        target,
+        "sudo",
+        "-n",
+        "iptables",
+        "-w",
+        "5",
+        *args,
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
@@ -272,7 +281,9 @@ def _host_iptables(*args: str, check: bool = True) -> subprocess.CompletedProces
 def _ensure_image(image: str) -> None:
     if _docker("image", "inspect", image, check=False).returncode:
         _docker("pull", image, timeout=900)
-    inspected = json.loads(_docker("image", "inspect", image, "--format", "{{json .Config.Env}}").stdout)
+    inspected = json.loads(
+        _docker("image", "inspect", image, "--format", "{{json .Config.Env}}").stdout
+    )
     forbidden = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "AWS_ACCESS", "VULTR_", "JEV_")
     if any(
         any(fragment in entry.partition("=")[0].upper() for fragment in forbidden)
@@ -296,10 +307,14 @@ def _container_uplink_ip(name: str, uplink_network: str) -> str:
     return address
 
 
-def _firewall_rule(cell_id: str, source_ip: str, gateway: SkyvernSpec, *, allow: bool) -> tuple[str, ...]:
+def _firewall_rule(
+    cell_id: str, source_ip: str, gateway: SkyvernSpec, *, allow: bool
+) -> tuple[str, ...]:
     parts = ["DOCKER-USER", "-s", source_ip]
     if allow:
-        parts.extend(["-d", gateway.gateway_host, "-p", "tcp", "--dport", str(gateway.gateway_port)])
+        parts.extend(
+            ["-d", gateway.gateway_host, "-p", "tcp", "--dport", str(gateway.gateway_port)]
+        )
     else:
         parts.extend(["-m", "conntrack", "--ctstate", "NEW"])
     parts.extend(["-m", "comment", "--comment", cell_id, "-j", "ACCEPT" if allow else "DROP"])
@@ -308,8 +323,19 @@ def _firewall_rule(cell_id: str, source_ip: str, gateway: SkyvernSpec, *, allow:
 
 def _input_drop_rule(cell_id: str, source_ip: str) -> tuple[str, ...]:
     return (
-        "INPUT", "-s", source_ip, "-m", "conntrack", "--ctstate", "NEW",
-        "-m", "comment", "--comment", cell_id, "-j", "DROP",
+        "INPUT",
+        "-s",
+        source_ip,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "NEW",
+        "-m",
+        "comment",
+        "--comment",
+        cell_id,
+        "-j",
+        "DROP",
     )
 
 
@@ -318,11 +344,15 @@ def _install_gateway_firewall(cell: _Cell, gateway: SkyvernSpec) -> None:
     cell.gateway_source_ip = source_ip
     cell.gateway_target = replace(gateway, gateway_session_token="")
     # Deny first. The relay contains no credential before the brain starts.
-    _host_iptables("-I", "DOCKER-USER", "1", *_firewall_rule(cell.cell_id, source_ip, gateway, allow=False)[1:])
+    _host_iptables(
+        "-I", "DOCKER-USER", "1", *_firewall_rule(cell.cell_id, source_ip, gateway, allow=False)[1:]
+    )
     cell.gateway_drop_installed = True
     _host_iptables("-I", "INPUT", "1", *_input_drop_rule(cell.cell_id, source_ip)[1:])
     cell.gateway_input_installed = True
-    _host_iptables("-I", "DOCKER-USER", "1", *_firewall_rule(cell.cell_id, source_ip, gateway, allow=True)[1:])
+    _host_iptables(
+        "-I", "DOCKER-USER", "1", *_firewall_rule(cell.cell_id, source_ip, gateway, allow=True)[1:]
+    )
     cell.gateway_allow_installed = True
     for allow in (True, False):
         rule = _firewall_rule(cell.cell_id, source_ip, gateway, allow=allow)
@@ -351,23 +381,25 @@ def _remove_gateway_firewall(cell: _Cell) -> bool:
             _host_iptables("-D", *_input_drop_rule(cell.cell_id, source_ip), check=False)
     forwarding_gone = all(
         _host_iptables(
-            "-C", *_firewall_rule(cell.cell_id, source_ip, cell.gateway_target, allow=allow),
+            "-C",
+            *_firewall_rule(cell.cell_id, source_ip, cell.gateway_target, allow=allow),
             check=False,
-        ).returncode != 0
-        for source_ip, allow, installed in installed_rules if source_ip and installed
+        ).returncode
+        != 0
+        for source_ip, allow, installed in installed_rules
+        if source_ip and installed
     )
     input_gone = all(
-        _host_iptables("-C", *_input_drop_rule(cell.cell_id, source_ip), check=False).returncode != 0
-        for source_ip, installed in input_rules if source_ip and installed
+        _host_iptables("-C", *_input_drop_rule(cell.cell_id, source_ip), check=False).returncode
+        != 0
+        for source_ip, installed in input_rules
+        if source_ip and installed
     )
     return forwarding_gone and input_gone
 
 
 def _wait_gateway(name: str, host: str, port: int) -> None:
-    probe = (
-        "import socket; "
-        f"socket.create_connection(({host!r}, {port}), 3).close()"
-    )
+    probe = f"import socket; socket.create_connection(({host!r}, {port}), 3).close()"
     for _ in range(10):
         if not _docker("exec", name, "python", "-c", probe, check=False, timeout=5).returncode:
             return
@@ -531,7 +563,9 @@ class CellManager:
         except (KeyError, ValueError) as exc:
             raise CellError("browser cells require a known Docker Engine version") from exc
         if docker_major < 28:
-            raise CellError("browser cells require Docker Engine 28 or newer for loopback isolation")
+            raise CellError(
+                "browser cells require Docker Engine 28 or newer for loopback isolation"
+            )
         if "runsc" not in info.get("Runtimes", {}):
             raise CellError("gVisor runsc is required for browser cells")
         agent_image, egress_image = _images()
@@ -670,86 +704,191 @@ class CellManager:
         cell.brain = f"ontofill-cell-brain-{suffix}"
         _docker("network", "create", cell.uplink_network)
         _docker(
-            "network", "create", "--internal", "-o",
-            "com.docker.network.bridge.gateway_mode_ipv4=isolated", cell.brain_network,
+            "network",
+            "create",
+            "--internal",
+            "-o",
+            "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+            cell.brain_network,
         )
 
         relay_caps = (
-            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--pids-limit", "64", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.25",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "64",
+            "--memory",
+            "128m",
+            "--memory-swap",
+            "128m",
+            "--cpus",
+            "0.25",
         )
         _docker(
-            "run", "-d", "--name", cell.cdp_relay, "--network", cell.network,
+            "run",
+            "-d",
+            "--name",
+            cell.cdp_relay,
+            "--network",
+            cell.network,
             *relay_caps,
-            "-e", "RELAY_TARGET_HOST=" + cell.hands,
-            "-e", "RELAY_TARGET_PORT=9222", "-e", "RELAY_LISTEN_PORT=9222",
-            relay_image, "python", "-u", "/app/relay.py",
+            "-e",
+            "RELAY_TARGET_HOST=" + cell.hands,
+            "-e",
+            "RELAY_TARGET_PORT=9222",
+            "-e",
+            "RELAY_LISTEN_PORT=9222",
+            relay_image,
+            "python",
+            "-u",
+            "/app/relay.py",
         )
         _docker("network", "connect", "--alias", "cdp", cell.brain_network, cell.cdp_relay)
         _docker(
-            "run", "-d", "--name", cell.gateway_relay, "--network", cell.brain_network,
-            "--network-alias", "gateway", *relay_caps,
-            "-e", "RELAY_TARGET_HOST=" + spec.gateway_host,
-            "-e", "RELAY_TARGET_PORT=" + str(spec.gateway_port),
-            "-e", "RELAY_LISTEN_PORT=8787", relay_image,
-            "python", "-u", "/app/relay.py",
+            "run",
+            "-d",
+            "--name",
+            cell.gateway_relay,
+            "--network",
+            cell.brain_network,
+            "--network-alias",
+            "gateway",
+            *relay_caps,
+            "-e",
+            "RELAY_TARGET_HOST=" + spec.gateway_host,
+            "-e",
+            "RELAY_TARGET_PORT=" + str(spec.gateway_port),
+            "-e",
+            "RELAY_LISTEN_PORT=8787",
+            relay_image,
+            "python",
+            "-u",
+            "/app/relay.py",
         )
         _docker("network", "connect", cell.uplink_network, cell.gateway_relay)
         _install_gateway_firewall(cell, spec)
         _wait_gateway(cell.gateway_relay, spec.gateway_host, spec.gateway_port)
 
         _docker(
-            "run", "-d", "--name", cell.database, "--network", cell.brain_network,
-            "--network-alias", "postgres", "--read-only", "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges", "--user", "70:70",
-            "--pids-limit", "64", "--memory", "512m", "--memory-swap", "512m",
-            "--cpus", "0.5", "--tmpfs", "/tmp:rw,nosuid,size=64m,mode=1777",
-            "--tmpfs", "/var/run/postgresql:rw,nosuid,size=16m,mode=1777",
-            "--tmpfs", "/var/lib/postgresql/data:rw,nosuid,size=512m,mode=1777",
-            "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_USER=skyvern",
-            "-e", "POSTGRES_DB=skyvern", "-e", "PGDATA=/var/lib/postgresql/data/pgdata",
+            "run",
+            "-d",
+            "--name",
+            cell.database,
+            "--network",
+            cell.brain_network,
+            "--network-alias",
+            "postgres",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            "70:70",
+            "--pids-limit",
+            "64",
+            "--memory",
+            "512m",
+            "--memory-swap",
+            "512m",
+            "--cpus",
+            "0.5",
+            "--tmpfs",
+            "/tmp:rw,nosuid,size=64m,mode=1777",
+            "--tmpfs",
+            "/var/run/postgresql:rw,nosuid,size=16m,mode=1777",
+            "--tmpfs",
+            "/var/lib/postgresql/data:rw,nosuid,size=512m,mode=1777",
+            "-e",
+            "POSTGRES_HOST_AUTH_METHOD=trust",
+            "-e",
+            "POSTGRES_USER=skyvern",
+            "-e",
+            "POSTGRES_DB=skyvern",
+            "-e",
+            "PGDATA=/var/lib/postgresql/data/pgdata",
             spec.postgres_image,
         )
         self._wait_database(cell.database)
         brain_args = (
-            "run", "-d", "--name", cell.brain, "--network", cell.brain_network,
-            "--log-driver", "none",
-            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            *cell.limits.docker_args(), "--tmpfs", "/tmp:rw,nosuid,size=256m,mode=1777",
-            "--tmpfs", "/data:rw,nosuid,size=256m,mode=1777",
-            "--tmpfs", "/app/.skyvern:rw,nosuid,size=8m,mode=1777",
-            "-e", "DATABASE_STRING=postgresql+psycopg://skyvern@postgres:5432/skyvern",
-            "-e", "BROWSER_TYPE=cdp-connect",
-            "-e", "BROWSER_REMOTE_DEBUGGING_URL=http://cdp:9222/",
-            "-e", "BROWSER_STREAMING_MODE=cdp",
-            "-e", "ENABLE_OPENAI=true", "-e", "LLM_KEY=OPENAI_GPT5_5",
-            "-e", "OPENAI_API_BASE=" + spec.gateway_scheme + "://gateway:8787/v1",
-            "-e", "ENABLE_LOCAL_CREDENTIAL_VAULT=false", "-e", "OPENAI_API_KEY",
+            "run",
+            "-d",
+            "--name",
+            cell.brain,
+            "--network",
+            cell.brain_network,
+            "--log-driver",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            *cell.limits.docker_args(),
+            "--tmpfs",
+            "/tmp:rw,nosuid,size=256m,mode=1777",
+            "--tmpfs",
+            "/data:rw,nosuid,size=256m,mode=1777",
+            "--tmpfs",
+            "/app/.skyvern:rw,nosuid,size=8m,mode=1777",
+            "-e",
+            "DATABASE_STRING=postgresql+psycopg://skyvern@postgres:5432/skyvern",
+            "-e",
+            "BROWSER_TYPE=cdp-connect",
+            "-e",
+            "BROWSER_REMOTE_DEBUGGING_URL=http://cdp:9222/",
+            "-e",
+            "BROWSER_STREAMING_MODE=cdp",
+            "-e",
+            "ENABLE_OPENAI=true",
+            "-e",
+            "LLM_KEY=OPENAI_GPT5_5",
+            "-e",
+            "OPENAI_API_BASE=" + spec.gateway_scheme + "://gateway:8787/v1",
+            "-e",
+            "ENABLE_LOCAL_CREDENTIAL_VAULT=false",
+            "-e",
+            "OPENAI_API_KEY",
             spec.image,
         )
         cell.session_token = spec.gateway_session_token
         _docker_with_session_token(cell.session_token, *brain_args)
         _docker(
-            "run", "-d", "--name", cell.api_relay, "--network", cell.uplink_network,
-            *relay_caps, "-p", "127.0.0.1::8000",
-            "-e", "RELAY_TARGET_HOST=" + cell.brain,
-            "-e", "RELAY_TARGET_PORT=8000", "-e", "RELAY_LISTEN_PORT=8000",
-            relay_image, "python", "-u", "/app/relay.py",
+            "run",
+            "-d",
+            "--name",
+            cell.api_relay,
+            "--network",
+            cell.uplink_network,
+            *relay_caps,
+            "-p",
+            "127.0.0.1::8000",
+            "-e",
+            "RELAY_TARGET_HOST=" + cell.brain,
+            "-e",
+            "RELAY_TARGET_PORT=8000",
+            "-e",
+            "RELAY_LISTEN_PORT=8000",
+            relay_image,
+            "python",
+            "-u",
+            "/app/relay.py",
         )
         _docker("network", "connect", cell.brain_network, cell.api_relay)
         cell.api_source_ip = _container_uplink_ip(cell.api_relay, cell.uplink_network)
         _host_iptables(
-            "-I", "DOCKER-USER", "1",
+            "-I",
+            "DOCKER-USER",
+            "1",
             *_firewall_rule(cell.cell_id, cell.api_source_ip, spec, allow=False)[1:],
         )
         cell.api_drop_installed = True
-        _host_iptables(
-            "-I", "INPUT", "1", *_input_drop_rule(cell.cell_id, cell.api_source_ip)[1:]
-        )
+        _host_iptables("-I", "INPUT", "1", *_input_drop_rule(cell.cell_id, cell.api_source_ip)[1:])
         cell.api_input_installed = True
-        _host_iptables(
-            "-C", *_firewall_rule(cell.cell_id, cell.api_source_ip, spec, allow=False)
-        )
+        _host_iptables("-C", *_firewall_rule(cell.cell_id, cell.api_source_ip, spec, allow=False))
         _host_iptables("-C", *_input_drop_rule(cell.cell_id, cell.api_source_ip))
         port, cell.brain_tunnel = _open_tunnel(_published_port(cell.api_relay, 8000))
         _wait_brain(port)
@@ -860,8 +999,13 @@ class CellManager:
             except subprocess.TimeoutExpired:
                 cell.brain_tunnel.kill()
         for name in (
-            cell.api_relay, cell.brain, cell.database, cell.gateway_relay, cell.cdp_relay,
-            cell.hands, cell.proxy,
+            cell.api_relay,
+            cell.brain,
+            cell.database,
+            cell.gateway_relay,
+            cell.cdp_relay,
+            cell.hands,
+            cell.proxy,
         ):
             if name is None:
                 continue
@@ -880,11 +1024,24 @@ class CellManager:
             "proxy_gone": _docker("inspect", cell.proxy, check=False).returncode != 0,
             "network_removed": _docker("network", "inspect", cell.network, check=False).returncode
             != 0
-            and (cell.brain_network is None or _docker("network", "inspect", cell.brain_network, check=False).returncode != 0)
-            and (cell.uplink_network is None or _docker("network", "inspect", cell.uplink_network, check=False).returncode != 0)
+            and (
+                cell.brain_network is None
+                or _docker("network", "inspect", cell.brain_network, check=False).returncode != 0
+            )
+            and (
+                cell.uplink_network is None
+                or _docker("network", "inspect", cell.uplink_network, check=False).returncode != 0
+            )
             and all(
                 _docker("inspect", name, check=False).returncode != 0
-                for name in (cell.api_relay, cell.brain, cell.database, cell.gateway_relay, cell.cdp_relay) if name
+                for name in (
+                    cell.api_relay,
+                    cell.brain,
+                    cell.database,
+                    cell.gateway_relay,
+                    cell.cdp_relay,
+                )
+                if name
             )
             and firewall_removed,
         }

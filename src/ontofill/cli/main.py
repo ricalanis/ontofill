@@ -44,11 +44,16 @@ def main(argv: list[str] | None = None) -> int:
         if not token:
             parser.error("ONTOFILL_CELLS_TOKEN must be set")
         docker_host = os.environ.get("ONTOFILL_SANDBOX_DOCKER_HOST", "")
-        parsed = urlsplit(docker_host)
+        try:
+            parsed = urlsplit(docker_host)
+            port = parsed.port
+        except ValueError:
+            parser.error("ONTOFILL_SANDBOX_DOCKER_HOST must be ssh://[user@]host")
         if (
             parsed.scheme != "ssh"
             or not parsed.hostname
             or parsed.password
+            or port is not None
             or parsed.path not in {"", "/"}
             or parsed.query
             or parsed.fragment

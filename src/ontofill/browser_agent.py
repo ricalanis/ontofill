@@ -56,6 +56,7 @@ class BrowserAgentClient:
         self._next_id = 1
         self._session_header: str | None = None
         self._initialized = False
+        self._live_view_session_id: str | None = None
 
     @classmethod
     def from_env(
@@ -146,6 +147,8 @@ class BrowserAgentClient:
     def session_open(
         self, tdd: dict, allowed_domains: list[str], limits: dict | None = None
     ) -> dict:
+        if self.feed is not None and self.feed.current_status is None:
+            raise RuntimeError("run status must be initialized before opening a browser session")
         result = self._tool(
             "session.open",
             {"tdd": tdd, "allowed_domains": allowed_domains, "limits": limits},
@@ -158,7 +161,9 @@ class BrowserAgentClient:
             or not live_view_url.startswith(("http://", "https://"))
         ):
             raise ValueError("session.open returned an invalid live_view_url")
-        self._set_live_view(live_view_url)
+        if live_view_url is not None:
+            self._set_live_view(live_view_url)
+            self._live_view_session_id = result["session_id"]
         return result
 
     def session_act(
@@ -179,7 +184,9 @@ class BrowserAgentClient:
         try:
             return self._tool("session.close", {"session_id": session_id})
         finally:
-            self._set_live_view(None)
+            if self._live_view_session_id == session_id:
+                self._set_live_view(None)
+                self._live_view_session_id = None
 
 
 class BrowserTraceBridge:

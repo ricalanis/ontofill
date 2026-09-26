@@ -25,7 +25,12 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
         calls.append(args)
         if args[:2] == ("info", "--format"):
             return subprocess.CompletedProcess(
-                args, 0, json.dumps({"Name": "synthetic", "ServerVersion": "28.5.1", "Runtimes": {"runsc": {}}}), ""
+                args,
+                0,
+                json.dumps(
+                    {"Name": "synthetic", "ServerVersion": "28.5.1", "Runtimes": {"runsc": {}}}
+                ),
+                "",
             )
         if args[:2] == ("inspect", "--format"):
             return subprocess.CompletedProcess(
@@ -43,7 +48,11 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
     )
     monkeypatch.setattr(cells_module, "_denied_probe_host", lambda _domains: "denied.invalid")
     monkeypatch.setattr(cells_module, "_mesh_probe_ip", lambda: "100.64.0.2")
-    monkeypatch.setattr(cells_module, "_published_port", lambda _name, internal_port=9222: 49152 if internal_port == 9222 else 49153)
+    monkeypatch.setattr(
+        cells_module,
+        "_published_port",
+        lambda _name, internal_port=9222: 49152 if internal_port == 9222 else 49153,
+    )
     monkeypatch.setattr(cells_module, "_open_tunnel", lambda port: (port, None))
     monkeypatch.setattr(
         cells_module, "_wait_cdp", lambda port: f"ws://127.0.0.1:{port}/devtools/browser/synthetic"
@@ -199,19 +208,30 @@ def _brain_env() -> dict:
     }
 
 
-def test_skyvern_creates_brain_with_separate_network_and_exact_gateway_firewall(monkeypatch, tmp_path: Path) -> None:
+def test_skyvern_creates_brain_with_separate_network_and_exact_gateway_firewall(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls = _fake_docker(monkeypatch)
     monkeypatch.setenv("ONTOFILL_SANDBOX_DOCKER_HOST", "ssh://sandbox@100.64.0.3")
     monkeypatch.setattr(cells_module, "_ensure_image", lambda _image: None)
     monkeypatch.setattr(cells_module, "_container_uplink_ip", lambda _name, _network: "172.17.0.9")
     monkeypatch.setattr(cells_module, "_wait_gateway", lambda *_args: None)
     monkeypatch.setattr(cells_module, "_wait_brain", lambda _port: None)
-    monkeypatch.setattr(cells_module.CellManager, "_wait_database", staticmethod(lambda _name: None))
-    monkeypatch.setattr(cells_module, "_probe_brain", lambda *_args: {
-        "cdp": "ALLOWED", "gateway": "ALLOWED", "egress": "BLOCKED",
-        "metadata": "BLOCKED", "mesh": "BLOCKED",
-        "credential_env_names": ["OPENAI_API_KEY"],
-    })
+    monkeypatch.setattr(
+        cells_module.CellManager, "_wait_database", staticmethod(lambda _name: None)
+    )
+    monkeypatch.setattr(
+        cells_module,
+        "_probe_brain",
+        lambda *_args: {
+            "cdp": "ALLOWED",
+            "gateway": "ALLOWED",
+            "egress": "BLOCKED",
+            "metadata": "BLOCKED",
+            "mesh": "BLOCKED",
+            "credential_env_names": ["OPENAI_API_KEY"],
+        },
+    )
     firewall_calls: list[tuple[str, ...]] = []
     rules: set[tuple[str, ...]] = set()
 
@@ -235,8 +255,15 @@ def test_skyvern_creates_brain_with_separate_network_and_exact_gateway_firewall(
 
     monkeypatch.setattr(cells_module, "_docker_with_session_token", token_docker)
     trace: list[dict] = []
-    manager = CellManager(lake=FileLake(tmp_path / "lake"), case_id="synthetic", run_id="mock-synthetic", on_trace=trace.append)
-    opened = manager.create("skyvern", ["example.invalid"], skyvern=_skyvern_config(), brain_env=_brain_env())
+    manager = CellManager(
+        lake=FileLake(tmp_path / "lake"),
+        case_id="synthetic",
+        run_id="mock-synthetic",
+        on_trace=trace.append,
+    )
+    opened = manager.create(
+        "skyvern", ["example.invalid"], skyvern=_skyvern_config(), brain_env=_brain_env()
+    )
     assert opened["brain_url"] == "http://127.0.0.1:49153"
     assert opened["cdp_url"].startswith("ws://127.0.0.1:")
     assert manager.status(opened["cell_id"])["state"] == "ready"
@@ -247,20 +274,43 @@ def test_skyvern_creates_brain_with_separate_network_and_exact_gateway_firewall(
     hands_run = next(call for call in runs if "agent:test" in call)
     hands_network = hands_run[hands_run.index("--network") + 1]
     assert brain_network != hands_network
-    uplink = next(call[-1] for call in calls if call[:2] == ("network", "create") and "uplink" in call[-1])
+    uplink = next(
+        call[-1] for call in calls if call[:2] == ("network", "create") and "uplink" in call[-1]
+    )
     assert uplink not in {brain_network, hands_network}
-    assert any(call[:2] == ("network", "connect") and call[2:] == (uplink, next(run[run.index("--name") + 1] for run in runs if "RELAY_LISTEN_PORT=8787" in run)) for call in calls)
+    assert any(
+        call[:2] == ("network", "connect")
+        and call[2:]
+        == (
+            uplink,
+            next(run[run.index("--name") + 1] for run in runs if "RELAY_LISTEN_PORT=8787" in run),
+        )
+        for call in calls
+    )
     assert "-p" not in brain_run
-    assert any(call[:4] == ("network", "create", "--internal", "-o") and "gateway_mode_ipv4=isolated" in call[4] for call in calls)
+    assert any(
+        call[:4] == ("network", "create", "--internal", "-o")
+        and "gateway_mode_ipv4=isolated" in call[4]
+        for call in calls
+    )
     assert any(call[:2] == ("run", "-d") and "127.0.0.1::8000" in call for call in runs)
     assert "-e" in brain_run and "OPENAI_API_KEY" in brain_run
     assert brain_run[brain_run.index("--log-driver") + 1] == "none"
     assert "session-only-token-synthetic" not in json.dumps(runs)
-    assert any("-s" in rule and "172.17.0.9" in rule and "100.64.0.2" in rule and "8787" in rule and "ACCEPT" in rule for rule in firewall_calls)
+    assert any(
+        "-s" in rule
+        and "172.17.0.9" in rule
+        and "100.64.0.2" in rule
+        and "8787" in rule
+        and "ACCEPT" in rule
+        for rule in firewall_calls
+    )
     assert any("DROP" in rule and "172.17.0.9" in rule for rule in firewall_calls)
     assert any(rule[:2] == ("-I", "INPUT") and "172.17.0.9" in rule for rule in firewall_calls)
     with pytest.raises(CellError, match="session credential"):
-        manager.report_task_result(opened["cell_id"], {"leak": "session-only-token-synthetic"}, ok=True)
+        manager.report_task_result(
+            opened["cell_id"], {"leak": "session-only-token-synthetic"}, ok=True
+        )
     manager.report_task_result(opened["cell_id"], {"task": "synthetic"}, ok=True)
     closed = manager.destroy(opened["cell_id"])
     assert closed["job_record"]["checkpoints"]["teardown"]["ok"]
@@ -269,7 +319,9 @@ def test_skyvern_creates_brain_with_separate_network_and_exact_gateway_firewall(
     assert rules == set()
 
 
-def test_skyvern_config_rejects_unpinned_or_long_lived_credentials_before_docker(monkeypatch) -> None:
+def test_skyvern_config_rejects_unpinned_or_long_lived_credentials_before_docker(
+    monkeypatch,
+) -> None:
     calls = _fake_docker(monkeypatch)
     monkeypatch.setenv("ONTOFILL_SANDBOX_DOCKER_HOST", "ssh://sandbox@100.64.0.3")
     manager = CellManager()
@@ -349,7 +401,9 @@ def test_skyvern_firewall_failure_rolls_back_both_networks(monkeypatch) -> None:
     monkeypatch.setattr(cells_module, "_host_iptables", firewall)
     manager = CellManager()
     with pytest.raises(CellError, match="firewall rejection"):
-        manager.create("skyvern", ["example.invalid"], skyvern=_skyvern_config(), brain_env=_brain_env())
+        manager.create(
+            "skyvern", ["example.invalid"], skyvern=_skyvern_config(), brain_env=_brain_env()
+        )
     assert drop_added and drop_removed
     assert sum(call[:2] == ("network", "rm") for call in calls) == 3
     job = next(iter(manager._cells.values())).job_record
@@ -395,17 +449,27 @@ def test_http_skyvern_request_forwards_only_the_two_brain_env_fields(monkeypatch
 
     def create(*args, **kwargs) -> dict:
         received.append((args, kwargs))
-        return {"cell_id": "cell:synthetic", "cdp_url": "ws://127.0.0.1:1/devtools/browser/x", "brain_url": "http://127.0.0.1:2", "live_view_port": None}
+        return {
+            "cell_id": "cell:synthetic",
+            "cdp_url": "ws://127.0.0.1:1/devtools/browser/x",
+            "brain_url": "http://127.0.0.1:2",
+            "live_view_port": None,
+        }
 
     monkeypatch.setattr(manager, "create", create)
     server = serve_cells(manager, token="synthetic-token", port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        body = {"backend": "skyvern", "allowed_domains": ["example.invalid"],
-                "skyvern": _skyvern_config(), "brain_env": _brain_env()}
+        body = {
+            "backend": "skyvern",
+            "allowed_domains": ["example.invalid"],
+            "skyvern": _skyvern_config(),
+            "brain_env": _brain_env(),
+        }
         request = Request(
-            f"http://127.0.0.1:{server.server_port}/cells", method="POST",
+            f"http://127.0.0.1:{server.server_port}/cells",
+            method="POST",
             data=json.dumps(body).encode(),
             headers={"Authorization": "Bearer synthetic-token", "Content-Type": "application/json"},
         )
@@ -413,7 +477,8 @@ def test_http_skyvern_request_forwards_only_the_two_brain_env_fields(monkeypatch
             assert "session-only-token-synthetic" not in response.read().decode()
         assert received[0][1]["brain_env"] == _brain_env()
         assert set(received[0][1]["brain_env"]) == {
-            "OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY",
+            "OPENAI_COMPATIBLE_API_BASE",
+            "OPENAI_COMPATIBLE_API_KEY",
         }
     finally:
         server.shutdown()
