@@ -35,3 +35,23 @@ one-way policies. Do not destroy tagged resources just to retry admission.
 The account's `/vpc2` API returned HTTP 404; `/vpcs` worked, so this deployment
 uses Vultr VPC with `attach_vpc`. The Object Storage cluster is selected
 deterministically by region and tier when apply resumes.
+
+## Resume checkpoint (admission gate cleared)
+
+`provision apply` reused the tagged control VM, VPC, firewall group and SSH
+key, and created the sandbox VM and the Standard-tier Object Storage
+subscription (ewr1) with the lake bucket. The sandbox enrolled with its
+one-off key into `ontofill-sandbox-host`; both one-off keys are now consumed.
+Cloud-init finished cleanly: `runsc` is a registered Docker runtime,
+`/dev/kvm` is present, and the DOCKER-USER guard is active. From a runsc
+container, metadata and NetBird peers time out while the internet is reachable.
+
+`bootstrap` linked control to sandbox Docker over SSH on the mesh (P2P over
+the VPC). The client uses lazy connections, so the P2P check first opens
+TCP 22. Policies are now one-way: admins to both VMs (all), control to
+sandbox (TCP 22, which carries Docker and the CDP SSH tunnel), and sandbox to
+control (TCP 8700, the inference gateway only). `Default` is disabled. A probe
+showed sandbox to control 22/8000 and sandbox/control to the admin peer
+blocked. `approvers` exists and is on the owner user's `auto_groups`. An
+external probe of both public IPs found 22, 80, 443, 8000, 8080 and 8700
+closed or filtered, and the firewall group still has zero rules.

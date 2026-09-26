@@ -10,5 +10,6 @@ FORMAT: `uv run ruff check infra/vultr src/ontofill/sandbox/capture.py sandbox/a
 - [x] Bootstrap NetBird with a short-lived key in cloud-init `write_files`, absent from shell arguments and the persistent script.
 - [x] Transfer remote sandbox outputs with `docker cp`; preserve local behavior and proof.
 - [x] Run DONE, dry-run, sandbox and full-suite checks; commit.
-- [ ] Resume sandbox VM and Object Storage only after Vultr clears the monthly-fee admission gate.
-- [ ] Verify runsc, five proof checkpoints, NetBird policy finalization and S3 on live VM #2.
+- [x] Resume sandbox VM and Object Storage only after Vultr clears the monthly-fee admission gate.
+- [x] Verify runsc, NetBird policy finalization and S3 on live VM #2.
+- [ ] Run the sandbox proof checkpoints and a Chromium/Playwright cell on live VM #2.
