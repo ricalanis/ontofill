@@ -7,12 +7,15 @@ from ontofill.sandbox.capture import (
     capture_url,
     fetch_url,
 )
+from ontofill.sandbox.cells import CellError, CellManager
 from ontofill.sandbox.jobs import append_job_record, build_job_record, validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
 __all__ = [
     "CaptureBlocked",
     "CaptureError",
+    "CellError",
+    "CellManager",
     "SandboxLimitExceeded",
     "SandboxLimits",
     "append_job_record",

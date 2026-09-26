@@ -1,5 +1,36 @@
 # Sandbox capture and proof
 
+## Browser cells
+
+`CellManager.create("native", allowed_domains, limits, "sandbox_vm")` starts a
+one-session gVisor Chromium hands pod and an allowlist egress proxy on a unique
+internal Docker network. It returns a browser CDP WebSocket URL bound to
+control-plane loopback. Remote Docker (`ONTOFILL_SANDBOX_DOCKER_HOST=ssh://...`)
+uses an SSH loopback tunnel; no public CDP port is needed. `destroy(cell_id)`
+removes the pod, proxy, and network, then verifies teardown. A timer kills cells
+at `timeout_s`; `record_step` stops a cell at `max_steps`. The controller must
+call `record_step` before each browser action and `report_task_result` when the
+task completes. Direct CDP clients are not counted by the substrate.
+
+`CellManager(lake=..., case_id=..., run_id=..., on_trace=...)` appends an honest
+six-checkpoint `jobs.jsonl` row on teardown and emits proof trace steps as they
+occur. A missing task result is recorded as failed, never inferred from an open
+browser. The hands image has no key material or host mounts; its preflight
+measures pod identity, blocked non-allowlisted access, read-only filesystem,
+metadata/mesh isolation, and secret names without reading their values.
+
+`serve_cells(manager, token=..., port=8766)` provides a loopback-only JSON API:
+`POST /cells`, `GET /cells/{id}`, `DELETE /cells/{id}`,
+`POST /cells/{id}/steps`, and `POST /cells/{id}/task-result`. All routes require
+the configured bearer token. Keep this token on the control plane only.
+
+Skyvern brains and `throwaway_vx1` placement currently fail closed. They need
+a pinned upstream image, a session-scoped inference gateway route, and a
+live sandbox host, respectively. `live_view_port` is `null` until a separate
+per-cell viewer is implemented. The local Docker daemon lacks `runsc`, so the
+current lifecycle test uses a synthetic Docker driver; a control-plane-to-
+sandbox-host CDP smoke test remains required before claiming live proof.
+
 `capture_url` and `fetch_url` dispatch disposable browser/file pods behind an
 allowlist proxy. Each call accepts `limits=SandboxLimits(...)` or a complete
 mapping with `memory_mb`, `cpus`, `pids`, `timeout_s`, and `max_steps`. Defaults
