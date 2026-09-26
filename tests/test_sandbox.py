@@ -2,16 +2,37 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import threading
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 
 from ontofill.lake import FileLake
 from ontofill.sandbox import CaptureBlocked, capture_url, fetch_url
 from ontofill.sandbox.capture import _allowed_host
+
+
+def validate_trace_rows(rows: list[dict]) -> None:
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    schemas = [json.loads(path.read_text()) for path in schema_dir.glob("*.schema.json")]
+    registry = Registry().with_resources(
+        (schema["$id"], Resource.from_contents(schema)) for schema in schemas
+    )
+    trace_schema = next(
+        schema for schema in schemas if schema["title"] == "Execution trace JSONL step"
+    )
+    validator = Draft202012Validator(
+        trace_schema, registry=registry, format_checker=FormatChecker()
+    )
+    for row in rows:
+        validator.validate(row)
 
 
 class SyntheticPage(BaseHTTPRequestHandler):
@@ -80,6 +101,7 @@ def test_disallowed_target_fails_before_browser(tmp_path) -> None:
         )
     assert raised.value.trace[0]["evaluated"]["status"] == "blocked"
     assert raised.value.trace[0]["executed"]["network_request"] is False
+    validate_trace_rows(raised.value.trace)
 
 
 def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp_path) -> None:
@@ -119,14 +141,43 @@ def test_live_docker_capture_and_egress_gate(docker_ready, synthetic_server, tmp
     assert not any(event["method"] == "POST" for event in result["egress_events"])
 
     trace = result["trace"]
-    assert len(trace) == 1
+    assert len(trace) == 5
+    validate_trace_rows(trace)
     assert trace[0]["mode"] == "S1"
     assert all(trace[0][field] for field in ("observed", "requested", "executed", "evaluated"))
     assert trace[0]["executed"]["html_key"] == result["html_key"]
+    assert {row["evaluated"]["proof_checkpoint"] for row in trace} == {
+        "dispatch_result",
+        "host_check",
+        "pod_identity",
+        "isolation_probe",
+        "teardown",
+    }
+    assert all(row["generated_by"]["backend"] == "recorded" for row in trace)
+    proof = result["proof"]
+    assert proof["host_check"]["runtime"] in {"runc", "runsc"}
+    assert isinstance(proof["host_check"]["dev_kvm_present"], bool)
+    assert proof["pod_identity"]["hostname"]
+    assert proof["pod_identity"]["uname"]["system"] == "Linux"
+    assert proof["isolation_probe"]["network"]["blocked"]
+    assert proof["isolation_probe"]["network"]["proxy_logged_block"]
+    assert proof["isolation_probe"]["write_outside_pod"]["blocked"]
+    assert proof["isolation_probe"]["write_outside_writable_mount"]["blocked"]
+    assert proof["teardown"] == {
+        "pod_gone": True,
+        "proxy_gone": True,
+        "network_removed": True,
+        "verified": True,
+    }
 
 
 def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> None:
     lake = FileLake(tmp_path)
+    provenance = {
+        "backend": "vultr",
+        "model": "synthetic-dispatch",
+        "at": datetime.now(UTC).isoformat(),
+    }
     result = fetch_url(
         synthetic_server + "data.csv",
         allowed_domains=["host.docker.internal"],
@@ -135,6 +186,7 @@ def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> Non
         source_id="synthetic-source",
         objective_id="synthetic-objective",
         tdd_path="04-local/synthetic-tdd.json",
+        generated_by=provenance,
     )
     assert result["bytes"] == b"name\nProveedor Ejemplo 01\n"
     assert result["content_type"] == "text/csv"
@@ -142,3 +194,8 @@ def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> Non
     assert lake.read_metadata(result["bronze_key"])["content_type"] == "text/csv"
     assert result["trace"][0]["mode"] == "D0"
     assert any(event["decision"] == "allow" for event in result["egress_events"])
+    assert len(result["trace"]) == 5
+    validate_trace_rows(result["trace"])
+    assert all(row["generated_by"] == provenance for row in result["trace"])
+    assert result["proof"]["isolation_probe"]["blocked"]
+    assert result["proof"]["teardown"]["verified"]

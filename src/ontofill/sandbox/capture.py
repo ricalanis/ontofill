@@ -25,6 +25,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 class CaptureError(RuntimeError):
     """Browser or proxy execution failed."""
 
+    def __init__(self, message: str, trace: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.trace = trace or []
+
 
 class CaptureBlocked(CaptureError):
     """A URL was outside the TDD allowlist before browser execution."""
@@ -103,6 +107,8 @@ def _trace(
     evaluated: dict,
     ts: str,
     mode: str = "S1",
+    generated_by: dict | None = None,
+    parent_step_id: str | None = None,
 ) -> dict:
     return {
         "step_id": step_id,
@@ -116,10 +122,161 @@ def _trace(
         "requested": requested,
         "executed": executed,
         "evaluated": evaluated,
-        "parent_step_id": None,
+        "parent_step_id": parent_step_id,
         "value_ids": [],
         "ts": ts,
+        "generated_by": generated_by or _provenance(None),
     }
+
+
+def _provenance(generated_by: dict | None) -> dict:
+    if generated_by is None:
+        return {"backend": "recorded", "model": "sandbox-test", "at": datetime.now(UTC).isoformat()}
+    if set(generated_by) != {"backend", "model", "at"}:
+        raise ValueError("generated_by must contain only backend, model and at")
+    if generated_by.get("backend") not in {"recorded", "vultr"} or not generated_by.get("model"):
+        raise ValueError("generated_by needs backend=recorded|vultr and model")
+    try:
+        at = datetime.fromisoformat(generated_by["at"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("generated_by needs an ISO-8601 at timestamp") from exc
+    if at.tzinfo is None:
+        raise ValueError("generated_by.at needs a timezone")
+    return dict(generated_by)
+
+
+def _host_check() -> tuple[dict, list[str]]:
+    info = json.loads(_docker("info", "--format", "{{json .}}").stdout)
+    selected = os.environ.get("ONTOFILL_SANDBOX_RUNTIME")
+    runtime = selected or info.get("DefaultRuntime", "unknown")
+    host = {
+        "docker_host": info.get("Name", "unknown"),
+        "operating_system": info.get("OperatingSystem", "unknown"),
+        "architecture": info.get("Architecture", "unknown"),
+        "runtime": runtime,
+        "runtime_available": runtime in info.get("Runtimes", {}),
+    }
+    if selected and not host["runtime_available"]:
+        raise CaptureError(f"requested sandbox runtime {selected} is unavailable")
+    return host, (["--runtime", selected] if selected else [])
+
+
+def _denied_probe_host(domains: list[str]) -> str:
+    for suffix in ("invalid", "test", uuid.uuid4().hex):
+        host = f"ontofill-proof-denied-{uuid.uuid4().hex[:8]}.{suffix}"
+        if not _allowed_host("http://" + host, domains):
+            return host
+    raise CaptureError("could not select a non-allowlisted proof domain")
+
+
+def _isolation_proof(probes: dict, events: list[dict]) -> dict:
+    network = probes.get("network", {})
+    writes = probes.get("writes", {})
+    proxy_blocked = any(
+        event.get("decision") == "block" and event.get("host") == network.get("host")
+        for event in events
+    )
+    return {
+        "network": {**network, "proxy_logged_block": proxy_blocked},
+        "write_outside_pod": writes.get("outside_pod", {}),
+        "write_outside_writable_mount": writes.get("outside_writable_mount", {}),
+        "blocked": bool(
+            network.get("blocked")
+            and proxy_blocked
+            and writes.get("outside_pod", {}).get("blocked")
+            and writes.get("outside_writable_mount", {}).get("blocked")
+        ),
+    }
+
+
+def _proof_rows(
+    *,
+    step_id: str,
+    run_id: str,
+    phase: int,
+    source_id: str,
+    objective_id: str | None,
+    tdd_path: str,
+    mode: str,
+    generated_by: dict,
+    host: dict,
+    pod: dict,
+    isolation: dict,
+) -> list[dict]:
+    details = (
+        ("host_check", host),
+        ("pod_identity", pod),
+        ("isolation_probe", isolation),
+    )
+    return [
+        _trace(
+            step_id=f"step:{uuid.uuid4().hex}",
+            run_id=run_id,
+            phase=phase,
+            source_id=source_id,
+            objective_id=objective_id,
+            tdd_path=tdd_path,
+            observed={"checkpoint": checkpoint},
+            requested={"proof_checkpoint": checkpoint},
+            executed=detail,
+            evaluated={
+                "proof_checkpoint": checkpoint,
+                "status": "verified"
+                if checkpoint != "isolation_probe"
+                else ("blocked" if detail["blocked"] else "failed"),
+            },
+            ts=datetime.now(UTC).isoformat(),
+            mode=mode,
+            generated_by=generated_by,
+            parent_step_id=step_id,
+        )
+        for checkpoint, detail in details
+    ]
+
+
+def _cleanup_and_verify(proxy_name: str, pod_name: str, network: str) -> dict:
+    _docker("rm", "-f", proxy_name, check=False)
+    _docker("network", "rm", network, check=False)
+    result = {
+        "pod_gone": _docker("inspect", pod_name, check=False).returncode != 0,
+        "proxy_gone": _docker("inspect", proxy_name, check=False).returncode != 0,
+        "network_removed": _docker("network", "inspect", network, check=False).returncode != 0,
+    }
+    result["verified"] = all(result.values())
+    return result
+
+
+def _teardown_row(
+    *,
+    parent_step_id: str,
+    run_id: str,
+    phase: int,
+    source_id: str,
+    objective_id: str | None,
+    tdd_path: str,
+    mode: str,
+    generated_by: dict,
+    teardown: dict,
+) -> dict:
+    return _trace(
+        step_id=f"step:{uuid.uuid4().hex}",
+        run_id=run_id,
+        phase=phase,
+        source_id=source_id,
+        objective_id=objective_id,
+        tdd_path=tdd_path,
+        observed={"checkpoint": "teardown"},
+        requested={"pod_and_network_absent": True},
+        executed=teardown,
+        evaluated={
+            "proof_checkpoint": "teardown",
+            "status": "verified" if teardown["verified"] else "failed",
+        },
+        ts=datetime.now(UTC).isoformat(),
+        mode=mode,
+        generated_by=generated_by,
+        parent_step_id=parent_step_id,
+    )
 
 
 def _wait_proxy(name: str) -> None:
@@ -152,11 +309,13 @@ def capture_url(
     objective_id: str | None,
     tdd_path: str,
     phase: int = 5,
+    generated_by: dict | None = None,
 ) -> dict:
     """Capture a public page; only the proxy container can leave the internal network."""
     domains = _domains(allowed_domains)
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
+    provenance = _provenance(generated_by)
     request = {"url": url, "allowed_domains": domains, "capture": ["html", "a11y", "screenshot"]}
     if not _allowed_host(url, domains):
         row = _trace(
@@ -171,14 +330,19 @@ def capture_url(
             executed={"network_request": False},
             evaluated={"status": "blocked", "reason": "domain_not_allowed"},
             ts=timestamp,
+            generated_by=provenance,
         )
         raise CaptureBlocked("URL domain is not allowed by the TDD", [row])
 
     agent_image, egress_image = _images()
+    host, runtime_args = _host_check()
+    denied_host = _denied_probe_host(domains)
     suffix = uuid.uuid4().hex[:12]
     network = f"ontofill-sandbox-{suffix}"
     proxy_name = f"ontofill-egress-{suffix}"
     browser_name = f"ontofill-browser-{suffix}"
+    trace_rows: list[dict] | None = None
+    proof: dict = {}
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -213,6 +377,7 @@ def capture_url(
             output.chmod(0o777)
             browser = _docker(
                 "run",
+                *runtime_args,
                 "--rm",
                 "--name",
                 browser_name,
@@ -237,6 +402,8 @@ def capture_url(
                 "CAPTURE_URL=" + url,
                 "-e",
                 "PROXY_URL=http://egress:8888",
+                "-e",
+                "PROBE_DENIED_HOST=" + denied_host,
                 agent_image,
                 timeout=90,
                 check=False,
@@ -246,6 +413,12 @@ def capture_url(
                 detail = (browser.stderr or browser.stdout).strip()[-2000:]
                 raise CaptureError(f"browser pod failed: {detail}; egress={events}")
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            pod_identity = result["pod_identity"]
+            host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
+            host["dev_kvm_present"] = pod_identity["dev_kvm_present"]
+            isolation = _isolation_proof(result["isolation_probes"], events)
+            if not isolation["blocked"]:
+                raise CaptureError(f"sandbox isolation proof failed: {isolation}")
             final_url = result["url"]
             captured_at = datetime.now(UTC).isoformat()
             metadata = {
@@ -275,20 +448,65 @@ def capture_url(
                 observed={"url": final_url, "status": result["status"]},
                 requested=request,
                 executed={"network_request": True, **keys},
-                evaluated={"status": "captured", "bronze_objects": 3},
+                evaluated={
+                    "status": "captured",
+                    "bronze_objects": 3,
+                    "proof_checkpoint": "dispatch_result",
+                },
                 ts=captured_at,
+                generated_by=provenance,
             )
+            row["screenshot_key"] = screenshot_key
+            trace_rows = [
+                row,
+                *_proof_rows(
+                    step_id=step_id,
+                    run_id=run_id,
+                    phase=phase,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    mode="S1",
+                    generated_by=provenance,
+                    host=host,
+                    pod=pod_identity,
+                    isolation=isolation,
+                ),
+            ]
+            proof = {
+                "dispatch_result": {"url": final_url, "status": result["status"], **keys},
+                "host_check": host,
+                "pod_identity": pod_identity,
+                "isolation_probe": isolation,
+            }
             return {
                 **keys,
                 "html": html_bytes.decode("utf-8"),
                 "url": final_url,
                 "status": result["status"],
-                "trace": [row],
+                "trace": trace_rows,
                 "egress_events": events,
+                "proof": proof,
             }
     finally:
-        _docker("rm", "-f", proxy_name, check=False)
-        _docker("network", "rm", network, check=False)
+        teardown = _cleanup_and_verify(proxy_name, browser_name, network)
+        if trace_rows is not None:
+            proof["teardown"] = teardown
+            trace_rows.append(
+                _teardown_row(
+                    parent_step_id=step_id,
+                    run_id=run_id,
+                    phase=phase,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    mode="S1",
+                    generated_by=provenance,
+                    teardown=teardown,
+                )
+            )
+        if not teardown["verified"]:
+            raise CaptureError("sandbox teardown proof failed", trace_rows)
 
 
 def fetch_url(
@@ -301,11 +519,13 @@ def fetch_url(
     objective_id: str | None,
     tdd_path: str,
     phase: int = 5,
+    generated_by: dict | None = None,
 ) -> dict:
     """Fetch a discovered file inside the same contained network and store raw bytes."""
     domains = _domains(allowed_domains)
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
+    provenance = _provenance(generated_by)
     request = {"url": url, "allowed_domains": domains, "fetch": "bytes"}
     if not _allowed_host(url, domains):
         row = _trace(
@@ -321,14 +541,19 @@ def fetch_url(
             evaluated={"status": "blocked", "reason": "domain_not_allowed"},
             ts=timestamp,
             mode="D0",
+            generated_by=provenance,
         )
         raise CaptureBlocked("URL domain is not allowed by the TDD", [row])
 
     agent_image, egress_image = _images()
+    host, runtime_args = _host_check()
+    denied_host = _denied_probe_host(domains)
     suffix = uuid.uuid4().hex[:12]
     network = f"ontofill-sandbox-{suffix}"
     proxy_name = f"ontofill-egress-{suffix}"
     pod_name = f"ontofill-fetch-{suffix}"
+    trace_rows: list[dict] | None = None
+    proof: dict = {}
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -363,6 +588,7 @@ def fetch_url(
             output.chmod(0o777)
             pod = _docker(
                 "run",
+                *runtime_args,
                 "--rm",
                 "--name",
                 pod_name,
@@ -389,6 +615,8 @@ def fetch_url(
                 "PROXY_URL=http://egress:8888",
                 "-e",
                 "CAPTURE_MODE=fetch",
+                "-e",
+                "PROBE_DENIED_HOST=" + denied_host,
                 agent_image,
                 timeout=90,
                 check=False,
@@ -398,6 +626,12 @@ def fetch_url(
                 detail = (pod.stderr or pod.stdout).strip()[-2000:]
                 raise CaptureError(f"fetch pod failed: {detail}; egress={events}")
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            pod_identity = result["pod_identity"]
+            host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
+            host["dev_kvm_present"] = pod_identity["dev_kvm_present"]
+            isolation = _isolation_proof(result["isolation_probes"], events)
+            if not isolation["blocked"]:
+                raise CaptureError(f"sandbox isolation proof failed: {isolation}")
             final_url = result["url"]
             if not _allowed_host(final_url, domains):
                 raise CaptureError("fetch redirected outside the TDD allowlist")
@@ -423,19 +657,67 @@ def fetch_url(
                 observed={"url": final_url, "status": result["status"]},
                 requested=request,
                 executed={"network_request": True, "bronze_key": bronze_key},
-                evaluated={"status": "captured", "bronze_objects": 1},
+                evaluated={
+                    "status": "captured",
+                    "bronze_objects": 1,
+                    "proof_checkpoint": "dispatch_result",
+                },
                 ts=captured_at,
                 mode="D0",
+                generated_by=provenance,
             )
+            trace_rows = [
+                row,
+                *_proof_rows(
+                    step_id=step_id,
+                    run_id=run_id,
+                    phase=phase,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    mode="D0",
+                    generated_by=provenance,
+                    host=host,
+                    pod=pod_identity,
+                    isolation=isolation,
+                ),
+            ]
+            proof = {
+                "dispatch_result": {
+                    "url": final_url,
+                    "status": result["status"],
+                    "bronze_key": bronze_key,
+                },
+                "host_check": host,
+                "pod_identity": pod_identity,
+                "isolation_probe": isolation,
+            }
             return {
                 "bytes": content,
                 "content_type": result["content_type"],
                 "bronze_key": bronze_key,
                 "url": final_url,
                 "status": result["status"],
-                "trace": [row],
+                "trace": trace_rows,
                 "egress_events": events,
+                "proof": proof,
             }
     finally:
-        _docker("rm", "-f", proxy_name, check=False)
-        _docker("network", "rm", network, check=False)
+        teardown = _cleanup_and_verify(proxy_name, pod_name, network)
+        if trace_rows is not None:
+            proof["teardown"] = teardown
+            trace_rows.append(
+                _teardown_row(
+                    parent_step_id=step_id,
+                    run_id=run_id,
+                    phase=phase,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    mode="D0",
+                    generated_by=provenance,
+                    teardown=teardown,
+                )
+            )
+        if not teardown["verified"]:
+            raise CaptureError("sandbox teardown proof failed", trace_rows)
