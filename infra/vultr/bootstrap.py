@@ -8,6 +8,9 @@ import json
 import subprocess
 import time
 
+# Optional operator-owned known_hosts file; None keeps OpenSSH's default.
+KNOWN_HOSTS_FILE: str | None = None
+
 
 def ssh(
     address: str, command: str, *, input_text: str = "", identity_file: str | None = None
@@ -15,6 +18,8 @@ def ssh(
     """Invoke an already trusted SSH host; never put setup keys in argv or errors."""
     ipaddress.ip_address(address)
     argv = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]
+    if KNOWN_HOSTS_FILE:
+        argv.extend(["-o", f"UserKnownHostsFile={KNOWN_HOSTS_FILE}"])
     if identity_file:
         argv.extend(["-i", identity_file])
     argv.extend([f"root@{address}", command])
@@ -126,7 +131,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--control-peer-ip", required=True)
     parser.add_argument("--sandbox-peer-ip", required=True)
     parser.add_argument("--identity-file")
+    parser.add_argument("--known-hosts-file", help="pinned host keys; default ~/.ssh/known_hosts")
     args = parser.parse_args(argv)
+    global KNOWN_HOSTS_FILE
+    KNOWN_HOSTS_FILE = args.known_hosts_file
     result = bootstrap(
         args.control_peer_ip,
         args.sandbox_peer_ip,
