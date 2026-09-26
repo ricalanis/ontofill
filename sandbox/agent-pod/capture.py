@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import socket
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -61,6 +62,24 @@ def isolation_probes(proxy_url: str) -> dict:
     return {"network": network, "writes": writes}
 
 
+def write_result(output: Path, result: dict) -> None:
+    """Publish the completion marker only after all output bytes have been written."""
+    temporary = output / "result.json.tmp"
+    temporary.write_text(json.dumps(result), encoding="utf-8")
+    temporary.replace(output / "result.json")
+
+
+def wait_for_copy_ack() -> None:
+    """Keep remote /out tmpfs mounted until the control plane copies it."""
+    if os.environ.get("CAPTURE_WAIT_FOR_COPY") != "1":
+        return
+    for _ in range(600):
+        if Path("/out/.copied").exists():
+            return
+        time.sleep(0.2)
+    raise TimeoutError("control plane did not acknowledge sandbox output copy")
+
+
 async def capture() -> None:
     target = os.environ["CAPTURE_URL"]
     proxy_url = os.environ["PROXY_URL"]
@@ -90,16 +109,14 @@ async def capture() -> None:
             (output / "page.html").write_text(html, encoding="utf-8")
             (output / "a11y.txt").write_text(accessibility, encoding="utf-8")
             (output / "screenshot.png").write_bytes(screenshot)
-            (output / "result.json").write_text(
-                json.dumps(
-                    {
-                        "url": page.url,
-                        "status": response.status if response else None,
-                        "pod_identity": identity,
-                        "isolation_probes": isolation_probes(proxy_url),
-                    }
-                ),
-                encoding="utf-8",
+            write_result(
+                output,
+                {
+                    "url": page.url,
+                    "status": response.status if response else None,
+                    "pod_identity": identity,
+                    "isolation_probes": isolation_probes(proxy_url),
+                },
             )
         finally:
             await browser.close()
@@ -124,7 +141,7 @@ def fetch() -> None:
         }
     output = Path("/out")
     (output / "payload.bin").write_bytes(payload)
-    (output / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    write_result(output, result)
 
 
 if __name__ == "__main__":
@@ -132,3 +149,4 @@ if __name__ == "__main__":
         fetch()
     else:
         asyncio.run(capture())
+    wait_for_copy_ack()
