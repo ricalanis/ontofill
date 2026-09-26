@@ -80,6 +80,8 @@ def make_handler(manager: CellManager, token: str) -> type[BaseHTTPRequestHandle
                         body["allowed_domains"],
                         body.get("limits"),
                         body.get("placement", "sandbox_vm"),
+                        skyvern=body.get("skyvern"),
+                        brain_env=body.get("brain_env"),
                     )
                     self._send(201, result)
                 else:

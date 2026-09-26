@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
+import shlex
 import socket
 import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
@@ -36,6 +39,88 @@ class CellError(RuntimeError):
     """A browser cell could not meet its isolation or lifecycle contract."""
 
 
+_SKYVERN_IMAGE = re.compile(r"public\.ecr\.aws/skyvern/skyvern@sha256:[0-9a-f]{64}\Z")
+_POSTGRES_IMAGE = re.compile(r"postgres:14-alpine@sha256:[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True)
+class SkyvernSpec:
+    """Pinned upstream images and a single expiring gateway credential."""
+
+    image: str
+    postgres_image: str
+    gateway_url: str
+    gateway_session_token: str = field(repr=False)
+    expires_at: str
+
+    @classmethod
+    def from_value(
+        cls, value: Mapping[str, object] | None, brain_env: Mapping[str, object] | None
+    ) -> SkyvernSpec:
+        expected_config = {"image", "postgres_image", "expires_at"}
+        expected_env = {"OPENAI_COMPATIBLE_API_BASE", "OPENAI_COMPATIBLE_API_KEY"}
+        if not isinstance(value, Mapping) or set(value) != expected_config:
+            raise CellError("skyvern config requires pinned images and expiry")
+        if not isinstance(brain_env, Mapping) or set(brain_env) != expected_env:
+            raise CellError("brain_env requires exactly OpenAI-compatible gateway URL and session key")
+        try:
+            spec = cls(
+                **value,
+                gateway_url=brain_env["OPENAI_COMPATIBLE_API_BASE"],
+                gateway_session_token=brain_env["OPENAI_COMPATIBLE_API_KEY"],
+            )
+        except TypeError as exc:
+            raise CellError("invalid skyvern config") from exc
+        if any(
+            not isinstance(getattr(spec, name), str)
+            for name in cls.__dataclass_fields__
+        ):
+            raise CellError("skyvern config fields must be strings")
+        if not _SKYVERN_IMAGE.fullmatch(spec.image):
+            raise CellError("Skyvern image must be the upstream sha256-pinned image")
+        if not _POSTGRES_IMAGE.fullmatch(spec.postgres_image):
+            raise CellError("Postgres image must be sha256-pinned postgres:14-alpine")
+        if not isinstance(spec.gateway_session_token, str) or len(spec.gateway_session_token) < 16:
+            raise CellError("Skyvern requires a session gateway token")
+        parsed = urlsplit(spec.gateway_url)
+        try:
+            address = ipaddress.ip_address(parsed.hostname or "")
+            port = parsed.port
+            expires = datetime.fromisoformat(spec.expires_at)
+        except (TypeError, ValueError) as exc:
+            raise CellError("invalid Skyvern gateway address or expiry") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or address not in ipaddress.ip_network("100.64.0.0/10")
+            or not port
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/", "/v1", "/v1/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise CellError("Skyvern gateway must be a NetBird IP and explicit port")
+        if expires.tzinfo is None or not 0 < (expires - datetime.now(UTC)).total_seconds() <= 3600:
+            raise CellError("Skyvern session token must expire within one hour")
+        return spec
+
+    @property
+    def gateway_host(self) -> str:
+        return urlsplit(self.gateway_url).hostname or ""
+
+    @property
+    def gateway_port(self) -> int:
+        return urlsplit(self.gateway_url).port or 0
+
+    @property
+    def gateway_scheme(self) -> str:
+        return urlsplit(self.gateway_url).scheme
+
+    def remaining_seconds(self) -> float:
+        expires = datetime.fromisoformat(self.expires_at)
+        return (expires - datetime.now(UTC)).total_seconds()
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -53,9 +138,34 @@ def _remote_ssh_target() -> str | None:
     parsed = urlsplit(target)
     if parsed.scheme != "ssh" or not parsed.hostname or parsed.path not in {"", "/"}:
         raise CellError("remote Docker must use ssh://[user@]host")
-    if parsed.password or parsed.query or parsed.fragment:
+    if parsed.password or parsed.query or parsed.fragment or parsed.port is not None:
         raise CellError("remote Docker SSH URL must not contain credentials or options")
     return (parsed.username + "@" if parsed.username else "") + parsed.hostname
+
+
+def _ssh_prefix() -> list[str]:
+    raw = os.environ.get("DOCKER_SSH_COMMAND", "ssh")
+    try:
+        parts = shlex.split(raw)
+    except ValueError as exc:
+        raise CellError("invalid DOCKER_SSH_COMMAND") from exc
+    if not parts or parts[0] != "ssh":
+        raise CellError("DOCKER_SSH_COMMAND must start with ssh")
+    index = 1
+    while index < len(parts):
+        flag = parts[index]
+        if flag == "-i" and index + 1 < len(parts):
+            if not os.path.isabs(parts[index + 1]):
+                raise CellError("Docker SSH identity path must be absolute")
+            index += 2
+        elif flag == "-o" and index + 1 < len(parts):
+            option = parts[index + 1]
+            if option not in {"StrictHostKeyChecking=yes", "IdentitiesOnly=yes", "BatchMode=yes"}:
+                raise CellError("unsupported DOCKER_SSH_COMMAND option")
+            index += 2
+        else:
+            raise CellError("unsupported DOCKER_SSH_COMMAND option")
+    return [*parts, "-o", "StrictHostKeyChecking=yes"]
 
 
 def _cdp_url(port: int) -> str:
@@ -86,8 +196,8 @@ def _wait_cdp(port: int) -> str:
     raise CellError("hands CDP endpoint did not become ready")
 
 
-def _published_port(name: str) -> int:
-    result = _docker("port", name, "9222/tcp")
+def _published_port(name: str, internal_port: int = 9222) -> int:
+    result = _docker("port", name, f"{internal_port}/tcp")
     address = result.stdout.strip()
     if not address.startswith("127.0.0.1:") or "\n" in address:
         raise CellError("hands CDP port is not bound exclusively to Docker-host loopback")
@@ -103,7 +213,7 @@ def _open_tunnel(remote_port: int) -> tuple[int, subprocess.Popen[bytes] | None]
         return remote_port, None
     local_port = _loopback_port()
     command = [
-        "ssh",
+        *_ssh_prefix(),
         "-N",
         "-o",
         "BatchMode=yes",
@@ -122,6 +232,193 @@ def _open_tunnel(remote_port: int) -> tuple[int, subprocess.Popen[bytes] | None]
     return local_port, tunnel
 
 
+def _docker_with_session_token(token: str, *args: str) -> None:
+    """Pass the ephemeral token through CLI environment, never argv or errors."""
+    env = os.environ.copy()
+    target = env.get("ONTOFILL_SANDBOX_DOCKER_HOST")
+    if target:
+        env["DOCKER_HOST"] = target
+    env["OPENAI_API_KEY"] = token
+    try:
+        result = subprocess.run(
+            ["docker", *args], env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CellError("Skyvern brain Docker start failed") from exc
+    finally:
+        env.pop("OPENAI_API_KEY", None)
+    if result.returncode:
+        raise CellError("Skyvern brain Docker start failed")
+
+
+def _host_iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Edit only exact per-cell INPUT/DOCKER-USER rules on the remote sandbox host."""
+    target = _remote_ssh_target()
+    if target is None:
+        raise CellError("Skyvern gateway firewall needs remote sandbox SSH")
+    command = [
+        *_ssh_prefix(), "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target,
+        "sudo", "-n", "iptables", "-w", "5", *args,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CellError("sandbox gateway firewall command failed") from exc
+    if check and result.returncode:
+        raise CellError("sandbox gateway firewall command failed")
+    return result
+
+
+def _ensure_image(image: str) -> None:
+    if _docker("image", "inspect", image, check=False).returncode:
+        _docker("pull", image, timeout=900)
+    inspected = json.loads(_docker("image", "inspect", image, "--format", "{{json .Config.Env}}").stdout)
+    forbidden = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "AWS_ACCESS", "VULTR_", "JEV_")
+    if any(
+        any(fragment in entry.partition("=")[0].upper() for fragment in forbidden)
+        and bool(entry.partition("=")[2])
+        for entry in inspected or []
+    ):
+        raise CellError("upstream image embeds a nonempty credential environment variable")
+
+
+def _container_uplink_ip(name: str, uplink_network: str) -> str:
+    networks = json.loads(
+        _docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", name).stdout
+    )
+    address = networks.get(uplink_network, {}).get("IPAddress", "")
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError as exc:
+        raise CellError("relay has no uplink IPv4 address") from exc
+    if not isinstance(parsed, ipaddress.IPv4Address) or not parsed.is_private:
+        raise CellError("relay uplink address is not private IPv4")
+    return address
+
+
+def _firewall_rule(cell_id: str, source_ip: str, gateway: SkyvernSpec, *, allow: bool) -> tuple[str, ...]:
+    parts = ["DOCKER-USER", "-s", source_ip]
+    if allow:
+        parts.extend(["-d", gateway.gateway_host, "-p", "tcp", "--dport", str(gateway.gateway_port)])
+    else:
+        parts.extend(["-m", "conntrack", "--ctstate", "NEW"])
+    parts.extend(["-m", "comment", "--comment", cell_id, "-j", "ACCEPT" if allow else "DROP"])
+    return tuple(parts)
+
+
+def _input_drop_rule(cell_id: str, source_ip: str) -> tuple[str, ...]:
+    return (
+        "INPUT", "-s", source_ip, "-m", "conntrack", "--ctstate", "NEW",
+        "-m", "comment", "--comment", cell_id, "-j", "DROP",
+    )
+
+
+def _install_gateway_firewall(cell: _Cell, gateway: SkyvernSpec) -> None:
+    source_ip = _container_uplink_ip(cell.gateway_relay, cell.uplink_network)
+    cell.gateway_source_ip = source_ip
+    cell.gateway_target = replace(gateway, gateway_session_token="")
+    # Deny first. The relay contains no credential before the brain starts.
+    _host_iptables("-I", "DOCKER-USER", "1", *_firewall_rule(cell.cell_id, source_ip, gateway, allow=False)[1:])
+    cell.gateway_drop_installed = True
+    _host_iptables("-I", "INPUT", "1", *_input_drop_rule(cell.cell_id, source_ip)[1:])
+    cell.gateway_input_installed = True
+    _host_iptables("-I", "DOCKER-USER", "1", *_firewall_rule(cell.cell_id, source_ip, gateway, allow=True)[1:])
+    cell.gateway_allow_installed = True
+    for allow in (True, False):
+        rule = _firewall_rule(cell.cell_id, source_ip, gateway, allow=allow)
+        _host_iptables("-C", *rule)
+    _host_iptables("-C", *_input_drop_rule(cell.cell_id, source_ip))
+
+
+def _remove_gateway_firewall(cell: _Cell) -> bool:
+    if not cell.gateway_target:
+        return True
+    installed_rules = (
+        (cell.gateway_source_ip, True, cell.gateway_allow_installed),
+        (cell.gateway_source_ip, False, cell.gateway_drop_installed),
+        (cell.api_source_ip, False, cell.api_drop_installed),
+    )
+    input_rules = (
+        (cell.gateway_source_ip, cell.gateway_input_installed),
+        (cell.api_source_ip, cell.api_input_installed),
+    )
+    for source_ip, allow, installed in installed_rules:
+        if source_ip and installed:
+            rule = _firewall_rule(cell.cell_id, source_ip, cell.gateway_target, allow=allow)
+            _host_iptables("-D", *rule, check=False)
+    for source_ip, installed in input_rules:
+        if source_ip and installed:
+            _host_iptables("-D", *_input_drop_rule(cell.cell_id, source_ip), check=False)
+    forwarding_gone = all(
+        _host_iptables(
+            "-C", *_firewall_rule(cell.cell_id, source_ip, cell.gateway_target, allow=allow),
+            check=False,
+        ).returncode != 0
+        for source_ip, allow, installed in installed_rules if source_ip and installed
+    )
+    input_gone = all(
+        _host_iptables("-C", *_input_drop_rule(cell.cell_id, source_ip), check=False).returncode != 0
+        for source_ip, installed in input_rules if source_ip and installed
+    )
+    return forwarding_gone and input_gone
+
+
+def _wait_gateway(name: str, host: str, port: int) -> None:
+    probe = (
+        "import socket; "
+        f"socket.create_connection(({host!r}, {port}), 3).close()"
+    )
+    for _ in range(10):
+        if not _docker("exec", name, "python", "-c", probe, check=False, timeout=5).returncode:
+            return
+        time.sleep(0.5)
+    raise CellError("session inference gateway is unreachable from relay")
+
+
+def _wait_brain(port: int) -> None:
+    for _ in range(60):
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/api/v1/heartbeat", timeout=3) as response:
+                if response.status == 200:
+                    return
+        except OSError:
+            pass
+        time.sleep(1)
+    raise CellError("Skyvern brain heartbeat did not become ready")
+
+
+def _probe_brain(name: str, mesh_ip: str) -> dict:
+    script = f"""
+import json, os, socket
+pairs = [('cdp', 'cdp', 9222), ('gateway', 'gateway', 8787),
+         ('egress', 'egress', 8888), ('metadata', '169.254.169.254', 80),
+         ('mesh', {mesh_ip!r}, 22)]
+out = {{}}
+for label, host, port in pairs:
+    try:
+        connection = socket.create_connection((host, port), 2)
+        connection.close()
+        out[label] = 'ALLOWED'
+    except OSError:
+        out[label] = 'BLOCKED'
+out['credential_env_names'] = [name for name in os.environ if any(
+    marker in name.upper() for marker in
+    ('API_KEY', 'SECRET', 'TOKEN', 'PASSWORD', 'CREDENTIAL', 'VULTR_', 'NETBIRD_', 'AWS_', 'JEV_')
+)]
+print(json.dumps(out))
+"""
+    result = _docker("exec", name, "python", "-c", script, timeout=30)
+    proof = json.loads(result.stdout)
+    if (
+        proof.get("cdp") != "ALLOWED"
+        or proof.get("gateway") != "ALLOWED"
+        or any(proof.get(key) != "BLOCKED" for key in ("egress", "metadata", "mesh"))
+        or proof.get("credential_env_names") != ["OPENAI_API_KEY"]
+    ):
+        raise CellError("Skyvern brain network or credential-name probe failed")
+    return proof
+
+
 @dataclass
 class _Cell:
     cell_id: str
@@ -137,7 +434,26 @@ class _Cell:
     pod: dict = field(default_factory=dict)
     isolation: dict = field(default_factory=dict)
     secrets: dict = field(default_factory=dict)
+    brain_proof: dict = field(default_factory=dict)
     cdp_url: str | None = None
+    brain_url: str | None = None
+    brain_network: str | None = None
+    uplink_network: str | None = None
+    api_relay: str | None = None
+    cdp_relay: str | None = None
+    gateway_relay: str | None = None
+    database: str | None = None
+    brain: str | None = None
+    brain_tunnel: subprocess.Popen[bytes] | None = None
+    gateway_source_ip: str | None = None
+    api_source_ip: str | None = None
+    gateway_target: SkyvernSpec | None = field(default=None, repr=False)
+    session_token: str | None = field(default=None, repr=False)
+    gateway_drop_installed: bool = False
+    gateway_allow_installed: bool = False
+    gateway_input_installed: bool = False
+    api_drop_installed: bool = False
+    api_input_installed: bool = False
     tunnel: subprocess.Popen[bytes] | None = None
     timer: threading.Timer | None = None
     steps: int = 0
@@ -190,6 +506,9 @@ class CellManager:
         allowed_domains: list[str],
         limits: SandboxLimits | dict | None = None,
         placement: str = "sandbox_vm",
+        *,
+        skyvern: Mapping[str, object] | None = None,
+        brain_env: Mapping[str, object] | None = None,
     ) -> dict:
         if backend not in {"native", "skyvern"}:
             raise ValueError("backend must be native or skyvern")
@@ -197,17 +516,28 @@ class CellManager:
             raise ValueError("placement must be sandbox_vm or throwaway_vx1")
         if placement == "throwaway_vx1":
             raise CellError("throwaway_vx1 is unavailable until Vultr admission is cleared")
-        if backend == "skyvern":
-            raise CellError(
-                "Skyvern cells require a pinned upstream image and session gateway wiring"
-            )
+        if backend == "native" and (skyvern is not None or brain_env is not None):
+            raise CellError("native cells do not accept Skyvern credentials")
+        brain_spec = SkyvernSpec.from_value(skyvern, brain_env) if backend == "skyvern" else None
+        if brain_spec is not None and _remote_ssh_target() is None:
+            raise CellError("Skyvern cells require the remote sandbox VM and host firewall")
         domains = _domains(allowed_domains)
         budget = SandboxLimits.from_value(limits)
         _remote_ssh_target()  # Validate remote target before creating any resource.
+        _ssh_prefix()
         info = json.loads(_docker("info", "--format", "{{json .}}").stdout)
+        try:
+            docker_major = int(str(info["ServerVersion"]).split(".", 1)[0])
+        except (KeyError, ValueError) as exc:
+            raise CellError("browser cells require a known Docker Engine version") from exc
+        if docker_major < 28:
+            raise CellError("browser cells require Docker Engine 28 or newer for loopback isolation")
         if "runsc" not in info.get("Runtimes", {}):
             raise CellError("gVisor runsc is required for browser cells")
         agent_image, egress_image = _images()
+        if brain_spec is not None:
+            _ensure_image(brain_spec.image)
+            _ensure_image(brain_spec.postgres_image)
         suffix = uuid.uuid4().hex[:12]
         cell = _Cell(
             cell_id=f"cell:{suffix}",
@@ -307,19 +637,134 @@ class CellManager:
                 self._emit(cell, checkpoint, detail, ok=True)
             port, cell.tunnel = _open_tunnel(_published_port(cell.hands))
             cell.cdp_url = _wait_cdp(port)
+            if brain_spec is not None:
+                self._start_skyvern(cell, brain_spec, egress_image)
             cell.state = "ready"
-            cell.timer = threading.Timer(budget.timeout_s, self._expire, args=(cell.cell_id,))
+            remaining = budget.timeout_s - (time.monotonic() - cell.started_monotonic)
+            if brain_spec is not None:
+                remaining = min(remaining, brain_spec.remaining_seconds())
+            if remaining <= 0:
+                cell.failure_reason = "timeout"
+                raise CellError("browser cell deadline expired during startup")
+            cell.timer = threading.Timer(remaining, self._expire, args=(cell.cell_id,))
             cell.timer.daemon = True
             cell.timer.start()
             return {
                 "cell_id": cell.cell_id,
                 "cdp_url": cell.cdp_url,
-                "brain_url": None,
+                "brain_url": cell.brain_url,
                 "live_view_port": None,
             }
         except Exception:
             self._destroy(cell, mark_failed=True)
             raise
+
+    def _start_skyvern(self, cell: _Cell, spec: SkyvernSpec, relay_image: str) -> None:
+        suffix = cell.cell_id.partition(":")[2]
+        cell.brain_network = f"ontofill-cell-brain-{suffix}"
+        cell.uplink_network = f"ontofill-cell-uplink-{suffix}"
+        cell.cdp_relay = f"ontofill-cell-cdp-{suffix}"
+        cell.gateway_relay = f"ontofill-cell-gateway-{suffix}"
+        cell.api_relay = f"ontofill-cell-api-{suffix}"
+        cell.database = f"ontofill-cell-db-{suffix}"
+        cell.brain = f"ontofill-cell-brain-{suffix}"
+        _docker("network", "create", cell.uplink_network)
+        _docker(
+            "network", "create", "--internal", "-o",
+            "com.docker.network.bridge.gateway_mode_ipv4=isolated", cell.brain_network,
+        )
+
+        relay_caps = (
+            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--pids-limit", "64", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.25",
+        )
+        _docker(
+            "run", "-d", "--name", cell.cdp_relay, "--network", cell.network,
+            *relay_caps,
+            "-e", "RELAY_TARGET_HOST=" + cell.hands,
+            "-e", "RELAY_TARGET_PORT=9222", "-e", "RELAY_LISTEN_PORT=9222",
+            relay_image, "python", "-u", "/app/relay.py",
+        )
+        _docker("network", "connect", "--alias", "cdp", cell.brain_network, cell.cdp_relay)
+        _docker(
+            "run", "-d", "--name", cell.gateway_relay, "--network", cell.brain_network,
+            "--network-alias", "gateway", *relay_caps,
+            "-e", "RELAY_TARGET_HOST=" + spec.gateway_host,
+            "-e", "RELAY_TARGET_PORT=" + str(spec.gateway_port),
+            "-e", "RELAY_LISTEN_PORT=8787", relay_image,
+            "python", "-u", "/app/relay.py",
+        )
+        _docker("network", "connect", cell.uplink_network, cell.gateway_relay)
+        _install_gateway_firewall(cell, spec)
+        _wait_gateway(cell.gateway_relay, spec.gateway_host, spec.gateway_port)
+
+        _docker(
+            "run", "-d", "--name", cell.database, "--network", cell.brain_network,
+            "--network-alias", "postgres", "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--user", "70:70",
+            "--pids-limit", "64", "--memory", "512m", "--memory-swap", "512m",
+            "--cpus", "0.5", "--tmpfs", "/tmp:rw,nosuid,size=64m,mode=1777",
+            "--tmpfs", "/var/run/postgresql:rw,nosuid,size=16m,mode=1777",
+            "--tmpfs", "/var/lib/postgresql/data:rw,nosuid,size=512m,mode=1777",
+            "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_USER=skyvern",
+            "-e", "POSTGRES_DB=skyvern", "-e", "PGDATA=/var/lib/postgresql/data/pgdata",
+            spec.postgres_image,
+        )
+        self._wait_database(cell.database)
+        brain_args = (
+            "run", "-d", "--name", cell.brain, "--network", cell.brain_network,
+            "--log-driver", "none",
+            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            *cell.limits.docker_args(), "--tmpfs", "/tmp:rw,nosuid,size=256m,mode=1777",
+            "--tmpfs", "/data:rw,nosuid,size=256m,mode=1777",
+            "--tmpfs", "/app/.skyvern:rw,nosuid,size=8m,mode=1777",
+            "-e", "DATABASE_STRING=postgresql+psycopg://skyvern@postgres:5432/skyvern",
+            "-e", "BROWSER_TYPE=cdp-connect",
+            "-e", "BROWSER_REMOTE_DEBUGGING_URL=http://cdp:9222/",
+            "-e", "BROWSER_STREAMING_MODE=cdp",
+            "-e", "ENABLE_OPENAI=true", "-e", "LLM_KEY=OPENAI_GPT5_5",
+            "-e", "OPENAI_API_BASE=" + spec.gateway_scheme + "://gateway:8787/v1",
+            "-e", "ENABLE_LOCAL_CREDENTIAL_VAULT=false", "-e", "OPENAI_API_KEY",
+            spec.image,
+        )
+        cell.session_token = spec.gateway_session_token
+        _docker_with_session_token(cell.session_token, *brain_args)
+        _docker(
+            "run", "-d", "--name", cell.api_relay, "--network", cell.uplink_network,
+            *relay_caps, "-p", "127.0.0.1::8000",
+            "-e", "RELAY_TARGET_HOST=" + cell.brain,
+            "-e", "RELAY_TARGET_PORT=8000", "-e", "RELAY_LISTEN_PORT=8000",
+            relay_image, "python", "-u", "/app/relay.py",
+        )
+        _docker("network", "connect", cell.brain_network, cell.api_relay)
+        cell.api_source_ip = _container_uplink_ip(cell.api_relay, cell.uplink_network)
+        _host_iptables(
+            "-I", "DOCKER-USER", "1",
+            *_firewall_rule(cell.cell_id, cell.api_source_ip, spec, allow=False)[1:],
+        )
+        cell.api_drop_installed = True
+        _host_iptables(
+            "-I", "INPUT", "1", *_input_drop_rule(cell.cell_id, cell.api_source_ip)[1:]
+        )
+        cell.api_input_installed = True
+        _host_iptables(
+            "-C", *_firewall_rule(cell.cell_id, cell.api_source_ip, spec, allow=False)
+        )
+        _host_iptables("-C", *_input_drop_rule(cell.cell_id, cell.api_source_ip))
+        port, cell.brain_tunnel = _open_tunnel(_published_port(cell.api_relay, 8000))
+        _wait_brain(port)
+        cell.brain_proof = _probe_brain(cell.brain, _mesh_probe_ip())
+        self._emit(cell, "brain_network", cell.brain_proof, ok=True)
+        cell.brain_url = f"http://127.0.0.1:{port}"
+
+    @staticmethod
+    def _wait_database(name: str) -> None:
+        for _ in range(60):
+            result = _docker("exec", name, "pg_isready", "-U", "skyvern", check=False, timeout=5)
+            if result.returncode == 0:
+                return
+            time.sleep(0.5)
+        raise CellError("per-cell Skyvern database did not become ready")
 
     def _require(self, cell_id: str) -> _Cell:
         try:
@@ -342,6 +787,12 @@ class CellManager:
                     if not state.get("Running"):
                         cell.failure_reason = "memory" if state.get("OOMKilled") else "pids"
                         self._destroy(cell, mark_failed=True)
+                if cell.state == "ready" and cell.brain:
+                    brain_state = _docker(
+                        "inspect", "--format", "{{json .State}}", cell.brain, check=False
+                    )
+                    if brain_state.returncode or not json.loads(brain_state.stdout).get("Running"):
+                        self._destroy(cell, mark_failed=True)
             return {
                 "cell_id": cell.cell_id,
                 "backend": cell.backend,
@@ -350,7 +801,7 @@ class CellManager:
                 "limits": cell.limits.as_dict(),
                 "failure_reason": cell.failure_reason,
                 "cdp_url": cell.cdp_url if cell.state == "ready" else None,
-                "brain_url": None,
+                "brain_url": cell.brain_url if cell.state == "ready" else None,
                 "live_view_port": None,
             }
 
@@ -373,6 +824,8 @@ class CellManager:
             cell = self._require(cell_id)
             if cell.state != "ready":
                 raise CellError("cell is not ready")
+            if cell.session_token and cell.session_token in json.dumps(result, ensure_ascii=False):
+                raise CellError("task result contains a session credential")
             cell.task_result = result
             cell.task_ok = ok
             self._emit(cell, "dispatch_result", result, ok=ok)
@@ -400,18 +853,46 @@ class CellManager:
                 cell.tunnel.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 cell.tunnel.kill()
-        for name in (cell.hands, cell.proxy):
+        if cell.brain_tunnel:
+            cell.brain_tunnel.terminate()
+            try:
+                cell.brain_tunnel.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cell.brain_tunnel.kill()
+        for name in (
+            cell.api_relay, cell.brain, cell.database, cell.gateway_relay, cell.cdp_relay,
+            cell.hands, cell.proxy,
+        ):
+            if name is None:
+                continue
             _docker("rm", "-f", name, check=False)
+        try:
+            firewall_removed = _remove_gateway_firewall(cell)
+        except CellError:
+            firewall_removed = False
+        if cell.brain_network:
+            _docker("network", "rm", cell.brain_network, check=False)
+        if cell.uplink_network:
+            _docker("network", "rm", cell.uplink_network, check=False)
         _docker("network", "rm", cell.network, check=False)
         teardown = {
             "pod_gone": _docker("inspect", cell.hands, check=False).returncode != 0,
             "proxy_gone": _docker("inspect", cell.proxy, check=False).returncode != 0,
             "network_removed": _docker("network", "inspect", cell.network, check=False).returncode
-            != 0,
+            != 0
+            and (cell.brain_network is None or _docker("network", "inspect", cell.brain_network, check=False).returncode != 0)
+            and (cell.uplink_network is None or _docker("network", "inspect", cell.uplink_network, check=False).returncode != 0)
+            and all(
+                _docker("inspect", name, check=False).returncode != 0
+                for name in (cell.api_relay, cell.brain, cell.database, cell.gateway_relay, cell.cdp_relay) if name
+            )
+            and firewall_removed,
         }
         teardown["verified"] = all(teardown.values())
         cell.state = "destroyed" if teardown["verified"] else "teardown_failed"
         cell.cdp_url = None
+        cell.brain_url = None
+        cell.session_token = None
         if cell.failure_reason:
             self._emit(cell, "limit_kill", {"reason": cell.failure_reason}, ok=False)
         if cell.task_result is None:
@@ -496,6 +977,12 @@ class CellManager:
             if cell.isolation
             else {"probes": [], "not_run": True}
         )
+        if cell.brain_proof and not isolation.get("not_run"):
+            isolation["probes"].extend(
+                {"probe": "brain_" + name, "result": result}
+                for name, result in cell.brain_proof.items()
+                if name in {"egress", "metadata", "mesh"}
+            )
         wall_s = round(max(0.0, time.monotonic() - cell.started_monotonic), 3)
         record = {
             "job_id": "job:" + cell.cell_id.partition(":")[2],
