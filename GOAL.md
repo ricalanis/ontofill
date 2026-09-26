@@ -3,4 +3,4 @@ Deliver C1 through C3 of the ontofill engine: a validated contract, sandboxed ev
 
 DONE: `uv run pytest -q && uv run ontofill run ../proveedor-abierto/case --run-id c3-check && uv run ontofill export ../proveedor-abierto/case --run-id c3-check`
 
-Constraints: local Git only; no committed data or secrets; source discovery without hard-coded URLs; all captures in a sandbox; approvals use the contract protocol.
+Constraints: local Git only; no committed data or secrets; source discovery without hard-coded URLs; all captures in a sandbox; local bronze uses file:// and Vultr bronze uses S3; approvals use the contract protocol.

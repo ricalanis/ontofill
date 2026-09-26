@@ -21,9 +21,9 @@ REGISTRY = Registry().with_resources(
 
 
 def validate(name: str, document: object) -> None:
-    Draft202012Validator(
-        SCHEMAS[name], registry=REGISTRY, format_checker=FormatChecker()
-    ).validate(document)
+    Draft202012Validator(SCHEMAS[name], registry=REGISTRY, format_checker=FormatChecker()).validate(
+        document
+    )
 
 
 def evidence() -> dict:
@@ -123,9 +123,7 @@ EXAMPLES = {
                 "description": "Review a supplier",
             }
         ],
-        "requirements": [
-            {"id": "req-1", "job_id": "job-1", "description": "Show source evidence"}
-        ],
+        "requirements": [{"id": "req-1", "job_id": "job-1", "description": "Show source evidence"}],
         "constraints": ["Public sources only"],
         "non_goals": [],
         "definition_of_done": [

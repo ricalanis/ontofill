@@ -1,16 +1,16 @@
 # Work list
 
 ## C1: tooling and contract
-- [ ] Initialize Git, install full Apache-2.0 license, commit scaffold.
-- [ ] Build uv workspace, CLI skeleton, schemas, local compose, tests and dev commands.
-- [ ] Check: `uv run pytest -q`; `docker compose -f infra/compose/compose.yaml up -d` and service health.
-FILES: `LICENSE`, `pyproject.toml`, `packages/ontofill-scrape/`, `src/ontofill/cli/`, `schemas/`, `tests/`, `infra/compose/`, `.env.example`, `.gitignore`, `CLAUDE.md`, `AGENTS.md`, `README.md`, `GOAL.md`, `TODO.md`, `NOTES.md`.
-TASK: Make the engine installable with contract-valid documents and healthy local services.
-DONE: `uv run pytest -q && docker compose -f infra/compose/compose.yaml up -d`.
+- [x] Initialize Git, install full Apache-2.0 license, commit scaffold.
+- [x] Build uv workspace, CLI skeleton, schemas, local Postgres/Oxigraph compose, tests and dev commands.
+- [x] Check: `uv run pytest -q` → 41 passed; `docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait` → 3 services started, Postgres and Oxigraph probe healthy; `uv run ruff check .` and `uv run ruff format --check .` pass.
+FILES: `LICENSE`, `pyproject.toml`, `packages/ontofill-scrape/`, `src/ontofill/cli/`, `src/ontofill/lake/`, `schemas/`, `tests/`, `infra/compose/`, `.env.example`, `.gitignore`, `CLAUDE.md`, `AGENTS.md`, `README.md`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Make the engine installable with contract-valid documents, file:// local lake, and healthy local services.
+DONE: `uv run pytest -q && docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait`.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
 
 ## C2: sandbox gate
-- [ ] Docker browser pod, TDD domain allowlist, bronze captures and step logs.
+- [ ] Docker browser pod, TDD domain allowlist, file:// bronze captures and step logs.
 - [ ] Check: allowed capture yields HTML, accessibility tree and screenshot; disallowed URL fails; trace exists.
 FILES: `sandbox/`, `src/ontofill/sandbox/`, `src/ontofill/lake/`, `tests/`.
 TASK: Capture only allowlisted public pages in a contained browser, recording evidence and trace.
