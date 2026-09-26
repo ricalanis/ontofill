@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
+from ontofill.inference.decision import _tool_schema
 
 SCHEMA = {
     "type": "object",
@@ -58,6 +59,7 @@ def test_vultr_client_uses_only_inference_endpoint_and_validates_response() -> N
     assert seen[0].headers["Authorization"] == "Bearer test-only"
     body = json.loads(seen[0].content)
     assert body["tool_choice"] == {"type": "function", "function": {"name": "emit"}}
+    assert body["parallel_tool_calls"] is False
     assert body["tools"][0]["function"]["parameters"] == SCHEMA
     assert body["tools"][0]["function"]["strict"] is True
     assert client.call_log[0]["status"] == "ok"
@@ -106,13 +108,16 @@ def test_vultr_discovers_models_and_routes_by_decision_role(monkeypatch) -> None
     monkeypatch.delenv("VULTR_INFERENCE_MODEL", raising=False)
     monkeypatch.delenv("VULTR_INFERENCE_CRITIC_MODEL", raising=False)
     monkeypatch.delenv("VULTR_INFERENCE_EXTRACTION_MODEL", raising=False)
+    monkeypatch.delenv("VULTR_INFERENCE_DOCUMENT_MODEL", raising=False)
     client = VultrDecisionClient.from_env(
         client=httpx.Client(transport=httpx.MockTransport(handle))
     )
     assert client.model == "glm-5.3-flash"
     assert client.extraction_model == "qwen3.8-flash-next"
+    assert client.document_model == "qwen3.8-flash-next"
     assert client.critic_model == "minimax-m3"
     assert client.fallback_model == "glm-5.3"
+    client.complete_json("phase2.classify", "classify", SCHEMA)
     client.complete_json("phase1.prd", "generate", SCHEMA)
     client.complete_json("phase5.map_columns", "extract", SCHEMA)
     client.complete_json("critic.prd", "review", SCHEMA)
@@ -120,14 +125,53 @@ def test_vultr_discovers_models_and_routes_by_decision_role(monkeypatch) -> None
     assert [body["model"] for body in bodies] == [
         "glm-5.3-flash",
         "qwen3.8-flash-next",
+        "qwen3.8-flash-next",
         "minimax-m3",
     ]
     assert bodies[0]["reasoning_effort"] == "minimal"
+    assert bodies[1]["reasoning"] == {"enabled": False}
+    assert bodies[1]["max_completion_tokens"] == 4096
+    assert "Schema:" not in bodies[1]["messages"][1]["content"]
     assert "reasoning_effort" not in bodies[1]
     assert "reasoning_effort" not in bodies[2]
+    assert "reasoning_effort" not in bodies[3]
     assert client.call_log[0]["usage"]["est_usd"] == pytest.approx(0.00017)
     assert client.call_log[1]["usage"]["est_usd"] == pytest.approx(0.00014)
-    assert client.call_log[2]["usage"]["est_usd"] == pytest.approx(0.00038)
+    assert client.call_log[2]["usage"]["est_usd"] == pytest.approx(0.00014)
+    assert client.call_log[3]["usage"]["est_usd"] == pytest.approx(0.00038)
+
+
+def test_tool_schema_expands_local_refs_for_strict_structured_output() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"policy": {"$ref": "#/$defs/policy"}},
+        "$defs": {
+            "policy": {
+                "type": "object",
+                "properties": {"domains": {"type": "array", "items": {"type": "string"}}},
+            }
+        },
+    }
+    result = _tool_schema(schema)
+    assert result["properties"]["policy"] == schema["$defs"]["policy"]
+    assert "$defs" not in result
+
+
+def test_tool_schema_preserves_recursive_definition_without_looping() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"root": {"$ref": "#/$defs/node"}},
+        "$defs": {
+            "node": {
+                "type": "object",
+                "properties": {"child": {"$ref": "#/$defs/node"}},
+            }
+        },
+    }
+    result = _tool_schema(schema)
+    assert result["properties"]["root"]["type"] == "object"
+    assert result["properties"]["root"]["properties"]["child"] == {"$ref": "#/$defs/node"}
+    assert result["$defs"] == schema["$defs"]
 
 
 def test_truncated_extraction_is_logged_and_escalates_to_stronger_model() -> None:
