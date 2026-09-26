@@ -39,6 +39,12 @@ class CaptureBlocked(CaptureError):
 
 
 def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    target = env.get("ONTOFILL_SANDBOX_DOCKER_HOST")
+    if target:
+        if not target.startswith("ssh://"):
+            raise CaptureError("ONTOFILL_SANDBOX_DOCKER_HOST must use ssh://")
+        env["DOCKER_HOST"] = target
     try:
         result = subprocess.run(
             ["docker", *args],
@@ -46,6 +52,7 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CaptureError(f"Docker command failed: {args[0]}") from exc
@@ -147,7 +154,7 @@ def _provenance(generated_by: dict | None) -> dict:
 
 def _host_check() -> tuple[dict, list[str]]:
     info = json.loads(_docker("info", "--format", "{{json .}}").stdout)
-    selected = os.environ.get("ONTOFILL_SANDBOX_RUNTIME")
+    selected = os.environ.get("ONTOFILL_SANDBOX_RUNTIME") or ("runsc" if _remote_docker() else None)
     runtime = selected or info.get("DefaultRuntime", "unknown")
     host = {
         "docker_host": info.get("Name", "unknown"),
@@ -235,6 +242,7 @@ def _proof_rows(
 
 
 def _cleanup_and_verify(proxy_name: str, pod_name: str, network: str) -> dict:
+    _docker("rm", "-f", pod_name, check=False)
     _docker("rm", "-f", proxy_name, check=False)
     _docker("network", "rm", network, check=False)
     result = {
@@ -297,6 +305,46 @@ def _events(name: str) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return events
+
+
+def _remote_docker() -> bool:
+    target = os.environ.get("ONTOFILL_SANDBOX_DOCKER_HOST") or os.environ.get("DOCKER_HOST", "")
+    return target.startswith("ssh://")
+
+
+def _pod_output_args(output: Path) -> tuple[str, ...]:
+    if _remote_docker():
+        return ("--tmpfs", "/out:rw,nosuid,size=512m,mode=1777")
+    return ("-v", f"{output}:/out:rw")
+
+
+def _run_agent_pod(name: str, output: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    if not _remote_docker():
+        return _docker("run", "--rm", "--name", name, *args, timeout=90, check=False)
+    # Bind mount paths are interpreted on the remote daemon. The pod keeps its
+    # /out tmpfs mounted until the controller has copied the published result.
+    _docker("run", "-d", "--name", name, "-e", "CAPTURE_WAIT_FOR_COPY=1", *args, timeout=90)
+    ready = False
+    for _ in range(360):
+        if not _docker("exec", name, "test", "-f", "/out/result.json", check=False).returncode:
+            ready = True
+            break
+        state = _docker("inspect", "--format", "{{.State.Running}}", name, check=False)
+        if state.returncode or state.stdout.strip() != "true":
+            break
+        time.sleep(0.25)
+    if ready:
+        _docker("cp", f"{name}:/out/.", str(output), timeout=90)
+        _docker("exec", name, "touch", "/out/.copied")
+    waited = _docker("wait", name, timeout=90)
+    try:
+        exit_code = int(waited.stdout.strip())
+    except ValueError as exc:
+        raise CaptureError("remote Docker wait returned an invalid exit status") from exc
+    logs = _docker("logs", name, check=False)
+    if exit_code == 0 and not ready:
+        raise CaptureError("remote sandbox returned no result marker")
+    return subprocess.CompletedProcess(["docker", "run"], exit_code, logs.stdout, logs.stderr)
 
 
 def capture_url(
@@ -376,12 +424,10 @@ def capture_url(
         with tempfile.TemporaryDirectory(prefix="ontofill-capture-") as temp_dir:
             output = Path(temp_dir)
             output.chmod(0o777)
-            browser = _docker(
-                "run",
-                *runtime_args,
-                "--rm",
-                "--name",
+            browser = _run_agent_pod(
                 browser_name,
+                output,
+                *runtime_args,
                 "--network",
                 network,
                 "--read-only",
@@ -397,8 +443,7 @@ def capture_url(
                 "1g",
                 "--shm-size",
                 "256m",
-                "-v",
-                f"{output}:/out:rw",
+                *_pod_output_args(output),
                 "-e",
                 "CAPTURE_URL=" + url,
                 "-e",
@@ -406,8 +451,6 @@ def capture_url(
                 "-e",
                 "PROBE_DENIED_HOST=" + denied_host,
                 agent_image,
-                timeout=90,
-                check=False,
             )
             events = _events(proxy_name)
             if browser.returncode:
@@ -592,12 +635,10 @@ def fetch_url(
         with tempfile.TemporaryDirectory(prefix="ontofill-fetch-") as temp_dir:
             output = Path(temp_dir)
             output.chmod(0o777)
-            pod = _docker(
-                "run",
-                *runtime_args,
-                "--rm",
-                "--name",
+            pod = _run_agent_pod(
                 pod_name,
+                output,
+                *runtime_args,
                 "--network",
                 network,
                 "--read-only",
@@ -613,8 +654,7 @@ def fetch_url(
                 "1g",
                 "--shm-size",
                 "256m",
-                "-v",
-                f"{output}:/out:rw",
+                *_pod_output_args(output),
                 "-e",
                 "CAPTURE_URL=" + url,
                 "-e",
@@ -624,8 +664,6 @@ def fetch_url(
                 "-e",
                 "PROBE_DENIED_HOST=" + denied_host,
                 agent_image,
-                timeout=90,
-                check=False,
             )
             events = _events(proxy_name)
             if pod.returncode:
