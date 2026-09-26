@@ -21,6 +21,17 @@ TASK: Satisfy the official track requirement table with inspectable runtime proo
 DONE: targeted sandbox tests plus on-demand containment scenarios prove blocked egress, zero secrets and enforced limits.
 FORMAT: Ruff check/format across edited engine and sandbox files.
 
+## Cell substrate (brief 07 v2; alongside brief 06)
+- [ ] Expose create/status/destroy for a per-cell isolated network with gVisor Chromium hands, control-plane-only CDP, domain allowlist, caps and zero hands secrets.
+- [ ] Support native and upstream Skyvern brain cells; restrict a brain to its own hands and Claude PA's inference gateway using only a session-scoped token.
+- [ ] Publish six proof checkpoints and limits/usage to jobs.jsonl; prove allowlisted and blocked navigation from the control plane.
+- [ ] Connect engine S1/S2 steps to Claude PA's controller MCP client without editing `services/browser-agent/`.
+- [ ] Stretch: tagged throwaway-VX1 placement, destroyed with the cell.
+FILES: `src/ontofill/sandbox/`, `sandbox/`, `infra/vultr/` for placement, engine-side MCP client, relevant schemas/tests. Claude PA owns `services/browser-agent/` and the inference gateway.
+TASK: Supply safe cell lifecycle and the engine client interface for the controller service.
+DONE: local integration creates a native cell, connects via CDP, blocks disallowed egress, destroys it, and records six checkpoints; a Skyvern cell reaches only its gateway and hands. Remote gVisor check follows L2 VM availability.
+FORMAT: Ruff check/format across edited files.
+
 ## C1: tooling and contract
 - [x] Initialize Git, install full Apache-2.0 license, commit scaffold.
 - [x] Build uv workspace, CLI skeleton, schemas, local Postgres/Oxigraph compose, tests and dev commands.
