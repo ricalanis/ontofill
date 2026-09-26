@@ -1,7 +1,6 @@
-"""Silver observation storage, SHACL refinement, and contract gold export."""
+"""Silver observation storage, ontology refinement, and contract gold export."""
 
 from ontofill.refiner.core import (
-    CORE_FIELDS,
     MemorySilverStore,
     Observation,
     PostgresSilverStore,
@@ -14,7 +13,6 @@ from ontofill.refiner.core import (
 from ontofill.refiner.export import export_run
 
 __all__ = [
-    "CORE_FIELDS",
     "MemorySilverStore",
     "Observation",
     "PostgresSilverStore",

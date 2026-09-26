@@ -1,9 +1,8 @@
 # Refiner
 
-`Observation` is the only input to silver. Each observation contains an observed
-supplier field, its bronze and screenshot evidence, the execution step ID, and
-`generated_by` (`backend`, `model`, `at`).
-Its deterministic `value_id` is available immediately for `trace.value_ids`.
+`Observation` contains an ontology class, entity ID, property ID, typed scalar
+value, bronze and screenshot evidence, execution step ID, and `generated_by`.
+Its deterministic `value_id` is available before export for `trace.value_ids`.
 
 ```python
 from ontofill.refiner import PostgresSilverStore, export_run, refine_observations
@@ -11,32 +10,34 @@ from ontofill.refiner import PostgresSilverStore, export_run, refine_observation
 store = PostgresSilverStore()  # reads SILVER_DATABASE_URL
 store.add(observation)
 result = refine_observations(
-    store.list_for_run(run_id), generated_by=run_provenance, shapes_ttl=ontology_shape_path
+    store.list_for_run(run_id),
+    ontology=ontology,
+    generated_by=run_provenance,
+    shapes_ttl=ontology_shape_path,
 )
 metrics = export_run(
     lake,
     case_dir,
     case_id,
     run_id,
-    result.suppliers,
+    result.entities,
+    ontology=ontology,
+    dod_queries=dod_queries,
     trace=trace_steps,
     generated_by=run_provenance,
 )
 ```
 
-`MemorySilverStore` has the same API for synthetic tests. Refinement rejects
-invalid provenance or SHACL values and marks absent core fields `missing`;
-conflicting observed values stay `conflict`. Gold export validates all four
-contract documents, verifies each value's trace and both bronze objects, then
-writes `gold/<case_id>/<run_id>/` and finally `latest.json`. Only metrics are
-copied into `case/runs/`.
+`MemorySilverStore` has the same API for synthetic tests. Ontology datatypes and
+SHACL validate observations. Each class's declared properties appear in gold;
+absent properties are `missing`, and incompatible observations remain `conflict`
+without counting as complete. Silver retains all candidate observations.
 
-Recorded observations require a `mock-` run ID. They never update either
-`gold/<case_id>/latest.json` or `case/runs/latest/metrics.json`; their metrics
-carry `inference_backend: recorded`. Export rejects mixed inference backends
-across suppliers, values, trace steps, contracts, and phase lineage artifacts.
+Export validates case artifacts, phase lineage, typed value IDs, trace steps,
+relations, and bronze objects before writing `gold/<case_id>/<run_id>/`.
+The run contains `entities.jsonl`, `ontology.json`, `trace.jsonl`, and
+`metrics.json`. A bounded declarative DoD query document computes metrics;
+queries cannot execute model-generated code. `latest.json` is moved last.
+Recorded/preview runs never satisfy DoD criteria or update the live pointer.
 
-`ontofill.runfeed.RunFeed` writes `trace.live.jsonl` one step at a time, refreshes
-`status.json` on state or phase changes and by a background heartbeat every
-10 seconds, and points `runs/<case_id>/latest.json` at live runs only. Call
-`close()` when the run ends, or use it as a context manager.
+`ontofill.runfeed.RunFeed` publishes trace steps and status during execution.
