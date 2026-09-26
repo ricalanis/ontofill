@@ -76,7 +76,9 @@ def make_handler(manager: CellManager, token: str) -> type[BaseHTTPRequestHandle
                 path = urlsplit(self.path).path
                 if path == "/cells":
                     result = manager.create(
-                        body["backend"], body["allowed_domains"], body.get("limits"),
+                        body["backend"],
+                        body["allowed_domains"],
+                        body.get("limits"),
                         body.get("placement", "sandbox_vm"),
                     )
                     self._send(201, result)

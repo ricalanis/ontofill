@@ -8,6 +8,7 @@
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "step_id": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "minLength": 1},
     "phase": {"type": "integer", "minimum": 1, "maximum": 5},
     "source_id": {"type": ["string", "null"], "minLength": 1},

@@ -103,9 +103,17 @@ def _open_tunnel(remote_port: int) -> tuple[int, subprocess.Popen[bytes] | None]
         return remote_port, None
     local_port = _loopback_port()
     command = [
-        "ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
-        "-o", "ConnectTimeout=5", "-L",
-        f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}", target,
+        "ssh",
+        "-N",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-L",
+        f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+        target,
     ]
     try:
         tunnel = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -168,7 +176,9 @@ class CellManager:
         self.source_id = source_id
         self.tdd_path = tdd_path
         self.generated_by = generated_by or {
-            "backend": "recorded", "model": "cell-substrate", "at": _now(),
+            "backend": "recorded",
+            "model": "cell-substrate",
+            "at": _now(),
         }
         self.on_trace = on_trace
         self._cells: dict[str, _Cell] = {}
@@ -188,7 +198,9 @@ class CellManager:
         if placement == "throwaway_vx1":
             raise CellError("throwaway_vx1 is unavailable until Vultr admission is cleared")
         if backend == "skyvern":
-            raise CellError("Skyvern cells require a pinned upstream image and session gateway wiring")
+            raise CellError(
+                "Skyvern cells require a pinned upstream image and session gateway wiring"
+            )
         domains = _domains(allowed_domains)
         budget = SandboxLimits.from_value(limits)
         _remote_ssh_target()  # Validate remote target before creating any resource.
@@ -198,34 +210,84 @@ class CellManager:
         agent_image, egress_image = _images()
         suffix = uuid.uuid4().hex[:12]
         cell = _Cell(
-            cell_id=f"cell:{suffix}", backend=backend, domains=domains, limits=budget,
-            network=f"ontofill-cell-{suffix}", proxy=f"ontofill-cell-egress-{suffix}",
-            hands=f"ontofill-cell-hands-{suffix}", started_at=_now(),
+            cell_id=f"cell:{suffix}",
+            backend=backend,
+            domains=domains,
+            limits=budget,
+            network=f"ontofill-cell-{suffix}",
+            proxy=f"ontofill-cell-egress-{suffix}",
+            hands=f"ontofill-cell-hands-{suffix}",
+            started_at=_now(),
             started_monotonic=time.monotonic(),
-            host={"docker_host": info.get("Name", "unknown"), "runtime": "runsc", "runtime_available": True},
+            host={
+                "docker_host": info.get("Name", "unknown"),
+                "runtime": "runsc",
+                "runtime_available": True,
+            },
         )
         with self._lock:
             self._cells[cell.cell_id] = cell
         try:
             _docker("network", "create", "--internal", cell.network)
             _docker(
-                "run", "-d", "--name", cell.proxy, "--network", cell.network,
-                "--network-alias", "egress", "--read-only", "--cap-drop", "ALL",
-                "--security-opt", "no-new-privileges", "--pids-limit", "64",
-                "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.25",
-                "-e", "ALLOWED_DOMAINS=" + ",".join(domains), egress_image,
+                "run",
+                "-d",
+                "--name",
+                cell.proxy,
+                "--network",
+                cell.network,
+                "--network-alias",
+                "egress",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "64",
+                "--memory",
+                "128m",
+                "--memory-swap",
+                "128m",
+                "--cpus",
+                "0.25",
+                "-e",
+                "ALLOWED_DOMAINS=" + ",".join(domains),
+                egress_image,
             )
             _docker("network", "connect", "bridge", cell.proxy)
             _wait_proxy(cell.proxy)
             _docker(
-                "run", "-d", "--name", cell.hands, "--runtime", "runsc",
-                "--network", cell.network, "--read-only", "--tmpfs", "/tmp:rw,nosuid,size=512m",
-                "--tmpfs", "/out:rw,nosuid,size=4m,mode=1777", "--cap-drop", "ALL",
-                "--security-opt", "no-new-privileges", *budget.docker_args(),
-                "--shm-size", "256m", "-p", "127.0.0.1::9222",
-                "-e", "PROBE_DENIED_HOST=" + _denied_probe_host(domains),
-                "-e", "PROBE_MESH_IP=" + _mesh_probe_ip(),
-                agent_image, "python", "-u", "/app/cdp.py",
+                "run",
+                "-d",
+                "--name",
+                cell.hands,
+                "--runtime",
+                "runsc",
+                "--network",
+                cell.network,
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,nosuid,size=512m",
+                "--tmpfs",
+                "/out:rw,nosuid,size=4m,mode=1777",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                *budget.docker_args(),
+                "--shm-size",
+                "256m",
+                "-p",
+                "127.0.0.1::9222",
+                "-e",
+                "PROBE_DENIED_HOST=" + _denied_probe_host(domains),
+                "-e",
+                "PROBE_MESH_IP=" + _mesh_probe_ip(),
+                agent_image,
+                "python",
+                "-u",
+                "/app/cdp.py",
             )
             preflight = _wait_preflight(cell.hands)
             cell.pod = preflight["pod_identity"]
@@ -250,8 +312,10 @@ class CellManager:
             cell.timer.daemon = True
             cell.timer.start()
             return {
-                "cell_id": cell.cell_id, "cdp_url": cell.cdp_url,
-                "brain_url": None, "live_view_port": None,
+                "cell_id": cell.cell_id,
+                "cdp_url": cell.cdp_url,
+                "brain_url": None,
+                "live_view_port": None,
             }
         except Exception:
             self._destroy(cell, mark_failed=True)
@@ -267,7 +331,9 @@ class CellManager:
         with self._lock:
             cell = self._require(cell_id)
             if cell.state == "ready":
-                state_result = _docker("inspect", "--format", "{{json .State}}", cell.hands, check=False)
+                state_result = _docker(
+                    "inspect", "--format", "{{json .State}}", cell.hands, check=False
+                )
                 if state_result.returncode:
                     cell.failure_reason = "pids"
                     self._destroy(cell, mark_failed=True)
@@ -277,10 +343,15 @@ class CellManager:
                         cell.failure_reason = "memory" if state.get("OOMKilled") else "pids"
                         self._destroy(cell, mark_failed=True)
             return {
-                "cell_id": cell.cell_id, "backend": cell.backend, "state": cell.state,
-                "steps": cell.steps, "limits": cell.limits.as_dict(),
-                "failure_reason": cell.failure_reason, "cdp_url": cell.cdp_url if cell.state == "ready" else None,
-                "brain_url": None, "live_view_port": None,
+                "cell_id": cell.cell_id,
+                "backend": cell.backend,
+                "state": cell.state,
+                "steps": cell.steps,
+                "limits": cell.limits.as_dict(),
+                "failure_reason": cell.failure_reason,
+                "cdp_url": cell.cdp_url if cell.state == "ready" else None,
+                "brain_url": None,
+                "live_view_port": None,
             }
 
     def record_step(self, cell_id: str) -> int:
@@ -335,7 +406,8 @@ class CellManager:
         teardown = {
             "pod_gone": _docker("inspect", cell.hands, check=False).returncode != 0,
             "proxy_gone": _docker("inspect", cell.proxy, check=False).returncode != 0,
-            "network_removed": _docker("network", "inspect", cell.network, check=False).returncode != 0,
+            "network_removed": _docker("network", "inspect", cell.network, check=False).returncode
+            != 0,
         }
         teardown["verified"] = all(teardown.values())
         cell.state = "destroyed" if teardown["verified"] else "teardown_failed"
@@ -343,7 +415,12 @@ class CellManager:
         if cell.failure_reason:
             self._emit(cell, "limit_kill", {"reason": cell.failure_reason}, ok=False)
         if cell.task_result is None:
-            self._emit(cell, "dispatch_result", {"reason": cell.failure_reason or "no_task_result"}, ok=False)
+            self._emit(
+                cell,
+                "dispatch_result",
+                {"reason": cell.failure_reason or "no_task_result"},
+                ok=False,
+            )
         self._emit(cell, "teardown", teardown, ok=teardown["verified"])
         cell.job_record = self._job_record(cell, teardown, mark_failed=mark_failed)
         if self.lake is not None and self.case_id is not None:
@@ -358,44 +435,66 @@ class CellManager:
             evaluated = {"status": "hard_stop", "reason": cell.failure_reason}
             event = "hard_stop"
         row = _trace(
-            step_id=f"step:{uuid.uuid4().hex}", run_id=self.run_id or "run:unattached",
-            phase=3, source_id=self.source_id, objective_id=None,
-            tdd_path=self.tdd_path, observed={"cell_id": cell.cell_id},
-            requested={"proof_checkpoint": checkpoint}, executed=detail,
-            evaluated=evaluated, ts=_now(), generated_by=self.generated_by,
-            parent_step_id="step:" + cell.cell_id.partition(":")[2], event=event,
+            step_id=f"step:{uuid.uuid4().hex}",
+            run_id=self.run_id or "run:unattached",
+            phase=3,
+            source_id=self.source_id,
+            objective_id=None,
+            tdd_path=self.tdd_path,
+            observed={"cell_id": cell.cell_id},
+            requested={"proof_checkpoint": checkpoint},
+            executed=detail,
+            evaluated=evaluated,
+            ts=_now(),
+            generated_by=self.generated_by,
+            parent_step_id="step:" + cell.cell_id.partition(":")[2],
+            event=event,
         )
         self.on_trace(row)
 
     def _job_record(self, cell: _Cell, teardown: dict, *, mark_failed: bool) -> dict:
         host = (
             {
-                "ok": cell.host["runtime_available"], "sandbox_host": cell.host["docker_host"],
+                "ok": cell.host["runtime_available"],
+                "sandbox_host": cell.host["docker_host"],
                 "runtime": cell.host["runtime"],
                 "virt": {
                     "cpu_virtualization_flags": cell.host["cpu_virtualization_flags"],
                     "dev_kvm_present": cell.host["dev_kvm_present"],
                 },
             }
-            if "cpu_virtualization_flags" in cell.host else {"ok": False, "not_run": True}
+            if "cpu_virtualization_flags" in cell.host
+            else {"ok": False, "not_run": True}
         )
         where = (
-            {"ok": bool(cell.pod.get("hostname")), "hostname": cell.pod["hostname"], "uname": cell.pod["uname"]}
-            if cell.pod else {"ok": False, "not_run": True}
+            {
+                "ok": bool(cell.pod.get("hostname")),
+                "hostname": cell.pod["hostname"],
+                "uname": cell.pod["uname"],
+            }
+            if cell.pod
+            else {"ok": False, "not_run": True}
         )
         isolation = (
             {
                 "probes": [
                     {"probe": name, "result": "BLOCKED" if blocked else "ALLOWED"}
                     for name, blocked in (
-                        ("network_non_allowlisted", cell.isolation["network"]["blocked"]
-                         and cell.isolation["network"]["proxy_logged_block"]),
+                        (
+                            "network_non_allowlisted",
+                            cell.isolation["network"]["blocked"]
+                            and cell.isolation["network"]["proxy_logged_block"],
+                        ),
                         ("write_outside_pod", cell.isolation["write_outside_pod"]["blocked"]),
-                        ("write_outside_writable_mount", cell.isolation["write_outside_writable_mount"]["blocked"]),
+                        (
+                            "write_outside_writable_mount",
+                            cell.isolation["write_outside_writable_mount"]["blocked"],
+                        ),
                     )
                 ]
             }
-            if cell.isolation else {"probes": [], "not_run": True}
+            if cell.isolation
+            else {"probes": [], "not_run": True}
         )
         wall_s = round(max(0.0, time.monotonic() - cell.started_monotonic), 3)
         record = {
@@ -403,7 +502,8 @@ class CellManager:
             "run_id": self.run_id or "run:unattached",
             "step_id": "step:" + cell.cell_id.partition(":")[2],
             "source_id": self.source_id,
-            "started_at": cell.started_at, "ended_at": _now(),
+            "started_at": cell.started_at,
+            "ended_at": _now(),
             "generated_by": self.generated_by,
             "limits": cell.limits.as_dict(),
             "usage": {"peak_memory_mb": cell.peak_memory_mb, "wall_s": wall_s, "steps": cell.steps},
@@ -412,10 +512,12 @@ class CellManager:
                 "task": {
                     "ok": bool(cell.task_ok and not mark_failed),
                     "requested": {"backend": cell.backend, "allowed_domains": cell.domains},
-                    "result": cell.task_result or {"reason": cell.failure_reason or "no_task_result"},
+                    "result": cell.task_result
+                    or {"reason": cell.failure_reason or "no_task_result"},
                     "value_ids": [],
                 },
-                "where": where, "isolation": isolation,
+                "where": where,
+                "isolation": isolation,
                 "secrets": cell.secrets or {"ok": False, "not_run": True},
                 "teardown": {"ok": teardown["verified"], "detail": teardown},
             },

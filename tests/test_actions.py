@@ -173,6 +173,9 @@ def test_track_trace_events_validate_exact_contract_shapes() -> None:
         "reason": "Safety confirmation unavailable",
         "by": "gateway",
     }
-    validate_document("trace-step", {**base, "event": "quarantine", "screen": screened})
+    validate_document(
+        "trace-step",
+        {**base, "session_id": "session-1", "event": "quarantine", "screen": screened},
+    )
     with pytest.raises(ValidationError):
         validate_document("trace-step", {**base, "screen": screened})

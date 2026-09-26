@@ -23,9 +23,13 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
     def fake(*args: str, **_kwargs) -> subprocess.CompletedProcess[str]:
         calls.append(args)
         if args[:2] == ("info", "--format"):
-            return subprocess.CompletedProcess(args, 0, json.dumps({"Name": "synthetic", "Runtimes": {"runsc": {}}}), "")
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"Name": "synthetic", "Runtimes": {"runsc": {}}}), ""
+            )
         if args[:2] == ("inspect", "--format"):
-            return subprocess.CompletedProcess(args, 0, json.dumps({"Running": True, "OOMKilled": False}), "")
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"Running": True, "OOMKilled": False}), ""
+            )
         if args[0] == "inspect" or args[:2] == ("network", "inspect"):
             return subprocess.CompletedProcess(args, 1, "", "not found")
         return subprocess.CompletedProcess(args, 0, "", "")
@@ -33,18 +37,25 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
     monkeypatch.setattr(cells_module, "_docker", fake)
     monkeypatch.setattr(cells_module, "_images", lambda: ("agent:test", "egress:test"))
     monkeypatch.setattr(cells_module, "_wait_proxy", lambda _name: None)
-    monkeypatch.setattr(cells_module, "_events", lambda _name: [{"decision": "block", "host": "denied.invalid"}])
+    monkeypatch.setattr(
+        cells_module, "_events", lambda _name: [{"decision": "block", "host": "denied.invalid"}]
+    )
     monkeypatch.setattr(cells_module, "_denied_probe_host", lambda _domains: "denied.invalid")
     monkeypatch.setattr(cells_module, "_mesh_probe_ip", lambda: "100.64.0.2")
     monkeypatch.setattr(cells_module, "_published_port", lambda _name: 49152)
     monkeypatch.setattr(cells_module, "_open_tunnel", lambda port: (port, None))
-    monkeypatch.setattr(cells_module, "_wait_cdp", lambda port: f"ws://127.0.0.1:{port}/devtools/browser/synthetic")
     monkeypatch.setattr(
-        cells_module, "_wait_preflight", lambda _name: {
+        cells_module, "_wait_cdp", lambda port: f"ws://127.0.0.1:{port}/devtools/browser/synthetic"
+    )
+    monkeypatch.setattr(
+        cells_module,
+        "_wait_preflight",
+        lambda _name: {
             "pod_identity": {
                 "hostname": "synthetic-hands",
                 "uname": {"system": "Linux", "release": "synthetic", "machine": "x86_64"},
-                "cpu_virtualization_flags": ["vmx"], "dev_kvm_present": False,
+                "cpu_virtualization_flags": ["vmx"],
+                "dev_kvm_present": False,
             },
             "isolation_probes": {
                 "network": {"host": "denied.invalid", "blocked": True, "status": 403},
@@ -54,8 +65,10 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
                 },
             },
             "secret_probes": {
-                "env_keys_found": 0, "files_with_keys": 0,
-                "metadata_ip": "BLOCKED", "mesh": "BLOCKED",
+                "env_keys_found": 0,
+                "files_with_keys": 0,
+                "metadata_ip": "BLOCKED",
+                "mesh": "BLOCKED",
             },
             "peak_memory_mb": 36.5,
         },
@@ -63,11 +76,15 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
     return calls
 
 
-def test_native_cell_lifecycle_enforces_network_caps_and_six_proofs(monkeypatch, tmp_path: Path) -> None:
+def test_native_cell_lifecycle_enforces_network_caps_and_six_proofs(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls = _fake_docker(monkeypatch)
     lake = FileLake(tmp_path / "lake")
     trace: list[dict] = []
-    manager = CellManager(lake=lake, case_id="synthetic", run_id="mock-synthetic", on_trace=trace.append)
+    manager = CellManager(
+        lake=lake, case_id="synthetic", run_id="mock-synthetic", on_trace=trace.append
+    )
     limits = SandboxLimits(memory_mb=512, cpus=0.5, pids=64, timeout_s=60, max_steps=2)
     opened = manager.create("native", ["Example.invalid"], limits)
     assert opened["cdp_url"] == "ws://127.0.0.1:49152/devtools/browser/synthetic"
@@ -82,7 +99,12 @@ def test_native_cell_lifecycle_enforces_network_caps_and_six_proofs(monkeypatch,
     assert record["checkpoints"]["teardown"]["ok"]
     assert len(record["checkpoints"]) == 6
     assert {row["evaluated"]["proof_checkpoint"] for row in trace} == {
-        "host_check", "pod_identity", "isolation_probe", "secrets", "dispatch_result", "teardown",
+        "host_check",
+        "pod_identity",
+        "isolation_probe",
+        "secrets",
+        "dispatch_result",
+        "teardown",
     }
     assert record["usage"]["steps"] == 1
     assert record["limits"] == limits.as_dict()
@@ -90,7 +112,9 @@ def test_native_cell_lifecycle_enforces_network_caps_and_six_proofs(monkeypatch,
     assert any(call[:3] == ("network", "create", "--internal") for call in calls)
     proxy_run = next(call for call in calls if call[:2] == ("run", "-d") and "egress:test" in call)
     hands_run = next(call for call in calls if call[:2] == ("run", "-d") and "agent:test" in call)
-    assert ("network", "connect", "bridge") == next(call[:3] for call in calls if call[:2] == ("network", "connect"))
+    assert ("network", "connect", "bridge") == next(
+        call[:3] for call in calls if call[:2] == ("network", "connect")
+    )
     assert "--network" in proxy_run and "--network" in hands_run
     assert hands_run[hands_run.index("--runtime") + 1] == "runsc"
     assert hands_run[hands_run.index("--memory") + 1] == "512m"
@@ -115,21 +139,32 @@ def test_max_steps_kills_cell_and_records_honest_failure(monkeypatch) -> None:
 
 def test_preflight_failure_closes_resources_without_claiming_proof(monkeypatch) -> None:
     calls = _fake_docker(monkeypatch)
-    monkeypatch.setattr(cells_module, "_wait_preflight", lambda _name: {
-        "pod_identity": {
-            "hostname": "synthetic", "uname": {"system": "Linux", "release": "x", "machine": "x"},
-            "cpu_virtualization_flags": [], "dev_kvm_present": False,
+    monkeypatch.setattr(
+        cells_module,
+        "_wait_preflight",
+        lambda _name: {
+            "pod_identity": {
+                "hostname": "synthetic",
+                "uname": {"system": "Linux", "release": "x", "machine": "x"},
+                "cpu_virtualization_flags": [],
+                "dev_kvm_present": False,
+            },
+            "isolation_probes": {
+                "network": {"host": "denied.invalid", "blocked": True},
+                "writes": {
+                    "outside_pod": {"blocked": True},
+                    "outside_writable_mount": {"blocked": True},
+                },
+            },
+            "secret_probes": {
+                "env_keys_found": 1,
+                "files_with_keys": 0,
+                "metadata_ip": "BLOCKED",
+                "mesh": "BLOCKED",
+            },
+            "peak_memory_mb": 9.0,
         },
-        "isolation_probes": {
-            "network": {"host": "denied.invalid", "blocked": True},
-            "writes": {"outside_pod": {"blocked": True}, "outside_writable_mount": {"blocked": True}},
-        },
-        "secret_probes": {
-            "env_keys_found": 1, "files_with_keys": 0,
-            "metadata_ip": "BLOCKED", "mesh": "BLOCKED",
-        },
-        "peak_memory_mb": 9.0,
-    })
+    )
     manager = CellManager()
     with pytest.raises(CellError, match="preflight"):
         manager.create("native", ["example.invalid"])
@@ -161,13 +196,18 @@ def test_loopback_http_endpoint_requires_token(monkeypatch) -> None:
             urlopen(Request(base + "/cells", method="POST", data=b"{}"), timeout=2)
         assert denied.value.code == 401
         request = Request(
-            base + "/cells", method="POST",
+            base + "/cells",
+            method="POST",
             data=json.dumps({"backend": "native", "allowed_domains": ["example.invalid"]}).encode(),
             headers={"Authorization": "Bearer synthetic-token", "Content-Type": "application/json"},
         )
         with urlopen(request, timeout=2) as response:
             cell_id = json.load(response)["cell_id"]
-        request = Request(base + f"/cells/{cell_id}", method="DELETE", headers={"Authorization": "Bearer synthetic-token"})
+        request = Request(
+            base + f"/cells/{cell_id}",
+            method="DELETE",
+            headers={"Authorization": "Bearer synthetic-token"},
+        )
         with urlopen(request, timeout=2) as response:
             assert json.load(response)["state"] == "destroyed"
     finally:
