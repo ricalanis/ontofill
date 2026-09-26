@@ -25,6 +25,7 @@
         "source_id": {"type": "string", "minLength": 1},
         "source_type": {"type": "string", "minLength": 1},
         "format": {"enum": ["html", "xlsx", "csv", "pdf", "json", "api"]},
+        "discovered_by": {"$ref": "objectives.schema.json#/$defs/discovered_by"},
         "health": {
           "type": "object", "additionalProperties": false,
           "required": ["ok", "failed", "yield"],
@@ -43,13 +44,16 @@
         "preview": {"type": "boolean"},
         "inference_backend": {"enum": ["recorded", "vultr"]},
         "run_id": {"type": "string", "minLength": 1},
-        "suppliers_total": {"type": "integer", "minimum": 0},
-        "suppliers_at_80pct_core": {"type": "integer", "minimum": 0},
-        "per_field_completeness": {
-          "type": "object", "additionalProperties": {"$ref": "#/$defs/ratio"}
+        "entities_total": {"$ref": "metrics.schema.json#/$defs/class_counts"},
+        "entities_meeting_dod": {"$ref": "metrics.schema.json#/$defs/class_counts"},
+        "per_property_completeness": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": {"$ref": "#/$defs/ratio"}
+          }
         },
-        "distinct_source_types": {"type": "integer", "minimum": 0},
-        "gold_values_without_evidence": {"type": "integer", "minimum": 0},
+        "distinct_source_classes": {"type": "integer", "minimum": 0},
+        "values_without_evidence": {"type": "integer", "minimum": 0},
         "level_ratio_coverage": {
           "type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/ratio"}}
         },
@@ -62,6 +66,12 @@
             "S2": {"type": "integer", "minimum": 0}
           }
         },
+        "decisions_by_backend": {
+          "type": "object",
+          "propertyNames": {"enum": ["recorded", "vultr", "jev"]},
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "dod": {"type": "array", "items": {"$ref": "metrics.schema.json#/$defs/dod_result"}},
         "jobs": {
           "type": "object", "additionalProperties": false,
           "properties": {

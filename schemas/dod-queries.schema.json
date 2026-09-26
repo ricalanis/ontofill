@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/dod-queries.schema.json",
+  "title": "Safe declarative definition-of-done queries",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["queries", "generated_by"],
+  "properties": {
+    "prd_path": {"type": "string", "minLength": 1},
+    "ontology_version": {"type": "string", "minLength": 1},
+    "queries": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/query"}},
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"}
+  },
+  "$defs": {
+    "query": {
+      "type": "object", "additionalProperties": false,
+      "required": ["criterion_id", "aggregate", "target", "operator"],
+      "properties": {
+        "criterion_id": {"type": "string", "minLength": 1},
+        "aggregate": {
+          "enum": [
+            "count_entities", "count_entities_with_properties",
+            "count_distinct_source_classes", "count_values_without_evidence"
+          ]
+        },
+        "class_id": {"type": "string", "minLength": 1},
+        "properties": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "conditions": {"type": "array", "items": {"$ref": "#/$defs/condition"}},
+        "target": {"type": "number", "minimum": 0},
+        "operator": {"enum": [">=", ">", "=", "<=", "<"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"aggregate": {"const": "count_entities_with_properties"}}},
+          "then": {"required": ["properties"]}
+        }
+      ]
+    },
+    "condition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["property", "operator"],
+      "properties": {
+        "property": {"type": "string", "minLength": 1},
+        "operator": {"enum": ["exists", "eq", "ne"]},
+        "value": {"type": ["string", "number", "boolean", "null"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"operator": {"enum": ["eq", "ne"]}}},
+          "then": {"required": ["value"]}
+        },
+        {
+          "if": {"properties": {"operator": {"const": "exists"}}},
+          "then": {"not": {"required": ["value"]}}
+        }
+      ]
+    }
+  }
+}

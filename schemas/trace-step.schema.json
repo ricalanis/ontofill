@@ -15,6 +15,7 @@
     "tdd_path": {"type": ["string", "null"], "minLength": 1},
     "mode": {"enum": ["D0", "D1", "S1", "S2"]},
     "event": {"enum": ["escalation", "crystallization", "repair", "hard_stop", null]},
+    "usage": {"$ref": "#/$defs/usage"},
     "observed": {"$ref": "#/$defs/log_item"},
     "requested": {"$ref": "#/$defs/log_item"},
     "executed": {"$ref": "#/$defs/log_item"},
@@ -25,6 +26,17 @@
     "ts": {"type": "string", "format": "date-time"}
   },
   "$defs": {
-    "log_item": {"oneOf": [{"type": "object"}, {"type": "string", "minLength": 1}]}
+    "log_item": {"oneOf": [{"type": "object"}, {"type": "string", "minLength": 1}]},
+    "usage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "backend", "input_tokens", "output_tokens", "est_usd"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "backend": {"enum": ["recorded", "vultr", "jev"]},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "est_usd": {"type": "number", "minimum": 0}
+      }
+    }
   }
 }

@@ -4,7 +4,7 @@
   "title": "Phase 1 global product requirements",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "brief_path", "personas", "jobs_to_be_done", "requirements", "constraints", "non_goals", "definition_of_done", "generated_by"],
+  "required": ["version", "brief_path", "personas", "jobs_to_be_done", "requirements", "constraints", "non_goals", "definition_of_done", "authority_policy", "generated_by"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
     "version": {"type": "string", "minLength": 1},
@@ -13,10 +13,32 @@
     "jobs_to_be_done": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/job"}},
     "requirements": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/requirement"}},
     "constraints": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "authority_policy": {"$ref": "#/$defs/authority_policy"},
     "non_goals": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "definition_of_done": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/criterion"}}
   },
   "$defs": {
+    "authority_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["jurisdiction", "trusted_publishers", "unknown_source_action"],
+      "properties": {
+        "jurisdiction": {"type": "string", "minLength": 1},
+        "trusted_publishers": {"type": "array", "items": {"$ref": "#/$defs/trusted_publisher"}},
+        "unknown_source_action": {"const": "review"}
+      }
+    },
+    "trusted_publisher": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "domains", "rationale"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "domains": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$"}
+        },
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
     "persona": {
       "type": "object", "additionalProperties": false, "required": ["id", "description"],
       "properties": {"id": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}}
