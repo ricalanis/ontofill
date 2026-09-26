@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--to-phase", type=int, choices=range(1, 6), default=5)
     run.add_argument("--run-id")
     run.add_argument("--budget-usd", type=float)
+    run.add_argument("--preview-past-checkpoints", action="store_true")
 
     refine = commands.add_parser("refine", help="Rebuild silver and gold from stored bronze")
     refine.add_argument("case_dir", type=Path)
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
             to_phase=args.to_phase,
             run_id=args.run_id,
             budget_usd=args.budget_usd,
+            preview_past_checkpoints=args.preview_past_checkpoints,
         )
     if args.command == "refine":
         return refine_case(args.case_dir, run_id=args.run_id)

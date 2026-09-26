@@ -21,13 +21,12 @@ class SyntheticSearch:
 def test_discovery_uses_brief_and_records_selected_result(tmp_path) -> None:
     (tmp_path / "brief.md").write_text("Who supplies Example City?", encoding="utf-8")
     search = SyntheticSearch()
-    decision = RecordedDecisionClient(
-        {"phase3.select_source": [{"index": 1, "reason": "Likely supplier records"}]}
-    )
+    decision = RecordedDecisionClient({})
     document = discover_objective(tmp_path, {"version": "1"}, decision, search)
     assert "Example City" in search.queries[0]
     assert document["objectives"][0]["source_url"] == "https://registry.example.test/suppliers"
     assert (tmp_path / "03-fanout/objectives.yaml").exists()
+    assert decision.calls == []
     assert discover_objective(tmp_path, {"version": "1"}, decision, search) == document
     assert len(search.queries) == 1
 

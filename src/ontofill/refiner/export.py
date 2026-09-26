@@ -178,6 +178,7 @@ def _metrics(
     taxonomy_levels: Mapping[str, Sequence[Sequence[str]]],
     jobs: dict | None,
     generated_by: dict[str, str],
+    preview: bool = False,
 ) -> dict:
     total = len(suppliers)
     per_field = {
@@ -231,6 +232,7 @@ def _metrics(
         "jobs": jobs or {"ok": len(completed_jobs), "failed_by_reason": {}},
         "generated_by": generated_by.copy(),
         "inference_backend": generated_by["backend"],
+        "preview": preview,
     }
 
 
@@ -246,6 +248,7 @@ def export_run(
     taxonomy_levels: Mapping[str, Sequence[Sequence[str]]] | None = None,
     jobs: dict | None = None,
     generated_by: dict[str, str],
+    preview: bool = False,
 ) -> dict:
     """Write an entire schema-valid run, then move latest.json as the final step."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case_id) or not re.fullmatch(
@@ -286,7 +289,7 @@ def export_run(
             raise ValueError(f"contract {contract['id']} refers to an unknown supplier")
         _check_evidence(lake, contract["evidence"])
     metrics = _metrics(
-        run_id, sorted_suppliers, sorted_trace, taxonomy_levels or {}, jobs, run_provenance
+        run_id, sorted_suppliers, sorted_trace, taxonomy_levels or {}, jobs, run_provenance, preview
     )
     validators["metrics"].validate(metrics)
     prefix = f"gold/{case_id}/{run_id}"
@@ -297,13 +300,13 @@ def export_run(
     lake.write_key(f"{prefix}/metrics.json", metrics_bytes)
     runs_dir = Path(case_dir) / "runs"
     metric_targets = [runs_dir / run_id / "metrics.json"]
-    if run_provenance["backend"] == "vultr":
+    if run_provenance["backend"] == "vultr" and not preview:
         metric_targets.append(runs_dir / "latest" / "metrics.json")
     for target in metric_targets:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".json.tmp")
         temporary.write_bytes(metrics_bytes)
         temporary.replace(target)
-    if run_provenance["backend"] == "vultr":
+    if run_provenance["backend"] == "vultr" and not preview:
         lake.write_key(f"gold/{case_id}/latest.json", _json_bytes({"run_id": run_id}))
     return metrics

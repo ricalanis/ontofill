@@ -28,10 +28,15 @@ def source_discover(
     search_client: SearchClient,
     *,
     limit: int = 10,
+    query: str | None = None,
 ) -> tuple[SourceCandidate, ...]:
-    query = brief_search_query(brief)
+    query = query or brief_search_query(brief)
+    if not query.strip():
+        raise ToolFailure(FailureKind.VALIDATION_FAILED, "discovery query is empty")
     try:
         results = search_client.search(query)
+    except ToolFailure:
+        raise
     except Exception as exc:
         raise ToolFailure(FailureKind.NETWORK, "search service failed") from exc
     candidates: list[SourceCandidate] = []

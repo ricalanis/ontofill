@@ -8,7 +8,8 @@
   "properties": {
     "approver": {"type": "string", "minLength": 1},
     "date": {"type": "string", "format": "date"},
-    "checkpoint": {"enum": ["prd", "factors", "ontology"]},
+    "checkpoint": {"enum": ["prd", "factors", "ontology", "source"]},
+    "source_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "decisions": {
       "type": "object",
       "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
@@ -19,6 +20,10 @@
     {
       "if": {"required": ["decisions"]},
       "then": {"required": ["checkpoint"], "properties": {"checkpoint": {"const": "factors"}}}
+    },
+    {
+      "if": {"properties": {"checkpoint": {"const": "source"}}, "required": ["checkpoint"]},
+      "then": {"required": ["source_fingerprint"]}
     }
   ]
 }

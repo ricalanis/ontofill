@@ -81,5 +81,8 @@ def test_execute_emits_only_observed_cells(tmp_path) -> None:
         "1 Test Street",
     }
     assert all(item.evidence["bronze_key"] == csv_key for item in result.observations)
+    assert all(item.evidence["source_type"] == "supplier website" for item in result.observations)
+    assert all(item.evidence["format"] == "csv" for item in result.observations)
+    assert result.trace[-1]["mode"] == "D0"
     assert result.trace[-1]["value_ids"] == [item.value_id for item in result.observations]
     assert len(store.list_for_run("mock-test")) == 3

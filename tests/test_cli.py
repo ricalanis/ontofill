@@ -15,6 +15,7 @@ def test_cli_contract_arguments() -> None:
             "r1",
             "--budget-usd",
             "1.5",
+            "--preview-past-checkpoints",
         ]
     )
     assert (run.command, run.from_phase, run.to_phase, run.run_id, run.budget_usd) == (
@@ -26,3 +27,4 @@ def test_cli_contract_arguments() -> None:
     )
     assert parser.parse_args(["refine", "case"]).command == "refine"
     assert parser.parse_args(["export", "case"]).command == "export"
+    assert run.preview_past_checkpoints is True

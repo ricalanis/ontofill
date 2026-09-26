@@ -7,6 +7,7 @@
   "required": ["run_id", "suppliers_total", "suppliers_at_80pct_core", "per_field_completeness", "distinct_source_types", "gold_values_without_evidence", "level_ratio_coverage", "mode_counts", "jobs", "generated_by", "inference_backend"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "preview": {"type": "boolean"},
     "inference_backend": {"enum": ["recorded", "vultr"]},
     "run_id": {"type": "string", "minLength": 1},
     "suppliers_total": {"type": "integer", "minimum": 0},

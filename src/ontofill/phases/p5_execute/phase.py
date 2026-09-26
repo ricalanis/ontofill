@@ -30,6 +30,7 @@ class ExecutionResult:
     observations: list[Observation]
     trace: list[dict]
     sandbox_jobs: list[dict]
+    format: str
 
 
 def _format(url: str) -> str | None:
@@ -111,6 +112,7 @@ def _emit(
     screenshot_key: str,
     source_id: str,
     source_type: str,
+    format: str,
     captured_at: str,
     run_id: str,
     step_id: str,
@@ -130,6 +132,7 @@ def _emit(
             "captured_at": captured_at,
             "source_id": source_id,
             "source_type": source_type,
+            "format": format,
         }
         item = Observation(
             run_id=run_id,
@@ -220,17 +223,19 @@ def execute_objective(
         parsed = file_parse(downloaded["bytes"], format=_format(selected.url), max_rows=300)
         evidence_url = downloaded["url"]
         bronze_key = downloaded["bronze_key"]
-        source_type = parsed.format
+        source_type = objective.get("source_type", "supplier website")
+        file_format = parsed.format
         parent_step = downloaded["trace"][0]["step_id"]
     else:
         parsed = _html_table(page["html"])
         evidence_url = page["url"]
         bronze_key = page["html_key"]
-        source_type = "html"
+        source_type = objective.get("source_type", "supplier website")
+        file_format = "html"
         parent_step = page["trace"][0]["step_id"]
     rows = _supplier_rows(parsed)
     if not rows:
-        return ExecutionResult([], traces, jobs)
+        return ExecutionResult([], traces, jobs, file_format)
     row, fields = rows[0]
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
@@ -242,6 +247,7 @@ def execute_objective(
         screenshot_key=page["screenshot_key"],
         source_id=source_id,
         source_type=source_type,
+        format=file_format,
         captured_at=timestamp,
         run_id=run_id,
         step_id=step_id,
@@ -256,7 +262,7 @@ def execute_objective(
             "source_id": source_id,
             "objective_id": objective_id,
             "tdd_path": tdd_path,
-            "mode": "S1",
+            "mode": "D0" if file_format in {"csv", "xlsx"} else "S1",
             "observed": {"sheet": row.sheet, "row": row.row_number},
             "requested": {"tool": "emit.observation", "fields": list(fields)},
             "executed": {"tool": "emit.observation", "count": len(observed)},
@@ -267,4 +273,4 @@ def execute_objective(
             "generated_by": provenance,
         }
     )
-    return ExecutionResult(observed, traces, jobs)
+    return ExecutionResult(observed, traces, jobs, file_format)

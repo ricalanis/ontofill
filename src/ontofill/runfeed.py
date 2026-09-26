@@ -35,6 +35,7 @@ class RunFeed:
         run_id: str,
         generated_by: dict[str, str],
         *,
+        preview: bool = False,
         interval_seconds: float = 10,
         clock: Callable[[], datetime] | None = None,
         start_heartbeat: bool = True,
@@ -49,6 +50,7 @@ class RunFeed:
         self.case_id = case_id
         self.run_id = run_id
         self.generated_by = validate_run_provenance(run_id, generated_by)
+        self.preview = preview
         self.interval = timedelta(seconds=interval_seconds)
         self.clock = clock or (lambda: datetime.now(UTC))
         self.prefix = f"runs/{case_id}/{run_id}"
@@ -105,7 +107,7 @@ class RunFeed:
             raise ValueError("invalid run state")
         if phase not in range(1, 6):
             raise ValueError("phase must be 1..5")
-        if checkpoint_pending not in {None, "prd", "factors", "ontology"}:
+        if checkpoint_pending not in {None, "prd", "factors", "ontology", "source"}:
             raise ValueError("invalid checkpoint")
         with self._lock:
             self._check_ready()
@@ -127,6 +129,7 @@ class RunFeed:
                     else (previous["metrics"] if previous else {})
                 ),
                 "generated_by": self.generated_by.copy(),
+                "preview": self.preview,
             }
             changed = previous is None or any(
                 previous[key] != self._status[key]
@@ -167,7 +170,7 @@ class RunFeed:
         self.lake.write_key(f"{self.prefix}/status.json", _json_bytes(status))
         self._status = status
         self._last_status_write = now
-        if first_write and self.generated_by["backend"] == "vultr":
+        if first_write and self.generated_by["backend"] == "vultr" and not self.preview:
             self.lake.write_key(
                 f"runs/{self.case_id}/latest.json", _json_bytes({"run_id": self.run_id})
             )

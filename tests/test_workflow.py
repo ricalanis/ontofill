@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 
 from ontofill_scrape import SearchResult
 
-from ontofill.workflow import export_case, run_case
+from ontofill.workflow import _preview_decision, export_case, run_case
 
 
 class SyntheticSearch:
@@ -85,9 +86,17 @@ def test_recorded_workflow_uses_scratch_and_never_claims_approval(tmp_path) -> N
             ),
         }
 
-    run_id = "mock-" + tmp_path.name.replace("_", "-")
+    run_id = "mock-" + uuid.uuid4().hex
     assert (
-        run_case(case, run_id=run_id, search_client=SyntheticSearch(), capture=capture, fetch=fetch)
+        run_case(
+            case,
+            run_id=run_id,
+            preview_past_checkpoints=True,
+            decision=_preview_decision("Suppliers in Example City"),
+            search_client=SyntheticSearch(),
+            capture=capture,
+            fetch=fetch,
+        )
         == 3
     )
     assert list(case.iterdir()) == [case / "brief.md"]
@@ -102,9 +111,52 @@ def test_recorded_workflow_uses_scratch_and_never_claims_approval(tmp_path) -> N
     metrics = json.loads(lake.read_key(f"gold/{case.name}/{run_id}/metrics.json"))
     assert metrics["suppliers_total"] == 1
     assert metrics["inference_backend"] == "recorded"
+    assert metrics["preview"] is True
     assert metrics["suppliers_at_80pct_core"] == 1
     assert export_case(case, run_id=run_id) == 0
     assert not lake.exists(f"gold/{case.name}/latest.json")
     status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
     assert status["state"] == "paused"
     assert status["checkpoint_pending"] == "prd"
+    assert status["preview"] is True
+    assert status["sources"][0]["source_type"] == "supplier website"
+    assert status["sources"][0]["format"] == "csv"
+
+
+def test_recorded_default_pauses_at_first_checkpoint(tmp_path, capsys) -> None:
+    case = tmp_path / "tracked-case"
+    case.mkdir()
+    (case / "brief.md").write_text("Suppliers in Example City", encoding="utf-8")
+    run_id = "mock-" + uuid.uuid4().hex
+    assert (
+        run_case(case, run_id=run_id, decision=_preview_decision("Suppliers in Example City")) == 3
+    )
+    from ontofill.workflow import _scratch_case
+
+    scratch, lake = _scratch_case(case, run_id)
+    assert (scratch / "01-scope/prd.json").exists()
+    prd = json.loads((scratch / "01-scope/prd.json").read_text())
+    assert not prd["jobs_to_be_done"][0]["description"].startswith("#")
+    assert {item["metric"] for item in prd["definition_of_done"]} == {
+        "suppliers_total",
+        "suppliers_at_80pct_core",
+        "distinct_source_types",
+        "gold_values_without_evidence",
+    }
+    assert not (scratch / "02-ontology/factors/factors.json").exists()
+    assert not lake.exists(f"gold/{case.name}/{run_id}/metrics.json")
+    output = capsys.readouterr().out
+    assert f"run_id={run_id}" in output
+    assert "checkpoint_pending=prd" in output
+    assert "recorded artifacts cannot satisfy" in output
+    (scratch / "01-scope/APPROVED").write_text(
+        '{"approver":"Example Reviewer","date":"2026-09-26","checkpoint":"prd"}',
+        encoding="utf-8",
+    )
+    assert (
+        run_case(case, run_id=run_id, decision=_preview_decision("Suppliers in Example City")) == 3
+    )
+    assert (
+        "APPROVED exists but the artifact was produced by the recorded backend"
+        in capsys.readouterr().out
+    )

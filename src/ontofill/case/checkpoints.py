@@ -1,4 +1,4 @@
-"""Human approval markers for PRD, factors, and ontology."""
+"""Human approval markers for PRD, factors, ontology, and source authority."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ def require_approval(
     checkpoint: str,
     artifact_paths: list[str],
     generated_by: dict[str, str],
+    source_fingerprint: str | None = None,
 ) -> bool:
     """Return False and leave a review file until a valid APPROVED marker exists."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -42,7 +43,8 @@ def require_approval(
         validate_document("approved", document)
         if document.get("checkpoint", checkpoint) != checkpoint:
             raise ValueError(f"wrong checkpoint in {approved}")
-        return True
+        if checkpoint != "source" or document.get("source_fingerprint") == source_fingerprint:
+            return True
     metadata = {
         "phase": phase,
         "checkpoint": checkpoint,
@@ -51,6 +53,10 @@ def require_approval(
         "artifact_paths": artifact_paths,
         "generated_by": generated_by,
     }
+    if checkpoint == "source":
+        if source_fingerprint is None:
+            raise ValueError("source checkpoint needs a candidate fingerprint")
+        metadata["source_fingerprint"] = source_fingerprint
     validate_document("approval-pending", metadata)
     pending = directory / "APPROVAL_PENDING.md"
     links = "\n".join(f"- `{path}`" for path in artifact_paths)
@@ -61,7 +67,9 @@ def require_approval(
         + f"# Approval pending: {checkpoint}\n\n"
         + f"Review these artifacts:\n\n{links}\n\n"
         + "To approve, create `APPROVED` next to this file with JSON content "
-        + f'like `{{"approver":"name","date":"YYYY-MM-DD","checkpoint":"{checkpoint}"}}`.\n',
+        + f'like `{{"approver":"name","date":"YYYY-MM-DD","checkpoint":"{checkpoint}"'
+        + (f',"source_fingerprint":"{source_fingerprint}"' if checkpoint == "source" else "")
+        + "}`.\n",
         encoding="utf-8",
     )
     return False

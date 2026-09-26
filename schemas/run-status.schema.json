@@ -7,10 +7,11 @@
   "required": ["run_id", "state", "phase", "checkpoint_pending", "updated_at", "sources", "metrics", "generated_by"],
   "properties": {
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "preview": {"type": "boolean"},
     "run_id": {"type": "string", "minLength": 1},
     "state": {"enum": ["running", "paused", "done", "failed"]},
     "phase": {"type": "integer", "minimum": 1, "maximum": 5},
-    "checkpoint_pending": {"enum": [null, "prd", "factors", "ontology"]},
+    "checkpoint_pending": {"enum": [null, "prd", "factors", "ontology", "source"]},
     "updated_at": {"type": "string", "format": "date-time"},
     "live_view_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
     "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
@@ -23,6 +24,7 @@
       "properties": {
         "source_id": {"type": "string", "minLength": 1},
         "source_type": {"type": "string", "minLength": 1},
+        "format": {"enum": ["html", "xlsx", "csv", "pdf", "json", "api"]},
         "health": {
           "type": "object", "additionalProperties": false,
           "required": ["ok", "failed", "yield"],
@@ -38,6 +40,7 @@
       "type": "object", "additionalProperties": false,
       "properties": {
         "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+        "preview": {"type": "boolean"},
         "inference_backend": {"enum": ["recorded", "vultr"]},
         "run_id": {"type": "string", "minLength": 1},
         "suppliers_total": {"type": "integer", "minimum": 0},

@@ -13,13 +13,18 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from ontofill.case.checkpoints import load_json, require_approval
+from ontofill.case.checkpoints import load_json, require_approval, write_json
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
 from ontofill.lake import FileLake, lake_for_case
 from ontofill.phases.p1_scope.phase import draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
-from ontofill.phases.p3_fanout.phase import discover_objective
-from ontofill.phases.p3_fanout.search import SandboxSearchClient
+from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
+from ontofill.phases.p3_fanout.phase import discover_objectives
+from ontofill.phases.p3_fanout.search import (
+    ProviderSearchClient,
+    SandboxSearchClient,
+    SandboxWebSearchProvider,
+)
 from ontofill.phases.p4_local_scoping.phase import draft_local_scope
 from ontofill.phases.p5_execute import execute_objective
 from ontofill.refiner import Observation, export_run, refine_observations, silver_store_from_env
@@ -29,7 +34,14 @@ from ontofill.sandbox import CaptureBlocked, append_job_record, build_job_record
 
 def _preview_decision(brief: str) -> RecordedDecisionClient:
     """Deterministic scaffolding for a labeled preview; it contains no source or supplier data."""
-    subject = brief.strip().replace("\n", " ")[:160] or "Public supplier investigation"
+    subject = (
+        " ".join(
+            line.strip()
+            for line in brief.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )[:160]
+        or "Public supplier investigation"
+    )
     return RecordedDecisionClient(
         {
             "phase1.prd": [
@@ -51,11 +63,29 @@ def _preview_decision(brief: str) -> RecordedDecisionClient:
                     "non_goals": ["Unaudited assertions"],
                     "definition_of_done": [
                         {
-                            "id": "supplier",
+                            "id": "supplier_volume",
                             "metric": "suppliers_total",
                             "operator": ">=",
-                            "target": 1,
-                        }
+                            "target": 50,
+                        },
+                        {
+                            "id": "core_coverage",
+                            "metric": "suppliers_at_80pct_core",
+                            "operator": ">=",
+                            "target": 50,
+                        },
+                        {
+                            "id": "source_diversity",
+                            "metric": "distinct_source_types",
+                            "operator": ">=",
+                            "target": 4,
+                        },
+                        {
+                            "id": "evidence_integrity",
+                            "metric": "gold_values_without_evidence",
+                            "operator": "=",
+                            "target": 0,
+                        },
                     ],
                 }
             ],
@@ -89,9 +119,6 @@ def _preview_decision(brief: str) -> RecordedDecisionClient:
                         }
                     ]
                 }
-            ],
-            "phase3.select_source": [
-                {"index": 0, "reason": "Highest ranked public dataset for the brief"}
             ],
             "phase4.local_scope": [
                 {
@@ -191,6 +218,58 @@ def _publish_steps(feed: RunFeed, trace: list[dict]) -> None:
         feed.append_step(step, screenshot_key=step.get("screenshot_key"))
 
 
+def _source_review(case_dir: Path, objective: dict, provenance: dict) -> tuple[bool, Path]:
+    directory = case_dir / "03-fanout/sources" / objective["source_id"]
+    manifest_path = directory / "candidate.json"
+    if manifest_path.exists():
+        manifest = load_json(manifest_path)
+    else:
+        # Existing objectives from an earlier engine version still need authority review.
+        fingerprint = source_fingerprint(
+            url=objective["source_url"],
+            title="",
+            snippet="",
+            provider="legacy",
+            capture_key=None,
+        )
+        manifest = {
+            "source_id": objective["source_id"],
+            "url": objective["source_url"],
+            "source_type": objective.get("source_type", "supplier website"),
+            "provider": "legacy",
+            "capture_key": None,
+            "fingerprint": fingerprint,
+            "authority": "review",
+            "generated_by": provenance,
+        }
+        write_json(manifest_path, manifest)
+    fingerprint = objective.get("source_fingerprint", manifest["fingerprint"])
+    trusted, _ = authority_result(objective["source_url"])
+    if manifest.get("authority") == "auto" and manifest["fingerprint"] == fingerprint:
+        trusted = True
+    if trusted:
+        return True, directory
+    approved = require_approval(
+        directory,
+        phase=3,
+        checkpoint="source",
+        artifact_paths=[f"03-fanout/sources/{objective['source_id']}/candidate.json"],
+        generated_by=provenance,
+        source_fingerprint=fingerprint,
+    )
+    return approved, directory
+
+
+def _report_pause(checkpoint: str, directory: Path, recorded: bool) -> None:
+    if recorded and (directory / "APPROVED").exists():
+        reason = "APPROVED exists but the artifact was produced by the recorded backend"
+    elif recorded:
+        reason = "recorded artifacts cannot satisfy a checkpoint"
+    else:
+        reason = "waiting for human approval"
+    print(f"state=paused checkpoint_pending={checkpoint} reason={reason}")
+
+
 def run_case(
     case_dir: Path,
     *,
@@ -198,6 +277,7 @@ def run_case(
     to_phase: int = 5,
     run_id: str | None = None,
     budget_usd: float | None = None,
+    preview_past_checkpoints: bool = False,
     decision=None,
     search_client=None,
     capture=None,
@@ -217,6 +297,8 @@ def run_case(
         else:
             decision = _preview_decision((original / "brief.md").read_text(encoding="utf-8"))
     mock = decision.backend == "recorded"
+    if preview_past_checkpoints and not mock:
+        raise ValueError("checkpoint preview is reserved for recorded development runs")
     run_id = run_id or (("mock-" if mock else "run-") + uuid.uuid4().hex[:12])
     if mock != run_id.startswith("mock-"):
         raise ValueError("recorded runs require mock- IDs; live runs reserve them")
@@ -227,11 +309,13 @@ def run_case(
     else:
         case_dir = original
         lake = lake or lake_for_case(case_dir)
+    location = "scratch" if mock else "case"
+    print(f"run_id={run_id} {location}_path={case_dir} inference_backend={decision.backend}")
     provenance = generated_by(decision)
     store = store or silver_store_from_env()
     trace: list[dict] = []
     pending: str | None = None
-    with RunFeed(lake, case_id, run_id, provenance) as feed:
+    with RunFeed(lake, case_id, run_id, provenance, preview=preview_past_checkpoints) as feed:
         feed.update_status(state="running", phase=from_phase)
         try:
             prd = draft_prd(case_dir, decision)
@@ -247,13 +331,16 @@ def run_case(
                 generated_by=prd["generated_by"],
             ):
                 pending = "prd"
-                if not mock:
+                if not preview_past_checkpoints:
                     feed.update_status(state="paused", phase=1, checkpoint_pending="prd")
+                    _report_pause("prd", case_dir / "01-scope", mock)
                     return 3
             if to_phase == 1:
                 feed.update_status(
                     state="paused" if pending else "done", phase=1, checkpoint_pending=pending
                 )
+                if pending:
+                    _report_pause(pending, case_dir / "01-scope", mock)
                 return 3 if pending else 0
 
             if from_phase <= 2:
@@ -273,8 +360,9 @@ def run_case(
                 generated_by=factors["generated_by"],
             ):
                 pending = pending or "factors"
-                if not mock:
+                if not preview_past_checkpoints:
                     feed.update_status(state="paused", phase=2, checkpoint_pending="factors")
+                    _report_pause("factors", case_dir / "02-ontology/factors", mock)
                     return 3
             ontology = draft_ontology(case_dir, prd, factors, decision)
             step = _trace_step(
@@ -291,34 +379,60 @@ def run_case(
                 generated_by=ontology["generated_by"],
             ):
                 pending = pending or "ontology"
-                if not mock:
+                if not preview_past_checkpoints:
                     feed.update_status(state="paused", phase=2, checkpoint_pending="ontology")
+                    _report_pause("ontology", case_dir / "02-ontology", mock)
                     return 3
             if to_phase == 2:
                 feed.update_status(
                     state="paused" if pending else "done", phase=2, checkpoint_pending=pending
                 )
+                if pending:
+                    _report_pause(pending, case_dir / "01-scope", mock)
                 return 3 if pending else 0
 
             if from_phase <= 3:
                 feed.update_status(state="running", phase=3)
-            search_client = search_client or SandboxSearchClient(lake, run_id, provenance)
-            objectives = discover_objective(case_dir, ontology, decision, search_client)
-            if from_phase <= 3:
-                _publish_steps(feed, getattr(search_client, "trace", []))
-                trace.extend(getattr(search_client, "trace", []))
-                for job in getattr(search_client, "jobs", []):
-                    append_job_record(lake, case_id, build_job_record(job))
+            search_client = search_client or ProviderSearchClient(
+                [
+                    SandboxSearchClient(lake, run_id, provenance),
+                    SandboxWebSearchProvider("bing_html", lake, run_id, provenance),
+                    SandboxWebSearchProvider("duckduckgo_html", lake, run_id, provenance),
+                ]
+            )
+            trace_before = len(getattr(search_client, "trace", []))
+            jobs_before = len(getattr(search_client, "jobs", []))
+            try:
+                objectives = discover_objectives(
+                    case_dir, ontology, decision, search_client, max_sources=1
+                )
+            finally:
+                fresh_trace = getattr(search_client, "trace", [])[trace_before:]
+                _publish_steps(feed, fresh_trace)
+                trace.extend(fresh_trace)
+                for job in getattr(search_client, "jobs", [])[jobs_before:]:
+                    if "proof" in job:
+                        append_job_record(lake, case_id, build_job_record(job))
             step = _trace_step(
                 run_id, 3, provenance, "source.discover", "03-fanout/objectives.json"
             )
             if from_phase <= 3:
                 _publish_steps(feed, [step])
                 trace.append(step)
+            for discovered in objectives["objectives"]:
+                approved, directory = _source_review(case_dir, discovered, provenance)
+                if not approved:
+                    pending = pending or "source"
+                    if not preview_past_checkpoints:
+                        feed.update_status(state="paused", phase=3, checkpoint_pending="source")
+                        _report_pause("source", directory, mock)
+                        return 3
             if to_phase == 3:
                 feed.update_status(
                     state="paused" if pending else "done", phase=3, checkpoint_pending=pending
                 )
+                if pending:
+                    _report_pause(pending, case_dir / "01-scope", mock)
                 return 3 if pending else 0
 
             if from_phase <= 4:
@@ -341,6 +455,8 @@ def run_case(
                 feed.update_status(
                     state="paused" if pending else "done", phase=4, checkpoint_pending=pending
                 )
+                if pending:
+                    _report_pause(pending, case_dir / "01-scope", mock)
                 return 3 if pending else 0
 
             feed.update_status(
@@ -349,7 +465,7 @@ def run_case(
                 sources=[
                     {
                         "source_id": objective["source_id"],
-                        "source_type": "web",
+                        "source_type": objective.get("source_type", "supplier website"),
                         "health": {"ok": 0, "failed": 0, "yield": 0},
                     }
                 ],
@@ -391,6 +507,7 @@ def run_case(
                 refined.suppliers,
                 trace=trace,
                 generated_by=provenance,
+                preview=preview_past_checkpoints,
             )
             feed.update_status(
                 state="paused" if pending else "done",
@@ -400,11 +517,16 @@ def run_case(
                 sources=[
                     {
                         "source_id": objective["source_id"],
-                        "source_type": "web",
+                        "source_type": objective.get("source_type", "supplier website"),
+                        "format": execution.format,
                         "health": {"ok": 1, "failed": 0, "yield": len(refined.suppliers)},
                     }
                 ],
             )
+            if pending:
+                _report_pause(pending, case_dir / "01-scope", mock)
+            else:
+                print("state=done checkpoint_pending=none")
             return 3 if pending else 0
         except CaptureBlocked as exc:
             for step in exc.trace:
@@ -429,11 +551,12 @@ def _existing_run(case_dir: Path, run_id: str | None) -> tuple[str, object, str,
     if not run_id:
         run_id = json.loads(lake.read_key(f"runs/{case_id}/latest.json"))["run_id"]
     status = json.loads(lake.read_key(f"runs/{case_id}/{run_id}/status.json"))
-    return case_id, lake, run_id, status["generated_by"]
+    return case_id, lake, run_id, status
 
 
 def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
-    case_id, lake, run_id, provenance = _existing_run(case_dir, run_id)
+    case_id, lake, run_id, status = _existing_run(case_dir, run_id)
+    provenance = status["generated_by"]
     if run_id.startswith("mock-"):
         case_dir, _ = _scratch_case(case_dir, run_id)
     store = silver_store_from_env()
@@ -449,7 +572,14 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
     key = f"runs/{case_id}/{run_id}/trace.live.jsonl"
     trace = [json.loads(line) for line in lake.read_key(key).splitlines()]
     export_run(
-        lake, case_dir, case_id, run_id, refined.suppliers, trace=trace, generated_by=provenance
+        lake,
+        case_dir,
+        case_id,
+        run_id,
+        refined.suppliers,
+        trace=trace,
+        generated_by=provenance,
+        preview=status.get("preview", False),
     )
     return 0
 

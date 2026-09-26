@@ -9,6 +9,29 @@ TASK: Make the engine installable with contract-valid documents, file:// local l
 DONE: `uv run pytest -q && docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait`.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
 
+## C4a: provider-pluggable discovery and authority review
+- [ ] Add catalog plus agent-driven general web-search providers through sandbox egress; query from ontology gaps; stop on captcha/block and try next provider.
+- [ ] Gate unrecognized sources behind an explicit human source approval; derive recorded selections only from captured candidates.
+FILES: `src/ontofill/phases/p3_fanout/`, `src/ontofill/workflow.py`, `packages/ontofill-scrape/src/ontofill_scrape/discovery.py`, `tests/test_discovery_providers.py`, `schemas/` only if interface needs it.
+TASK: Discover public sources across source types from the brief and current gaps with auditable authority decisions.
+DONE: `uv run pytest -q tests/test_discovery_providers.py tests/test_discovery_phase.py` including synthetic captcha/fallback and source-review checks.
+FORMAT: `uv run ruff check src/ontofill/phases/p3_fanout tests/test_discovery_providers.py && uv run ruff format --check src/ontofill/phases/p3_fanout tests/test_discovery_providers.py`.
+
+## C4b: multi-source completion loop
+- [ ] Execute 3–4 discovered source objectives, resolve entities, reconcile conflicts with double critic for high-stakes statuses, and reopen fan-out on remaining gaps.
+- [ ] Keep all observations evidenced and recorded mock outputs scratch-only; report metrics honestly.
+FILES: `src/ontofill/workflow.py`, `src/ontofill/phases/p5_execute/`, `src/ontofill/refiner/`, `packages/ontofill-scrape/src/ontofill_scrape/extract.py`, `tests/test_multisource_workflow.py`.
+TASK: Make the C3 one-source run expand through source types until DoD or budget.
+DONE: `uv run pytest -q tests/test_multisource_workflow.py` shows 3 distinct synthetic source types and traced gap-triggered fan-out.
+FORMAT: `uv run ruff check src/ontofill/workflow.py src/ontofill/phases/p5_execute src/ontofill/refiner tests/test_multisource_workflow.py && uv run ruff format --check src/ontofill/workflow.py src/ontofill/phases/p5_execute src/ontofill/refiner tests/test_multisource_workflow.py`.
+
+## C4c: Vultr dry-run infrastructure (parallel worker)
+- [ ] Plan two Ubuntu 24.04 VMs, private network, gVisor sandbox, Object Storage, NetBird peers, and private dispatch; dry-run without credentials.
+FILES: `infra/vultr/`, `tests/test_vultr_plan.py`, `.env.example` (worker ownership).
+TASK: Make cloud provisioning idempotent and reviewable before credentials arrive.
+DONE: `uv run pytest -q tests/test_vultr_plan.py && uv run python infra/vultr/provision.py --dry-run` (or worker's documented CLI).
+FORMAT: `uv run ruff check infra/vultr tests/test_vultr_plan.py && uv run ruff format --check infra/vultr tests/test_vultr_plan.py`.
+
 ## C2: sandbox gate
 - [x] Docker browser pod, TDD domain allowlist, file:// bronze captures and step logs.
 - [x] Check: `uv run pytest -q tests/test_sandbox.py -s` → 3 passed, including live Docker allowed capture, disallowed subrequest blocked by proxy, and step trace fields.
