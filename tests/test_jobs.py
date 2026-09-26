@@ -1,4 +1,4 @@
-"""Synthetic v0.4 proof records and lake append behavior."""
+"""Synthetic six-checkpoint proof records and lake append behavior."""
 
 from __future__ import annotations
 
@@ -35,7 +35,14 @@ def _validate(name: str, document: dict) -> None:
 
 
 def _capture_result() -> dict:
-    names = ["dispatch_result", "host_check", "pod_identity", "isolation_probe", "teardown"]
+    names = [
+        "dispatch_result",
+        "host_check",
+        "pod_identity",
+        "isolation_probe",
+        "secrets",
+        "teardown",
+    ]
     trace = [
         {
             "step_id": "step:synthetic",
@@ -55,6 +62,8 @@ def _capture_result() -> dict:
         "status": 200,
         "started_at": "2026-09-26T14:00:00Z",
         "ended_at": "2026-09-26T14:00:02Z",
+        "limits": {"memory_mb": 1024, "cpus": 1, "pids": 256, "timeout_s": 90, "max_steps": 32},
+        "usage": {"peak_memory_mb": 48, "wall_s": 2, "steps": 2},
         "proof": {
             "dispatch_result": {"url": "https://example.invalid/public", "status": 200},
             "host_check": {
@@ -73,6 +82,13 @@ def _capture_result() -> dict:
                 "write_outside_pod": {"path": "/host/proof", "blocked": True},
                 "write_outside_writable_mount": {"path": "/etc/proof", "blocked": True},
             },
+            "secrets": {
+                "ok": True,
+                "env_keys_found": 0,
+                "files_with_keys": 0,
+                "metadata_ip": "BLOCKED",
+                "mesh": "BLOCKED",
+            },
             "teardown": {
                 "pod_gone": True,
                 "proxy_gone": True,
@@ -89,6 +105,9 @@ def test_jobs_record_and_last_line_wins(tmp_path: Path) -> None:
     _validate("jobs", first)
     assert first["checkpoints"]["host"]["runtime"] == "runc"
     assert {probe["result"] for probe in first["checkpoints"]["isolation"]["probes"]} == {"BLOCKED"}
+    assert first["checkpoints"]["secrets"]["ok"]
+    assert first["limits"]["memory_mb"] == 1024
+    assert first["usage"]["steps"] == 2
     key = append_job_record(lake, "synthetic-case", first)
     assert key == "runs/synthetic-case/mock-synthetic/jobs.jsonl"
     second = build_job_record(_capture_result(), job_id="job:synthetic", value_ids=["val:one"])
@@ -102,7 +121,7 @@ def test_jobs_record_and_last_line_wins(tmp_path: Path) -> None:
 def test_jobs_record_rejects_incomplete_proof_and_bad_time() -> None:
     result = _capture_result()
     result["trace"].pop()
-    with pytest.raises(ValueError, match="five proof checkpoints"):
+    with pytest.raises(ValueError, match="six proof checkpoints"):
         build_job_record(result)
     result = _capture_result()
     result["ended_at"] = "2026-09-26T13:59:59Z"
@@ -158,3 +177,47 @@ def test_writer_validates_record(tmp_path: Path) -> None:
         validate_job_record(record)
     with pytest.raises(ValidationError):
         append_job_record(FileLake(tmp_path), "synthetic-case", record)
+
+
+def test_job_rejects_false_secret_claim_and_over_budget_steps() -> None:
+    record = build_job_record(_capture_result())
+    record["checkpoints"]["secrets"]["metadata_ip"] = "ALLOWED"
+    with pytest.raises(ValueError, match="secret checkpoint"):
+        validate_job_record(record)
+    record["checkpoints"]["secrets"]["metadata_ip"] = "BLOCKED"
+    record["usage"]["steps"] = record["limits"]["max_steps"] + 1
+    with pytest.raises(ValueError, match="steps exceed"):
+        validate_job_record(record)
+
+
+def test_early_limit_job_marks_unrun_probes_without_fake_success() -> None:
+    result = _capture_result()
+    result["failure_reason"] = "timeout"
+    result["requested"] = {"url": "https://example.invalid/public"}
+    result["usage"] = {"peak_memory_mb": 0, "wall_s": 90, "steps": 0}
+    result["trace"] = [
+        {
+            **result["trace"][0],
+            "event": "limit_kill",
+            "evaluated": {"status": "hard_stop", "reason": "timeout"},
+        },
+        result["trace"][-1],
+    ]
+    result["proof"] = {
+        "host_check": {
+            "docker_host": "synthetic-host",
+            "runtime": "runc",
+            "runtime_available": True,
+        },
+        "pod_identity": None,
+        "isolation_probe": None,
+        "secrets": None,
+        "teardown": result["proof"]["teardown"],
+    }
+    record = build_job_record(result)
+    _validate("jobs", record)
+    assert record["checkpoints"]["host"] == {"ok": False, "not_run": True}
+    assert record["checkpoints"]["where"] == {"ok": False, "not_run": True}
+    assert record["checkpoints"]["isolation"] == {"probes": [], "not_run": True}
+    assert record["checkpoints"]["secrets"] == {"ok": False, "not_run": True}
+    assert record["checkpoints"]["teardown"]["ok"]

@@ -45,7 +45,7 @@ def test_local_pod_keeps_bind_mount(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(capture, "_docker", fake_docker)
     args = capture._pod_output_args(tmp_path)
     capture._run_agent_pod("synthetic-pod", tmp_path, *args, "synthetic-image")
-    assert calls[0][:4] == ("run", "--rm", "--name", "synthetic-pod")
+    assert calls[0][:3] == ("run", "--name", "synthetic-pod")
     assert "-v" in calls[0]
     assert "--tmpfs" not in calls[0]
 
@@ -67,4 +67,4 @@ def test_remote_pod_failure_does_not_copy_unpublished_output(monkeypatch, tmp_pa
     monkeypatch.setattr(capture, "_docker", fake_docker)
     result = capture._run_agent_pod("synthetic-pod", tmp_path, "synthetic-image")
     assert result.returncode == 23
-    assert calls == ["run", "exec", "inspect", "wait", "logs"]
+    assert calls == ["run", "exec", "inspect", "wait", "logs", "inspect"]

@@ -1,4 +1,4 @@
-"""Contract v0.4 sandbox proof records and append-only job feed."""
+"""Sandbox proof records, enforced limits and append-only job feed."""
 
 from __future__ import annotations
 
@@ -37,10 +37,110 @@ def validate_job_record(record: Mapping[str, Any]) -> None:
     ended = datetime.fromisoformat(record["ended_at"])
     if started > ended:
         raise ValueError("job ended_at precedes started_at")
+    secrets = record["checkpoints"]["secrets"]
+    if not secrets.get("not_run"):
+        expected_ok = (
+            secrets["env_keys_found"] == 0
+            and secrets["files_with_keys"] == 0
+            and secrets["metadata_ip"] == "BLOCKED"
+            and secrets["mesh"] == "BLOCKED"
+        )
+        if secrets["ok"] != expected_ok:
+            raise ValueError("secret checkpoint ok disagrees with measured probes")
+    if record["usage"]["steps"] > record["limits"]["max_steps"]:
+        raise ValueError("job steps exceed the recorded maximum")
 
 
 def _probe(name: str, blocked: bool, detail: dict) -> dict:
     return {"probe": name, "result": "BLOCKED" if blocked else "ALLOWED", "detail": detail}
+
+
+def _isolation_checkpoint(isolation: dict | None) -> dict:
+    if isolation is None:
+        return {"probes": [], "not_run": True}
+    return {
+        "probes": [
+            _probe(
+                "network_non_allowlisted",
+                bool(
+                    isolation["network"]["blocked"] and isolation["network"]["proxy_logged_block"]
+                ),
+                isolation["network"],
+            ),
+            _probe(
+                "write_outside_pod",
+                bool(isolation["write_outside_pod"]["blocked"]),
+                isolation["write_outside_pod"],
+            ),
+            _probe(
+                "write_outside_writable_mount",
+                bool(isolation["write_outside_writable_mount"]["blocked"]),
+                isolation["write_outside_writable_mount"],
+            ),
+        ]
+    }
+
+
+def _failed_job_record(
+    capture_result: Mapping[str, Any], job_id: str | None, values: list[str]
+) -> dict:
+    trace = capture_result["trace"]
+    if not trace or trace[0].get("event") != "limit_kill":
+        raise ValueError("failed job requires a limit_kill trace")
+    first = trace[0]
+    proof = capture_result["proof"]
+    host = proof.get("host_check")
+    pod = proof.get("pod_identity")
+    teardown = proof["teardown"]
+    host_check = (
+        {
+            "ok": bool(host["runtime_available"]),
+            "sandbox_host": host["docker_host"],
+            "runtime": host["runtime"],
+            "virt": {
+                "cpu_virtualization_flags": host["cpu_virtualization_flags"],
+                "dev_kvm_present": host["dev_kvm_present"],
+            },
+        }
+        if host and "cpu_virtualization_flags" in host and "dev_kvm_present" in host
+        else {"ok": False, "not_run": True}
+    )
+    where = (
+        {
+            "ok": bool(pod["hostname"] and pod["uname"].get("system") == "Linux"),
+            "hostname": pod["hostname"],
+            "uname": pod["uname"],
+        }
+        if pod
+        else {"ok": False, "not_run": True}
+    )
+    record = {
+        "job_id": job_id or f"job:{uuid.uuid4().hex}",
+        "run_id": first["run_id"],
+        "step_id": first["step_id"],
+        "source_id": first["source_id"],
+        "started_at": capture_result["started_at"],
+        "ended_at": capture_result["ended_at"],
+        "generated_by": first["generated_by"],
+        "limits": capture_result["limits"],
+        "usage": capture_result["usage"],
+        "failure_reason": capture_result["failure_reason"],
+        "checkpoints": {
+            "host": host_check,
+            "task": {
+                "ok": False,
+                "requested": capture_result["requested"],
+                "result": {"reason": capture_result["failure_reason"]},
+                "value_ids": values,
+            },
+            "where": where,
+            "isolation": _isolation_checkpoint(proof.get("isolation_probe")),
+            "secrets": proof.get("secrets") or {"ok": False, "not_run": True},
+            "teardown": {"ok": bool(teardown["verified"]), "detail": teardown},
+        },
+    }
+    validate_job_record(record)
+    return record
 
 
 def build_job_record(
@@ -51,18 +151,28 @@ def build_job_record(
 ) -> dict:
     """Collapse one completed capture/fetch proof into a jobs.jsonl record."""
     trace = capture_result["trace"]
-    expected = {"dispatch_result", "host_check", "pod_identity", "isolation_probe", "teardown"}
-    if len(trace) != 5 or {row["evaluated"]["proof_checkpoint"] for row in trace} != expected:
-        raise ValueError("capture result must contain five proof checkpoints")
+    values = list(dict.fromkeys(value_ids))
+    if any(not _VALUE_ID.fullmatch(value) for value in values):
+        raise ValueError("value_ids must be val:<id>")
+    if capture_result.get("failure_reason"):
+        return _failed_job_record(capture_result, job_id, values)
+    expected = {
+        "dispatch_result",
+        "host_check",
+        "pod_identity",
+        "isolation_probe",
+        "secrets",
+        "teardown",
+    }
+    if len(trace) != 6 or {row["evaluated"]["proof_checkpoint"] for row in trace} != expected:
+        raise ValueError("capture result must contain six proof checkpoints")
     proof = capture_result["proof"]
     first = trace[0]
     host = proof["host_check"]
     pod = proof["pod_identity"]
     isolation = proof["isolation_probe"]
+    secrets = proof["secrets"]
     teardown = proof["teardown"]
-    values = list(dict.fromkeys(value_ids))
-    if any(not _VALUE_ID.fullmatch(value) for value in values):
-        raise ValueError("value_ids must be val:<id>")
     record = {
         "job_id": job_id or f"job:{uuid.uuid4().hex}",
         "run_id": first["run_id"],
@@ -71,6 +181,8 @@ def build_job_record(
         "started_at": capture_result["started_at"],
         "ended_at": capture_result["ended_at"],
         "generated_by": first["generated_by"],
+        "limits": capture_result["limits"],
+        "usage": capture_result["usage"],
         "checkpoints": {
             "host": {
                 "ok": bool(host["runtime_available"]),
@@ -94,28 +206,8 @@ def build_job_record(
                 "hostname": pod["hostname"],
                 "uname": pod["uname"],
             },
-            "isolation": {
-                "probes": [
-                    _probe(
-                        "network_non_allowlisted",
-                        bool(
-                            isolation["network"]["blocked"]
-                            and isolation["network"]["proxy_logged_block"]
-                        ),
-                        isolation["network"],
-                    ),
-                    _probe(
-                        "write_outside_pod",
-                        bool(isolation["write_outside_pod"]["blocked"]),
-                        isolation["write_outside_pod"],
-                    ),
-                    _probe(
-                        "write_outside_writable_mount",
-                        bool(isolation["write_outside_writable_mount"]["blocked"]),
-                        isolation["write_outside_writable_mount"],
-                    ),
-                ]
-            },
+            "isolation": _isolation_checkpoint(isolation),
+            "secrets": secrets,
             "teardown": {
                 "ok": bool(teardown["verified"]),
                 "detail": teardown,

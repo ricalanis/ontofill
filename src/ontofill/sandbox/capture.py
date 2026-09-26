@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -11,11 +12,13 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from ontofill.lake import FileLake, S3Lake
+from ontofill.sandbox.limits import SandboxLimits
 
 _DOMAIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _IMAGE_LOCK = threading.Lock()
@@ -38,6 +41,21 @@ class CaptureBlocked(CaptureError):
         self.trace = trace
 
 
+class DockerTimeout(CaptureError):
+    """The Docker CLI exceeded an enforced controller deadline."""
+
+
+class SandboxLimitExceeded(CaptureError):
+    """A pod exceeded one of its resource or action budgets."""
+
+    def __init__(self, reason: str, trace: list[dict] | None = None) -> None:
+        if reason not in {"timeout", "memory", "pids", "max_steps"}:
+            raise ValueError("unknown sandbox limit reason")
+        super().__init__(f"sandbox limit exceeded: {reason}", trace)
+        self.reason = reason
+        self.result: dict | None = None
+
+
 def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     target = env.get("ONTOFILL_SANDBOX_DOCKER_HOST")
@@ -54,7 +72,9 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
             check=False,
             env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise DockerTimeout(f"Docker {args[0]} exceeded its deadline") from exc
+    except OSError as exc:
         raise CaptureError(f"Docker command failed: {args[0]}") from exc
     if check and result.returncode:
         detail = (result.stderr or result.stdout).strip()[-1500:]
@@ -100,6 +120,17 @@ def _domains(allowed_domains: list[str]) -> list[str]:
     return normalized
 
 
+def _mesh_probe_ip() -> str:
+    value = os.environ.get("ONTOFILL_CONTROL_NETBIRD_IP", "100.64.0.1")
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ValueError("ONTOFILL_CONTROL_NETBIRD_IP must be a NetBird IPv4 address") from exc
+    if address not in ipaddress.ip_network("100.64.0.0/10"):
+        raise ValueError("ONTOFILL_CONTROL_NETBIRD_IP must be within 100.64.0.0/10")
+    return value
+
+
 def _trace(
     *,
     step_id: str,
@@ -116,8 +147,9 @@ def _trace(
     mode: str = "S1",
     generated_by: dict | None = None,
     parent_step_id: str | None = None,
+    event: str | None = None,
 ) -> dict:
-    return {
+    row = {
         "step_id": step_id,
         "run_id": run_id,
         "phase": phase,
@@ -134,6 +166,9 @@ def _trace(
         "ts": ts,
         "generated_by": generated_by or _provenance(None),
     }
+    if event is not None:
+        row["event"] = event
+    return row
 
 
 def _provenance(generated_by: dict | None) -> dict:
@@ -196,6 +231,22 @@ def _isolation_proof(probes: dict, events: list[dict]) -> dict:
     }
 
 
+def _secret_proof(probes: dict) -> dict:
+    proof = {
+        "env_keys_found": probes["env_keys_found"],
+        "files_with_keys": probes["files_with_keys"],
+        "metadata_ip": probes["metadata_ip"],
+        "mesh": probes["mesh"],
+    }
+    proof["ok"] = (
+        proof["env_keys_found"] == 0
+        and proof["files_with_keys"] == 0
+        and proof["metadata_ip"] == "BLOCKED"
+        and proof["mesh"] == "BLOCKED"
+    )
+    return proof
+
+
 def _proof_rows(
     *,
     step_id: str,
@@ -209,11 +260,13 @@ def _proof_rows(
     host: dict,
     pod: dict,
     isolation: dict,
+    secrets: dict,
 ) -> list[dict]:
     details = (
         ("host_check", host),
         ("pod_identity", pod),
         ("isolation_probe", isolation),
+        ("secrets", secrets),
     )
     return [
         _trace(
@@ -229,8 +282,8 @@ def _proof_rows(
             evaluated={
                 "proof_checkpoint": checkpoint,
                 "status": "verified"
-                if checkpoint != "isolation_probe"
-                else ("blocked" if detail["blocked"] else "failed"),
+                if checkpoint not in {"isolation_probe", "secrets"}
+                else ("blocked" if detail.get("blocked", detail.get("ok")) else "failed"),
             },
             ts=datetime.now(UTC).isoformat(),
             mode=mode,
@@ -287,6 +340,37 @@ def _teardown_row(
     )
 
 
+def _limit_row(
+    *,
+    parent_step_id: str,
+    run_id: str,
+    phase: int,
+    source_id: str,
+    objective_id: str | None,
+    tdd_path: str,
+    mode: str,
+    generated_by: dict,
+    reason: str,
+) -> dict:
+    return _trace(
+        step_id=f"step:{uuid.uuid4().hex}",
+        run_id=run_id,
+        phase=phase,
+        source_id=source_id,
+        objective_id=objective_id,
+        tdd_path=tdd_path,
+        observed={"limit": reason},
+        requested={"enforce_limit": reason},
+        executed={"pod_stop_requested": True},
+        evaluated={"status": "hard_stop", "reason": reason},
+        ts=datetime.now(UTC).isoformat(),
+        mode=mode,
+        generated_by=generated_by,
+        parent_step_id=parent_step_id,
+        event="limit_kill",
+    )
+
+
 def _wait_proxy(name: str) -> None:
     probe = "import socket; socket.create_connection(('127.0.0.1', 8888), 1).close()"
     for _ in range(40):
@@ -318,14 +402,37 @@ def _pod_output_args(output: Path) -> tuple[str, ...]:
     return ("-v", f"{output}:/out:rw")
 
 
-def _run_agent_pod(name: str, output: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _pod_exit_reason(name: str, result: subprocess.CompletedProcess[str]) -> str | None:
+    if result.returncode == 0:
+        return None
+    state = _docker("inspect", "--format", "{{.State.OOMKilled}}", name, check=False)
+    if state.returncode == 0 and state.stdout.strip() == "true":
+        return "memory"
+    detail = (result.stderr or result.stdout).lower()
+    if "pids limit" in detail or "resource temporarily unavailable" in detail:
+        return "pids"
+    return None
+
+
+def _run_agent_pod(
+    name: str, output: Path, *args: str, limits: SandboxLimits | None = None
+) -> subprocess.CompletedProcess[str]:
+    budget = limits or SandboxLimits()
     if not _remote_docker():
-        return _docker("run", "--rm", "--name", name, *args, timeout=90, check=False)
+        try:
+            result = _docker("run", "--name", name, *args, timeout=budget.timeout_s, check=False)
+        except DockerTimeout as exc:
+            raise SandboxLimitExceeded("timeout") from exc
+        reason = _pod_exit_reason(name, result)
+        if reason:
+            raise SandboxLimitExceeded(reason)
+        return result
     # Bind mount paths are interpreted on the remote daemon. The pod keeps its
     # /out tmpfs mounted until the controller has copied the published result.
     _docker("run", "-d", "--name", name, "-e", "CAPTURE_WAIT_FOR_COPY=1", *args, timeout=90)
     ready = False
-    for _ in range(360):
+    deadline = time.monotonic() + budget.timeout_s
+    while time.monotonic() < deadline:
         if not _docker("exec", name, "test", "-f", "/out/result.json", check=False).returncode:
             ready = True
             break
@@ -334,9 +441,14 @@ def _run_agent_pod(name: str, output: Path, *args: str) -> subprocess.CompletedP
             break
         time.sleep(0.25)
     if ready:
-        _docker("cp", f"{name}:/out/.", str(output), timeout=90)
+        _docker("cp", f"{name}:/out/.", str(output), timeout=budget.timeout_s)
         _docker("exec", name, "touch", "/out/.copied")
-    waited = _docker("wait", name, timeout=90)
+    elif time.monotonic() >= deadline:
+        raise SandboxLimitExceeded("timeout")
+    try:
+        waited = _docker("wait", name, timeout=max(1, int(deadline - time.monotonic())))
+    except DockerTimeout as exc:
+        raise SandboxLimitExceeded("timeout") from exc
     try:
         exit_code = int(waited.stdout.strip())
     except ValueError as exc:
@@ -344,7 +456,11 @@ def _run_agent_pod(name: str, output: Path, *args: str) -> subprocess.CompletedP
     logs = _docker("logs", name, check=False)
     if exit_code == 0 and not ready:
         raise CaptureError("remote sandbox returned no result marker")
-    return subprocess.CompletedProcess(["docker", "run"], exit_code, logs.stdout, logs.stderr)
+    result = subprocess.CompletedProcess(["docker", "run"], exit_code, logs.stdout, logs.stderr)
+    reason = _pod_exit_reason(name, result)
+    if reason:
+        raise SandboxLimitExceeded(reason)
+    return result
 
 
 def capture_url(
@@ -358,13 +474,21 @@ def capture_url(
     tdd_path: str,
     phase: int = 5,
     generated_by: dict | None = None,
+    limits: SandboxLimits | Mapping[str, object] | None = None,
 ) -> dict:
     """Capture a public page; only the proxy container can leave the internal network."""
     domains = _domains(allowed_domains)
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
-    request = {"url": url, "allowed_domains": domains, "capture": ["html", "a11y", "screenshot"]}
+    budget = SandboxLimits.from_value(limits)
+    started_monotonic = time.monotonic()
+    request = {
+        "url": url,
+        "allowed_domains": domains,
+        "capture": ["html", "a11y", "screenshot"],
+        "limits": budget.as_dict(),
+    }
     if not _allowed_host(url, domains):
         row = _trace(
             step_id=step_id,
@@ -392,6 +516,12 @@ def capture_url(
     trace_rows: list[dict] | None = None
     proof: dict = {}
     job_result: dict | None = None
+    limit_error: SandboxLimitExceeded | None = None
+    pod_identity: dict | None = None
+    isolation: dict | None = None
+    secrets: dict | None = None
+    pod_steps = 0
+    peak_memory_mb = 0.0
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -415,6 +545,10 @@ def capture_url(
             "64",
             "--memory",
             "128m",
+            "--memory-swap",
+            "128m",
+            "--cpus",
+            "0.25",
             "-e",
             "ALLOWED_DOMAINS=" + ",".join(domains),
             egress_image,
@@ -437,10 +571,7 @@ def capture_url(
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
-                "--pids-limit",
-                "256",
-                "--memory",
-                "1g",
+                *budget.docker_args(),
                 "--shm-size",
                 "256m",
                 *_pod_output_args(output),
@@ -450,19 +581,36 @@ def capture_url(
                 "PROXY_URL=http://egress:8888",
                 "-e",
                 "PROBE_DENIED_HOST=" + denied_host,
+                "-e",
+                "PROBE_MESH_IP=" + _mesh_probe_ip(),
+                "-e",
+                "CAPTURE_MAX_STEPS=" + str(budget.max_steps),
                 agent_image,
+                limits=budget,
             )
             events = _events(proxy_name)
             if browser.returncode:
                 detail = (browser.stderr or browser.stdout).strip()[-2000:]
                 raise CaptureError(f"browser pod failed: {detail}; egress={events}")
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
-            pod_identity = result["pod_identity"]
-            host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
-            host["dev_kvm_present"] = pod_identity["dev_kvm_present"]
-            isolation = _isolation_proof(result["isolation_probes"], events)
+            pod_identity = result.get("pod_identity")
+            if pod_identity is not None:
+                host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
+                host["dev_kvm_present"] = pod_identity["dev_kvm_present"]
+            pod_steps = result.get("steps", 0)
+            peak_memory_mb = result.get("peak_memory_mb", 0)
+            if result.get("isolation_probes"):
+                isolation = _isolation_proof(result["isolation_probes"], events)
+            if result.get("secret_probes"):
+                secrets = _secret_proof(result["secret_probes"])
+            if result.get("limit_reason"):
+                raise SandboxLimitExceeded(result["limit_reason"])
+            assert pod_identity is not None
+            assert isolation is not None and secrets is not None
             if not isolation["blocked"]:
                 raise CaptureError(f"sandbox isolation proof failed: {isolation}")
+            if not secrets["ok"]:
+                raise CaptureError("sandbox secret hygiene proof failed")
             final_url = result["url"]
             captured_at = datetime.now(UTC).isoformat()
             metadata = {
@@ -515,6 +663,7 @@ def capture_url(
                     host=host,
                     pod=pod_identity,
                     isolation=isolation,
+                    secrets=secrets,
                 ),
             ]
             proof = {
@@ -522,6 +671,7 @@ def capture_url(
                 "host_check": host,
                 "pod_identity": pod_identity,
                 "isolation_probe": isolation,
+                "secrets": secrets,
             }
             job_result = {
                 **keys,
@@ -532,8 +682,31 @@ def capture_url(
                 "egress_events": events,
                 "proof": proof,
                 "started_at": timestamp,
+                "limits": budget.as_dict(),
+                "usage": {
+                    "peak_memory_mb": result.get("peak_memory_mb", 0),
+                    "wall_s": 0,
+                    "steps": result["steps"],
+                },
             }
             return job_result
+    except SandboxLimitExceeded as exc:
+        limit_error = exc
+        trace_rows = exc.trace
+        trace_rows.append(
+            _limit_row(
+                parent_step_id=step_id,
+                run_id=run_id,
+                phase=phase,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                mode="S1",
+                generated_by=provenance,
+                reason=exc.reason,
+            )
+        )
+        raise
     finally:
         teardown = _cleanup_and_verify(proxy_name, browser_name, network)
         if trace_rows is not None:
@@ -553,6 +726,28 @@ def capture_url(
             )
         if job_result is not None:
             job_result["ended_at"] = datetime.now(UTC).isoformat()
+            job_result["usage"]["wall_s"] = round(time.monotonic() - started_monotonic, 3)
+        if limit_error is not None:
+            limit_error.result = {
+                "trace": trace_rows,
+                "requested": request,
+                "proof": {
+                    "host_check": host,
+                    "pod_identity": pod_identity,
+                    "isolation_probe": isolation,
+                    "secrets": secrets,
+                    "teardown": teardown,
+                },
+                "started_at": timestamp,
+                "ended_at": datetime.now(UTC).isoformat(),
+                "limits": budget.as_dict(),
+                "usage": {
+                    "peak_memory_mb": peak_memory_mb,
+                    "wall_s": round(time.monotonic() - started_monotonic, 3),
+                    "steps": pod_steps,
+                },
+                "failure_reason": limit_error.reason,
+            }
         if not teardown["verified"]:
             raise CaptureError("sandbox teardown proof failed", trace_rows)
 
@@ -568,13 +763,16 @@ def fetch_url(
     tdd_path: str,
     phase: int = 5,
     generated_by: dict | None = None,
+    limits: SandboxLimits | Mapping[str, object] | None = None,
 ) -> dict:
     """Fetch a discovered file inside the same contained network and store raw bytes."""
     domains = _domains(allowed_domains)
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
-    request = {"url": url, "allowed_domains": domains, "fetch": "bytes"}
+    budget = SandboxLimits.from_value(limits)
+    started_monotonic = time.monotonic()
+    request = {"url": url, "allowed_domains": domains, "fetch": "bytes", "limits": budget.as_dict()}
     if not _allowed_host(url, domains):
         row = _trace(
             step_id=step_id,
@@ -603,6 +801,12 @@ def fetch_url(
     trace_rows: list[dict] | None = None
     proof: dict = {}
     job_result: dict | None = None
+    limit_error: SandboxLimitExceeded | None = None
+    pod_identity: dict | None = None
+    isolation: dict | None = None
+    secrets: dict | None = None
+    pod_steps = 0
+    peak_memory_mb = 0.0
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -626,6 +830,10 @@ def fetch_url(
             "64",
             "--memory",
             "128m",
+            "--memory-swap",
+            "128m",
+            "--cpus",
+            "0.25",
             "-e",
             "ALLOWED_DOMAINS=" + ",".join(domains),
             egress_image,
@@ -648,10 +856,7 @@ def fetch_url(
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
-                "--pids-limit",
-                "256",
-                "--memory",
-                "1g",
+                *budget.docker_args(),
                 "--shm-size",
                 "256m",
                 *_pod_output_args(output),
@@ -663,19 +868,36 @@ def fetch_url(
                 "CAPTURE_MODE=fetch",
                 "-e",
                 "PROBE_DENIED_HOST=" + denied_host,
+                "-e",
+                "PROBE_MESH_IP=" + _mesh_probe_ip(),
+                "-e",
+                "CAPTURE_MAX_STEPS=" + str(budget.max_steps),
                 agent_image,
+                limits=budget,
             )
             events = _events(proxy_name)
             if pod.returncode:
                 detail = (pod.stderr or pod.stdout).strip()[-2000:]
                 raise CaptureError(f"fetch pod failed: {detail}; egress={events}")
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
-            pod_identity = result["pod_identity"]
-            host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
-            host["dev_kvm_present"] = pod_identity["dev_kvm_present"]
-            isolation = _isolation_proof(result["isolation_probes"], events)
+            pod_identity = result.get("pod_identity")
+            if pod_identity is not None:
+                host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
+                host["dev_kvm_present"] = pod_identity["dev_kvm_present"]
+            pod_steps = result.get("steps", 0)
+            peak_memory_mb = result.get("peak_memory_mb", 0)
+            if result.get("isolation_probes"):
+                isolation = _isolation_proof(result["isolation_probes"], events)
+            if result.get("secret_probes"):
+                secrets = _secret_proof(result["secret_probes"])
+            if result.get("limit_reason"):
+                raise SandboxLimitExceeded(result["limit_reason"])
+            assert pod_identity is not None
+            assert isolation is not None and secrets is not None
             if not isolation["blocked"]:
                 raise CaptureError(f"sandbox isolation proof failed: {isolation}")
+            if not secrets["ok"]:
+                raise CaptureError("sandbox secret hygiene proof failed")
             final_url = result["url"]
             if not _allowed_host(final_url, domains):
                 raise CaptureError("fetch redirected outside the TDD allowlist")
@@ -724,6 +946,7 @@ def fetch_url(
                     host=host,
                     pod=pod_identity,
                     isolation=isolation,
+                    secrets=secrets,
                 ),
             ]
             proof = {
@@ -735,6 +958,7 @@ def fetch_url(
                 "host_check": host,
                 "pod_identity": pod_identity,
                 "isolation_probe": isolation,
+                "secrets": secrets,
             }
             job_result = {
                 "bytes": content,
@@ -746,8 +970,31 @@ def fetch_url(
                 "egress_events": events,
                 "proof": proof,
                 "started_at": timestamp,
+                "limits": budget.as_dict(),
+                "usage": {
+                    "peak_memory_mb": result.get("peak_memory_mb", 0),
+                    "wall_s": 0,
+                    "steps": result["steps"],
+                },
             }
             return job_result
+    except SandboxLimitExceeded as exc:
+        limit_error = exc
+        trace_rows = exc.trace
+        trace_rows.append(
+            _limit_row(
+                parent_step_id=step_id,
+                run_id=run_id,
+                phase=phase,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                mode="D0",
+                generated_by=provenance,
+                reason=exc.reason,
+            )
+        )
+        raise
     finally:
         teardown = _cleanup_and_verify(proxy_name, pod_name, network)
         if trace_rows is not None:
@@ -767,5 +1014,27 @@ def fetch_url(
             )
         if job_result is not None:
             job_result["ended_at"] = datetime.now(UTC).isoformat()
+            job_result["usage"]["wall_s"] = round(time.monotonic() - started_monotonic, 3)
+        if limit_error is not None:
+            limit_error.result = {
+                "trace": trace_rows,
+                "requested": request,
+                "proof": {
+                    "host_check": host,
+                    "pod_identity": pod_identity,
+                    "isolation_probe": isolation,
+                    "secrets": secrets,
+                    "teardown": teardown,
+                },
+                "started_at": timestamp,
+                "ended_at": datetime.now(UTC).isoformat(),
+                "limits": budget.as_dict(),
+                "usage": {
+                    "peak_memory_mb": peak_memory_mb,
+                    "wall_s": round(time.monotonic() - started_monotonic, 3),
+                    "steps": pod_steps,
+                },
+                "failure_reason": limit_error.reason,
+            }
         if not teardown["verified"]:
             raise CaptureError("sandbox teardown proof failed", trace_rows)
