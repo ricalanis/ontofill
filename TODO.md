@@ -20,7 +20,7 @@ FORMAT: `uv run ruff check . && uv run ruff format --check .`.
 ## C3: five-phase walking skeleton
 - [ ] Brief to PRD, ontology, discovered source, local TDD, S1 extraction, silver, SHACL, gold and export.
 - [ ] Check: case run yields one evidenced supplier and valid export metrics.
-FILES: `src/ontofill/`, `packages/ontofill-scrape/`, `schemas/`, `tests/`, `README.md`.
+FILES: `src/ontofill/`, `packages/ontofill-scrape/`, `schemas/`, `tests/`, `.env.example`, `README.md`.
 TASK: Run one source end to end using discovered sources and evidence-backed gold values.
 DONE: `uv run pytest -q && uv run ontofill run ../proveedor-abierto/case --run-id c3-check && uv run ontofill export ../proveedor-abierto/case --run-id c3-check`.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
