@@ -206,15 +206,27 @@ class VultrAPI:
                 "Content-Type": "application/json",
             },
         )
-        try:
-            with urlopen(req, timeout=30) as response:
-                body = response.read()
-        except HTTPError as exc:
-            raise RuntimeError(
-                f"Vultr {method} {path.split('?')[0]} failed (HTTP {exc.code})"
-            ) from None
-        except URLError:
-            raise RuntimeError(f"Vultr {method} {path.split('?')[0]} failed (network)") from None
+        # Only idempotent GETs retry; the API returns transient 429/5xx responses.
+        attempts = 4 if method == "GET" else 1
+        for attempt in range(attempts):
+            try:
+                with urlopen(req, timeout=30) as response:
+                    body = response.read()
+                break
+            except HTTPError as exc:
+                if attempt + 1 < attempts and (exc.code == 429 or exc.code >= 500):
+                    time.sleep(2**attempt)
+                    continue
+                raise RuntimeError(
+                    f"Vultr {method} {path.split('?')[0]} failed (HTTP {exc.code})"
+                ) from None
+            except URLError:
+                if attempt + 1 < attempts:
+                    time.sleep(2**attempt)
+                    continue
+                raise RuntimeError(
+                    f"Vultr {method} {path.split('?')[0]} failed (network)"
+                ) from None
         return json.loads(body) if body else {}
 
     def list_all(self, path: str, field: str) -> list[dict]:
