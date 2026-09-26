@@ -26,8 +26,11 @@ metrics) is in `../coord/CONTRACT.md`; report progress in `../coord/status/codex
 From the `ontofill/` repository root, copy `.env.example` to the ignored `.env`
 and fill the names in it. Local service URLs are
 `postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@127.0.0.1:5432/<POSTGRES_DB>`
-and `http://127.0.0.1:7878` (Oxigraph). Set `LAKE_ROOT` to a directory outside
-the checkout for the `file://` lake. S3 names are for Vultr Object Storage.
+and `http://127.0.0.1:7878` (Oxigraph). Set a top-level `case_id`,
+`bronze.kind: file`, and `bronze.root` in the case's `lake.yaml`, or override the
+root with `LAKE_ROOT` pointing outside the checkout. `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` are for Vultr Object Storage; its endpoint and bucket
+live in `lake.yaml`.
 
 ```sh
 docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait

@@ -18,8 +18,10 @@ From the `ontofill/` repository root:
 cp .env.example .env
 # Fill the names in .env. For local compose, set SILVER_DATABASE_URL to
 # postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@127.0.0.1:5432/<POSTGRES_DB>,
-# OXIGRAPH_URL to http://127.0.0.1:7878, and LAKE_ROOT to a directory outside
-# the checkout (for example, /tmp/ontofill-lake). S3 names are for Vultr.
+# OXIGRAPH_URL to http://127.0.0.1:7878. Set top-level case_id,
+# bronze.kind=file, and bronze.root in the case's lake.yaml, or override its
+# root with LAKE_ROOT pointing outside the checkout (for example,
+# /tmp/ontofill-lake). AWS_* credentials are for Vultr.
 docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait
 uv sync
 uv run pytest -q
