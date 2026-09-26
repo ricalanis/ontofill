@@ -35,3 +35,8 @@ Changed paths:
  M tests/test_cli.py
  M tests/test_execute_phase.py
 <!-- agent-session-state:end -->
+# Pattern A repair runner lint note
+
+The first Ruff pass flagged the candidate exception handler, and replacing `BaseException` with
+`Exception` still triggered BLE001. The repair runner must record arbitrary candidate failures;
+the narrow `# noqa: BLE001` on that handler documents this intentional boundary.
