@@ -14,7 +14,7 @@ from ontofill.lake import FileLake
 from ontofill.runfeed import RunFeed
 
 
-def test_mcp_session_lifecycle_and_screening() -> None:
+def test_mcp_session_lifecycle_and_screening(tmp_path: Path) -> None:
     called: list[str] = []
     observations = [
         {"observation": {"text_excerpt": "untrusted page bytes"}},
@@ -62,7 +62,10 @@ def test_mcp_session_lifecycle_and_screening() -> None:
         name = body["params"]["name"]
         called.append(name)
         result = {
-            "session.open": {"session_id": "browser-session", "live_view_url": None},
+            "session.open": {
+                "session_id": "browser-session",
+                "live_view_url": "https://view.example.test/stream?token=synthetic",
+            },
             "session.act": {"status": "achieved"},
             "session.close": {"closed": True},
         }.get(name)
@@ -81,11 +84,20 @@ def test_mcp_session_lifecycle_and_screening() -> None:
             )
         return httpx.Response(200, json=response)
 
+    lake = FileLake(tmp_path / "lake")
+    provenance = {"backend": "vultr", "model": "synthetic", "at": "2026-09-26T00:00:00Z"}
+    feed = RunFeed(lake, "case", "live-run", provenance, start_heartbeat=False)
+    feed.update_status(state="running", phase=5)
     client = BrowserAgentClient(
-        "http://127.0.0.1:8701/mcp", client=httpx.Client(transport=httpx.MockTransport(handle))
+        "http://127.0.0.1:8701/mcp",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+        feed=feed,
     )
     opened = client.session_open({}, ["example.test"])
     assert opened["session_id"] == "browser-session"
+    status_key = "runs/case/live-run/status.json"
+    assert json.loads(lake.read_key(status_key))["live_view_url"] == opened["live_view_url"]
+    assert not lake.exists("runs/case/live-run/trace.live.jsonl")
     assert (
         client.session_act("browser-session", action={"tool": "click", "args": {}})["status"]
         == "achieved"
@@ -106,6 +118,8 @@ def test_mcp_session_lifecycle_and_screening() -> None:
         == "safe page bytes"
     )
     assert client.session_close("browser-session")["closed"]
+    assert "live_view_url" not in json.loads(lake.read_key(status_key))
+    feed.close()
     assert called == [
         "session.open",
         "session.act",

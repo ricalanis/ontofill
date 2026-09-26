@@ -46,21 +46,38 @@ class BrowserAgentClient:
         *,
         client: httpx.Client | None = None,
         timeout: float = 60,
+        feed: RunFeed | None = None,
     ) -> None:
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError("browser controller endpoint must be HTTP(S)")
         self.endpoint = endpoint
         self.client = client or httpx.Client(timeout=timeout)
+        self.feed = feed
         self._next_id = 1
         self._session_header: str | None = None
         self._initialized = False
 
     @classmethod
-    def from_env(cls, *, client: httpx.Client | None = None) -> BrowserAgentClient:
+    def from_env(
+        cls, *, client: httpx.Client | None = None, feed: RunFeed | None = None
+    ) -> BrowserAgentClient:
         endpoint = os.getenv("ONTOFILL_BROWSER_AGENT_MCP_URL", "")
         if not endpoint:
             raise RuntimeError("set ONTOFILL_BROWSER_AGENT_MCP_URL")
-        return cls(endpoint, client=client)
+        return cls(endpoint, client=client, feed=feed)
+
+    def _set_live_view(self, url: str | None) -> None:
+        if self.feed is None:
+            return
+        status = self.feed.current_status
+        if status is None:
+            raise RuntimeError("run status must be initialized before opening a browser session")
+        self.feed.update_status(
+            state=status["state"],
+            phase=status["phase"],
+            checkpoint_pending=status["checkpoint_pending"],
+            live_view_url=url,
+        )
 
     def _post(self, body: dict) -> dict:
         headers = {
@@ -135,6 +152,13 @@ class BrowserAgentClient:
         )
         if not result.get("session_id"):
             raise ValueError("session.open returned no session_id")
+        live_view_url = result.get("live_view_url")
+        if live_view_url is not None and (
+            not isinstance(live_view_url, str)
+            or not live_view_url.startswith(("http://", "https://"))
+        ):
+            raise ValueError("session.open returned an invalid live_view_url")
+        self._set_live_view(live_view_url)
         return result
 
     def session_act(
@@ -152,7 +176,10 @@ class BrowserAgentClient:
         return result
 
     def session_close(self, session_id: str) -> dict:
-        return self._tool("session.close", {"session_id": session_id})
+        try:
+            return self._tool("session.close", {"session_id": session_id})
+        finally:
+            self._set_live_view(None)
 
 
 class BrowserTraceBridge:

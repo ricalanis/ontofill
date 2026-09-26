@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,12 +26,46 @@ def build_parser() -> argparse.ArgumentParser:
     export = commands.add_parser("export", help="Write the gold export")
     export.add_argument("case_dir", type=Path)
     export.add_argument("--run-id")
+
+    cells = commands.add_parser("cells", help="Manage sandbox browser cells")
+    cell_commands = cells.add_subparsers(dest="cells_command", required=True)
+    serve = cell_commands.add_parser("serve", help="Serve the loopback cell API")
+    serve.add_argument("--port", type=int, default=8766)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "cells":
+        if not 1 <= args.port <= 65535:
+            parser.error("--port must be between 1 and 65535")
+        token = os.environ.get("ONTOFILL_CELLS_TOKEN", "")
+        if not token:
+            parser.error("ONTOFILL_CELLS_TOKEN must be set")
+        docker_host = os.environ.get("ONTOFILL_SANDBOX_DOCKER_HOST", "")
+        parsed = urlsplit(docker_host)
+        if (
+            parsed.scheme != "ssh"
+            or not parsed.hostname
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            parser.error("ONTOFILL_SANDBOX_DOCKER_HOST must be ssh://[user@]host")
+
+        from ontofill.sandbox.cell_api import serve_cells
+        from ontofill.sandbox.cells import CellManager
+
+        server = serve_cells(CellManager(), token=token, port=args.port)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+        return 0
     if args.command == "run" and args.from_phase > args.to_phase:
         parser.error("--from-phase must be at most --to-phase")
     if args.command == "run" and args.budget_usd is not None and args.budget_usd < 0:

@@ -176,7 +176,7 @@ curl -sS -X POST http://localhost:8000/api/v1/tasks \
   -H "Content-Type: application/json" -H "x-api-key: $SKYVERN_API_KEY" \
   -d '{"url":"https://example.com",
        "navigation_goal":"Read the page and report the exact text of the main heading. Do not click any links, do not submit any forms.",
-       "data_extraction_schema":{"type":"object","properties":{"heading":{"type":"string"}},"required":["heading"]},
+       "data_extraction_goal":"Extract the page heading","extracted_information_schema":{"type":"object","properties":{"heading":{"type":"string"}},"required":["heading"]},
        "max_steps":3}'
 
 curl -sS http://localhost:8000/api/v1/tasks/<task_id> -H "x-api-key: $SKYVERN_API_KEY" | jq '.status, .extracted_information'
@@ -306,13 +306,13 @@ bypasses**, satisfying "captcha is a hard stop" automatically as long as we stay
 
 ## 5. Data out: extraction, artifacts, and the evidence contract
 
-- **`data_extraction_schema`** (JSON Schema) is passed at task creation to force structured output.
+- **`data_extraction_goal`** + **`extracted_information_schema`** (JSON Schema) are passed at task creation to force structured output. **Verified on v1.0.54 by the team:** `data_extraction_schema` is silently ignored.
 - **Artifacts per run** ([Using Artifacts](https://www.skyvern.com/docs/developers/debugging/using-artifacts)):
   WebM recording, screenshots (`screenshot_final`, `screenshot_action`, `screenshot_llm`), LLM prompts/responses,
   parsed-action logs, DOM trees (JSON + text), element/selector maps, HTML dumps, execution logs, browser
   console output, full HAR files, Playwright traces. Local filesystem for self-hosted (`signed_url` is `null`).
   Maps cleanly onto our four-field trace: **observed** = DOM tree/screenshot/HAR, **requested** =
-  `navigation_goal`/`data_extraction_schema`, **executed** = the parsed action log, **evaluated** = our own
+  `navigation_goal`/`data_extraction_goal`+`extracted_information_schema`, **executed** = the parsed action log, **evaluated** = our own
   SHACL/critic pass.
 - **Webhooks fire only at run completion**, not per step — payload includes `run_id`, `status`, `output`,
   `recording_url`, `screenshot_urls`, `failure_reason`, `step_count`
