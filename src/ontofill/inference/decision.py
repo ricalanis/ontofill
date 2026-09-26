@@ -14,9 +14,22 @@ from typing import Protocol
 
 import httpx
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
-GENERATOR_PREFERENCES = ("glm-5.3", "glm-5.3-flash", "minimax-m3")
-CRITIC_PREFERENCES = ("qwen3.8-27b", "deepseek-v4.1-flash", "qwen3.8-flash-next")
+GENERATOR_PREFERENCES = ("glm-5.3-flash", "glm-5.3")
+EXTRACTION_PREFERENCES = ("qwen3.8-flash-next", "glm-5.3", "glm-5.3-flash")
+CRITIC_PREFERENCES = ("minimax-m3", "deepseek-v4.1-flash", "qwen3.8-flash-next", "qwen3.8-27b")
+FALLBACK_PREFERENCES = ("glm-5.3",)
+
+# USD per million input/output tokens from docs/reference/vultr.md §2.3.
+TOKEN_PRICES: dict[str, tuple[float, float]] = {
+    "glm-5.3-flash": (0.10, 0.35),
+    "glm-5.3": (0.75, 3.00),
+    "qwen3.8-flash-next": (0.10, 0.20),
+    "minimax-m3": (0.20, 0.90),
+    "deepseek-v4.1-flash": (0.15, 0.60),
+    "qwen3.8-27b": (0.15, 1.00),
+}
 
 
 def _family(model: str) -> str:
@@ -30,6 +43,29 @@ def _choose_model(available: set[str], preferred: tuple[str, ...], *, other: str
     raise RuntimeError("no suitable Vultr tool-calling model in the live catalog")
 
 
+def _usage(model: str, payload: dict | None) -> dict[str, str | int | float | None]:
+    raw = (payload or {}).get("usage") or {}
+    input_tokens = raw.get("prompt_tokens")
+    output_tokens = raw.get("completion_tokens")
+    input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else 0
+    output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else 0
+    prices = TOKEN_PRICES.get(model)
+    cost = None
+    if (
+        prices is not None
+        and raw.get("prompt_tokens") is not None
+        and raw.get("completion_tokens") is not None
+    ):
+        cost = (input_tokens * prices[0] + output_tokens * prices[1]) / 1_000_000
+    return {
+        "model": model,
+        "backend": "vultr",
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "est_usd": cost,
+    }
+
+
 class DecisionClient(Protocol):
     backend: str
     model: str
@@ -40,7 +76,7 @@ class DecisionClient(Protocol):
 def generated_by(decision: DecisionClient) -> dict[str, str]:
     return {
         "backend": decision.backend,
-        "model": decision.model,
+        "model": getattr(decision, "last_model", decision.model),
         "at": datetime.now(UTC).isoformat(),
     }
 
@@ -54,18 +90,23 @@ class VultrDecisionClient:
         api_key: str,
         model: str,
         critic_model: str | None = None,
+        extraction_model: str | None = None,
+        fallback_model: str | None = None,
         base_url: str = "https://api.vultrinference.com/v1",
         client: httpx.Client | None = None,
     ) -> None:
         if not api_key or not model:
             raise ValueError("Vultr inference requires an API key and model")
         self.model = model
+        self.last_model = model
         self.critic_model = critic_model or model
+        self.extraction_model = extraction_model or model
+        self.fallback_model = fallback_model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.client = client or httpx.Client(timeout=120)
         self.decisions_by_backend = {"vultr": 0}
-        self.call_log: list[dict[str, str]] = []
+        self.call_log: list[dict[str, object]] = []
 
     @classmethod
     def from_env(cls, *, client: httpx.Client | None = None) -> VultrDecisionClient:
@@ -74,7 +115,9 @@ class VultrDecisionClient:
             raise RuntimeError("set VULTR_INFERENCE_API_KEY")
         base_url = os.environ.get("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
         transport = client or httpx.Client(timeout=120)
-        response = transport.get(f"{base_url.rstrip('/')}/models")
+        response = transport.get(
+            f"{base_url.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}
+        )
         response.raise_for_status()
         available = {item["id"] for item in response.json().get("data", []) if item.get("id")}
         model = os.environ.get("VULTR_INFERENCE_MODEL") or _choose_model(
@@ -87,23 +130,37 @@ class VultrDecisionClient:
         )
         if critic not in available or _family(model) == _family(critic):
             raise RuntimeError("Vultr critic must be available and from another model family")
+        extraction = os.environ.get("VULTR_INFERENCE_EXTRACTION_MODEL") or _choose_model(
+            available, EXTRACTION_PREFERENCES
+        )
+        if extraction not in available:
+            raise RuntimeError("configured Vultr extraction model is absent from the live catalog")
+        fallback = next(
+            (candidate for candidate in FALLBACK_PREFERENCES if candidate in available), None
+        )
         return cls(
             api_key=key,
             model=model,
             critic_model=critic,
+            extraction_model=extraction,
+            fallback_model=fallback,
             base_url=base_url,
             client=transport,
         )
 
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
-        model = self.critic_model if purpose.startswith("critic.") else self.model
+        if purpose.startswith("critic."):
+            model = self.critic_model
+        elif purpose.startswith(("phase5.", "extract.")):
+            model = self.extraction_model
+        else:
+            model = self.model
         tool_schema = {
             key: value
             for key, value in schema.items()
             if key not in {"$schema", "$id", "title", "description"}
         }
         request = {
-            "model": model,
             "messages": [
                 {
                     "role": "system",
@@ -120,7 +177,6 @@ class VultrDecisionClient:
             ],
             "temperature": 0,
             "max_completion_tokens": 16384,
-            "reasoning_effort": "low",
             "tools": [
                 {
                     "type": "function",
@@ -128,48 +184,98 @@ class VultrDecisionClient:
                         "name": "emit",
                         "description": "Return the typed decision",
                         "parameters": tool_schema,
-                        "strict": False,
+                        "strict": True,
                     },
                 }
             ],
             "tool_choice": {"type": "function", "function": {"name": "emit"}},
         }
-        calls = []
-        finish_reason = "unknown"
+        last_error: Exception | None = None
+        use_json_schema = False
+        retry_model: str | None = None
         for attempt in range(2):
-            response = self.client.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=request,
+            selected = retry_model or (
+                model if attempt == 0 or not self.fallback_model else self.fallback_model
             )
-            response.raise_for_status()
-            choice = response.json()["choices"][0]
-            finish_reason = choice.get("finish_reason", "unknown")
-            calls = choice["message"].get("tool_calls") or []
-            if len(calls) == 1 and calls[0].get("function", {}).get("name") == "emit":
-                break
-            if attempt == 0:
-                request["messages"][1]["content"] += (
-                    "\nYou must return exactly one emit function call; do not answer in text."
-                )
-        if len(calls) != 1 or calls[0].get("function", {}).get("name") != "emit":
-            raise TypeError(
-                f"Vultr returned no single emit tool decision (finish={finish_reason}, calls={len(calls)})"
-            )
-        result = json.loads(calls[0]["function"]["arguments"])
-        if not isinstance(result, dict):
-            raise TypeError("Vultr decision must be a JSON object")
-        Draft202012Validator(schema).validate(result)
-        self.decisions_by_backend["vultr"] += 1
-        self.call_log.append(
-            {
+            body = {**request, "model": selected}
+            if selected.startswith("glm-"):
+                body["reasoning_effort"] = "minimal" if selected == "glm-5.3-flash" else "low"
+            if use_json_schema:
+                body.pop("tools")
+                body.pop("tool_choice")
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "emit", "strict": True, "schema": tool_schema},
+                }
+            record: dict[str, object] = {
                 "purpose": purpose,
-                "model": model,
+                "model": selected,
                 "backend": "vultr",
                 "at": datetime.now(UTC).isoformat(),
+                "attempt": attempt + 1,
+                "method": "json_schema" if use_json_schema else "forced_tool",
+                "usage": _usage(selected, None),
             }
-        )
-        return result
+            self.call_log.append(record)
+            try:
+                response = self.client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=body,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                record["usage"] = _usage(selected, payload)
+                choice = payload["choices"][0]
+                finish_reason = choice.get("finish_reason", "unknown")
+                record["finish_reason"] = finish_reason
+                if finish_reason == "length":
+                    raise ValueError("Vultr decision was truncated")
+                if use_json_schema:
+                    arguments = (choice["message"].get("content") or "").strip()
+                else:
+                    calls = choice["message"].get("tool_calls") or []
+                    if len(calls) != 1 or calls[0].get("function", {}).get("name") != "emit":
+                        raise TypeError("Vultr returned no single emit tool decision")
+                    arguments = calls[0]["function"]["arguments"]
+                result = json.loads(arguments)
+                if not isinstance(result, dict):
+                    raise TypeError("Vultr decision must be a JSON object")
+                Draft202012Validator(schema).validate(result)
+            except httpx.HTTPStatusError as exc:
+                record["status"] = f"http_{exc.response.status_code}"
+                last_error = exc
+                if exc.response.status_code in (400, 422) and selected in (
+                    "glm-5.3-flash",
+                    "qwen3.8-flash-next",
+                ):
+                    use_json_schema = True
+                    retry_model = selected
+                if exc.response.status_code not in (400, 422, 429, 500, 502, 503, 504):
+                    raise
+            except (
+                httpx.TransportError,
+                ValueError,
+                TypeError,
+                KeyError,
+                IndexError,
+                ValidationError,
+            ) as exc:
+                record["status"] = (
+                    "length"
+                    if isinstance(exc, ValueError) and record.get("finish_reason") == "length"
+                    else "invalid_response"
+                )
+                last_error = exc
+            else:
+                record["status"] = "ok"
+                self.decisions_by_backend["vultr"] += 1
+                self.last_model = selected
+                return result
+            request["messages"][1]["content"] += (
+                "\nReturn one complete object matching the schema through the requested output method."
+            )
+        raise TypeError("Vultr returned no valid typed decision after two attempts") from last_error
 
     def review_json(self, purpose: str, artifact: dict, criteria: str) -> dict:
         """Get an independent verdict from a different model family."""
