@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ontofill_scrape import SearchResult
 
+from ontofill.phases.p1_scope.phase import draft_prd
+from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
 from ontofill.workflow import _scratch_case, export_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
 
@@ -90,6 +93,7 @@ def test_library_brief_runs_all_phases_with_generic_gold(tmp_path) -> None:
     assert entities[0]["properties"]["free_internet"]["value"] is True
     metrics = json.loads(lake.read_key(f"{prefix}/metrics.json"))
     assert metrics["entities_total"] == {"library": 1}
+    assert metrics["entities_meeting_dod"] == {"library": 1}
     assert metrics["values_without_evidence"] == 0
     assert {item["criterion_id"] for item in metrics["dod"]} == {
         "library_count",
@@ -100,3 +104,18 @@ def test_library_brief_runs_all_phases_with_generic_gold(tmp_path) -> None:
     assert export_case(case, run_id=run_id) == 0
     assert not lake.exists(f"gold/{case.name}/latest.json")
     assert not lake.exists(f"runs/{case.name}/latest.json")
+
+
+def test_ontology_repairs_invalid_class_property_reference(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text(BRIEF.read_text(encoding="utf-8"), encoding="utf-8")
+    decision = library_decisions()
+    invalid = deepcopy(decision.responses["phase2.schema"][0])
+    invalid["classes"][0]["identifier_property"] = "missing_property"
+    decision.responses["phase2.schema"].appendleft(invalid)
+    prd = draft_prd(tmp_path, decision)
+    factors = draft_factors(tmp_path, prd, decision)
+    ontology = draft_ontology(tmp_path, prd, factors, decision)
+    assert ontology["classes"][0]["identifier_property"] == "name"
+    prompts = [prompt for purpose, prompt in decision.calls if purpose == "phase2.schema"]
+    assert len(prompts) == 2
+    assert "identifier_property must refer to a property of its class" in prompts[1]

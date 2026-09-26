@@ -243,13 +243,14 @@ def _validate_entities(entities: Sequence[dict], ontology: dict, lake: GoldLake)
 
 
 def _matches(entity: dict, query: dict) -> bool:
-    if query.get("class_id") and entity["class"] != query["class_id"]:
+    class_id = query.get("class_id", query.get("class"))
+    if class_id and entity["class"] != class_id:
         return False
     for condition in query.get("conditions", []):
         prop = entity["properties"].get(condition["property"])
         if prop is None:
             return False
-        present = prop["status"] == "gold"
+        present = prop["status"] == "gold" and bool(prop["evidence"])
         if not present:
             return False
         if condition["operator"] == "eq" and _canonical(prop["value"]) != _canonical(
@@ -272,16 +273,34 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int:
     if aggregate == "count_entities_with_properties":
         return sum(
             all(
-                entity["properties"].get(property_id, {}).get("status") == "gold"
+                (field := entity["properties"].get(property_id, {})).get("status") == "gold"
+                and bool(field.get("evidence"))
                 for property_id in property_ids
             )
+            for entity in selected
+        )
+    if aggregate == "entities_meeting_completeness":
+        dod_properties = query.get("_dod_properties")
+        if dod_properties is None:
+            raise ValueError("completeness query needs ontology DoD properties")
+        if not dod_properties:
+            return 0
+        return sum(
+            sum(
+                (field := entity["properties"].get(property_id, {})).get("status") == "gold"
+                and bool(field.get("evidence"))
+                for property_id in dod_properties
+            )
+            / len(dod_properties)
+            >= query["min_ratio"]
             for entity in selected
         )
     fields = [
         value
         for entity in selected
         for property_id, value in entity["properties"].items()
-        if (not property_ids or property_id in property_ids) and value["status"] == "gold"
+        if (property_ids == "dod" or not property_ids or property_id in property_ids)
+        and value["status"] == "gold"
     ]
     if aggregate == "count_distinct_source_classes":
         return len({ev["source_type"] for value in fields for ev in value["evidence"]})
@@ -325,17 +344,25 @@ def _metrics(
     entities_total = {class_id: len(group) for class_id, group in by_class.items()}
     entities_meeting_dod = {}
     per_property_completeness = {}
+    thresholds = {
+        query["class"]: query["min_ratio"]
+        for query in dod_queries["queries"]
+        if query["aggregate"] == "entities_meeting_completeness"
+    }
     for class_id, group in by_class.items():
         own = {key: prop for key, prop in properties.items() if prop["domain"] == class_id}
         dod_properties = [key for key, prop in own.items() if prop.get("dod")]
-        entities_meeting_dod[class_id] = (
-            sum(
-                bool(dod_properties)
-                and all(entity["properties"][key]["status"] == "gold" for key in dod_properties)
-                for entity in group
+        min_ratio = thresholds.get(class_id, 0.8)
+        entities_meeting_dod[class_id] = sum(
+            bool(dod_properties)
+            and sum(
+                (field := entity["properties"].get(key, {})).get("status") == "gold"
+                and bool(field.get("evidence"))
+                for key in dod_properties
             )
-            if generated_by["backend"] == "vultr" and not preview
-            else 0
+            / len(dod_properties)
+            >= min_ratio
+            for entity in group
         )
         per_property_completeness[class_id] = {
             key: (
@@ -374,20 +401,38 @@ def _metrics(
         if criterion_id in criterion_ids:
             raise ValueError(f"duplicate DoD criterion ID: {criterion_id}")
         criterion_ids.add(criterion_id)
-        if query.get("class_id") and query["class_id"] not in classes:
-            raise ValueError(f"DoD query has unknown class: {query['class_id']}")
+        class_id = query.get("class_id", query.get("class"))
+        if class_id and class_id not in classes:
+            raise ValueError(f"DoD query has unknown class: {class_id}")
+        if (
+            query["aggregate"] == "entities_meeting_completeness"
+            and class_id != ontology["primary_class"]
+        ):
+            raise ValueError("completeness query must use the primary class")
+        listed = query.get("properties", [])
+        listed = [] if listed == "dod" else listed
         for property_id in [
-            *query.get("properties", []),
+            *listed,
             *(c["property"] for c in query.get("conditions", [])),
         ]:
             if property_id not in properties:
                 raise ValueError(f"DoD query has unknown property: {property_id}")
-            if query.get("class_id") and properties[property_id]["domain"] != query["class_id"]:
+            if class_id and properties[property_id]["domain"] != class_id:
                 raise ValueError(f"DoD property {property_id} is outside query class")
-        actual = _query_actual(entities, query)
+        evaluation_query = query
+        if query["aggregate"] == "entities_meeting_completeness":
+            evaluation_query = {
+                **query,
+                "_dod_properties": [
+                    key
+                    for key, prop in properties.items()
+                    if prop["domain"] == class_id and prop.get("dod")
+                ],
+            }
+        actual = _query_actual(entities, evaluation_query)
         readable = query["aggregate"]
         arguments = []
-        for key in ("class_id", "properties", "conditions"):
+        for key in ("class_id", "class", "properties", "min_ratio", "conditions"):
             if query.get(key):
                 arguments.append(f"{key}={_canonical(query[key])}")
         if arguments:

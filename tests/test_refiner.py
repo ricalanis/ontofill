@@ -334,6 +334,100 @@ def test_refinement_preserves_typed_values_missing_and_conflict(tmp_path: Path) 
     )
 
 
+def test_dod_property_count_requires_all_and_completeness_uses_approved_ratio() -> None:
+    def field(value, *, present=True):
+        return {
+            "value": value,
+            "status": "gold" if present else "missing",
+            "evidence": [1] if present else [],
+        }
+
+    entities = [
+        {
+            "class": "Room",
+            "properties": {"a": field(False), "b": field(0), "c": field(None, present=False)},
+        },
+        {
+            "class": "Room",
+            "properties": {
+                "a": field("A"),
+                "b": field(None, present=False),
+                "c": field(None, present=False),
+            },
+        },
+    ]
+    assert (
+        _query_actual(
+            entities,
+            {
+                "aggregate": "count_entities_with_properties",
+                "class_id": "Room",
+                "properties": ["a", "b"],
+            },
+        )
+        == 1
+    )
+    assert (
+        _query_actual(
+            entities,
+            {
+                "aggregate": "entities_meeting_completeness",
+                "class": "Room",
+                "properties": "dod",
+                "min_ratio": 2 / 3,
+                "_dod_properties": ["a", "b", "c"],
+            },
+        )
+        == 1
+    )
+
+
+def test_export_applies_per_entity_min_ratio_from_approved_query(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    entries = [observed(lake, "book_id", "B-1"), observed(lake, "title", "First")]
+    model, queries = ontology(), dod_queries()
+    queries["queries"].append(
+        {
+            "criterion_id": "partial_completeness",
+            "aggregate": "entities_meeting_completeness",
+            "class": "Book",
+            "properties": "dod",
+            "min_ratio": 2 / 3,
+            "target": 1,
+            "operator": ">=",
+        }
+    )
+    case_dir = tmp_path / "case"
+    write_lineage(case_dir, model, queries, RECORDED)
+    prd_path = case_dir / "01-scope/prd.json"
+    prd = json.loads(prd_path.read_text())
+    prd["definition_of_done"].append(
+        {
+            "id": "partial_completeness",
+            "metric": "two thirds of required fields",
+            "operator": ">=",
+            "target": 1,
+            "min_ratio": 2 / 3,
+        }
+    )
+    prd_path.write_text(json.dumps(prd))
+    entity = refine_observations(entries, ontology=model, generated_by=RECORDED).entities[0]
+    metrics = export_run(
+        lake,
+        case_dir,
+        "books",
+        RUN_ID,
+        [entity],
+        ontology=model,
+        dod_queries=queries,
+        trace=trace([item.value_id for item in entries]),
+        generated_by=RECORDED,
+    )
+    assert metrics["entities_meeting_dod"]["Book"] == 1
+    assert metrics["dod"][-1]["actual"] == 1
+    assert metrics["dod"][-1]["met"] is False
+
+
 def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     entries = [
@@ -359,7 +453,7 @@ def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None
         generated_by=RECORDED,
     )
     assert metrics["entities_total"] == {"Book": 1, "Library": 0}
-    assert metrics["entities_meeting_dod"]["Book"] == 0
+    assert metrics["entities_meeting_dod"]["Book"] == 1
     assert metrics["per_property_completeness"]["Book"]["copies"] == 1
     assert metrics["per_property_completeness"]["Book"]["published"] == 0
     assert metrics["distinct_source_classes"] == 1

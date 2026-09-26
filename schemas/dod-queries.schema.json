@@ -20,14 +20,19 @@
         "aggregate": {
           "enum": [
             "count_entities", "count_entities_with_properties",
-            "count_distinct_source_classes", "count_values_without_evidence"
+            "count_distinct_source_classes", "count_values_without_evidence",
+            "entities_meeting_completeness"
           ]
         },
         "class_id": {"type": "string", "minLength": 1},
+        "class": {"type": "string", "minLength": 1},
         "properties": {
-          "type": "array", "minItems": 1, "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "oneOf": [
+            {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+            {"const": "dod"}
+          ]
         },
+        "min_ratio": {"type": "number", "minimum": 0, "maximum": 1},
         "conditions": {"type": "array", "items": {"$ref": "#/$defs/condition"}},
         "target": {"type": "number", "minimum": 0},
         "operator": {"enum": [">=", ">", "=", "<=", "<"]}
@@ -35,7 +40,17 @@
       "allOf": [
         {
           "if": {"properties": {"aggregate": {"const": "count_entities_with_properties"}}},
-          "then": {"required": ["properties"]}
+          "then": {
+            "required": ["properties"],
+            "properties": {"properties": {"type": "array"}}
+          }
+        },
+        {
+          "if": {"properties": {"aggregate": {"const": "entities_meeting_completeness"}}},
+          "then": {
+            "required": ["class", "properties", "min_ratio"],
+            "properties": {"properties": {"const": "dod"}}
+          }
         }
       ]
     },

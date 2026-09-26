@@ -203,29 +203,49 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
             }
         )
     proposal = _schema_proposal()
-    schema_prompt = (
-        "Design the case-specific data schema from the approved PRD, factors and taxonomies. "
-        "Choose a primary class, classes with title and identifier properties, typed properties, "
-        "relations, rule descriptions, source classes, and public alignment URIs. "
-        "Use only these property datatypes: string, integer, number, boolean, date, datetime, uri. "
-        "Every value must come from the case's question, never from an assumed domain. "
-        "Use stable snake_case IDs, and mark the properties needed for the definition of done. "
-        f"PRD: {prd}. Approved factors: {chosen}. Taxonomies: {taxonomies}"
-    )
-    proposed = decision.complete_json("phase2.schema", schema_prompt, proposal)
-    Draft202012Validator(proposal).validate(proposed)
-    ontology = {
-        "version": "1",
-        "prd_path": "01-scope/prd.json",
+    case_spec = {
+        "question": (case_dir / "brief.md").read_text(encoding="utf-8")[:3000],
+        "jobs": [item["description"] for item in prd["jobs_to_be_done"]],
+        "requirements": prd["requirements"],
+        "definition_of_done": prd["definition_of_done"],
         "factors": chosen,
         "taxonomies": taxonomies,
-        **proposed,
-        "shacl_path": "02-ontology/shapes.ttl",
-        "dod_queries_path": "02-ontology/dod-queries.json",
-        "generated_by": generated_by(decision),
     }
-    validate_document("ontology", ontology)
-    _validate_ontology(ontology)
+    schema_prompt = (
+        "Produce the smallest useful data schema for this case. Use stable snake_case IDs. "
+        "Choose a primary class, title and identifier properties for every class, typed properties, "
+        "relations, rules, source classes and public alignment URIs. Mark DoD properties. "
+        "Allowed datatypes: string, integer, number, boolean, date, datetime, uri. "
+        "Each class title_property and identifier_property must name a property whose domain is that class. "
+        "All relation domain/range and property domains must name declared classes. "
+        "Do not invent observations. Keep the response concise. "
+        f"Approved case specification: {json.dumps(case_spec, ensure_ascii=False)}"
+    )
+    for attempt in range(2):
+        proposed = decision.complete_json("phase2.schema", schema_prompt, proposal)
+        ontology = {
+            "version": "1",
+            "prd_path": "01-scope/prd.json",
+            "factors": chosen,
+            "taxonomies": taxonomies,
+            **proposed,
+            "shacl_path": "02-ontology/shapes.ttl",
+            "dod_queries_path": "02-ontology/dod-queries.json",
+            "generated_by": generated_by(decision),
+        }
+        try:
+            Draft202012Validator(proposal).validate(proposed)
+            validate_document("ontology", ontology)
+            _validate_ontology(ontology)
+        except (ValidationError, ValueError) as exc:
+            if attempt:
+                raise
+            schema_prompt += (
+                f"\nRepair the previous schema: {str(exc)[:300]}. "
+                "Regenerate a complete schema with valid class/property references."
+            )
+        else:
+            break
     queries = _draft_dod_queries(prd, ontology, decision)
     validate_document("dod-queries", queries)
     _validate_queries(prd, ontology, queries)
@@ -255,16 +275,17 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
 def _schema_proposal() -> dict:
     schema = load_schema("ontology")
     names = ("primary_class", "classes", "properties", "relations", "rules", "source_classes")
+    limits = {"classes": 6, "properties": 24, "relations": 12, "rules": 12, "source_classes": 8}
     return {
         "type": "object",
         "additionalProperties": False,
         "required": list(names),
         "properties": {
-            name: (
-                {**schema["properties"][name], "minItems": 1}
-                if name == "source_classes"
-                else schema["properties"][name]
-            )
+            name: {
+                **schema["properties"][name],
+                **({"maxItems": limits[name]} if name in limits else {}),
+                **({"minItems": 1} if name == "source_classes" else {}),
+            }
             for name in names
         },
         "$defs": schema["$defs"],
@@ -306,6 +327,8 @@ def _draft_dod_queries(prd: dict, ontology: dict, decision: DecisionClient) -> d
     prompt = (
         "Compile every approved definition-of-done criterion into exactly one safe declarative "
         "query. Use only ontology class/property IDs and the supported aggregate/condition operators. "
+        "For a per-entity completeness criterion, use entities_meeting_completeness with "
+        "class equal to the primary class, properties='dod', and min_ratio copied from the PRD. "
         "Copy each criterion's target and comparison operator exactly. Do not write SQL or code. "
         f"Criteria: {prd['definition_of_done']}. Classes: {ontology['classes']}. "
         f"Properties: {ontology['properties']}. Source classes: {ontology.get('source_classes', [])}."
@@ -328,11 +351,28 @@ def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:
         criterion = criteria[query["criterion_id"]]
         if query["target"] != criterion["target"] or query["operator"] != criterion["operator"]:
             raise ValueError("DoD query target/operator differs from approved PRD")
-        class_id = query.get("class_id")
+        if (
+            criterion.get("min_ratio") is not None
+            and query.get("min_ratio") != criterion["min_ratio"]
+        ):
+            raise ValueError("DoD query min_ratio differs from approved PRD")
+        if (
+            criterion.get("min_ratio") is not None
+            and query["aggregate"] != "entities_meeting_completeness"
+        ):
+            raise ValueError("per-entity completeness requires its declarative aggregate")
+        if query["aggregate"] == "entities_meeting_completeness":
+            if query["class"] != ontology["primary_class"]:
+                raise ValueError("completeness query must use the primary class")
+            if criterion.get("min_ratio") is None:
+                raise ValueError("completeness query requires an approved PRD min_ratio")
+        class_id = query.get("class_id", query.get("class"))
         if class_id is not None and class_id not in classes:
             raise ValueError("DoD query references an unknown class")
+        listed = query.get("properties", [])
+        listed = [] if listed == "dod" else listed
         for property_id in [
-            *query.get("properties", []),
+            *listed,
             *(c["property"] for c in query.get("conditions", [])),
         ]:
             if property_id not in properties:
