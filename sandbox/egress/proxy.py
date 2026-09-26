@@ -9,6 +9,7 @@ import os
 import select
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlsplit
 
 ALLOWED = frozenset(
@@ -36,6 +37,7 @@ def _forbidden_ip(address: str) -> bool:
         ip = ip.ipv4_mapped
     return bool(
         ip.is_loopback
+        or ip.is_private
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_unspecified
@@ -46,11 +48,33 @@ def _forbidden_ip(address: str) -> bool:
 
 def _resolved_address(host: str, port: int) -> str | None:
     """Pin a DNS result and refuse hosts with any protected address."""
+    test_host_ip = None
+    if host == "host.docker.internal" and host in ALLOWED:
+        # One-shot local Docker tests explicitly add this host-gateway mapping.
+        # A DNS answer alone never authorizes a private destination.
+        for line in Path("/etc/hosts").read_text(encoding="utf-8").splitlines():
+            parts = line.split("#", 1)[0].split()
+            if len(parts) > 1 and host in parts[1:]:
+                try:
+                    candidate = ipaddress.ip_address(parts[0])
+                except ValueError:
+                    break
+                if (
+                    candidate.is_private
+                    and not candidate.is_loopback
+                    and not candidate.is_link_local
+                    and candidate not in MESH
+                    and candidate not in DEPLOYMENT_VPC
+                ):
+                    test_host_ip = parts[0]
+                break
     try:
         addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
         return None
-    if not addresses or any(_forbidden_ip(item[4][0]) for item in addresses):
+    if not addresses or any(
+        _forbidden_ip(item[4][0]) and item[4][0] != test_host_ip for item in addresses
+    ):
         return None
     return addresses[0][4][0]
 

@@ -94,6 +94,8 @@ def test_proxy_rejects_metadata_mesh_and_rebound_addresses(monkeypatch) -> None:
         "169.254.169.254",
         "100.64.0.1",
         "10.42.0.8",
+        "172.17.0.1",
+        "192.168.50.2",
         "127.0.0.1",
         "::ffff:169.254.169.254",
     ):
@@ -108,6 +110,15 @@ def test_proxy_rejects_metadata_mesh_and_rebound_addresses(monkeypatch) -> None:
 
     monkeypatch.setattr(module.socket, "getaddrinfo", rebound)
     assert module._resolved_address("allowed.example", 443) is None
+
+    monkeypatch.setattr(module, "ALLOWED", frozenset({"host.docker.internal"}))
+    monkeypatch.setattr(module.Path, "read_text", lambda *_args, **_kwargs: "172.17.0.1 host.docker.internal\n")
+    monkeypatch.setattr(
+        module.socket, "getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("172.17.0.1", 80))],
+    )
+    assert module._resolved_address("host.docker.internal", 80) == "172.17.0.1"
+    assert module._resolved_address("other.example", 80) is None
 
 
 @pytest.mark.skipif(

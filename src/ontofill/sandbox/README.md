@@ -24,12 +24,58 @@ metadata/mesh isolation, and secret names without reading their values.
 `POST /cells/{id}/steps`, and `POST /cells/{id}/task-result`. All routes require
 the configured bearer token. Keep this token on the control plane only.
 
-Skyvern brains and `throwaway_vx1` placement currently fail closed. They need
-a pinned upstream image, a session-scoped inference gateway route, and a
-live sandbox host, respectively. `live_view_port` is `null` until a separate
-per-cell viewer is implemented. The local Docker daemon lacks `runsc`, so the
-current lifecycle test uses a synthetic Docker driver; a control-plane-to-
-sandbox-host CDP smoke test remains required before claiming live proof.
+For a Skyvern cell, pass `skyvern={...}` and `brain_env={...}` to `create`
+or in `POST /cells`:
+
+```json
+{
+  "image": "public.ecr.aws/skyvern/skyvern@sha256:<64 lowercase hex>",
+  "postgres_image": "postgres:14-alpine@sha256:<64 lowercase hex>",
+  "expires_at": "<ISO-8601 timestamp within one hour>"
+}
+```
+
+```json
+{
+  "OPENAI_COMPATIBLE_API_BASE": "http://100.x.y.z:<port>",
+  "OPENAI_COMPATIBLE_API_KEY": "<session-only token>"
+}
+```
+
+`brain_env` accepts exactly those two keys. The gateway address must be a
+NetBird IPv4 address with an explicit port. The
+token must expire within an hour; the cell is destroyed by its expiry or its
+wall-clock limit, whichever comes first. The gateway issues and enforces the
+token's budget; this substrate validates its expiry and never writes its value
+to the job feed, trace, logs, labels, or Docker CLI arguments. Docker stores
+the session token in the brain's environment until teardown. The brain gets
+`OPENAI_API_KEY` as that token and `OPENAI_API_BASE` pointing to a fixed relay;
+its upstream profile is `OPENAI_GPT5_5`, with the gateway selecting the actual
+Vultr model. No Vultr, Jev, NetBird, or AWS key is passed. The database uses per-cell tmpfs
+and local trust authentication, so it has no persistent password.
+
+Skyvern's brain network uses Docker's isolated gateway mode. It contains the
+brain, database, CDP relay to its own hands, and gateway relay. The hands and
+public-page proxy remain on a different internal network. The gateway relay
+and the loopback API relay join a separate per-cell uplink bridge. No other
+cell joins that uplink. Exact `DOCKER-USER` rules allow the gateway relay's
+uplink IP to the configured NetBird gateway port and drop other new outbound
+connections. Tagged `INPUT` rules also block new connections from both bridge
+relays into the sandbox host itself.
+The brain API is reached through a separate fixed relay published only on
+Docker-host loopback and then an SSH loopback tunnel to the control plane.
+Creation requires Docker Engine 28 or newer, a working remote sandbox SSH target,
+host `sudo -n iptables`,
+gateway reachability, Skyvern heartbeat, and brain network/credential probes;
+any failure removes the cell and reports the failed proof.
+
+`throwaway_vx1` placement still fails closed until Vultr admission is cleared.
+`live_view_port` is `null` until a separate per-cell viewer is implemented.
+The local Docker daemon lacks `runsc`, so current lifecycle tests use a
+synthetic Docker driver. Live checks still need to confirm the pinned Skyvern
+image starts with read-only tmpfs paths, the browser CDP connection works, the
+gateway is reachable under the NetBird and host firewall policies, and the
+controller can authenticate to the per-cell Skyvern API.
 
 `capture_url` and `fetch_url` dispatch disposable browser/file pods behind an
 allowlist proxy. Each call accepts `limits=SandboxLimits(...)` or a complete

@@ -7,6 +7,10 @@ allowlist proxy. `CellManager` starts it only with `runsc`, a read-only root
 filesystem, tmpfs output, no Linux capabilities, and explicit resource caps.
 See `src/ontofill/sandbox/README.md` for its API and verification limits.
 
+The `egress` image also contains `/app/relay.py`, a fixed-destination TCP
+relay. Skyvern cells use separate relay processes for their hands CDP,
+inference gateway, and loopback brain API. They contain no model credential.
+
 `agent-pod/` contains a disposable Chromium capture worker. It receives only
 page/proxy/probe settings and a step cap, never inference credentials. It
 publishes pod identity, isolation and secret-hygiene probes with the captured
