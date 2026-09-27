@@ -481,3 +481,22 @@ def test_a_multi_request_checkpoint_waits_for_every_answer_then_resumes(setup, m
     )
     run_until_idle(r)
     assert [c["run_id"] for c in calls(setup)] == ["run-abc"]  # every answer in: resumed once
+
+
+def test_bronze_probe_samples_each_lake_once_and_keeps_the_file_bounded(setup, tmp_path, monkeypatch):
+    from ontofill_runner import bronze_probe
+
+    bronze = setup["lake"] / "bronze" / "sha256"
+    bronze.mkdir(parents=True)
+    for i in range(3):
+        (bronze / f"obj{i}").write_bytes(b"x")
+    cfg = setup["cfg"]
+    line = bronze_probe.sample(cfg)
+    assert line["objects"] == 3 and line["cases"] == {"c1": 3} and line["prefix"] == "bronze/"
+    assert line["newest"].endswith("Z") and line["ts"].endswith("Z")
+    monkeypatch.setattr(bronze_probe, "KEEP_LINES", 5)
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    for _ in range(8):
+        path = bronze_probe.append(cfg.state_dir, line)
+    rows = [json.loads(x) for x in path.read_text().splitlines()]
+    assert len(rows) == 5 and rows[-1]["objects"] == 3

@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample bronze every 2 minutes (console: capturing vs stalled)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

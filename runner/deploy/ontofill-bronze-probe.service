@@ -1,0 +1,10 @@
+[Unit]
+Description=Ontofill bronze probe: one sample of each case's raw-capture count for the console's progress watch
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/ontofill/runner.env
+WorkingDirectory=/opt/ontofill/engine/runner
+ExecStart=/opt/ontofill/engine/runner/.venv/bin/ontofill-runner bronze-probe
+# read-only on the lakes; writes only <state>/bronze-probe.jsonl
