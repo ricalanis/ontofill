@@ -43,10 +43,10 @@ which also states where each case stands.
   blocked and POSTs are refused, so the blast radius stayed zero while egress widened. The engine run
   continues after submission; its status is live on the judges console, with every run, review and failure.
 - **Building in the open.** A simpler second case (San Francisco library branches) surfaced five engine defects
-  that the hard case had hidden. Three are fixed with tests: city-level jurisdictions in P1, invalid ontology rules
-  set aside with salvage in P2, and exhausted phases reported as needs-human instead of a crash. Two are found and
-  queued: rules whose label does not match their predicate, and a core PRD field that is still not bound to a
-  property (a first fix shipped in `378a8c0` but did not trigger on the rerun).
+  that the hard case had hidden. Four are fixed with tests: city-level jurisdictions in P1, invalid ontology rules
+  set aside with salvage in P2, a core PRD field never bound to a property (the second fix, `3c1a2b0`, is verified
+  on a live rerun), and exhausted phases reported as needs-human instead of a crash. One is in progress: ontology
+  rules are red-flag patterns, but the rule critic judged them as passing checks, so no rule could pass.
 
 ## How it works
 
