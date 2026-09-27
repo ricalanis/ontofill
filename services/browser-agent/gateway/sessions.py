@@ -21,6 +21,7 @@ class Session:
     budget_usd: float
     run_id: str | None = None
     spent_usd: float = 0.0
+    tagged_only: bool = False  # trusted clients that mark page text: screen only <page_content> spans
     calls: int = 0
     flagged: int = 0
     last_flag: dict | None = None  # §12a screen summary of the most recent flagged chunk (no page text)
@@ -60,7 +61,8 @@ class SessionStore:
             self._by_hash[s.token_hash] = session_id
         return token, s
 
-    def register_service(self, session_id: str, token_hash: str, budget_usd: float, spent_usd: float = 0.0) -> Session:
+    def register_service(self, session_id: str, token_hash: str, budget_usd: float, spent_usd: float = 0.0,
+                         tagged_only: bool = False) -> Session:
         """A long-lived service principal (e.g. the engine): configured by token hash, never by the token itself; no
         TTL, still budget-capped and revocable. `spent_usd` is restored from the call log so a restart keeps the cap."""
         if len(token_hash) != 64 or any(c not in "0123456789abcdef" for c in token_hash):
@@ -69,7 +71,8 @@ class SessionStore:
             old = self._by_id.get(session_id)
             if old:
                 self._by_hash.pop(old.token_hash, None)
-            s = Session(session_id, token_hash, float("inf"), float(budget_usd), None, spent_usd=float(spent_usd))
+            s = Session(session_id, token_hash, float("inf"), float(budget_usd), None, spent_usd=float(spent_usd),
+                        tagged_only=tagged_only)
             self._by_id[session_id] = s
             self._by_hash[token_hash] = session_id
         return s

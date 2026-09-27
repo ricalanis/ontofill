@@ -478,3 +478,26 @@ def test_service_token_spec_rejects_bad_hash():
 
     with _pytest.raises(ValueError):
         SessionStore().register_service("engine", "not-a-hash", 1.0)
+
+
+@respx.mock
+def test_tagged_service_screens_only_page_content(tmp_path):
+    import hashlib
+
+    from fastapi.testclient import TestClient
+
+    from gateway.app import Settings, create_app
+
+    jev = respx.post(f"{JEV}/v1/systemone").mock(return_value=jev_answer("benign", 0.99))
+    respx.post(f"{VULTR}/chat/completions").mock(return_value=chat_ok())
+    token = "tagged-engine-token"
+    s = Settings(vultr_base=VULTR, jev_base=JEV, vultr_key="k", jev_key="j", admin_token=ADMIN,
+                 log_path=str(tmp_path / "log.jsonl"),
+                 service_tokens=f"engine:{hashlib.sha256(token.encode()).hexdigest()}:5:tagged")
+    c = TestClient(create_app(s))
+    long_instructions = "You are the planner. " * 200  # > 2000 chars of the client's own instructions
+    assert c.post("/v1/chat/completions", json=body(long_instructions), headers=auth(token)).status_code == 200
+    assert jev.call_count == 0  # not screened: a tagged client's own text
+    r = c.post("/v1/chat/completions", json=body(long_instructions + "<page_content>captured text</page_content>"),
+               headers=auth(token))
+    assert r.status_code == 200 and jev.call_count == 1  # the page span is screened

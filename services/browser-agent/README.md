@@ -158,7 +158,7 @@ development). `BA_CELLS_TIMEOUT_S` (default 600) bounds a cell create, which bui
 ## Service principals (the engine)
 
 The engine is a gateway client like any session: `BA_GATEWAY_SERVICE_TOKENS=engine:<sha256 of its token>:<budget_usd>`
-registers a long-lived, budget-capped, revocable principal (no TTL). The gateway stores only the hash; its spend is
+registers a long-lived, budget-capped, revocable principal (no TTL); append `:tagged` for a trusted client that wraps page text in `<page_content>` (only those spans are screened, not its own instructions). The gateway stores only the hash; its spend is
 restored from the call log on restart, so the cap survives restarts. The engine then points its decision client at the
 gateway (`VULTR_INFERENCE_BASE_URL=http://<control NetBird IP>:8700/v1`, with its service token as the bearer), holds no
 Vultr or Jev key, and its prompts are screened like any other. Every call is logged under `session_id: engine`.

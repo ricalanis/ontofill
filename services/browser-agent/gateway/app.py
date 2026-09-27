@@ -35,7 +35,8 @@ class Settings:
     jev_key: str | None = field(default=None, repr=False)
     admin_token: str | None = field(default=None, repr=False)
     log_path: str = ".cache/gateway-calls.jsonl"
-    # Long-lived service principals: "name:sha256hex:budget_usd[,…]" (hashes only; the tokens live with the services)
+    # Long-lived service principals: "name:sha256hex:budget_usd[:tagged][,…]" (hashes only; the tokens live with the
+    # services). `tagged`: a trusted client that wraps page text in <page_content>; only those spans are screened.
     service_tokens: str | None = field(default=None, repr=False)
     jev_model: str = config.JEV_MODEL
     safety_model: str = config.SAFETY_MODEL
@@ -114,8 +115,9 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
     screener = Screener(up, settings.jev_model, settings.safety_model)
     log = CallLog(settings.log_path)
     for spec in [s.strip() for s in (settings.service_tokens or "").split(",") if s.strip()]:
-        name, token_hash, budget = spec.split(":")
-        store.register_service(name, token_hash.strip().lower(), float(budget), spent_from_log(settings.log_path, name))
+        name, token_hash, budget, *flags = spec.split(":")
+        store.register_service(name, token_hash.strip().lower(), float(budget), spent_from_log(settings.log_path, name),
+                               tagged_only="tagged" in flags)
     app = FastAPI(title="browser-agent inference gateway", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.log, app.state.screener = store, log, screener
 
@@ -154,7 +156,7 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list) or not body.get("model"):
             raise HTTPException(400, "model and messages are required")
         report = reporter(session, step_id)
-        messages, gate = await run_in_threadpool(screener.screen, body["messages"], report)
+        messages, gate = await run_in_threadpool(screener.screen, body["messages"], report, session.tagged_only)
         forward = {**body, "messages": messages}
         gate_header = "flagged" if gate.get("flagged") else "clean"
         chars = _prompt_chars(body["messages"])

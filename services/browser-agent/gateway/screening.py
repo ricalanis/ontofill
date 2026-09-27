@@ -54,7 +54,7 @@ def _parts(message: dict):
                 yield (lambda p=part: p["text"]), (lambda v, p=part: p.__setitem__("text", v))
 
 
-def extract_chunks(messages: list[dict]) -> list[str]:
+def extract_chunks(messages: list[dict], tagged_only: bool = False) -> list[str]:
     chunks = []
     for m in messages or []:
         if m.get("role") not in ("user", "tool"):
@@ -64,7 +64,7 @@ def extract_chunks(messages: list[dict]) -> list[str]:
             tagged = PAGE_RE.findall(text)
             if tagged:
                 chunks.extend(tagged)
-            elif len(text) > LONG_TEXT:
+            elif len(text) > LONG_TEXT and not tagged_only:  # untagged clients (Skyvern): screen long text
                 chunks.append(text)
     return chunks
 
@@ -143,9 +143,9 @@ class Screener:
                 self._cache[key] = result
         return result
 
-    def screen(self, messages: list[dict], report: Report) -> tuple[list[dict], dict]:
+    def screen(self, messages: list[dict], report: Report, tagged_only: bool = False) -> tuple[list[dict], dict]:
         """(messages to forward, gate summary). Flagged chunks are quarantined in a copy; nothing is removed."""
-        chunks = extract_chunks(messages)
+        chunks = extract_chunks(messages, tagged_only)
         if not chunks:
             return messages, {"checked": 0, "flagged": 0}
         results = {c: self.screen_chunk(c, report) for c in dict.fromkeys(chunks)}
