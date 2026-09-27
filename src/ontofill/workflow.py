@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from ontofill.case.checkpoints import load_json, require_approval, write_json
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
 from ontofill.lake import FileLake, lake_for_case
+from ontofill.outer_gap import decide_outer_gap, outer_trace_step, prior_reopens
 from ontofill.phases.p1_scope.phase import PrdDraftUnavailable, draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
 from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
@@ -305,6 +306,92 @@ def _publish_unreported_decisions(
     _publish_decision_calls(feed, trace, decision, published, run_id, phase)
 
 
+def _objective_for_pass(objectives: dict, trace: list[dict]) -> dict:
+    """Give newly discovered objectives a turn before revisiting old sources."""
+    executed = {
+        step["objective_id"]
+        for step in trace
+        if step.get("phase") == 5 and step.get("objective_id")
+    }
+    return next(
+        (item for item in objectives["objectives"] if item["id"] not in executed),
+        objectives["objectives"][0],
+    )
+
+
+def _latest_outer_reopen(trace: list[dict], phase: int) -> dict | None:
+    return next(
+        (
+            step
+            for step in reversed(trace)
+            if step.get("event") == "loop"
+            and step.get("loop", {}).get("phase") == "outer"
+            and step.get("executed", {}).get("reopen") == phase
+        ),
+        None,
+    )
+
+
+def _gap_fields(step: dict | None) -> tuple[str, ...]:
+    if step is None:
+        return ()
+    return tuple(
+        dict.fromkeys(
+            field
+            for gap in step.get("observed", {}).get("gaps", [])
+            for field in gap.get("properties", [])
+        )
+    )
+
+
+def _reopen_discovery(case_dir: Path, iteration: int) -> None:
+    """Force a new captured search round while retaining its objectives and ledger."""
+    path = case_dir / "03-fanout/surface-map/discovery.json"
+    if path.exists():
+        ledger = load_json(path)
+        ledger["request_fingerprint"] = f"reopen-round-{iteration}"
+        write_json(path, ledger)
+
+
+def _reopen_local_scope(case_dir: Path, objective: dict, iteration: int) -> None:
+    """Archive the TDD and invalidate only its cache marker for a new draft."""
+    directory = case_dir / "04-local" / f"{objective['source_id']}__{objective['id']}"
+    if not directory.resolve().is_relative_to(case_dir.resolve()):
+        raise ValueError("objective path escapes case directory")
+    archive = directory / "revisions" / f"gap-{iteration}"
+    archive.mkdir(parents=True, exist_ok=True)
+    for name in ("local-prd.json", "tdd.json", "local-prd.md", "tdd.md"):
+        source = directory / name
+        if source.exists():
+            shutil.copy2(source, archive / name)
+    marker = directory / "tdd.md"
+    if marker.exists():
+        marker.unlink()
+
+
+def _request_ontology_gap_review(
+    case_dir: Path, iteration: int, gap_ids: list[str], provenance: dict
+) -> None:
+    directory = case_dir / "02-ontology"
+    marker = directory / "APPROVED"
+    if marker.exists():
+        marker.rename(directory / f"APPROVED.stale.gap-{iteration}")
+    require_approval(
+        directory,
+        phase=2,
+        checkpoint="ontology",
+        artifact_paths=["02-ontology/ontology.json"],
+        generated_by=provenance,
+    )
+    with (directory / "APPROVAL_PENDING.md").open("a", encoding="utf-8") as pending:
+        pending.write(
+            "\n## Outer-loop DoD gaps\n\n"
+            + "\n".join(f"- `{criterion_id}`" for criterion_id in gap_ids)
+            + "\n\nReview the ontology against these approved criteria. Deny with a reason "
+            "to regenerate it, or approve the current ontology to continue.\n"
+        )
+
+
 def _source_review(
     case_dir: Path, objective: dict, provenance: dict, authority_policy: dict
 ) -> tuple[bool, Path]:
@@ -429,6 +516,12 @@ def run_case(
     store = store or silver_store_from_env()
     trace: list[dict] = []
     pending: str | None = None
+    reopen_phase: int | None = None
+    outer_paused = False
+    historical_trace = _persisted_run_trace(lake, case_id, run_id, [])
+    earlier_reopens = prior_reopens(historical_trace)
+    discovery_gaps = _gap_fields(_latest_outer_reopen(historical_trace, 3))
+    local_reopen = _latest_outer_reopen(historical_trace, 4)
     with RunFeed(lake, case_id, run_id, provenance, preview=preview_past_checkpoints) as feed:
         feed.update_status(state="running", phase=from_phase)
         try:
@@ -545,7 +638,12 @@ def run_case(
             jobs_before = len(getattr(search_client, "jobs", []))
             try:
                 objectives = discover_objectives(
-                    case_dir, ontology, decision, search_client, max_sources=1
+                    case_dir,
+                    ontology,
+                    decision,
+                    search_client,
+                    gaps=discovery_gaps or None,
+                    max_sources=4 if earlier_reopens else 1,
                 )
             finally:
                 _publish_decision_calls(feed, trace, decision, decision_start, run_id, 3)
@@ -581,10 +679,17 @@ def run_case(
 
             if from_phase <= 4:
                 feed.update_status(state="running", phase=4)
-            objective = objectives["objectives"][0]
+            objective = _objective_for_pass(
+                objectives, _persisted_run_trace(lake, case_id, run_id, trace)
+            )
+            local_objective = (
+                {**objective, "gap_report": local_reopen["observed"]["gaps"]}
+                if local_reopen is not None
+                else objective
+            )
             decision_start = len(getattr(decision, "call_log", []))
             _, tdd = draft_local_scope(
-                case_dir, prd, ontology, objective, decision, budget_usd=budget_usd
+                case_dir, prd, ontology, local_objective, decision, budget_usd=budget_usd
             )
             _publish_decision_calls(feed, trace, decision, decision_start, run_id, 4)
             step = _trace_step(
@@ -667,26 +772,84 @@ def run_case(
                 preview=preview_past_checkpoints,
                 decisions_by_backend=getattr(decision, "decisions_by_backend", None),
             )
-            feed.update_status(
-                state="paused" if pending else "done",
-                phase=5,
-                checkpoint_pending=pending,
+            outer = decide_outer_gap(
                 metrics=metrics,
-                sources=[
-                    {
-                        "source_id": objective["source_id"],
-                        "source_type": objective["source_type"],
-                        "discovered_by": objective.get("discovered_by"),
-                        "format": execution.format,
-                        "health": {"ok": 1, "failed": 0, "yield": len(refined.entities)},
-                    }
-                ],
+                dod_queries=dod_queries,
+                ontology=ontology,
+                objectives=objectives,
+                decision=decision,
+                provenance=provenance,
+                trace=export_trace,
+                budget_usd=budget_usd,
             )
-            if pending:
-                _report_pause(pending, case_dir / "01-scope", mock)
+            outer_step = outer_trace_step(run_id, outer)
+            feed.append_step(outer_step)
+            trace.append(outer_step)
+            metrics = export_run(
+                lake,
+                case_dir,
+                case_id,
+                run_id,
+                refined.entities,
+                ontology=ontology,
+                dod_queries=dod_queries,
+                trace=[*export_trace, outer_step],
+                generated_by=provenance,
+                preview=preview_past_checkpoints,
+                decisions_by_backend=getattr(decision, "decisions_by_backend", None),
+            )
+            sources = [
+                {
+                    "source_id": objective["source_id"],
+                    "source_type": objective["source_type"],
+                    "discovered_by": objective.get("discovered_by"),
+                    "format": execution.format,
+                    "health": {"ok": 1, "failed": 0, "yield": len(refined.entities)},
+                }
+            ]
+            if outer.reopen == 2:
+                _request_ontology_gap_review(
+                    case_dir,
+                    outer.iteration,
+                    [gap.criterion_id for gap in outer.gaps],
+                    ontology["generated_by"],
+                )
+                pending = "ontology"
+            elif outer.reopen == 3:
+                _reopen_discovery(case_dir, outer.iteration)
+                reopen_phase = 3
+            elif outer.reopen == 4:
+                _reopen_local_scope(case_dir, objective, outer.iteration)
+                reopen_phase = 4
+            outer_paused = outer.stop_reason in {"budget", "human"}
+            if reopen_phase is not None:
+                feed.update_status(
+                    state="running",
+                    phase=reopen_phase,
+                    checkpoint_pending=pending,
+                    metrics=metrics,
+                    sources=sources,
+                )
             else:
-                print("state=done checkpoint_pending=none")
-            return 3 if pending else 0
+                feed.update_status(
+                    state="paused" if pending or outer_paused else "done",
+                    phase=5,
+                    checkpoint_pending=pending,
+                    metrics=metrics,
+                    sources=sources,
+                )
+                if pending:
+                    _report_pause(
+                        pending,
+                        case_dir / ("02-ontology" if pending == "ontology" else "01-scope"),
+                        mock,
+                    )
+                elif outer_paused:
+                    print(
+                        f"state=paused open_dod_gaps={len(outer.gaps)} reason={outer.stop_reason}"
+                    )
+                else:
+                    print(f"state=done checkpoint_pending=none open_dod_gaps={len(outer.gaps)}")
         except SandboxLimitExceeded as exc:
             fresh = [
                 step for step in exc.trace if step["step_id"] not in {s["step_id"] for s in trace}
@@ -724,6 +887,22 @@ def run_case(
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
             raise
+    if reopen_phase is not None:
+        return run_case(
+            original,
+            from_phase=reopen_phase,
+            to_phase=to_phase,
+            run_id=run_id,
+            budget_usd=budget_usd,
+            preview_past_checkpoints=preview_past_checkpoints,
+            decision=decision,
+            search_client=search_client,
+            capture=capture,
+            fetch=fetch,
+            lake=lake,
+            store=store,
+        )
+    return 3 if pending or outer_paused else 0
 
 
 def _existing_run(case_dir: Path, run_id: str | None) -> tuple[str, object, str, dict]:
