@@ -649,6 +649,13 @@ class TavilyLeadProvider(LeadProvider):
 
     def request_body(self, query: LeadQuery, context: LeadContext) -> dict:
         primary, other = policy_domains(context.policy)
+        site_domain = next(
+            (
+                match.group(1).lower().rstrip(".")
+                for match in re.finditer(r"(?:^|\s)site:([A-Za-z0-9.-]+)", query.text)
+            ),
+            None,
+        )
         body: dict = {
             "query": query.text,
             "search_depth": "basic",
@@ -656,7 +663,10 @@ class TavilyLeadProvider(LeadProvider):
             "max_results": self.max_results,
             "include_usage": True,
         }
-        if primary and context.iteration == 1:
+        if site_domain:
+            body["include_domains"] = [site_domain]
+            body["include_domains_mode"] = "restrict"
+        elif primary and context.iteration == 1:
             body["include_domains"] = primary[:300]
             body["include_domains_mode"] = "restrict"
         elif primary or other:

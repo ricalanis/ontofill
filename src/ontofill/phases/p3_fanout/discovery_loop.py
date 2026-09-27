@@ -14,6 +14,7 @@ captured page from an unrecognized publisher waits for human source review.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 import subprocess
@@ -23,11 +24,20 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import yaml
+from jsonschema import ValidationError
 
-from ontofill.case.checkpoints import load_json, require_approval, write_json
+from ontofill.case.checkpoints import (
+    ApprovalArtifactMismatch,
+    load_json,
+    load_verified_approval,
+    require_approval,
+    verify_approval_artifacts,
+    write_json,
+)
 from ontofill.contracts import validate_document
 from ontofill.inference import DecisionClient, complete_validated, generated_by
 from ontofill.inference.page_content import screened_page_content
@@ -44,7 +54,9 @@ from ontofill.phases.p3_fanout.leads import (
     LeadContext,
     LeadProvider,
     LeadQuery,
+    public_url,
 )
+from ontofill.sandbox import CaptureBlocked
 from ontofill.sandbox.domains import registrable_domain
 from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
@@ -61,6 +73,9 @@ _SUMMARY_SECRET = re.compile(
     r"(?i)\b(api[_-]?key|token|secret|password|authorization|bearer)\b[^\n]*"
 )
 _SUMMARY_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,}")
+_P3_BASE_ITERATIONS = 3
+_P3_MAX_ITERATIONS = 12
+_P3_EXTRA_ITERATION_RESERVE_USD = 0.05
 
 
 def _summary_text(value: object, limit: int = 180) -> str:
@@ -68,6 +83,71 @@ def _summary_text(value: object, limit: int = 180) -> str:
     text = _SUMMARY_SECRET.sub(lambda match: f"{match.group(1)}=<redacted>", text)
     text = _SUMMARY_TOKEN.sub("<redacted>", text)
     return text[:limit]
+
+
+def p3_iteration_limit(*, remaining_usd: float | None) -> int:
+    """Use the existing three rounds as a floor, buying extra rounds conservatively."""
+    if remaining_usd is None or remaining_usd <= 0:
+        return _P3_BASE_ITERATIONS
+    extra = int(remaining_usd / _P3_EXTRA_ITERATION_RESERVE_USD)
+    return min(_P3_MAX_ITERATIONS, _P3_BASE_ITERATIONS + extra)
+
+
+def _public_dns_host(value: str) -> bool:
+    """Accept DNS hostnames, not IP literals or local/special-use names."""
+    host = value.casefold().rstrip(".")
+    if not host or len(host) > 253:
+        return False
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return False
+    labels = host.split(".")
+    if len(labels) < 2 or labels[-1].isdigit():
+        return False
+    if labels[-1] in {"arpa", "internal", "invalid", "local", "localhost", "metadata"}:
+        return False
+    return all(
+        1 <= len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(char.isalnum() or char == "-" for char in label)
+        for label in labels
+    )
+
+
+def _policy_domains(policy: Mapping) -> list[str]:
+    """Return policy-listed DNS roots in stable order for generic search seeding."""
+    domains: list[str] = []
+    for publisher in policy.get("trusted_publishers", []):
+        for raw_domain in publisher.get("domains", []):
+            if not isinstance(raw_domain, str):
+                continue
+            domain = raw_domain.lower().rstrip(".")
+            if _public_dns_host(domain) and domain not in domains:
+                domains.append(domain)
+    return domains
+
+
+def _matching_policy_domains(host: str, policy: Mapping) -> list[str]:
+    """Only widen a job to publisher domains related to this lead's host."""
+    normalized = host.casefold().rstrip(".")
+    lead_root = registrable_domain(normalized)
+    matches = []
+    for domain in _policy_domains(policy):
+        if (
+            normalized == domain
+            or normalized.endswith("." + domain)
+            or lead_root == registrable_domain(domain)
+        ):
+            matches.append(domain)
+    return matches
 
 
 class NoConfirmedSources(ValueError):
@@ -81,12 +161,43 @@ class NoConfirmedSources(ValueError):
         *,
         iterations: int,
         stop_reason: str,
+        unreachable_count: int = 0,
+        review_source_ids: Sequence[str] = (),
+        review_source_hosts: Sequence[str] = (),
     ) -> None:
         gap_ids = [_summary_text(gap, 80) for gap in gaps]
         reason_gaps = ", ".join(gap_ids[:5])
         if len(gap_ids) > 5:
             reason_gaps += f", and {len(gap_ids) - 5} more"
-        self.reason = _summary_text(f"no authoritative source found for {reason_gaps}", 300)
+        self.review_source_ids = list(dict.fromkeys(review_source_ids))
+        host_values = []
+        for value in review_source_hosts:
+            host = str(value).casefold().rstrip(".")
+            if _public_dns_host(host) and host not in host_values:
+                host_values.append(host)
+        self.review_source_hosts = host_values
+        self.checkpoint_pending = "source" if self.review_source_ids else None
+        unreachable_count = max(0, int(unreachable_count))
+        prefix = (
+            f"sources unreachable ({unreachable_count} blocked/redirected/403); "
+            if unreachable_count
+            else ""
+        )
+        host_labels = [_summary_text(host, 80) for host in self.review_source_hosts[:3]]
+        omitted_hosts = max(0, len(self.review_source_hosts) - len(host_labels))
+        host_summary = ", ".join(host_labels)
+        if omitted_hosts:
+            host_summary += f" and {omitted_hosts} more"
+        review_prefix = ""
+        if self.review_source_ids:
+            host_detail = f" at {host_summary}" if host_summary else ""
+            review_prefix = (
+                f"source authority review required for {len(self.review_source_ids)} redirected "
+                f"publisher(s){host_detail}; "
+            )
+        self.reason = _summary_text(
+            f"{prefix}{review_prefix}no authoritative source found for {reason_gaps}", 300
+        )
         self.summary = {
             "gaps": gap_ids[:12],
             "gaps_omitted": max(0, len(gap_ids) - 12),
@@ -96,6 +207,12 @@ class NoConfirmedSources(ValueError):
             "objections_omitted": max(0, len(objections) - 8),
             "iterations": max(0, int(iterations)),
             "stop_reason": _summary_text(stop_reason, 40),
+            "unreachable_count": unreachable_count,
+            "source_review_required": bool(self.review_source_ids),
+            "review_source_ids": self.review_source_ids[:8],
+            "review_sources_omitted": max(0, len(self.review_source_ids) - 8),
+            "review_source_hosts": host_labels,
+            "review_hosts_omitted": omitted_hosts,
         }
         query_summary = (
             _summary_text("; ".join(self.summary["queries"][:2]), 160) or "none recorded"
@@ -211,20 +328,48 @@ def _publisher_kind_policy_error(candidate: Mapping) -> str | None:
     return None
 
 
-def _source_approved(directory: Path, fingerprint: str, backend: str) -> bool:
-    """Pure read of a source APPROVED marker (require_approval writes the pending file)."""
+def _verified_source_approval(case_dir: Path, directory: Path, fingerprint: str) -> dict | None:
+    """Load a source marker only when its digest and fingerprint match this packet."""
     marker = directory / "APPROVED"
-    if backend != "vultr" or not marker.exists():
-        return False
+    candidate = directory / "candidate.json"
+    if not marker.exists():
+        return None
+    if not candidate.is_file():
+        raise ApprovalArtifactMismatch("source")
     try:
-        document = load_json(marker)
-    except (OSError, ValueError):
-        return False
-    return (
-        document.get("checkpoint", "source") == "source"
-        and document.get("decision", "approve") != "deny"
-        and document.get("source_fingerprint") == fingerprint
-    )
+        relative = candidate.relative_to(case_dir).as_posix()
+        document = load_verified_approval(marker, case_dir, [relative], "source")
+        verify_approval_artifacts(case_dir, document, [relative])
+        manifest = load_json(candidate)
+    except ApprovalArtifactMismatch as exc:
+        raise ApprovalArtifactMismatch("source") from exc
+    except (OSError, ValueError, ValidationError) as exc:
+        raise ApprovalArtifactMismatch("source") from exc
+    if (
+        document.get("source_fingerprint") != fingerprint
+        or manifest.get("fingerprint") != fingerprint
+    ):
+        raise ApprovalArtifactMismatch("source")
+    return document
+
+
+def _source_decision(
+    case_dir: Path, directory: Path, fingerprint: str, backend: str
+) -> Literal["approved", "denied", "pending"]:
+    """Read a digest-bound source decision without treating a denial as pending."""
+    if not (directory / "APPROVED").exists():
+        return "pending"
+    document = _verified_source_approval(case_dir, directory, fingerprint)
+    if document is None:
+        return "pending"
+    if document.get("decision", "approve") == "deny":
+        return "denied"
+    return "approved" if backend == "vultr" else "pending"
+
+
+def _source_approved(case_dir: Path, directory: Path, fingerprint: str, backend: str) -> bool:
+    """Accept source approval only for the exact, still-current candidate bytes."""
+    return _source_decision(case_dir, directory, fingerprint, backend) == "approved"
 
 
 class DiscoveryLoop:
@@ -271,6 +416,7 @@ class DiscoveryLoop:
         self._page_evidence: dict[str, dict[str, dict]] = {}
         self._pending_spider_gap_properties: set[str] = set()
         self.source_display_by_id: dict[str, dict[str, str]] = {}
+        self._redirect_frontier: dict[str, dict] = {}
 
     def request_site_graph_refresh(self, property_ids: Iterable[str]) -> None:
         """Request bounded recrawls for confirmed sources that may cover these gaps."""
@@ -330,6 +476,7 @@ class DiscoveryLoop:
                 if line.strip() and not line.lstrip().startswith("#")
             ).split()[:12]
         )
+        planned_by_gap: dict[str, str] = {}
         if decision.backend == "vultr":
             schema = {
                 "type": "object",
@@ -383,13 +530,11 @@ class DiscoveryLoop:
                     schema,
                     validate_queries,
                 )
-                planned = [
-                    LeadQuery(item["property_id"], " ".join(item["query"].split()))
+                planned_by_gap = {
+                    item["property_id"]: " ".join(item["query"].split())
                     for item in result["queries"]
-                    if " ".join(item["query"].split()) not in tried
-                ]
-                if planned:
-                    return list({query.property_id: query for query in planned}.values())
+                    if " ".join(item["query"].split())
+                }
             except PROVIDER_ERRORS as exc:  # fall back to the deterministic template
                 self._step(
                     {"tool": "phase3.plan_queries"},
@@ -402,6 +547,9 @@ class DiscoveryLoop:
             prop = properties[gap]
             owner = classes.get(prop.get("domain"), {})
             plural = owner.get("label_plural") or owner.get("label", "")
+            if planned_by_gap.get(gap):
+                queries.append(LeadQuery(gap, planned_by_gap[gap]))
+                continue
             variants = [
                 f"{prop['label']} {plural} {jurisdiction}",
                 f"{prop['label']} {subject}",
@@ -412,7 +560,18 @@ class DiscoveryLoop:
                 if text and text not in tried:
                     queries.append(LeadQuery(gap, text))
                     break
-        return queries
+        sites = _policy_domains(policy)
+        if not sites:
+            return [query for query in queries if query.text not in tried]
+        restricted: list[LeadQuery] = []
+        for index, query in enumerate(queries):
+            for offset in range(len(sites)):
+                site = sites[(iteration - 1 + index + offset) % len(sites)]
+                text = f"site:{site} {query.text}"
+                if text not in tried:
+                    restricted.append(LeadQuery(query.property_id, text))
+                    break
+        return restricted
 
     # --------------------------------------------------------------- propose
     def _rank_lead(self, lead: dict, policy: Mapping) -> float:
@@ -421,27 +580,234 @@ class DiscoveryLoop:
         score = 100.0 if trusted else (40.0 if tier in {"secondary", "review"} else 0.0)
         return score + 10.0 * (len(lead["providers"]) - 1) + 5.0 * float(lead.get("score", 0))
 
-    def _capture_lead(self, candidate: dict, policy: Mapping, ontology: Mapping) -> None:
+    @staticmethod
+    def _redirect_chain_from_error(error: Exception, requested_url: str) -> list[str] | None:
+        result = getattr(error, "result", None)
+        if not isinstance(result, Mapping):
+            return None
+        proof = result.get("proof")
+        dispatch = proof.get("dispatch_result", {}) if isinstance(proof, Mapping) else {}
+        trace = result.get("trace") or getattr(error, "trace", [])
+        evaluated = next(
+            (
+                row.get("evaluated", {})
+                for row in trace
+                if isinstance(row, Mapping) and isinstance(row.get("evaluated"), Mapping)
+            ),
+            {},
+        )
+        raw = (
+            result.get("redirect_chain")
+            or (dispatch.get("redirect_chain") if isinstance(dispatch, Mapping) else None)
+            or evaluated.get("redirect_chain")
+        )
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raw = []
+        chain = list(dict.fromkeys(raw))
+        if not chain or chain[0] != requested_url:
+            chain.insert(0, requested_url)
+        final_url = result.get("url") or (
+            dispatch.get("url") if isinstance(dispatch, Mapping) else None
+        )
+        if isinstance(final_url, str) and final_url and final_url not in chain:
+            chain.append(final_url)
+        return chain if len(chain) > 1 else None
+
+    @staticmethod
+    def _canonical_redirect_url(url: str, policy: Mapping) -> str | None:
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            return None
+        if not public_url(url) or parsed.username or parsed.password or not _public_dns_host(host):
+            return None
+        trusted, reason = authority_result(url, policy=dict(policy))
+        valid_review_reasons = {
+            "publisher authority needs human review",
+            "secondary cross-check source needs authority review",
+            "publisher tier requires authority review",
+        }
+        if not trusted and reason not in valid_review_reasons:
+            return None
+        netloc = host
+        if (
+            port is not None
+            and not (parsed.scheme == "https" and port == 443)
+            and not (parsed.scheme == "http" and port == 80)
+        ):
+            netloc = f"{host}:{port}"
+        path = parsed.path or "/"
+        return parsed._replace(
+            scheme=parsed.scheme.lower(), netloc=netloc, path=path, fragment=""
+        ).geturl()
+
+    def _redirect_lead_from_error(
+        self,
+        error: Exception,
+        candidate: Mapping,
+        policy: Mapping,
+        case_dir: Path,
+    ) -> dict | None:
+        chain = self._redirect_chain_from_error(error, str(candidate["url"]))
+        if chain is None:
+            return None
+        canonical_chain = []
+        for index, item in enumerate(chain):
+            canonical = self._canonical_redirect_url(item, policy)
+            if canonical is None:
+                # Do not turn private, metadata, local, non-HTTP, or credentialed hops
+                # into leads or approval artifacts.
+                if index:
+                    return None
+                continue
+            if not canonical_chain or canonical_chain[-1] != canonical:
+                canonical_chain.append(canonical)
+        if len(canonical_chain) < 2:
+            return None
+        destination = canonical_chain[-1]
+        destination_host = urlsplit(destination).hostname or ""
+        for existing_url, existing in self._redirect_frontier.items():
+            if existing_url == destination:
+                existing["redirect_chain"] = canonical_chain
+                return existing
+            existing_host = urlsplit(existing_url).hostname or ""
+            if existing_host == destination_host:
+                chains = existing.setdefault("observed_redirect_chains", [])
+                if canonical_chain not in chains:
+                    chains.append(canonical_chain)
+                return existing
+
+        for existing_url in self._redirect_frontier:
+            if existing_url == destination:
+                return self._redirect_frontier[existing_url]
+        title = f"Redirect destination at {destination_host}"
+        snippet = "Public URL observed in a browser redirect chain."
+        provider = "sandbox_redirect"
+        fingerprint = source_fingerprint(
+            url=destination,
+            title=title,
+            snippet=snippet,
+            provider=provider,
+            capture_key=None,
+            authority_policy=dict(policy),
+        )
+        trusted, reason = authority_result(destination, policy=dict(policy))
+        tier = authority_tier(destination, policy)
+        needs_review = not trusted
+        source_id = _source_id(destination)
+        directory = case_dir / "03-fanout/sources" / source_id
+        candidate_path = directory / "candidate.json"
+        if needs_review and candidate_path.exists():
+            try:
+                prior_packet = load_json(candidate_path)
+            except (OSError, ValueError):
+                return None
+            if prior_packet.get("url") != destination:
+                return None
+            if prior_packet.get("fingerprint") != fingerprint:
+                # A changed authority context gets a distinct review packet. An existing
+                # approval is immutable and cannot be bypassed by making a new packet.
+                if (directory / "APPROVED").exists():
+                    return None
+                source_id = _source_id(destination + "\0" + fingerprint)
+                directory = case_dir / "03-fanout/sources" / source_id
+                candidate_path = directory / "candidate.json"
+                if candidate_path.exists():
+                    try:
+                        prior_packet = load_json(candidate_path)
+                    except (OSError, ValueError):
+                        return None
+                    if (
+                        prior_packet.get("url") != destination
+                        or prior_packet.get("fingerprint") != fingerprint
+                    ):
+                        return None
+            if (directory / "APPROVED").exists():
+                _verified_source_approval(case_dir, directory, fingerprint)
+        lead = {
+            "url": destination,
+            "title": title,
+            "snippet": snippet,
+            "discovered_by": provider,
+            "query": f"redirect from {candidate['url']}",
+            "property_ids": list(candidate.get("property_ids", [])),
+            "score": 0.0,
+            "publisher": None,
+            "lead_only": True,
+            "providers": [provider],
+            "iteration": int(candidate.get("iteration", 1)),
+            "redirect_chain": canonical_chain,
+            "redirect_review_required": needs_review,
+            "review_source_id": source_id if needs_review else None,
+            "review_fingerprint": fingerprint if needs_review else None,
+            "authority_tier": tier,
+        }
+        self.source_display_by_id[source_id] = source_display_identity(
+            destination, title, source_id
+        )
+        if needs_review:
+            if candidate_path.exists():
+                packet = load_json(candidate_path)
+            else:
+                packet = {
+                    "source_id": source_id,
+                    "url": destination,
+                    "title": title,
+                    "snippet": snippet,
+                    "provider": provider,
+                    "providers": [provider],
+                    "capture_key": None,
+                    "authority": "review",
+                    "authority_tier": tier,
+                    "authority_reason": reason,
+                    "fingerprint": fingerprint,
+                    "redirect_chain": canonical_chain,
+                    "generated_by": self.provenance,
+                }
+            validate_document("source-candidate", packet)
+            if not candidate_path.exists():
+                write_json(candidate_path, packet)
+            if (
+                not (directory / "APPROVED").exists()
+                and not (directory / "APPROVAL_PENDING.md").exists()
+            ):
+                require_approval(
+                    directory,
+                    phase=3,
+                    checkpoint="source",
+                    artifact_paths=[f"03-fanout/sources/{source_id}/candidate.json"],
+                    generated_by=dict(self.provenance),
+                    source_fingerprint=fingerprint,
+                    case_dir=case_dir,
+                )
+        self._redirect_frontier[destination] = lead
+        return lead
+
+    def _capture_lead(
+        self, candidate: dict, policy: Mapping, ontology: Mapping, case_dir: Path
+    ) -> dict | None:
         url = candidate["url"]
         host = (urlsplit(url).hostname or "").lower()
-        redirect_domain = registrable_domain(host)
-        source_id = _source_id(url)
+        source_id = str(candidate.get("source_review_id") or _source_id(url))
+        allowed_domains = sorted({host, *_matching_policy_domains(host, policy)})
         self.source_display_by_id[source_id] = source_display_identity(
             url, candidate.get("title"), source_id
         )
+        capture_kwargs = {
+            "allowed_domains": allowed_domains,
+            "lake": self.lake,
+            "run_id": self.run_id,
+            "source_id": source_id,
+            "objective_id": None,
+            "tdd_path": TDD_PATH,
+            "phase": 3,
+            "generated_by": self.provenance,
+        }
+        attempts = 1
         try:
-            captured = self.capture(
-                url,
-                allowed_domains=[redirect_domain],
-                lake=self.lake,
-                run_id=self.run_id,
-                source_id=source_id,
-                objective_id=None,
-                tdd_path=TDD_PATH,
-                phase=3,
-                generated_by=self.provenance,
-                redirect_domain=redirect_domain,
-            )
+            captured = self.capture(url, **capture_kwargs)
         except (*PROVIDER_ERRORS, subprocess.SubprocessError) as exc:  # the lead stays a lead
             trace_start = len(self.trace)
             self.trace.extend(getattr(exc, "trace", None) or [])
@@ -449,19 +815,94 @@ class DiscoveryLoop:
             result = getattr(exc, "result", None)
             if isinstance(result, dict) and "proof" in result:
                 self.jobs.append(result)
-            candidate.update(status="capture_failed", capture_reason=type(exc).__name__)
-            return
+            dispatch = (
+                result.get("proof", {}).get("dispatch_result", {})
+                if isinstance(result, Mapping) and isinstance(result.get("proof"), Mapping)
+                else {}
+            )
+            reason = (dispatch.get("reason") if isinstance(dispatch, Mapping) else None) or (
+                result.get("reason") if isinstance(result, Mapping) else None
+            )
+            if reason != "http_403":
+                candidate.update(
+                    status="capture_failed",
+                    capture_reason=reason or type(exc).__name__,
+                    capture_outcome="blocked" if isinstance(exc, CaptureBlocked) else "failed",
+                    capture_attempts=1,
+                )
+                return self._redirect_lead_from_error(exc, candidate, policy, case_dir)
+            attempts = 2
+            try:
+                captured = self.capture(url, **capture_kwargs)
+            except (*PROVIDER_ERRORS, subprocess.SubprocessError) as retry_exc:
+                trace_start = len(self.trace)
+                self.trace.extend(getattr(retry_exc, "trace", None) or [])
+                self._annotate_source_steps(self.trace[trace_start:])
+                retry_result = getattr(retry_exc, "result", None)
+                if isinstance(retry_result, dict) and "proof" in retry_result:
+                    self.jobs.append(retry_result)
+                retry_dispatch = (
+                    retry_result.get("proof", {}).get("dispatch_result", {})
+                    if isinstance(retry_result, Mapping)
+                    and isinstance(retry_result.get("proof"), Mapping)
+                    else {}
+                )
+                retry_reason = (
+                    retry_dispatch.get("reason") if isinstance(retry_dispatch, Mapping) else None
+                )
+                candidate.update(
+                    status="capture_failed",
+                    capture_reason=retry_reason or f"http_403_retry_{type(retry_exc).__name__}",
+                    capture_outcome="blocked"
+                    if isinstance(retry_exc, CaptureBlocked)
+                    else "failed",
+                    capture_attempts=2,
+                )
+                return self._redirect_lead_from_error(
+                    retry_exc, candidate, policy, case_dir
+                ) or self._redirect_lead_from_error(exc, candidate, policy, case_dir)
         trace_start = len(self.trace)
         self.trace.extend(captured.get("trace", []))
         self._annotate_source_steps(self.trace[trace_start:])
         if "proof" in captured:
             self.jobs.append(captured)
         status = int(captured.get("status", 200))
+        if status == 403 and attempts == 1:
+            try:
+                retry = self.capture(url, **capture_kwargs)
+            except (*PROVIDER_ERRORS, subprocess.SubprocessError) as exc:
+                trace_start = len(self.trace)
+                self.trace.extend(getattr(exc, "trace", None) or [])
+                self._annotate_source_steps(self.trace[trace_start:])
+                result = getattr(exc, "result", None)
+                if isinstance(result, dict) and "proof" in result:
+                    self.jobs.append(result)
+                candidate.update(
+                    status="capture_failed",
+                    capture_reason=(
+                        f"http_403_retry_{type(exc).__name__}"
+                        if not isinstance(exc, CaptureBlocked)
+                        else "http_403_retry_blocked"
+                    ),
+                    capture_outcome="blocked",
+                    capture_attempts=2,
+                )
+                return self._redirect_lead_from_error(exc, candidate, policy, case_dir)
+            trace_start = len(self.trace)
+            self.trace.extend(retry.get("trace", []))
+            self._annotate_source_steps(self.trace[trace_start:])
+            if "proof" in retry:
+                self.jobs.append(retry)
+            captured = retry
+            status = int(captured.get("status", 200))
+            attempts = 2
+        candidate["capture_attempts"] = attempts
         key = captured.get("html_key")
         if status >= 400 or not isinstance(key, str):
             candidate.update(
                 status="capture_failed",
                 capture_reason=f"http_{status}" if status >= 400 else "empty_page",
+                capture_outcome="blocked" if status == 403 else "failed",
                 capture_key=key,
             )
             return
@@ -487,6 +928,7 @@ class DiscoveryLoop:
             candidate.update(
                 status="capture_failed",
                 capture_reason="sandbox_parse_failed",
+                capture_outcome="failed",
                 capture_key=key,
             )
             return
@@ -494,11 +936,20 @@ class DiscoveryLoop:
         self.trace.extend(parsed_page.trace)
         self._annotate_source_steps(self.trace[trace_start:])
         self.jobs.append(parsed_page.job_record)
+        if parsed_page.challenge_detected:
+            candidate.update(
+                status="capture_failed",
+                capture_reason="bot_challenge",
+                capture_outcome="blocked",
+                capture_key=key,
+            )
+            return
         text = parsed_page.page_text
         if not text:
             candidate.update(
                 status="capture_failed",
                 capture_reason="empty_page",
+                capture_outcome="failed",
                 capture_key=key,
             )
             return
@@ -777,12 +1228,71 @@ class DiscoveryLoop:
         if previous and previous.get("generated_by", {}).get("backend") != decision.backend:
             previous = None
         ledger = load_json(ledger_path) if ledger_path.exists() else {}
-        if previous and ledger.get("request_fingerprint") == request_key:
-            validate_document("objectives", previous)
-            return self._site_graphs(case_dir, ontology, decision, previous)
-
         backend = self.provenance.get("backend", decision.backend)
+        if previous and ledger.get("request_fingerprint") == request_key:
+            cache_has_denial = False
+            for objective in previous.get("objectives", []):
+                source_directory = case_dir / "03-fanout/sources" / objective["source_id"]
+                if not (source_directory / "APPROVED").exists():
+                    continue
+                source_state = _source_decision(
+                    case_dir,
+                    source_directory,
+                    objective.get("source_fingerprint", ""),
+                    backend,
+                )
+                cache_has_denial |= source_state == "denied"
+            if not cache_has_denial:
+                validate_document("objectives", previous)
+                return self._site_graphs(case_dir, ontology, decision, previous)
+
         sources_dir = case_dir / "03-fanout/sources"
+        self._redirect_frontier = {}
+        saved_redirect_leads: dict[str, dict] = {}
+        saved_candidate_urls: set[str] = set()
+        leads_path = case_dir / "03-fanout/surface-map/leads.json"
+        try:
+            saved_surface = load_json(leads_path)
+            saved_leads = saved_surface.get("leads", [])
+            saved_candidates = saved_surface.get("candidates", [])
+            if not isinstance(saved_candidates, list):
+                saved_candidates = []
+            saved_candidate_urls = {
+                candidate["url"]
+                for candidate in saved_candidates
+                if isinstance(candidate, dict) and isinstance(candidate.get("url"), str)
+            }
+        except (OSError, ValueError, AttributeError):
+            saved_leads = []
+            saved_candidates = []
+        for candidate in saved_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            source_id = candidate.get("source_id")
+            fingerprint = candidate.get("source_review_fingerprint") or candidate.get("fingerprint")
+            if not isinstance(source_id, str) or not isinstance(fingerprint, str):
+                continue
+            source_directory = sources_dir / source_id
+            if (source_directory / "APPROVED").exists():
+                _source_decision(case_dir, source_directory, fingerprint, backend)
+        if isinstance(saved_leads, list):
+            for lead in saved_leads:
+                if not isinstance(lead, dict) or not lead.get("redirect_review_required"):
+                    continue
+                url = lead.get("url")
+                if not isinstance(url, str) or not url:
+                    continue
+                if lead.get("redirect_review_required"):
+                    review_source_id = lead.get("review_source_id")
+                    review_fingerprint = lead.get("review_fingerprint")
+                    if isinstance(review_source_id, str) and isinstance(review_fingerprint, str):
+                        _verified_source_approval(
+                            case_dir,
+                            sources_dir / review_source_id,
+                            review_fingerprint,
+                        )
+                saved_redirect_leads[url] = lead
+                self._redirect_frontier[url] = lead
         prior_cover: dict[str, set[str]] = {target: set() for target in targets}
         if previous and not explicit:
             for objective in previous["objectives"]:
@@ -790,19 +1300,39 @@ class DiscoveryLoop:
                 if not manifest_path.exists():
                     continue
                 manifest = load_json(manifest_path)
-                if not manifest.get("capture_key"):
+                if (manifest_path.parent / "APPROVED").exists():
+                    _verified_source_approval(
+                        case_dir,
+                        manifest_path.parent,
+                        objective.get("source_fingerprint", ""),
+                    )
+                capture_manifest_path = manifest_path.with_name("capture.json")
+                capture_manifest = (
+                    load_json(capture_manifest_path)
+                    if not manifest.get("capture_key") and capture_manifest_path.exists()
+                    else manifest
+                )
+                if not capture_manifest.get("capture_key"):
                     continue
-                allowed = manifest.get("authority") == "auto" or _source_approved(
-                    manifest_path.parent, objective.get("source_fingerprint", ""), backend
+                source_state = _source_decision(
+                    case_dir,
+                    manifest_path.parent,
+                    objective.get("source_fingerprint", ""),
+                    backend,
+                )
+                allowed = source_state != "denied" and (
+                    manifest.get("authority") == "auto" or source_state == "approved"
                 )
                 if allowed:
                     host = (urlsplit(objective["source_url"]).hostname or "").lower()
-                    for prop in manifest.get("covers", []):
+                    for prop in capture_manifest.get("covers", []):
                         if prop in prior_cover:
                             prior_cover[prop].add(host)
 
         # Sources confirmed in earlier rounds are never re-captured as new leads.
-        known_urls = {item["source_url"] for item in (previous or {}).get("objectives", [])}
+        known_urls = {
+            item["source_url"] for item in (previous or {}).get("objectives", [])
+        } | saved_candidate_urls
         self._page_texts = {}
         self._page_evidence = {}
         tried_queries: set[str] = set()
@@ -814,9 +1344,14 @@ class DiscoveryLoop:
             for candidate in (draft or {}).get("candidates", {}).values():
                 if candidate["status"] != "confirmed":
                     continue
-                fingerprint = candidate.get("fingerprint", "")
-                allowed = candidate.get("authority") == "auto" or _source_approved(
-                    sources_dir / candidate["source_id"], fingerprint, backend
+                fingerprint = candidate.get(
+                    "source_review_fingerprint", candidate.get("fingerprint", "")
+                )
+                source_state = _source_decision(
+                    case_dir, sources_dir / candidate["source_id"], fingerprint, backend
+                )
+                allowed = source_state != "denied" and (
+                    candidate.get("authority") == "auto" or source_state == "approved"
                 )
                 if not allowed:
                     continue
@@ -848,7 +1383,10 @@ class DiscoveryLoop:
             }
 
         def propose(context: dict, iteration: int) -> dict:
-            draft = deepcopy(context["previous"]) or {"candidates": {}, "leads": {}}
+            draft = deepcopy(context["previous"]) or {
+                "candidates": {},
+                "leads": deepcopy(saved_redirect_leads),
+            }
             queries = tuple(LeadQuery(pid, text) for pid, text in context["queries"])
             if not queries:
                 return draft
@@ -907,6 +1445,27 @@ class DiscoveryLoop:
             for name, _, _ in lead_context.publisher_names:
                 tried_publishers.add(name)
 
+            # Keep trusted publisher roots in the frontier even when search found
+            # other leads; an official landing page may link to the actual records.
+            for domain in _policy_domains(policy):
+                url = f"https://{domain}/"
+                for gap in context["gaps"]:
+                    lead = Lead(
+                        url=url,
+                        title=f"Publisher root at {domain}",
+                        snippet="Domain root listed in the approved authority policy.",
+                        discovered_by="authority_policy",
+                        query="approved publisher domain root",
+                        property_ids=(gap,),
+                    )
+                    entry = draft["leads"].setdefault(
+                        url,
+                        {**lead.as_dict(), "providers": [], "iteration": iteration},
+                    )
+                    if lead.discovered_by not in entry["providers"]:
+                        entry["providers"].append(lead.discovered_by)
+                    entry["property_ids"] = sorted(set(entry["property_ids"]) | {gap})
+
             open_now = set(context["gaps"])
             pool = [
                 lead
@@ -914,6 +1473,16 @@ class DiscoveryLoop:
                 if url not in draft["candidates"]
                 and url not in known_urls
                 and open_now & set(lead["property_ids"])
+                and (
+                    not lead.get("redirect_review_required")
+                    or _source_decision(
+                        case_dir,
+                        sources_dir / str(lead.get("review_source_id") or ""),
+                        str(lead.get("review_fingerprint") or ""),
+                        backend,
+                    )
+                    == "approved"
+                )
             ]
             pool.sort(key=lambda lead: self._rank_lead(lead, policy), reverse=True)
             chosen: list[dict] = []
@@ -951,9 +1520,39 @@ class DiscoveryLoop:
                     "iteration": iteration,
                     "status": "pending",
                     "covers": [],
+                    **(
+                        {"source_id": lead["review_source_id"]}
+                        if lead.get("redirect_review_required")
+                        else {}
+                    ),
+                    **(
+                        {"discovery_redirect_chain": lead["redirect_chain"]}
+                        if isinstance(lead.get("redirect_chain"), list)
+                        else {}
+                    ),
+                    **(
+                        {
+                            "source_review_id": lead["review_source_id"],
+                            "source_review_fingerprint": lead["review_fingerprint"],
+                        }
+                        if lead.get("redirect_review_required")
+                        else {}
+                    ),
                 }
-                self._capture_lead(candidate, policy, ontology)
+                redirect_lead = self._capture_lead(candidate, policy, ontology, case_dir)
                 draft["candidates"][lead["url"]] = candidate
+                if redirect_lead is not None:
+                    existing = draft["leads"].get(redirect_lead["url"])
+                    if existing is None:
+                        draft["leads"][redirect_lead["url"]] = redirect_lead
+                    elif existing is not redirect_lead:
+                        existing["redirect_chain"] = redirect_lead["redirect_chain"]
+                        if redirect_lead.get("redirect_review_required"):
+                            existing.update(
+                                redirect_review_required=True,
+                                review_source_id=redirect_lead["review_source_id"],
+                                review_fingerprint=redirect_lead["review_fingerprint"],
+                            )
             return draft
 
         def critique(draft: dict, _context: dict, _iteration: int) -> dict:
@@ -1133,11 +1732,40 @@ class DiscoveryLoop:
         max_sources: int,
     ) -> dict:
         provenance = generated_by(decision)
+        source_root = case_dir / "03-fanout/sources"
+        backend = provenance.get("backend", decision.backend)
+        pending_review_leads = []
+        for lead in draft.get("leads", {}).values():
+            if not lead.get("redirect_review_required"):
+                continue
+            source_id = lead.get("review_source_id")
+            fingerprint = lead.get("review_fingerprint")
+            if not isinstance(source_id, str) or not isinstance(fingerprint, str):
+                continue
+            if (
+                _source_decision(case_dir, source_root / source_id, fingerprint, backend)
+                == "pending"
+            ):
+                pending_review_leads.append(lead)
         dod = _dod_properties(ontology)
         primary = next(
             item for item in ontology["classes"] if item["id"] == ontology["primary_class"]
         )
-        confirmed = [c for c in draft["candidates"].values() if c["status"] == "confirmed"]
+        confirmed = []
+        candidate_source_decisions: dict[str, str] = {}
+        for candidate in draft["candidates"].values():
+            if candidate["status"] != "confirmed":
+                continue
+            source_state = _source_decision(
+                case_dir,
+                source_root / candidate["source_id"],
+                candidate.get("source_review_fingerprint", candidate["fingerprint"]),
+                backend,
+            )
+            candidate_source_decisions[candidate["source_id"]] = source_state
+            if source_state == "denied":
+                continue
+            confirmed.append(candidate)
         confirmed.sort(
             key=lambda c: (
                 c["authority"] == "auto",
@@ -1148,7 +1776,17 @@ class DiscoveryLoop:
         )
         # max_sources is the legacy one-source hint; coverage may need more (schema cap 8).
         confirmed = confirmed[: max(8, max_sources)]
-        by_id = {item["id"]: item for item in (previous or {}).get("objectives", [])}
+        by_id = {}
+        for item in (previous or {}).get("objectives", []):
+            source_directory = source_root / item["source_id"]
+            if (source_directory / "APPROVED").exists() and _source_decision(
+                case_dir,
+                source_directory,
+                item.get("source_fingerprint", ""),
+                backend,
+            ) == "denied":
+                continue
+            by_id[item["id"]] = item
         now = datetime.now(UTC).isoformat()
         for candidate in confirmed:
             source_id = candidate["source_id"]
@@ -1176,7 +1814,9 @@ class DiscoveryLoop:
                 "source_id": source_id,
                 "source_url": candidate["url"],
                 "source_type": candidate["source_type"],
-                "source_fingerprint": candidate["fingerprint"],
+                "source_fingerprint": candidate.get(
+                    "source_review_fingerprint", candidate["fingerprint"]
+                ),
                 "discovery_provider": candidate["discovered_by"],
                 "discovered_by": discovered,
                 "target_fields": fields,
@@ -1208,9 +1848,28 @@ class DiscoveryLoop:
                 "property_evidence": candidate.get("property_evidence", {}),
                 "generated_by": provenance,
             }
+            validate_document("source-candidate", manifest)
             directory = case_dir / "03-fanout/sources" / source_id
-            write_json(directory / "candidate.json", manifest)
-            if candidate["authority"] != "auto":
+            review_fingerprint = candidate.get("source_review_fingerprint")
+            redirect_review_approved = bool(
+                review_fingerprint and candidate_source_decisions.get(source_id) == "approved"
+            )
+            source_marker_exists = (directory / "APPROVED").exists()
+            pending_path = directory / "APPROVAL_PENDING.md"
+            pending_exists = pending_path.exists()
+            candidate_path = directory / "candidate.json"
+            if pending_exists and not source_marker_exists:
+                if not candidate_path.is_file():
+                    raise ApprovalArtifactMismatch("source")
+                validate_document("source-candidate", load_json(candidate_path))
+            if redirect_review_approved or source_marker_exists or pending_exists:
+                # Keep the digest-bound authority packet byte-for-byte intact. The
+                # fresh capture/evidence has its own record and the objective points
+                # to its bronze key.
+                write_json(directory / "capture.json", manifest)
+            else:
+                write_json(candidate_path, manifest)
+            if candidate["authority"] != "auto" and not source_marker_exists and not pending_exists:
                 require_approval(
                     directory,
                     phase=3,
@@ -1218,6 +1877,7 @@ class DiscoveryLoop:
                     artifact_paths=[f"03-fanout/sources/{source_id}/candidate.json"],
                     generated_by=provenance,
                     source_fingerprint=candidate["fingerprint"],
+                    case_dir=case_dir,
                 )
         ordered = sorted(
             by_id.values(),
@@ -1316,12 +1976,32 @@ class DiscoveryLoop:
                     if isinstance(attempt.get("query"), str) and attempt["query"].strip()
                 }
             )
+            review_source_ids = sorted(
+                {
+                    str(lead["review_source_id"])
+                    for lead in pending_review_leads
+                    if isinstance(lead.get("review_source_id"), str)
+                }
+            )
+            review_source_hosts = sorted(
+                {
+                    urlsplit(str(lead["url"])).hostname or ""
+                    for lead in pending_review_leads
+                    if isinstance(lead.get("url"), str)
+                }
+            )
             raise NoConfirmedSources(
                 targets,
                 queries,
                 result.objections,
                 iterations=result.iterations,
                 stop_reason=result.stop_reason,
+                unreachable_count=sum(
+                    candidate.get("capture_outcome") == "blocked"
+                    for candidate in draft["candidates"].values()
+                ),
+                review_source_ids=review_source_ids,
+                review_source_hosts=review_source_hosts,
             )
         write_json(case_dir / "03-fanout/objectives.json", document)
         (case_dir / "03-fanout/objectives.yaml").write_text(

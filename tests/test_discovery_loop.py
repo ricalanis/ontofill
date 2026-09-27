@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -112,8 +113,7 @@ class FakeCapture:
     def __call__(self, url: str, **kwargs) -> dict:
         self.calls.append(url)
         assert kwargs["phase"] == 3
-        assert kwargs["allowed_domains"] == [kwargs["redirect_domain"]]
-        assert same_registrable_domain(url, kwargs["redirect_domain"])
+        assert (urlsplit(url).hostname or "") in kwargs["allowed_domains"]
         row = {
             "step_id": f"step:{uuid.uuid4().hex}",
             "run_id": kwargs["run_id"],
@@ -539,8 +539,9 @@ def test_loop_stops_when_checks_pass_and_emits_loop_trace(tmp_path) -> None:
     assert round_["required"]["opening_hours"] == 1
     assert round_["provider_yield"]["synthetic"]["sources"] == 2
     # Same request is served from the ledger: no second provider or sandbox call.
+    captures_before_cached_read = len(capture.calls)
     assert discover_objectives(tmp_path, ontology, RecordedDecisionClient({}), loop) == result
-    assert provider.calls == 1 and len(capture.calls) == 2
+    assert provider.calls == 1 and len(capture.calls) == captures_before_cached_read
 
 
 def test_loop_stops_at_iteration_bound_when_gaps_stay_open(tmp_path) -> None:
@@ -592,7 +593,9 @@ def test_lead_without_capture_never_becomes_a_source(tmp_path) -> None:
     assert not (tmp_path / "03-fanout/objectives.json").exists()
     assert not (tmp_path / "03-fanout/sources").exists()
     leads = json.loads((tmp_path / "03-fanout/surface-map/leads.json").read_text())
-    assert {lead["url"] for lead in leads["leads"]} == {blocked, missing}
+    lead_urls = {lead["url"] for lead in leads["leads"]}
+    assert {blocked, missing} <= lead_urls
+    assert "https://libraries.example.test/" in lead_urls
     assert all(lead["lead_only"] for lead in leads["leads"])
     assert {c["status"] for c in leads["candidates"]} == {"capture_failed"}
     outcomes = {a["provider"]: a["outcome"] for a in loop.attempts}
@@ -842,6 +845,8 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path) -> N
     # A human approves the secondary cross-check; the high-stakes gap closes on a
     # reopened round without any new provider call or capture.
     directory = tmp_path / "03-fanout/sources" / by_url[secondary]["source_id"]
+    candidate_path = directory / "candidate.json"
+    relative = candidate_path.relative_to(tmp_path).as_posix()
     (directory / "APPROVED").write_text(
         json.dumps(
             {
@@ -849,6 +854,10 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path) -> N
                 "date": "2026-09-26",
                 "checkpoint": "source",
                 "source_fingerprint": by_url[secondary]["source_fingerprint"],
+                "identity_source": "local",
+                "artifact_sha256": {
+                    relative: hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+                },
             }
         )
     )
@@ -861,6 +870,35 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path) -> N
     again.discover_sources(tmp_path, ontology, decision)
     assert again.result.stop_reason == "checks_passed"
     assert provider.calls == calls and capture.calls == []
+
+    denied = by_url[unknown]
+    denied_directory = tmp_path / "03-fanout/sources" / denied["source_id"]
+    denied_candidate = denied_directory / "candidate.json"
+    denied_bytes = denied_candidate.read_bytes()
+    denied_pending = denied_directory / "APPROVAL_PENDING.md"
+    pending_bytes = denied_pending.read_bytes()
+    denied_relative = denied_candidate.relative_to(tmp_path).as_posix()
+    (denied_directory / "APPROVED").write_text(
+        json.dumps(
+            {
+                "approver": "Reviewer",
+                "date": "2026-09-27",
+                "checkpoint": "source",
+                "source_fingerprint": denied["source_fingerprint"],
+                "identity_source": "local",
+                "artifact_sha256": {denied_relative: hashlib.sha256(denied_bytes).hexdigest()},
+                "decision": "deny",
+                "reason": "Synthetic source rejection",
+            }
+        )
+    )
+    denied_resume, denied_capture = _loop(tmp_path, [provider], pages, backend="vultr")
+    denied_result = denied_resume.discover_sources(tmp_path, ontology, decision)
+    assert unknown not in {item["source_url"] for item in denied_result["objectives"]}
+    assert primary in {item["source_url"] for item in denied_result["objectives"]}
+    assert denied_capture.calls == []
+    assert denied_candidate.read_bytes() == denied_bytes
+    assert denied_pending.read_bytes() == pending_bytes
 
 
 def test_high_stakes_and_tier_helpers_are_generic() -> None:
@@ -913,7 +951,8 @@ def test_workflow_publishes_loop_and_outer_reopen_skips_known_sources(tmp_path) 
         fetch=_fetch,
     )
     assert code == 3
-    assert capture.calls == [url]  # the reopened round never re-captures a known source
+    assert capture.calls.count(url) == 1  # the reopen never recaptures a known source
+    assert len(capture.calls) == len(set(capture.calls))  # policy roots are tried only once
     scratch, lake = _scratch_case(case, run_id)
     trace = [
         json.loads(line)
@@ -996,7 +1035,6 @@ def test_recorded_run_case_confirms_lead_without_starting_live_spider(
 
     def capture_lead(lead_url: str, **kwargs: object) -> dict:
         capture_calls.append(lead_url)
-        assert lead_url == url
         lake = kwargs["lake"]
         return FakeCapture(lake, {url: PAGE.format(title="Branches")})(lead_url, **kwargs)
 
@@ -1025,7 +1063,7 @@ def test_recorded_run_case_confirms_lead_without_starting_live_spider(
 
     scratch, _ = workflow._scratch_case(case, run_id)
     assert result == 3  # recorded previews cannot clear human checkpoints
-    assert capture_calls == [url]  # the lead was confirmed in the sandbox double
+    assert capture_calls.count(url) == 1  # the lead was confirmed in the sandbox double
     assert (scratch / "03-fanout/objectives.json").is_file()
     assert not list((scratch / "03-fanout/surface-map").glob("*/site-graph.json"))
     assert captured["spider_capture"] is None

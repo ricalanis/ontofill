@@ -11,6 +11,7 @@ from ontofill.lake import FileLake
 from ontofill.phase_loop import LoopBudget
 from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop
 from ontofill.phases.p3_fanout.leads import Lead, LeadContext, LeadProvider
+from ontofill.sandbox import CaptureBlocked
 from ontofill.workflow import NEEDS_HUMAN_EXIT, run_case
 from tests.genericity.fixtures.libraries import library_decisions
 
@@ -24,7 +25,7 @@ class EmptyRecordedProvider(LeadProvider):
         return []
 
 
-def test_recorded_p3_no_sources_pauses_with_bounded_reason_and_trace(
+def test_recorded_p3_empty_search_tries_policy_roots_then_pauses_with_trace(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     original = tmp_path / "case"
@@ -44,12 +45,15 @@ def test_recorded_p3_no_sources_pauses_with_bounded_reason_and_trace(
     monkeypatch.setattr("ontofill.workflow._scratch_case", scratch_case)
     decision = library_decisions()
 
-    def forbidden_capture(*_args, **_kwargs) -> dict:
-        raise AssertionError("an empty provider must not dispatch a browser capture")
+    captured_roots: list[str] = []
+
+    def blocked_capture(url: str, **_kwargs) -> dict:
+        captured_roots.append(url)
+        raise CaptureBlocked("synthetic publisher root is unreachable", [])
 
     discovery = DiscoveryLoop(
         [EmptyRecordedProvider()],
-        capture=forbidden_capture,
+        capture=blocked_capture,
         lake=lake,
         run_id=run_id,
         provenance=generated_by(decision),
@@ -71,7 +75,10 @@ def test_recorded_p3_no_sources_pauses_with_bounded_reason_and_trace(
     status = json.loads(lake.read_key(status_key))
     assert status["state"] == "paused"
     assert status["phase"] == 3 and status["checkpoint_pending"] is None
-    assert status["reason"].startswith("no authoritative source found for ")
+    assert status["reason"].startswith("sources unreachable (")
+    assert "no authoritative source found for " in status["reason"]
+    assert captured_roots
+    assert all(url.startswith("https://") and url.endswith("/") for url in captured_roots)
     assert "queries:" in status["reason"]
     assert "objections:" in status["reason"]
     assert "iterations: 2" in status["reason"]

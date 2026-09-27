@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import uuid
@@ -42,7 +43,11 @@ from ontofill.phases.p3_fanout.authority import (
     source_display_identity,
     source_fingerprint,
 )
-from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, NoConfirmedSources
+from ontofill.phases.p3_fanout.discovery_loop import (
+    DiscoveryLoop,
+    NoConfirmedSources,
+    p3_iteration_limit,
+)
 from ontofill.phases.p3_fanout.leads import default_lead_providers
 from ontofill.phases.p3_fanout.phase import discover_objectives
 from ontofill.phases.p3_fanout.search import (
@@ -725,6 +730,20 @@ def _failure_status_reason(error: Exception) -> str:
     return (reason or type(error).__name__)[:1200]
 
 
+def _remaining_budget_usd(decision: object, total_budget: float | None) -> float | None:
+    """Subtract priced calls already made in earlier phases before P3 plans rounds."""
+    if total_budget is None:
+        return None
+    spent = 0.0
+    for call in getattr(decision, "call_log", []):
+        usage = call.get("usage") if isinstance(call, Mapping) else None
+        cost = usage.get("est_usd") if isinstance(usage, Mapping) else None
+        if not isinstance(cost, (int, float)) or not math.isfinite(float(cost)) or cost < 0:
+            return 0.0
+        spent += float(cost)
+    return max(0.0, total_budget - spent)
+
+
 def run_case(
     case_dir: Path,
     *,
@@ -997,7 +1016,13 @@ def run_case(
                     lake=lake,
                     run_id=run_id,
                     provenance=provenance,
-                    budget=LoopBudget(max_iterations=3, max_usd=budget_usd, wall_seconds=900),
+                    budget=LoopBudget(
+                        max_iterations=p3_iteration_limit(
+                            remaining_usd=_remaining_budget_usd(decision, budget_usd)
+                        ),
+                        max_usd=_remaining_budget_usd(decision, budget_usd),
+                        wall_seconds=900,
+                    ),
                     spider_capture=(capture or capture_url) if not mock else None,
                 )
             decision_start = len(getattr(decision, "call_log", []))
@@ -1425,11 +1450,25 @@ def run_case(
             step["evaluated"] = {
                 "status": "needs_human",
                 "reason": exc.reason,
+                **(
+                    {"checkpoint_pending": exc.checkpoint_pending} if exc.checkpoint_pending else {}
+                ),
                 **exc.summary,
             }
             _publish_steps(feed, [step])
             trace.append(step)
-            feed.update_status(state="paused", phase=3, reason=exc.status_reason)
+            feed.update_status(
+                state="paused",
+                phase=3,
+                checkpoint_pending=exc.checkpoint_pending,
+                reason=exc.status_reason,
+            )
+            if exc.checkpoint_pending and exc.review_source_ids:
+                _report_pause(
+                    exc.checkpoint_pending,
+                    case_dir / "03-fanout/sources" / exc.review_source_ids[0],
+                    mock,
+                )
             print(f"state=paused phase=3 reason={exc.status_reason} needs_human=true")
             return NEEDS_HUMAN_EXIT
         except Exception as exc:
