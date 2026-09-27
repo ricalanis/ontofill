@@ -26,16 +26,20 @@ from ontofill.sandbox.capture import CaptureError, DockerTimeout, _docker
 from ontofill.sandbox.jobs import validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
-ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"]
+ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "jsonl", "pdf", "zip", "auto"]
 ParseMode = Literal["full", "preview"]
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_SUPPORTED_FORMATS = frozenset({"csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"})
+_SUPPORTED_FORMATS = frozenset(
+    {"csv", "xls", "xlsx", "xlsm", "html", "json", "jsonl", "pdf", "zip", "auto"}
+)
 _MAX_NON_PDF_INPUT_BYTES = 8 * 1024 * 1024
 _MAX_PDF_INPUT_BYTES = 32 * 1024 * 1024
 _MAX_INPUT_BYTES = _MAX_PDF_INPUT_BYTES
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_ROWS = 10_000
 _MAX_DOCUMENT_ITEMS = 100_000
+_MAX_JSON_RECORD_ITEMS = 1_000_000
+_MAX_JSON_RECORD_OUTPUT_BYTES = 4 * 1024 * 1024
 _POD_DIRECTORY = Path(__file__).resolve().parents[3] / "sandbox/parse-pod"
 _IMAGE_LOCK = threading.Lock()
 _SAFE_XLS_EXCEPTION_TYPES = frozenset(
@@ -82,6 +86,7 @@ class ParseResult:
     challenge_detected: bool = False
     profile: dict[str, Any] = field(default_factory=dict)
     preview: dict[str, Any] | None = None
+    records: tuple[dict[str, Any], ...] = ()
 
     def as_parsed_file(self) -> Any:
         """Rebuild the safe parsed-file value object without reopening bronze bytes."""
@@ -737,6 +742,50 @@ def parse_bronze_json(
     )
 
 
+def _valid_json_records(value: object, *, kind: str, max_rows: int) -> bool:
+    if not isinstance(value, list) or len(value) > max_rows:
+        return False
+    item_count = 0
+    for expected_row, record in enumerate(value, start=1):
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"row_number", "path", "value"}
+            or type(record.get("row_number")) is not int
+            or record["row_number"] != expected_row
+            or not isinstance(record.get("path"), str)
+            or len(record["path"]) > 4096
+            or not isinstance(record.get("value"), dict)
+            or (kind == "jsonl" and record["path"] != f"$line/{expected_row}")
+            or (kind == "json" and record["path"] and not record["path"].startswith("/"))
+        ):
+            return False
+        pending = [(record["value"], 0)]
+        while pending:
+            item, depth = pending.pop()
+            item_count += 1
+            if item_count > _MAX_JSON_RECORD_ITEMS or depth > 64:
+                return False
+            if isinstance(item, dict):
+                if any(not isinstance(key, str) or len(key) > 100_000 for key in item):
+                    return False
+                pending.extend((child, depth + 1) for child in item.values())
+            elif isinstance(item, list):
+                pending.extend((child, depth + 1) for child in item)
+            elif isinstance(item, str):
+                if len(item) > 2_000_000:
+                    return False
+            elif isinstance(item, float):
+                if not math.isfinite(item):
+                    return False
+            elif item is not None and not isinstance(item, (int, bool)):
+                return False
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+    return len(encoded.encode("utf-8")) <= _MAX_JSON_RECORD_OUTPUT_BYTES
+
+
 def _result(
     execution: ParseExecution,
     *,
@@ -762,21 +811,45 @@ def _result(
     detected_kind = output.get("kind", kind)
     result_format = format
     if format == "auto":
-        if detected_kind not in {"csv", "xls", "xlsx", "xlsm", "json", "pdf", "zip"}:
+        if detected_kind not in {
+            "csv",
+            "xls",
+            "xlsx",
+            "xlsm",
+            "json",
+            "jsonl",
+            "pdf",
+            "zip",
+        }:
             task_ok = False
             reason = "parse_pod_returned_invalid_detected_format"
         else:
             result_format = detected_kind
     rows = output.get("rows", []) if task_ok else []
+    records = output.get("records", []) if task_ok else []
     text = output.get("text", "") if task_ok else ""
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         rows = []
         task_ok = False
         reason = "parse_pod_returned_invalid_rows"
-    elif len(rows) > max_rows + (1 if detected_kind == "json" else 0):
+    elif len(rows) > max_rows + (1 if detected_kind in {"json", "jsonl"} else 0):
         rows = []
         task_ok = False
         reason = "parse_pod_returned_too_many_rows"
+    if task_ok and mode == "full":
+        if detected_kind in {"json", "jsonl"}:
+            if not _valid_json_records(records, kind=detected_kind, max_rows=max_rows):
+                records = []
+                task_ok = False
+                reason = "parse_pod_returned_invalid_json_records"
+        elif records:
+            records = []
+            task_ok = False
+            reason = "parse_pod_returned_unrequested_json_records"
+    elif not isinstance(records, list) or records:
+        records = []
+        task_ok = False
+        reason = "parse_pod_returned_unrequested_json_records"
     if not isinstance(text, str):
         text = ""
         task_ok = False
@@ -802,7 +875,7 @@ def _result(
             or skeleton_hash is not None
             or challenge_detected is not False
             or profile
-            or detected_kind not in {"csv", "xls"}
+            or detected_kind not in {"csv", "xls", "json", "jsonl"}
             or not _valid_preview(preview, expected_format=detected_kind)
         ):
             task_ok = False
@@ -854,6 +927,7 @@ def _result(
         truncated = False
     if not task_ok:
         rows = []
+        records = []
         text = ""
         page_text = ""
         links = []
@@ -877,6 +951,7 @@ def _result(
         challenge_detected=challenge_detected if task_ok else False,
         profile=profile if task_ok else {},
         preview=preview if task_ok and mode == "preview" else None,
+        records=tuple(records),
     )
     request = {
         "tool": "file.parse",
@@ -910,6 +985,18 @@ def _result(
             "format": result_format,
             **({"requested_format": "auto"} if format == "auto" else {}),
             "row_count": len(result.rows),
+            **(
+                {
+                    "source_record_count": len(result.records)
+                    if mode == "full"
+                    else sum(
+                        item["source_row_count"]
+                        for item in (preview.get("sheets", []) if isinstance(preview, dict) else [])
+                    )
+                }
+                if detected_kind in {"json", "jsonl"}
+                else {}
+            ),
             "truncated": result.truncated,
             "text_chars": len(result.text),
             "page_text_chars": len(result.page_text),
@@ -942,6 +1029,7 @@ def _result(
         challenge_detected=result.challenge_detected,
         profile=result.profile,
         preview=result.preview,
+        records=result.records,
     )
 
 
@@ -1015,6 +1103,7 @@ def _valid_preview(value: object, *, expected_format: str) -> bool:
         return False
     if expected_format == "xls" and not sheets:
         return False
+    record_format = expected_format in {"json", "jsonl"}
     total_source_rows = 0
     sampled_cells = 0
     for sheet in sheets:
@@ -1034,7 +1123,7 @@ def _valid_preview(value: object, *, expected_format: str) -> bool:
         header_row = sheet.get("header_row_number")
         if (
             (name is not None and (not isinstance(name, str) or len(name) > 128))
-            or (expected_format == "csv" and name is not None)
+            or (expected_format in {"csv", "json", "jsonl"} and name is not None)
             or (expected_format == "xls" and not name)
             or not isinstance(headers, list)
             or len(headers) > 16_384
@@ -1046,24 +1135,35 @@ def _valid_preview(value: object, *, expected_format: str) -> bool:
             or not 0 <= source_rows <= 1_000_000
             or (
                 header_row is not None
-                and (type(header_row) is not int or not 1 <= header_row <= source_rows)
+                and (
+                    type(header_row) is not int
+                    or (record_format and (source_rows == 0 or header_row != 0))
+                    or (not record_format and not 1 <= header_row <= source_rows)
+                )
             )
             or type(sheet.get("sample_truncated")) is not bool
             or not isinstance(samples, list)
             or len(samples) > 5
             or (header_row is None and (headers or samples or sheet["sample_truncated"]))
-            or (header_row is not None and not headers)
+            or (header_row is not None and not headers and not record_format)
         ):
             return False
         total_source_rows += source_rows
         if total_source_rows > 1_000_000:
             return False
-        expected_sample_count = min(5, source_rows - header_row) if header_row is not None else 0
+        if record_format:
+            expected_sample_count = min(5, source_rows)
+            expected_sample_truncated = source_rows > expected_sample_count
+        else:
+            expected_sample_count = (
+                min(5, source_rows - header_row) if header_row is not None else 0
+            )
+            expected_sample_truncated = header_row is not None and source_rows - header_row > 5
         if len(samples) != expected_sample_count or sheet["sample_truncated"] != (
-            header_row is not None and source_rows - header_row > 5
+            expected_sample_truncated
         ):
             return False
-        previous_row = header_row or 0
+        previous_row = 0 if record_format else header_row or 0
         sampled_cells += len(headers)
         for sample in samples:
             if not isinstance(sample, dict) or set(sample) != {"row_number", "values"}:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -15,6 +16,7 @@ import socket
 import sys
 import time
 import zipfile
+import zlib
 from collections.abc import Mapping
 from datetime import date, datetime
 from datetime import time as datetime_time
@@ -35,6 +37,9 @@ MAX_PREVIEW_ROWS = 1_000_000
 MAX_PREVIEW_SAMPLE_ROWS = 5
 MAX_PREVIEW_HEADER_SCAN_ROWS = 10
 MAX_DOCUMENT_ITEMS = 100_000
+MAX_JSON_RECORD_ITEMS = 1_000_000
+MAX_JSONL_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_JSONL_LINE_BYTES = 2 * 1024 * 1024
 MAX_JSON_DEPTH = 64
 MAX_PAGE_TEXT_CHARS = 200_000
 MAX_FORMS = 40
@@ -94,13 +99,13 @@ def _json_no_constants(value: str) -> None:
     raise ParseFailure("invalid_json_constant")
 
 
-def _bounded_document(document: Any) -> None:
+def _bounded_document(document: Any, *, max_items: int = MAX_DOCUMENT_ITEMS) -> int:
     stack = [(document, 0)]
     count = 0
     while stack:
         value, depth = stack.pop()
         count += 1
-        if count > MAX_DOCUMENT_ITEMS:
+        if count > max_items:
             raise ParseFailure("document_item_limit")
         if depth > MAX_JSON_DEPTH:
             raise ParseFailure("document_depth_limit")
@@ -108,6 +113,191 @@ def _bounded_document(document: Any) -> None:
             stack.extend((child, depth + 1) for child in value.values())
         elif isinstance(value, list):
             stack.extend((child, depth + 1) for child in value)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ParseFailure("invalid_json_number")
+    return count
+
+
+def _json_pointer(parts: tuple[str | int, ...]) -> str:
+    return "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in parts)
+
+
+def _select_json_records(document: Any) -> tuple[list[dict[str, Any]], str]:
+    """Select a generic largest array of objects, or the root object as one record."""
+    candidates: list[tuple[int, int, str, list[dict[str, Any]]]] = []
+    pending = [(document, (), 0)]
+    while pending:
+        value, path, depth = pending.pop()
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                pending.append((child, (*path, str(key)), depth + 1))
+        elif isinstance(value, list):
+            if value and all(isinstance(item, dict) for item in value):
+                candidates.append((len(value), depth, _json_pointer(path), value))
+            for index, child in enumerate(value):
+                if isinstance(child, (Mapping, list)):
+                    pending.append((child, (*path, index), depth + 1))
+    if candidates:
+        # Prefer cardinality, then the shallowest location, then a stable path.
+        _count, _depth, path, records = min(
+            candidates, key=lambda item: (-item[0], item[1], item[2])
+        )
+        return records, path
+    if isinstance(document, dict):
+        return [document], ""
+    raise ParseFailure("json_record_collection_not_found")
+
+
+def _flatten_json_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+
+    def visit(value: Any, prefix: str) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                visit(child, path)
+        elif isinstance(value, list):
+            fields[prefix] = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        elif prefix:
+            fields[prefix] = _json_cell(value)
+
+    visit(record, "")
+    return fields
+
+
+def _record_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened = [_flatten_json_record(record["value"]) for record in records]
+    headers = list(dict.fromkeys(key for row in flattened for key in row))
+    return [_row(None, 1, headers)] + [
+        _row(None, index + 2, [row.get(header) for header in headers])
+        for index, row in enumerate(flattened)
+    ]
+
+
+def _decode_json_records(
+    data: bytes, *, max_rows: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        document = json.loads(data.decode("utf-8-sig"), parse_constant=_json_no_constants)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ParseFailure("invalid_json") from None
+    _bounded_document(document, max_items=MAX_JSON_RECORD_ITEMS)
+    source_records, path = _select_json_records(document)
+    if len(source_records) > max_rows:
+        raise ParseFailure("max_rows_exceeded")
+    records = [
+        {"row_number": index, "path": f"{path}/{index - 1}" if path else "", "value": value}
+        for index, value in enumerate(source_records, start=1)
+    ]
+    return _record_rows(records), records
+
+
+def _iter_jsonl_records(data: bytes):
+    source: Any = io.BytesIO(data)
+    compressed = data.startswith(b"\x1f\x8b")
+    if compressed:
+        try:
+            source = gzip.GzipFile(fileobj=source, mode="rb")
+        except (OSError, EOFError):
+            raise ParseFailure("invalid_jsonl_gzip") from None
+    total_bytes = 0
+    record_number = 0
+    total_items = 0
+    while True:
+        try:
+            line = source.readline(MAX_JSONL_LINE_BYTES + 1)
+        except (OSError, EOFError, gzip.BadGzipFile, zlib.error):
+            raise ParseFailure("invalid_jsonl_gzip") from None
+        if not line:
+            break
+        total_bytes += len(line)
+        if total_bytes > MAX_JSONL_DECOMPRESSED_BYTES:
+            raise ParseFailure("jsonl_decompressed_limit_exceeded")
+        if len(line) > MAX_JSONL_LINE_BYTES:
+            raise ParseFailure("jsonl_record_limit_exceeded")
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line.decode("utf-8"), parse_constant=_json_no_constants)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ParseFailure("invalid_jsonl_record") from None
+        if not isinstance(value, dict):
+            raise ParseFailure("jsonl_record_must_be_object")
+        total_items += _bounded_document(value)
+        if total_items > MAX_JSON_RECORD_ITEMS:
+            raise ParseFailure("document_item_limit")
+        record_number += 1
+        yield {
+            "row_number": record_number,
+            "path": f"$line/{record_number}",
+            "value": value,
+        }
+    if compressed:
+        source.close()
+
+
+def _decode_jsonl_records(
+    data: bytes, *, max_rows: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    records = []
+    for record in _iter_jsonl_records(data):
+        records.append(record)
+        if len(records) > max_rows:
+            raise ParseFailure("max_rows_exceeded")
+    return _record_rows(records), records
+
+
+def _preview_from_records(
+    kind: str, records: list[dict[str, Any]], source_row_count: int
+) -> dict[str, Any]:
+    samples = records[:MAX_PREVIEW_SAMPLE_ROWS]
+    flattened = [_flatten_json_record(record["value"]) for record in samples]
+    headers = list(dict.fromkeys(key for row in flattened for key in row))
+    if len(headers) > 16_384:
+        raise ParseFailure("preview_header_limit_exceeded")
+    sample_rows = []
+    for record, row in zip(samples, flattened, strict=True):
+        values = [row.get(header) for header in headers]
+        if any(isinstance(value, str) and len(value) > 100_000 for value in values):
+            raise ParseFailure("preview_sample_value_limit_exceeded")
+        sample_rows.append({"row_number": record["row_number"], "values": values})
+    sheet = {
+        "sheet": None,
+        "headers": headers,
+        "sample_rows": sample_rows,
+        "source_row_count": source_row_count,
+        "header_row_number": 0 if source_row_count else None,
+        "sample_truncated": source_row_count > len(sample_rows),
+    }
+    return {"format": kind, "sheets": [sheet]}
+
+
+def _preview_json(data: bytes) -> dict[str, Any]:
+    try:
+        document = json.loads(data.decode("utf-8-sig"), parse_constant=_json_no_constants)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ParseFailure("invalid_json") from None
+    _bounded_document(document, max_items=MAX_JSON_RECORD_ITEMS)
+    records, path = _select_json_records(document)
+    wrappers = [
+        {"row_number": index, "path": f"{path}/{index - 1}" if path else "", "value": value}
+        for index, value in enumerate(records[:MAX_PREVIEW_SAMPLE_ROWS], start=1)
+    ]
+    if len(records) > MAX_PREVIEW_ROWS:
+        raise ParseFailure("preview_row_limit_exceeded")
+    return _preview_from_records("json", wrappers, len(records))
+
+
+def _preview_jsonl(data: bytes) -> dict[str, Any]:
+    sample = []
+    count = 0
+    for record in _iter_jsonl_records(data):
+        count += 1
+        if count > MAX_PREVIEW_ROWS:
+            raise ParseFailure("preview_row_limit_exceeded")
+        if len(sample) < MAX_PREVIEW_SAMPLE_ROWS:
+            sample.append(record)
+    return _preview_from_records("jsonl", sample, count)
 
 
 def _flatten_json_records(value: Any, *, max_rows: int) -> list[dict[str, Any]]:
@@ -440,6 +630,10 @@ def _preview(data: bytes, kind: str) -> dict[str, Any]:
         return _preview_csv(data)
     if kind == "xls":
         return _preview_xls(data)
+    if kind == "json":
+        return _preview_json(data)
+    if kind == "jsonl":
+        return _preview_jsonl(data)
     raise ParseFailure("preview_unsupported_format")
 
 
@@ -732,6 +926,8 @@ def _detect_document_format(data: bytes) -> str:
         except Exception:  # noqa: BLE001 - malformed OLE input must be rejected by the pod
             raise ParseFailure("unknown_document_format") from None
         return "xls"
+    if prefix.startswith(b"\x1f\x8b"):
+        return "jsonl"
     if prefix.startswith(b"PK\x03\x04"):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -745,6 +941,14 @@ def _detect_document_format(data: bytes) -> str:
         text = prefix.decode("utf-8-sig").strip()
     except UnicodeDecodeError:
         raise ParseFailure("unknown_document_format") from None
+    if text.startswith("{") and "\n" in text:
+        lines = [line for line in text.splitlines() if line.strip()][:2]
+        if len(lines) == 2:
+            try:
+                if all(isinstance(json.loads(line), dict) for line in lines):
+                    return "jsonl"
+            except json.JSONDecodeError:
+                pass
     if text.startswith(("{", "[")):
         return "json"
     if "\n" in text:
@@ -931,6 +1135,7 @@ def run(input_path: Path, output_path: Path) -> None:
     started = time.monotonic()
     proof: dict[str, Any] = {}
     rows: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     text = ""
     page_text = ""
     links: list[dict[str, str]] = []
@@ -987,8 +1192,14 @@ def run(input_path: Path, output_path: Path) -> None:
             raise ParseFailure("input_too_large")
         if kind == "auto":
             kind = _detect_document_format(payload)
+        if kind != "pdf" and len(payload) > MAX_NON_PDF_INPUT_BYTES:
+            raise ParseFailure("input_too_large")
         if mode == "preview":
             preview = _preview(payload, kind)
+        elif kind == "json":
+            rows, records = _decode_json_records(payload, max_rows=max_rows)
+        elif kind == "jsonl":
+            rows, records = _decode_jsonl_records(payload, max_rows=max_rows)
         else:
             rows, text, page_text, links, skeleton_hash, challenge_detected = _parse(
                 payload, kind, max_rows, base_url
@@ -996,7 +1207,8 @@ def run(input_path: Path, output_path: Path) -> None:
             if kind == "html":
                 forms = _parse_forms(payload)
                 table_headers = _parse_table_headers(payload)
-            profile = _safe_profile(payload, kind, envelope)
+            if kind not in {"json", "jsonl"}:
+                profile = _safe_profile(payload, kind, envelope)
             if kind == "zip" and not profile.get("table_count"):
                 raise ParseFailure("zip_no_supported_tables")
     except ParseFailure as exc:
@@ -1016,6 +1228,7 @@ def run(input_path: Path, output_path: Path) -> None:
         "ok": error is None,
         "kind": kind,
         "rows": rows if error is None else [],
+        "records": records if error is None else [],
         "text": text if error is None else "",
         "page_text": page_text if error is None else "",
         "links": links if error is None else [],
@@ -1041,6 +1254,7 @@ def run(input_path: Path, output_path: Path) -> None:
             {
                 "ok": False,
                 "rows": [],
+                "records": [],
                 "text": "",
                 "page_text": "",
                 "links": [],

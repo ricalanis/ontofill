@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -1064,6 +1065,208 @@ def test_large_csv_preview_counts_all_source_rows_and_returns_only_five_samples(
     }
     assert len(result.trace) == 6
     assert result.job_record["checkpoints"]["task"]["ok"] is True
+
+
+def _gzip_jsonl(records: list[dict]) -> bytes:
+    output = io.BytesIO()
+    with gzip.GzipFile(fileobj=output, mode="wb") as compressed:
+        for record in records:
+            compressed.write(json.dumps(record, separators=(",", ":")).encode() + b"\n")
+    return output.getvalue()
+
+
+def test_full_jsonl_gzip_returns_nested_records_with_lineage(monkeypatch, tmp_path: Path) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    source_records = [
+        {
+            "ocid": "ocds-synthetic-01",
+            "parties": [{"id": "SUP-1", "name": "Example Supplier"}],
+            "awards": [{"id": "AWD-1", "suppliers": [{"id": "SUP-1"}]}],
+        },
+        {
+            "ocid": "ocds-synthetic-02",
+            "parties": [{"id": "SUP-2", "name": "Second Supplier"}],
+            "awards": [{"id": "AWD-2", "suppliers": [{"id": "SUP-2"}]}],
+        },
+    ]
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(_gzip_jsonl(source_records), {"content_type": "application/gzip"})
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="auto",
+        max_rows=10,
+        executor=RunnerBackedExecutor(_PARSER, tmp_path),
+    )
+
+    assert result.format == "jsonl"
+    assert [record["row_number"] for record in result.records] == [1, 2]
+    assert [record["path"] for record in result.records] == ["$line/1", "$line/2"]
+    assert [record["value"] for record in result.records] == source_records
+    assert result.records[0]["value"]["awards"][0]["suppliers"][0]["id"] == "SUP-1"
+    assert result.job_record["checkpoints"]["task"]["result"]["source_record_count"] == 2
+
+
+def test_jsonl_preview_counts_all_records_and_returns_only_five_samples(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    source_records = [
+        {"record_id": f"SYN-{number:02d}", "nested": {"value": number}} for number in range(9)
+    ]
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(_gzip_jsonl(source_records))
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="auto",
+        mode="preview",
+        max_rows=10,
+        executor=RunnerBackedExecutor(_PARSER, tmp_path),
+    )
+
+    assert result.format == "jsonl"
+    assert result.rows == ()
+    assert result.records == ()
+    assert result.preview == {
+        "format": "jsonl",
+        "sheets": [
+            {
+                "sheet": None,
+                "headers": ["record_id", "nested.value"],
+                "sample_rows": [
+                    {
+                        "row_number": number + 1,
+                        "values": [f"SYN-{number:02d}", number],
+                    }
+                    for number in range(5)
+                ],
+                "source_row_count": 9,
+                "header_row_number": 0,
+                "sample_truncated": True,
+            }
+        ],
+    }
+    assert result.job_record["checkpoints"]["task"]["result"]["source_record_count"] == 9
+
+
+def test_jsonl_row_limit_and_decompression_limit_fail_without_partial_records(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(_gzip_jsonl([{"id": 1}, {"id": 2}]))
+
+    with pytest.raises(SandboxParseError, match="max_rows_exceeded") as row_failure:
+        parse_bronze(
+            lake,
+            key,
+            format="jsonl",
+            max_rows=1,
+            executor=RunnerBackedExecutor(_PARSER, tmp_path),
+        )
+    assert row_failure.value.job_record["checkpoints"]["task"]["result"]["row_count"] == 0
+
+    monkeypatch.setattr(_PARSER, "MAX_JSONL_DECOMPRESSED_BYTES", 10)
+    key = lake.put_bytes(_gzip_jsonl([{"id": 1}, {"id": 2}]))
+    with pytest.raises(
+        SandboxParseError, match="jsonl_decompressed_limit_exceeded"
+    ) as size_failure:
+        parse_bronze(
+            lake,
+            key,
+            format="jsonl",
+            max_rows=10,
+            executor=RunnerBackedExecutor(_PARSER, tmp_path),
+        )
+    result = size_failure.value.job_record["checkpoints"]["task"]["result"]
+    assert result["row_count"] == 0
+    assert result["source_record_count"] == 0
+
+
+def test_full_jsonl_enforces_non_pdf_compressed_input_limit(monkeypatch, tmp_path: Path) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    monkeypatch.setattr(_PARSER, "MAX_NON_PDF_INPUT_BYTES", 10)
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b'{"record":"long enough"}\n')
+
+    with pytest.raises(SandboxParseError, match="input_too_large") as raised:
+        parse_bronze(
+            lake,
+            key,
+            format="jsonl",
+            max_rows=10,
+            executor=RunnerBackedExecutor(_PARSER, tmp_path),
+        )
+
+    result = raised.value.job_record["checkpoints"]["task"]["result"]
+    assert result["reason"] == "input_too_large"
+    assert result["row_count"] == 0
+    assert result["source_record_count"] == 0
+
+
+def test_json_full_mode_preserves_nested_records_and_pointer_lineage(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    document = {
+        "releaseCollection": {
+            "releases": [
+                {"ocid": "ocds-synthetic-01", "parties": [{"id": "SUP-1"}]},
+                {"ocid": "ocds-synthetic-02", "parties": [{"id": "SUP-2"}]},
+            ]
+        }
+    }
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(json.dumps(document).encode())
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="json",
+        max_rows=10,
+        executor=RunnerBackedExecutor(_PARSER, tmp_path),
+    )
+
+    assert [record["path"] for record in result.records] == [
+        "/releaseCollection/releases/0",
+        "/releaseCollection/releases/1",
+    ]
+    assert [record["value"] for record in result.records] == document["releaseCollection"][
+        "releases"
+    ]
 
 
 def test_large_xls_preview_uses_sheet_metadata_and_bounded_samples(
