@@ -129,45 +129,47 @@ def test_nested_spanish_open_data_page_is_explored_one_level_only(tmp_path) -> N
     assert child in {objective["source_url"] for objective in result["objectives"]}
 
 
-def test_primary_entity_searches_expand_spanish_list_terms_with_property() -> None:
-    ontology = {
-        "primary_class": "person",
+def _entity_anchor_ontology() -> dict:
+    return {
+        "primary_class": "record",
         "classes": [
             {
-                "id": "person",
-                "label": "Contribuyente",
-                "label_plural": "Contribuyentes",
+                "id": "record",
+                "label": "Record",
+                "label_plural": "Records",
                 "identifier_property": "record_id",
-                "title_property": "name",
-            }
+                "title_property": "display_name",
+            },
+            {
+                "id": "program",
+                "label": "Program",
+                "label_plural": "Programs",
+                "identifier_property": "program_id",
+                "title_property": "program_name",
+            },
         ],
         "properties": [
-            {"id": "record_id", "label": "RFC", "domain": "person"},
-            {"id": "name", "label": "Nombre", "domain": "person"},
-            {"id": "status", "label": "Estatus fiscal", "domain": "person", "dod": True},
+            {"id": "record_id", "label": "Record identifier", "domain": "record"},
+            {"id": "display_name", "label": "Display name", "domain": "record"},
+            {"id": "status", "label": "Eligibility status", "domain": "record", "dod": True},
+            {"id": "program_id", "label": "Program identifier", "domain": "program"},
+            {"id": "program_name", "label": "Program name", "domain": "program"},
+        ],
+        "relations": [
+            {
+                "id": "record_program",
+                "label": "Enrolled in program",
+                "domain": "record",
+                "range": "program",
+            }
         ],
     }
-    brief = "Necesitamos una fuente pública para identificar cada registro en México."
-    loop = object.__new__(DiscoveryLoop)
-    tried: set[str] = set()
-    queries = []
-    for iteration in range(1, 4):
-        planned = loop._plan_queries(
-            RecordedDecisionClient({}),
-            brief,
-            ontology,
-            {"jurisdiction": "México", "trusted_publishers": []},
-            ["status"],
-            iteration,
-            tried,
-        )
-        query = next(item.text for item in planned if not item.text.startswith("site:"))
-        queries.append(query.casefold())
-        tried.add(query)
 
-    assert "listado de contribuyentes estatus fiscal rfc" in queries[0]
-    assert "relación de contribuyentes estatus fiscal rfc" in queries[1]
-    assert "datos abiertos estatus fiscal contribuyentes rfc" in queries[2]
+
+def test_primary_entity_query_uses_ontology_anchor_and_model_local_terms() -> None:
+    ontology = _entity_anchor_ontology()
+    brief = "Find a public source for each record."
+    loop = object.__new__(DiscoveryLoop)
 
     class QueryPlanner:
         backend = "vultr"
@@ -176,21 +178,128 @@ def test_primary_entity_searches_expand_spanish_list_terms_with_property() -> No
         def complete_json(self, purpose, prompt, schema):
             assert purpose == "phase3.plan_queries"
             self.prompt = prompt
-            return {"queries": [{"property_id": "status", "query": "official entity source"}]}
+            return {
+                "queries": [
+                    {
+                        "property_id": "status",
+                        "query": "localized roster open dataset API enrolled in program",
+                    }
+                ]
+            }
 
     planner = QueryPlanner()
     planned = loop._plan_queries(
         planner,
         brief,
         ontology,
-        {"jurisdiction": "México", "trusted_publishers": []},
+        {"jurisdiction": "Example region", "trusted_publishers": []},
         ["status"],
         1,
         set(),
     )
-    assert "listado de contribuyentes estatus fiscal rfc" in planned[0].text.casefold()
-    assert "relación de contribuyentes estatus fiscal rfc" in planner.prompt.casefold()
-    assert "datos abiertos estatus fiscal contribuyentes rfc" in planner.prompt.casefold()
+    query = planned[0].text.casefold()
+    for anchor in ("record", "record identifier", "eligibility status", "enrolled in program"):
+        assert anchor in query
+    assert "display name" in planner.prompt.casefold()
+    assert "local-language" in planner.prompt.casefold()
+    assert "entity-level rows" in planner.prompt.casefold()
+    assert "enrolled in program" in planner.prompt.casefold()
+
+    fallback_first = loop._plan_queries(
+        RecordedDecisionClient({}),
+        brief,
+        ontology,
+        {"jurisdiction": "Example region", "trusted_publishers": []},
+        ["status"],
+        1,
+        set(),
+    )
+    first_query = fallback_first[0].text.casefold()
+    assert "record" in first_query and "record identifier" in first_query
+    assert "eligibility status" in first_query
+    fallback_second = loop._plan_queries(
+        RecordedDecisionClient({}),
+        brief,
+        ontology,
+        {"jurisdiction": "Example region", "trusted_publishers": []},
+        ["status"],
+        2,
+        {fallback_first[0].text},
+    )
+    relation_query = fallback_second[0].text.casefold()
+    assert "enrolled in program" in relation_query and "program" in relation_query
+    assert "record identifier" in relation_query and "eligibility status" in relation_query
+
+
+def test_relation_rows_out_rank_property_only_aggregate_leads() -> None:
+    loop = object.__new__(DiscoveryLoop)
+    ontology = _entity_anchor_ontology()
+    relation_rows = {
+        "url": "https://data.example.test/records-programs",
+        "title": "Records enrolled in Programs",
+        "snippet": "Record identifier, display name, and program link for each row.",
+        "providers": ["tavily"],
+        "property_ids": ["status"],
+        "score": 0.2,
+    }
+    aggregate = {
+        "url": "https://data.example.test/status-summary",
+        "title": "Eligibility status totals",
+        "snippet": "Aggregate dashboard of status totals.",
+        "providers": ["tavily"],
+        "property_ids": ["status"],
+        "score": 1.0,
+    }
+
+    assert loop._rank_lead(relation_rows, POLICY, ontology) > loop._rank_lead(
+        aggregate, POLICY, ontology
+    )
+    lower_score = {**aggregate, "score": 0.0}
+    assert loop._rank_lead(aggregate, POLICY, ontology) > loop._rank_lead(
+        lower_score, POLICY, ontology
+    )
+
+
+def test_new_public_portal_is_handed_to_later_provider_in_same_round(tmp_path) -> None:
+    ontology = _library_case(tmp_path, POLICY)
+    portal = "https://data.example.test/open-data"
+
+    class PortalProvider(StaticProvider):
+        def leads(self, context):
+            self.calls += 1
+            self._attempt("portal discovery", "ok", 1)
+            return [
+                Lead(
+                    portal,
+                    "Open data catalog",
+                    "Public datasets and API",
+                    self.name,
+                    "portal discovery",
+                    ("name",),
+                )
+            ]
+
+    class CkanObserver(StaticProvider):
+        seen_portals: tuple[str, ...] = ()
+
+        def leads(self, context):
+            self.seen_portals = context.open_data_portals
+            self.calls += 1
+            self._attempt("catalog query", "empty", 0)
+            return []
+
+    producer = PortalProvider("model", {})
+    observer = CkanObserver("ckan", {})
+    loop, _ = _loop(
+        tmp_path,
+        [producer, observer],
+        {portal: PAGE.format(title="Open data catalog")},
+        budget=LoopBudget(max_iterations=1, wall_seconds=60),
+    )
+
+    loop.discover_sources(tmp_path, ontology, RecordedDecisionClient({}), gaps=("name",))
+
+    assert observer.seen_portals == (portal,)
 
 
 def test_blank_portal_is_inconclusive_and_capture_error_is_recorded(tmp_path) -> None:

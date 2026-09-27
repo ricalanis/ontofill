@@ -252,3 +252,10 @@ DONE: recorded P3 attribution checks and the full engine gate pass with no unown
 Make P3 pair primary-entity DoD properties with generic local-language list and open-data terms, and explore one bounded level below nested official data portals.
 
 DONE: `uv run pytest -q tests/test_r48_recall.py` proves ontology-derived property/identifier query patterns for Spanish list and open-data searches, including the model-planner path, and nested portal traversal stops after one link. Ruff lint/format and `git diff --check` pass for the owned files.
+# Current goal: R48 primary-entity discovery anchors
+
+For every primary-class gap, anchor first-round queries with the ontology class, identifier, and gap property; give title and touching-relation labels to the model for concise local-language list/open-data/API phrasing. The deterministic fallback tries a relation route on the next iteration. Prefer entity-row or relation datasets over property-only aggregates using lead text only, and pass newly discovered public data portals to later providers in the same round. Preserve authority and capture gates.
+
+DONE: The managed successor gate passed 45 focused/genericity tests: `uv run pytest -q tests/test_r48_recall.py tests/test_discovery_loop.py tests/test_discovery_providers.py tests/test_no_case_vocabulary.py && uv run ruff check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r48_recall.py && uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r48_recall.py && git diff --check`. Tests cover compact ontology anchors, early model/fallback relation routes, relation-vs-aggregate ranking, and same-round portal handoff.
+
+Constraints: only `discovery_loop.py`, `tests/test_r48_recall.py`, and task notes; no provider code, real case, approval, push, or deploy.

@@ -105,22 +105,6 @@ _PORTAL_LINK_CUES = (
     "records",
     "dataset",
 )
-_SPANISH_QUERY_MARKERS = frozenset(
-    {
-        "cada",
-        "con",
-        "del",
-        "desde",
-        "hasta",
-        "las",
-        "los",
-        "necesitamos",
-        "para",
-        "por",
-        "sobre",
-        "una",
-    }
-)
 _REDIRECT_PREVIEW_LIMITS = SandboxLimits(memory_mb=512, cpus=1, pids=64, timeout_s=30, max_steps=8)
 _GOVERNMENT_PSL_LABELS = frozenset({"gov", "gob", "govt", "government"})
 _OFFICIAL_PUBLISHER_MARKERS = (
@@ -410,32 +394,74 @@ def _tokens(text: str) -> set[str]:
     return {word for word in re.findall(r"[a-z0-9]{4,}", plain) if word not in _STOP}
 
 
-def _uses_spanish(text: str) -> bool:
-    """Detect Spanish brief/ontology wording for deterministic local query scaffolds."""
-    plain = unicodedata.normalize("NFKD", text.casefold())
-    plain = "".join(char for char in plain if not unicodedata.combining(char))
-    words = set(re.findall(r"[a-z]+", plain))
-    generic_search_phrases = {"datos abiertos", "listado de", "relacion de"}
-    return len(words & _SPANISH_QUERY_MARKERS) >= 2 or any(
-        phrase in plain for phrase in generic_search_phrases
-    )
+def _primary_entity_anchor(ontology: Mapping, property_id: str) -> dict | None:
+    """Return ontology-derived entity and relation anchors for a primary-class gap."""
+    primary_id = ontology.get("primary_class")
+    properties = {item["id"]: item for item in ontology.get("properties", [])}
+    classes = {item["id"]: item for item in ontology.get("classes", [])}
+    prop = properties.get(property_id, {})
+    if not primary_id or prop.get("domain") != primary_id:
+        return None
+    primary = classes.get(primary_id, {})
+
+    def property_label(identifier: object) -> str:
+        if not isinstance(identifier, str) or not identifier:
+            return ""
+        field = properties.get(identifier, {})
+        return str(field.get("label") or identifier)
+
+    links = []
+    for relation in ontology.get("relations", []):
+        domain = relation.get("domain")
+        range_id = relation.get("range")
+        if domain == primary_id:
+            linked_id = range_id
+        elif range_id == primary_id:
+            linked_id = domain
+        else:
+            continue
+        linked = classes.get(linked_id, {})
+        links.append(
+            {
+                "id": relation.get("id", ""),
+                "label": relation.get("label") or relation.get("id", ""),
+                "linked_class_id": linked_id or "",
+                "linked_class_label": linked.get("label") or linked_id or "",
+                "linked_class_plural": linked.get("label_plural")
+                or linked.get("label")
+                or linked_id
+                or "",
+            }
+        )
+    return {
+        "class_id": primary_id,
+        "class_label": primary.get("label") or primary_id,
+        "class_plural": primary.get("label_plural") or primary.get("label") or primary_id,
+        "identifier_property": property_label(primary.get("identifier_property")),
+        "title_property": property_label(primary.get("title_property")),
+        "target_property": str(prop.get("label") or property_id),
+        "relations": links,
+    }
 
 
-def _entity_list_search_examples(
-    plural: str, property_label: str, identity_label: str, *, spanish: bool
-) -> list[str]:
-    """Build generic entity-list queries from ontology labels, never case terms."""
-    if spanish:
-        return [
-            f"listado de {plural} {property_label} {identity_label}",
-            f"relación de {plural} {property_label} {identity_label}",
-            f"datos abiertos {property_label} {plural} {identity_label}",
-        ]
-    return [
-        f"individual list of {plural} {property_label} {identity_label}",
-        f"open data {property_label} {plural} {identity_label}",
-        f"public registry of {plural} {property_label} {identity_label}",
+def _primary_anchor_query_terms(anchor: Mapping, *, include_relation: bool = False) -> list[str]:
+    """Keep query anchors short; expose relation choices separately to the planner."""
+    fields = [
+        anchor.get("class_label"),
+        anchor.get("identifier_property") or anchor.get("title_property"),
+        anchor.get("target_property"),
     ]
+    if include_relation and anchor.get("relations"):
+        relation = anchor["relations"][0]
+        fields.extend((relation.get("label"), relation.get("linked_class_label")))
+    result: list[str] = []
+    seen: set[str] = set()
+    for field in fields:
+        value = " ".join(str(field or "").split())
+        if value and value.casefold() not in seen:
+            seen.add(value.casefold())
+            result.append(value)
+    return result
 
 
 def _dod_properties(ontology: Mapping) -> tuple[str, ...]:
@@ -1294,16 +1320,6 @@ class DiscoveryLoop:
         classes = {item["id"]: item for item in ontology["classes"]}
         jurisdiction = str(policy.get("jurisdiction") or "").strip()
         channel = _DISCOVERY_CHANNELS[(iteration - 1) % len(_DISCOVERY_CHANNELS)]
-        language_text = " ".join(
-            [
-                brief,
-                jurisdiction,
-                *(str(item.get("label") or "") for item in ontology["classes"]),
-                *(str(item.get("label_plural") or "") for item in ontology["classes"]),
-                *(str(item.get("label") or "") for item in ontology["properties"]),
-            ]
-        )
-        spanish = _uses_spanish(language_text)
         subject = " ".join(
             " ".join(
                 line.strip()
@@ -1338,28 +1354,15 @@ class DiscoveryLoop:
             for gap in gaps:
                 prop = properties[gap]
                 owner = classes.get(prop.get("domain"), {})
-                entity_target = prop.get("domain") == ontology["primary_class"] and bool(
-                    prop.get("dod")
-                )
-                identifier = properties.get(owner.get("identifier_property"), {}).get("label", "")
-                title = properties.get(owner.get("title_property"), {}).get("label", "")
+                anchor = _primary_entity_anchor(ontology, gap)
                 listing.append(
                     {
                         "property_id": gap,
                         "label": prop["label"],
                         "description": prop.get("description", ""),
                         "class": owner.get("label", ""),
-                        "requires_entity_records": entity_target,
-                        "entity_list_search_examples": (
-                            _entity_list_search_examples(
-                                owner.get("label_plural") or owner.get("label", ""),
-                                prop["label"],
-                                identifier or title,
-                                spanish=spanish,
-                            )
-                            if entity_target
-                            else []
-                        ),
+                        "requires_entity_records": anchor is not None,
+                        "primary_entity_anchor": anchor,
                     }
                 )
             prompt = (
@@ -1367,10 +1370,12 @@ class DiscoveryLoop:
                 "publisher of that property for the brief's jurisdiction, in the brief's "
                 "language. This round target the local-language equivalent of the source channel "
                 f"{channel!r}; across rounds search open data, transparency obligations, registries, "
-                "lists, APIs and downloadable datasets. For primary-entity DoD properties, use one "
-                "of that gap's generic local-language entity-list examples and pair the exact "
-                "property with its ontology identifier/title field; exclude aggregate statistics, "
-                "totals and dashboards. Do not include URLs. "
+                "lists, APIs and downloadable datasets. For primary-class gaps, first target "
+                "entity-level rows using the class, target property, and identifier or title label; "
+                "also consider datasets exposing a relation link and its linked class. Propose the "
+                "local-language equivalents of list, roster, register, open/public data and API "
+                "terms yourself, choosing one concise route per query instead of concatenating every "
+                "anchor. Exclude aggregate statistics, totals and dashboards. Do not include URLs. "
                 "Do not repeat a tried query. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Gaps: {json.dumps(listing, ensure_ascii=False)}. "
@@ -1409,31 +1414,18 @@ class DiscoveryLoop:
             plural = owner.get("label_plural") or owner.get("label", "")
             identity_label = properties.get(owner.get("identifier_property"), {}).get("label", "")
             title_label = properties.get(owner.get("title_property"), {}).get("label", "")
-            entity_target = prop.get("domain") == ontology["primary_class"] and bool(
-                prop.get("dod")
-            )
-            if entity_target:
-                examples = _entity_list_search_examples(
-                    plural,
-                    prop["label"],
-                    identity_label or title_label,
-                    spanish=spanish,
-                )
+            anchor = _primary_entity_anchor(ontology, gap)
+            if anchor is not None:
                 if planned_by_gap.get(gap):
                     planned = planned_by_gap[gap]
-                    example = examples[(iteration - 1) % len(examples)]
-                    query = (
-                        planned
-                        if example.casefold() in planned.casefold()
-                        else f"{planned} {example}"
-                    )
+                    terms = " ".join(_primary_anchor_query_terms(anchor))
+                    query = " ".join(part for part in (planned, terms) if part)
                     queries.append(LeadQuery(gap, " ".join(query.split())))
                     continue
-                variants = [f"{example} {jurisdiction}" for example in examples] + [
-                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
-                    f"{prop['label']} {title_label} {channel} {subject}",
-                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction} {subject}",
-                ]
+                terms = " ".join(
+                    _primary_anchor_query_terms(anchor, include_relation=iteration > 1)
+                )
+                variants = [f"{channel} {jurisdiction} {terms} {subject}"]
             else:
                 variants = [
                     f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
@@ -1463,17 +1455,50 @@ class DiscoveryLoop:
         return [*global_queries, *restricted]
 
     # --------------------------------------------------------------- propose
-    def _rank_lead(self, lead: dict, policy: Mapping) -> float:
+    def _rank_lead(self, lead: dict, policy: Mapping, ontology: Mapping | None = None) -> float:
         trusted, _ = authority_result(lead["url"], policy=dict(policy))
         tier = authority_tier(lead["url"], policy)
         score = 100.0 if trusted else (40.0 if tier in {"secondary", "review"} else 0.0)
         priority = 200.0 if "approved_source" in lead["providers"] else 0.0
         priority += 40.0 if "portal_link" in lead["providers"] else 0.0
+        anchor_score = 0.0
+        if ontology is not None:
+            lead_text = f"{lead.get('title', '')} {lead.get('snippet', '')}"
+            matched = _tokens(lead_text)
+            matched.update(word.casefold() for word in re.findall(r"\b[A-Z0-9]{2,}\b", lead_text))
+            for property_id in lead.get("property_ids", []):
+                anchor = _primary_entity_anchor(ontology, property_id)
+                if anchor is None:
+                    continue
+                property_tokens = _tokens(str(anchor.get("target_property") or ""))
+                class_tokens = _tokens(
+                    f"{anchor.get('class_label', '')} {anchor.get('class_plural', '')}"
+                )
+                identity_tokens = _tokens(
+                    f"{anchor.get('identifier_property', '')} {anchor.get('title_property', '')}"
+                )
+                if matched & property_tokens:
+                    anchor_score += 2.0
+                if matched & class_tokens:
+                    anchor_score += 5.0
+                if matched & identity_tokens:
+                    anchor_score += 4.0
+                for relation in anchor.get("relations", []):
+                    relation_tokens = _tokens(str(relation.get("label") or ""))
+                    linked_tokens = _tokens(
+                        f"{relation.get('linked_class_label', '')} "
+                        f"{relation.get('linked_class_plural', '')}"
+                    )
+                    if matched & relation_tokens and matched & linked_tokens:
+                        anchor_score += 12.0
+        # Lead title/snippet relevance only affects ordering; it is not capture,
+        # authority, or property-capability evidence.
         return (
             priority
             + score
             + 10.0 * (len(lead["providers"]) - 1)
             + 5.0 * float(lead.get("score", 0))
+            + anchor_score
         )
 
     @staticmethod
@@ -3274,6 +3299,20 @@ class DiscoveryLoop:
             queries = tuple(LeadQuery(pid, text) for pid, text in context["queries"])
             if not queries:
                 return draft
+            portal_limit = max(1, self.max_queries)
+            portal_urls: list[str] = []
+            for lead in draft["leads"].values():
+                if not isinstance(lead, Mapping) or not isinstance(lead.get("url"), str):
+                    continue
+                url = lead["url"]
+                if (
+                    public_url(url)
+                    and is_open_data_portal(lead, ontology)
+                    and url not in portal_urls
+                ):
+                    portal_urls.append(url)
+                    if len(portal_urls) >= portal_limit:
+                        break
             lead_context = LeadContext(
                 brief=brief,
                 ontology=ontology,
@@ -3281,13 +3320,7 @@ class DiscoveryLoop:
                 queries=queries,
                 iteration=iteration,
                 tried=tried_publishers,
-                open_data_portals=tuple(
-                    lead["url"]
-                    for lead in draft["leads"].values()
-                    if isinstance(lead, Mapping)
-                    and isinstance(lead.get("url"), str)
-                    and is_open_data_portal(lead, ontology)
-                ),
+                open_data_portals=tuple(portal_urls),
             )
             for provider in self.providers:
                 attempts_before = len(provider.attempts)
@@ -3321,6 +3354,16 @@ class DiscoveryLoop:
                         mode="D1" if provider.name == "model" else "D0",
                     )
                 for lead in found:
+                    if (
+                        public_url(lead.url)
+                        and is_open_data_portal(lead.as_dict(), ontology)
+                        and lead.url not in lead_context.open_data_portals
+                        and len(lead_context.open_data_portals) < portal_limit
+                    ):
+                        lead_context.open_data_portals = (
+                            *lead_context.open_data_portals,
+                            lead.url,
+                        )
                     entry = draft["leads"].setdefault(
                         lead.url,
                         {**lead.as_dict(), "providers": [], "iteration": iteration},
@@ -3375,7 +3418,7 @@ class DiscoveryLoop:
                     == "approved"
                 )
             ]
-            pool.sort(key=lambda lead: self._rank_lead(lead, policy), reverse=True)
+            pool.sort(key=lambda lead: self._rank_lead(lead, policy, ontology), reverse=True)
             chosen: list[dict] = []
             per_host: dict[str, int] = {}
             while len(chosen) < self.max_captures:

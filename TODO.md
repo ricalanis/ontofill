@@ -554,3 +554,12 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `src/ontofill/phases/p
 TASK: Make generic primary-entity list searches explicit and explore captured open-data pages one level below their landing URL.
 DONE: `uv run pytest -q tests/test_r48_recall.py` proves the recorded query and one-level portal regressions; Ruff lint/format and `git diff --check` pass for the owned files.
 FORMAT: `uv run ruff check src/ontofill/phases/p3_fanout/discovery_loop.py src/ontofill/phases/p3_fanout/leads.py tests/test_r48_recall.py && uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py src/ontofill/phases/p3_fanout/leads.py tests/test_r48_recall.py`.
+# R48 primary-entity discovery anchors
+
+- [x] Add recorded regressions for ontology-derived anchor-first query planning, a linking-relation row beating a property-only aggregate in lead ordering, and same-round handoff of a discovered public portal to the next provider.
+- [x] Implement bounded generic query anchors and title/snippet-only ranking while preserving `lead.score`, existing authority ranking, and capture gates.
+- [x] Run the managed focused gate on final diff; commit locally and report SHA to root.
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r48_recall.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Anchor primary-class source discovery to ontology entities/relations and make newly found portal context available in the same provider round.
+DONE: the scoped managed gate in `GOAL.md` passes all listed synthetic regressions and Ruff/diff checks.
+FORMAT: Ruff check/format for the two Python files.

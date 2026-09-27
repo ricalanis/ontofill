@@ -450,6 +450,10 @@ For primary-entity DoD properties, derive local-language list query examples fro
 
 The synthetic tests use a generic Spanish record class and a nested `/datos-abiertos` fixture, with no real-case files or approval markers. Managed focused gate attempt 1 passed 40 tests and Ruff lint but failed only the formatter check on the newly added conditional; after formatting, attempt 2 passed 40 tests, Ruff lint/format, and `git diff --check`. Separate managed genericity/no-case-vocabulary gate passed 5 tests. No live browse, real-case read, push, or deployment was performed.
 
+# R48 primary-entity anchor follow-up
+
+The initial managed red baseline confirmed the planner lacked an ontology anchor, relation-aware lead ordering, and same-round portal context. The first implementation gate passed 41 tests including the new portal assertion; its sole failure was a `NameError` caused by stale assertions from the replaced Spanish regression being left below the portal test. That stale fixture tail is removed. The successor hypothesis is unchanged in behavior scope: use a short class/identifier/property query anchor, expose title and touching-relation labels to the model, try one deterministic relation route on the next iteration, and keep ranking as title/snippet lead ordering only. The managed successor gate verifies the final diff.
+
 
 # R40 malformed XLS parse diagnostics (2026-09-27)
 
