@@ -1,3 +1,7 @@
+# Current goal: R25 repair durability and six-checkpoint jobs
+
+Merge the reviewed repair changes into current engine main without weakening sandbox limits or page screening. Ensure patch prompts carry expected row volume, repair/escalation steps survive fallback errors, and repair pods write six-checkpoint jobs. DONE: full pytest, Ruff lint/format, schema/diff checks and a pre-push scan. VM deploy only when no engine process is active.
+
 # Current goal: R49 eager authority coverage and tiered value refinement
 
 A versioned, human-approved PRD authority policy covers government levels and public data channels. P3 admits captured official entity-level capabilities at a documented tier, including low-tier flagged unknown official hosts, while unclassifiable hosts still need source review. P5 writes source tier and publisher identity into every silver observation. Silver retains each receipt and independent corroboration count; gold chooses by tier and corroboration with conflicts visible.

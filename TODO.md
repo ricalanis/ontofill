@@ -1,3 +1,15 @@
+# R25 current integration
+
+FILES: `sandbox/code-repair/runner.py`, `src/ontofill/phases/p5_execute/phase.py`, `src/ontofill/repair/`, `src/ontofill/sandbox/jobs.py`, focused tests.
+TASK: review and merge OpenCode R25, resolve conflicts on current main, verify, push, guarded deploy.
+DONE: `uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox && git diff --check`.
+FORMAT: Ruff for edited Python.
+
+1. [ ] Review R25 job records, sandbox constraints, and patch fallback behavior.
+2. [ ] Cherry-pick reviewed commits and resolve current-main conflicts.
+3. [ ] Run managed gate, scan outgoing commits, push main.
+4. [ ] Recheck zero live engine processes before VM fast-forward.
+
 # R49 integration
 
 - [x] FILES: `schemas/global-prd.schema.json`, P1, refiner core, focused tests. TASK: integrate versioned authority matrix and tiered gold selection. DONE: base compatibility 9 passed; silver independent corroboration red baseline and green successor 5 passed. FORMAT: Ruff.
