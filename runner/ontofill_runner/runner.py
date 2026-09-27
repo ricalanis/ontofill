@@ -369,12 +369,19 @@ class Runner:
                 lstatus.get("state") == "paused"
                 and lstatus.get("phase") == 3
                 and isinstance(reason, str)
-                and reason.startswith("no authoritative source found for ")
+                and ("no authoritative source found for " in reason or reason.startswith("sources unreachable"))
             ):
+                # R37: the engine may prefix "sources unreachable (N blocked/redirected/403); " to the no-source reason
+                ask = (
+                    "sources were unreachable (blocked, redirected or 403): fix access or revise the PRD authority "
+                    "policy, then start a new run"
+                    if reason.startswith("sources unreachable")
+                    else "revise the brief or PRD authority policy, then start a new run"
+                )
                 self._transition(
                     cid,
                     "needs_human",
-                    f"{reason} | needs you: revise the brief or PRD authority policy, then start a new run",
+                    f"{reason} | needs you: {ask}",
                     run_id=run_id,
                     phase=3,
                     checkpoint=None,

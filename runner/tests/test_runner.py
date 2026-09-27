@@ -362,3 +362,18 @@ def test_a_clean_pause_has_no_reason_and_no_stale_stop(setup, monkeypatch):
     st = r.state.status("c1")
     assert st["reason"] is None and st["checkpoint"] == "factors"
     assert st["engine_stop"]["checkpoint_pending"] == "factors" and st["engine_stop"]["state"] == "paused"
+
+
+def test_unreachable_sources_exit_is_needs_human_not_failed(setup, monkeypatch):
+    """R37: exit 4 with "sources unreachable (…); no authoritative source found for …" ended as failed."""
+    monkeypatch.setenv("FAKE_MODE", "unreachable")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    st = r.state.status("c1")
+    assert st["state"] == "needs_human" and st["checkpoint"] is None and st["phase"] == 3
+    assert st["reason"].startswith("sources unreachable (27 blocked/redirected/403)")
+    ev = events(setup)[-1]
+    assert ev["kind"] == "needs-human" and "fix access or revise the PRD authority policy" in ev["detail"]
+    r.poll_once()
+    assert r.state.status("c1")["state"] == "needs_human" and len(calls(setup)) == 1  # not relaunched

@@ -44,6 +44,19 @@ if mode.startswith("fail_phase:"):  # like the engine: status failed + phase, th
 if mode == "done":
     (run / "status.json").write_text(json.dumps({"state": "done"}))
     sys.exit(0)
+if mode == "unreachable":  # R37: the engine's prefixed no-source reason
+    (run / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "paused",
+                "phase": 3,
+                "checkpoint_pending": None,
+                "reason": "sources unreachable (27 blocked/redirected/403); no authoritative source found for "
+                "supplier_name | queries: Compranet | iterations: 12",
+            }
+        )
+    )
+    sys.exit(4)
 if mode == "needs-human":
     (run / "status.json").write_text(
         json.dumps(
