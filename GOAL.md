@@ -313,3 +313,21 @@ FILES: `sandbox/parse-pod/profiler/extract.py`, `sandbox/parse-pod/profiler/prof
 TASK: Keep actual PDF page receipts for merged tables and let the real pod runner profile bounded ZIP-of-CSV input while rejecting ZIPs without supported tables.
 DONE: The focused profiler test suite proves page 2 receipts, auto-detected ZIP profiles with jurisdiction patterns, and malformed/unsupported ZIP refusal; Ruff check/format and diff check pass.
 FORMAT: Ruff format on the owned Python files.
+# Current goal: R53 item 2 — follow dataset links from captured open-data indexes
+
+P3 follows a bounded set of relevant CSV/XLS/XLSX/ZIP links only from captured,
+policy-approved official open-data pages. Same-host documents use exact-host
+sandbox capture and the networkless parse pod. Off-host documents become
+digest-bound source-review packets; no network request occurs until approval.
+ZIP links are captured and routed to the networkless parser, with unsupported
+ZIP parsing recorded as a sandbox parse failure until a safe archive parser is
+available.
+
+DONE: red baseline stopped at `NoConfirmedSources`; the managed focused gate now
+passes (1 synthetic test, Ruff, format, and diff checks). The fixture proves
+same-host CSV/XLS/XLSX datasets reach the networkless parse executor, a same-host
+ZIP reaches that executor and records an unsupported-format failure, unrelated
+links are ignored, and an off-host ZIP waits on a digest-bound review packet
+without a capture. Existing P3 discovery, recall, linked-download review, and
+document-context regressions pass (46 tests). No live case, approval,
+credential, push, or deploy.

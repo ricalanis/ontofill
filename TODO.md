@@ -630,3 +630,22 @@ FORMAT: Ruff check/format for the two Python files.
 - [ ] Run the composed full gate and pre-push scan; push public main.
 - [ ] Deploy and rebuild parse pod only in a fresh zero-engine window.
 - [ ] State the PDF replay limitation and exact no-browse refine command.
+# R53 dataset-link follow
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`,
+`tests/test_r53_dataset_links.py`, `GOAL.md`, `TODO.md`.
+TASK: From captured official open-data indexes, follow a small set of relevant
+CSV/XLS/XLSX/ZIP links. Parse approved same-host documents in the networkless
+pod, and create review packets without fetching off-host documents.
+DONE: `agent-progress run --task r53-dataset-links --paths
+src/ontofill/phases/p3_fanout/discovery_loop.py,tests/test_r53_dataset_links.py,GOAL.md,TODO.md
+--check r53-dataset-links-focused --strategy bounded-official-index-document-links
+--hypothesis 'Only policy-approved open-data index pages yield relevant document links; same-host files pass through sandbox capture and networkless parse, while every off-host link waits on a digest-bound source review.' --
+sh -c 'uv run pytest -q tests/test_r53_dataset_links.py && uv run ruff check
+src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r53_dataset_links.py &&
+uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py
+tests/test_r53_dataset_links.py && git diff --check'`.
+
+1. [x] Add the synthetic index-page regression and record the red baseline.
+2. [x] Implement bounded dataset-link follow, same-host exact-host capture, and off-host review.
+3. [x] Run the managed focused gate and commit the isolated change; send the SHA to root.

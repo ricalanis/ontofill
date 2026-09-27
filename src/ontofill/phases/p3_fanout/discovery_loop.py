@@ -26,7 +26,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import yaml
 from jsonschema import ValidationError
@@ -79,6 +79,12 @@ _DOCUMENT_MIME_FORMAT = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
 }
+_DATASET_FILE_SUFFIXES = frozenset({".csv", ".xls", ".xlsx", ".zip"})
+_DATASET_LINK_CUE = re.compile(
+    r"\b(?:dataset|download|records?|registry|register|spreadsheet|export|roster|archive|list)\b",
+    re.IGNORECASE,
+)
+_MAX_DATASET_LINKS_PER_INDEX = 5
 _NON_AUTHORITATIVE_PUBLISHER_KIND = re.compile(
     r"\b(?:social(?: media| network| account| profile| page| channel)|facebook|instagram|"
     r"tiktok|twitter|youtube|linkedin|reddit|forum|message board|discussion board|blog|"
@@ -881,6 +887,7 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
             or child_url in seen
             or not public_url(child_url)
             or not _public_dns_host(host)
+            or _dataset_file_suffix(child_url) is not None
         ):
             continue
         seen.add(child_url)
@@ -904,6 +911,135 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
         )
     ranked.sort(reverse=True)
     return [item for _, _, item in ranked[:4]]
+
+
+def _dataset_file_suffix(url: str) -> str | None:
+    """Return a supported dataset suffix, rejecting credential-like query names."""
+    try:
+        parsed = urlsplit(url)
+        suffix = Path(parsed.path).suffix.casefold()
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+    except (ValueError, TypeError):
+        return None
+    if suffix not in _DATASET_FILE_SUFFIXES:
+        return None
+    if any(_SENSITIVE_HEADER.search(name) for name, _value in query_pairs):
+        return None
+    return suffix
+
+
+def _canonical_dataset_link_url(url: str) -> str:
+    """Normalize link identity the same way as the shared source-review contract."""
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.casefold()
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        raise ValueError("dataset link must be a public HTTP URL")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("dataset link URL has an invalid port") from exc
+    if port not in {None, 80, 443}:
+        raise ValueError("dataset link URL uses an unsupported port")
+    netloc = host
+    if ":" in host and not host.startswith("["):
+        netloc = f"[{host}]"
+    if port is not None and not (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        netloc += f":{port}"
+    return parsed._replace(scheme=scheme, netloc=netloc, fragment="").geturl()
+
+
+def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping) -> list[dict]:
+    """Select a few ontology-relevant data-file links from one captured index page."""
+    parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
+    try:
+        parent_host = (urlsplit(parent_url).hostname or "").casefold().rstrip(".")
+    except ValueError:
+        return []
+    if not parent_host:
+        return []
+    primary_id = ontology.get("primary_class")
+    classes = {item.get("id"): item for item in ontology.get("classes", [])}
+    primary = classes.get(primary_id, {})
+    properties = {item.get("id"): item for item in ontology.get("properties", [])}
+    target_properties = [
+        properties.get(identifier, {})
+        for identifier in candidate.get("property_ids", [])
+        if isinstance(identifier, str)
+    ]
+    identity_properties = [
+        properties.get(primary.get(key), {}) for key in ("identifier_property", "title_property")
+    ]
+    relevant_terms = _tokens(
+        " ".join(
+            [
+                str(primary.get("label") or ""),
+                str(primary.get("label_plural") or ""),
+                *(
+                    str(item.get("label") or "")
+                    for item in [*target_properties, *identity_properties]
+                ),
+            ]
+        )
+    )
+    ranked: list[tuple[int, int, int, dict]] = []
+    seen: set[str] = set()
+    for index, link in enumerate(context.get("links", [])[:300]):
+        if not isinstance(link, Mapping):
+            continue
+        raw_url = str(link.get("url") or "").strip()
+        child_url = urljoin(parent_url, raw_url)
+        try:
+            parsed = urlsplit(child_url)
+            child_url = parsed._replace(fragment="").geturl()
+            host = (parsed.hostname or "").casefold().rstrip(".")
+        except ValueError:
+            continue
+        suffix = _dataset_file_suffix(child_url)
+        if (
+            not suffix
+            or child_url in seen
+            or not public_url(child_url)
+            or not _public_dns_host(host)
+        ):
+            continue
+        try:
+            child_url = _canonical_dataset_link_url(child_url)
+        except ValueError:
+            continue
+        if child_url in seen:
+            continue
+        seen.add(child_url)
+        label = " ".join(str(link.get(key) or "") for key in ("text", "title", "context")).strip()
+        search_text = f"{label} {parsed.path}"
+        term_matches = len(_tokens(search_text) & relevant_terms)
+        generic_cue = bool(_DATASET_LINK_CUE.search(search_text))
+        if term_matches == 0 and not generic_cue:
+            continue
+        ranked.append(
+            (
+                int(term_matches > 0),
+                term_matches,
+                int(host == parent_host),
+                {
+                    "url": child_url,
+                    "title": " ".join(
+                        str(link.get(key) or "") for key in ("text", "title")
+                    ).strip()[:200]
+                    or child_url.rsplit("/", 1)[-1][:200],
+                    "link_text": label[:500],
+                    "link_index": index,
+                    "parent_url": parent_url,
+                    "parent_capture_key": candidate.get("capture_key"),
+                    "parent_source_id": candidate.get("source_id"),
+                    "suffix": suffix,
+                },
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2], -item[3]["link_index"]), reverse=True)
+    return [item[3] for item in ranked[:_MAX_DATASET_LINKS_PER_INDEX]]
 
 
 def _publisher_kind_tier_suggestion(
@@ -2153,6 +2289,79 @@ class DiscoveryLoop:
         self._redirect_frontier[destination] = lead
         return lead
 
+    def _dataset_link_review_lead(
+        self,
+        case_dir: Path,
+        parent: Mapping,
+        link: Mapping,
+        policy: Mapping,
+        property_ids: Sequence[str],
+        iteration: int,
+    ) -> dict:
+        """Persist a digest-bound off-host file link without requesting its URL."""
+        from ontofill.phases.p5_execute.source_review import review_link_candidate
+
+        parent_source_id = str(link.get("parent_source_id") or "")
+        parent_url = str(link.get("parent_url") or "")
+        parent_key = str(link.get("parent_capture_key") or "")
+        url = str(link.get("url") or "")
+        parent_step_id = next(
+            (
+                step.get("step_id")
+                for step in reversed(self.trace)
+                if step.get("source_id") == parent_source_id
+                and step.get("executed", {}).get("html_key") == parent_key
+            ),
+            None,
+        )
+        screenshot_key = parent.get("screenshot_key")
+        source_state, _approved_url, directory = review_link_candidate(
+            case_dir=case_dir,
+            parent_source_id=parent_source_id,
+            parent_page_url=parent_url,
+            parent_capture_key=parent_key,
+            link_url=url,
+            link_text=str(link.get("link_text") or link.get("title") or url)[:500],
+            link_index=int(link.get("link_index") or 0),
+            allowed_domains=[],
+            authority_policy=dict(policy),
+            provenance=dict(self.provenance),
+            screenshot_key=screenshot_key if isinstance(screenshot_key, str) else None,
+            parent_step_id=parent_step_id if isinstance(parent_step_id, str) else None,
+        )
+        packet = load_json(directory / "candidate.json")
+        source_id = str(packet["source_id"])
+        fingerprint = str(packet["fingerprint"])
+        title = str(packet["title"])
+        snippet = str(packet["snippet"])
+        link_provenance = dict(packet["link_provenance"])
+        self._step(
+            {"tool": "p3.dataset_link.review", "url": url},
+            {
+                "source_id": source_id,
+                "network_request": False,
+                "link_index": link_provenance["link_index"],
+            },
+            {"status": source_state, "reason": "off-host document waits for source review"},
+            source_id=source_id,
+        )
+        return {
+            "url": url,
+            "title": title,
+            "snippet": snippet,
+            "discovered_by": "sandbox_page_link",
+            "query": f"dataset link from {parent_url}",
+            "property_ids": list(property_ids),
+            "providers": ["sandbox_page_link"],
+            "iteration": iteration,
+            "source_review_required": True,
+            "review_source_id": source_id,
+            "review_fingerprint": fingerprint,
+            "dataset_link": True,
+            "link_provenance": link_provenance,
+            "source_state": source_state,
+        }
+
     def _capture_lead(
         self,
         candidate: dict,
@@ -2173,7 +2382,10 @@ class DiscoveryLoop:
                 capture_reason="government_jurisdiction_mismatch",
             )
             return None
-        allowed_domains = sorted({host, *_matching_policy_domains(host, policy)})
+        linked_document = candidate.get("dataset_link") is True
+        allowed_domains = (
+            [host] if linked_document else sorted({host, *_matching_policy_domains(host, policy)})
+        )
         capture_kwargs = {
             "allowed_domains": allowed_domains,
             "lake": self.lake,
@@ -2183,6 +2395,7 @@ class DiscoveryLoop:
             "tdd_path": TDD_PATH,
             "phase": 3,
             "generated_by": self.provenance,
+            **({"exact_hosts": [host]} if linked_document else {}),
         }
         attempts = 1
         try:
@@ -3314,6 +3527,11 @@ class DiscoveryLoop:
                 "review_source_id": str(packet["source_id"]),
                 "review_fingerprint": fingerprint,
                 "parent_capture_key": packet.get("capture_key"),
+                **(
+                    {"dataset_link": True, "link_provenance": dict(packet["link_provenance"])}
+                    if isinstance(packet.get("link_provenance"), Mapping)
+                    else {}
+                ),
             }
         if isinstance(saved_leads, list):
             for lead in saved_leads:
@@ -3647,7 +3865,13 @@ class DiscoveryLoop:
                         )
                         if replace is not None:
                             chosen[replace] = root
-            for lead in chosen:
+            capture_queue = list(chosen)
+            captures_this_iteration = 0
+            while capture_queue and captures_this_iteration < self.max_captures:
+                lead = capture_queue.pop(0)
+                if lead["url"] in draft["candidates"]:
+                    continue
+                captures_this_iteration += 1
                 candidate = {
                     "url": lead["url"],
                     "title": lead["title"],
@@ -3679,9 +3903,90 @@ class DiscoveryLoop:
                         or lead.get("source_review_required")
                         else {}
                     ),
+                    **({"dataset_link": True} if lead.get("dataset_link") else {}),
+                    **(
+                        {"link_provenance": dict(lead["link_provenance"])}
+                        if isinstance(lead.get("link_provenance"), Mapping)
+                        else {}
+                    ),
                 }
                 redirect_lead = self._capture_lead(candidate, policy, ontology, decision, case_dir)
                 draft["candidates"][lead["url"]] = candidate
+                parent_url = str(candidate.get("landing_url") or lead["url"])
+                parent_host = (urlsplit(parent_url).hostname or "").casefold().rstrip(".")
+                parent_policy_trusted, _parent_reason = authority_result(
+                    parent_url, policy=dict(policy)
+                )
+                if (
+                    candidate.get("status") == "captured"
+                    and candidate.get("artifact_kind") != "download"
+                    and candidate.get("authority") == "auto"
+                    and parent_policy_trusted
+                    and _publisher_kind_policy_error(candidate) is None
+                    and is_open_data_portal(candidate, ontology)
+                ):
+                    page_context = self._page_access_contexts.get(lead["url"], {})
+                    for link in _dataset_index_links(candidate, page_context, ontology):
+                        link_url = str(link["url"])
+                        if link_url in draft["leads"] or link_url in draft["candidates"]:
+                            continue
+                        child_host = (urlsplit(link_url).hostname or "").casefold().rstrip(".")
+                        if child_host != parent_host:
+                            linked_lead = self._dataset_link_review_lead(
+                                case_dir,
+                                candidate,
+                                link,
+                                policy,
+                                lead["property_ids"],
+                                iteration,
+                            )
+                            draft["leads"][link_url] = linked_lead
+                            if (
+                                linked_lead.get("source_state") == "approved"
+                                and captures_this_iteration + len(capture_queue) < self.max_captures
+                            ):
+                                capture_queue.append(linked_lead)
+                            continue
+                        parent_step_id = next(
+                            (
+                                step.get("step_id")
+                                for step in reversed(self.trace)
+                                if step.get("source_id") == candidate.get("source_id")
+                                and step.get("executed", {}).get("html_key")
+                                == candidate.get("capture_key")
+                            ),
+                            None,
+                        )
+                        link_provenance = {
+                            "parent_source_id": str(candidate.get("source_id") or ""),
+                            "parent_page_url": parent_url,
+                            "parent_capture_key": str(candidate.get("capture_key") or ""),
+                            "link_url": link_url,
+                            "link_text": str(link.get("link_text") or link.get("title") or "")[
+                                :500
+                            ],
+                            "link_index": int(link.get("link_index") or 0),
+                        }
+                        if isinstance(parent_step_id, str):
+                            link_provenance["step_id"] = parent_step_id
+                        dataset_lead = {
+                            "url": link_url,
+                            "title": str(link.get("title") or link_url.rsplit("/", 1)[-1])[:200],
+                            "snippet": str(
+                                link.get("link_text")
+                                or "Dataset file linked from an official open-data index"
+                            )[:400],
+                            "discovered_by": "dataset_link",
+                            "query": f"dataset link from {parent_url}",
+                            "property_ids": list(lead["property_ids"]),
+                            "providers": ["dataset_link"],
+                            "iteration": iteration,
+                            "dataset_link": True,
+                            "link_provenance": link_provenance,
+                        }
+                        draft["leads"][link_url] = dataset_lead
+                        if captures_this_iteration + len(capture_queue) < self.max_captures:
+                            capture_queue.append(dataset_lead)
                 if candidate.get("status") == "captured" and lead.get("exploration_depth", 0) == 0:
                     for child in _portal_child_leads(
                         candidate, self._page_access_contexts.get(lead["url"], {}), ontology
@@ -3914,7 +4219,7 @@ class DiscoveryLoop:
         backend = provenance.get("backend", decision.backend)
         pending_review_leads = []
         for lead in draft.get("leads", {}).values():
-            if not lead.get("redirect_review_required"):
+            if not (lead.get("redirect_review_required") or lead.get("source_review_required")):
                 continue
             source_id = lead.get("review_source_id")
             fingerprint = lead.get("review_fingerprint")
@@ -4045,6 +4350,11 @@ class DiscoveryLoop:
                 "redirect_chain": candidate.get("redirect_chain", [candidate["url"]]),
                 "property_evidence": candidate.get("property_evidence", {}),
                 "generated_by": provenance,
+                **(
+                    {"link_provenance": candidate["link_provenance"]}
+                    if isinstance(candidate.get("link_provenance"), Mapping)
+                    else {}
+                ),
                 **(
                     {
                         "document_key": candidate["document_key"],
