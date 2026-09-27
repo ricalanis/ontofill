@@ -13,6 +13,11 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+
+def new_step_id() -> str:
+    """A step id allocated before the step is written, so the model calls it makes carry it (X-BA-Step-Id)."""
+    return f"step:{uuid.uuid4().hex}"
+
 class StepLog:
     """Append-only JSONL sink for one session's trace steps (the engine collects them into trace.live.jsonl)."""
 
@@ -27,9 +32,9 @@ class StepLog:
 
     def emit(self, *, mode: str, observed, requested, executed, evaluated, parent_step_id: str | None = None,
              value_ids: list[str] | None = None, event: str | None = None, generated_by: dict | None = None,
-             **extra) -> dict:
+             step_id: str | None = None, **extra) -> dict:
         """Write one step. `extra` carries §12 objects: verify / repair / gate, and screenshot_key."""
-        step = {"step_id": f"step:{uuid.uuid4().hex}", **self.base, "mode": mode, "observed": observed,
+        step = {"step_id": step_id or new_step_id(), **self.base, "mode": mode, "observed": observed,
                 "requested": requested, "executed": executed, "evaluated": evaluated,
                 "parent_step_id": parent_step_id, "value_ids": value_ids or [], "ts": now(),
                 "event": event, "session_id": self.session_id,

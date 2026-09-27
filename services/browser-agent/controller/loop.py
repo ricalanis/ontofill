@@ -21,7 +21,7 @@ from controller.captures import CaptureStore
 from shared import config
 from shared.gateway_client import GatewayError
 from shared.prices import jev_usd, vultr_usd
-from shared.steps import StepLog, now
+from shared.steps import StepLog, new_step_id, now
 
 
 @dataclass
@@ -107,6 +107,7 @@ class Session:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"ba-{session_id[:12]}")
         self.cell = cell  # the leased cell (§13a): id, isolation, timings; noted on the first step's `executed`
         self._cell_note = dict(cell) if cell else None
+        self._pending_sid: str | None = None  # step id for the model calls of the step being built
         self._open_args = {"session_id": session_id, "allowed_domains": self.allowed_domains,
                            "start_url": start_url, "cdp_url": cdp_url}
 
@@ -140,8 +141,16 @@ class Session:
     def _gen(self, backend: str = "vultr", model: str | None = None) -> dict:
         return {"backend": backend, "model": model or config.PLANNER_MODEL, "at": now()}
 
+    def _step_id(self) -> str:
+        """The id of the step the next model call belongs to: allocated at the call, consumed by the next emit."""
+        if self._pending_sid is None:
+            self._pending_sid = new_step_id()
+        return self._pending_sid
+
     def _emit(self, **kw) -> dict:
         kw.setdefault("mode", self.mode)
+        if self._pending_sid is not None and "step_id" not in kw:  # the step its model calls were attributed to
+            kw["step_id"], self._pending_sid = self._pending_sid, None
         if kw.get("generated_by") is None:
             kw["generated_by"] = self._gen()
         if self._cell_note and isinstance(kw.get("executed"), dict):
@@ -196,7 +205,7 @@ class Session:
                 "est_usd": round(usd, 8)}
 
     def _jev(self, state, questions, step_id=None) -> dict:
-        body = self.gateway.jev(state, questions, step_id=step_id)
+        body = self.gateway.jev(state, questions, step_id=step_id or self._step_id())
         tin = int((body.get("usage") or {}).get("input_tokens") or 0)
         self.metrics.estimated_usd += jev_usd(tin)
         self.metrics.backend_breakdown["jev"] += 1
@@ -204,7 +213,7 @@ class Session:
 
     def _chat(self, model: str, messages: list[dict], **params) -> dict:
         try:
-            return self.gateway.chat(model, messages, **params)
+            return self.gateway.chat(model, messages, step_id=self._step_id(), **params)
         except GatewayError as exc:
             if exc.status == 402:
                 raise Stop("stopped", "session budget exhausted") from exc
