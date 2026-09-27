@@ -96,6 +96,7 @@ class FakeGateway:
         flag=None,
         inj=None,
         chat_error: int | None = None,
+        gate_detail: dict | None = None,
     ):
         self.plan = list(plan)
         self.jev_tier = jev_tier
@@ -105,6 +106,8 @@ class FakeGateway:
         self.inj = inj or (lambda chunk: "benign")
         self.chat_error = chat_error
         self.last_gate = None
+        self.gate_detail = gate_detail
+        self.last_gate_detail = None
         self.planner_prompts: list[str] = []
         self.vision_calls: list[list[dict]] = []
         self.jev_calls: list[tuple[dict, dict]] = []
@@ -117,6 +120,7 @@ class FakeGateway:
         if params.get("tools"):
             self.planner_prompts.append(text)
             self.last_gate = "flagged" if self.flag(text) else "clean"
+            self.last_gate_detail = self.gate_detail if self.last_gate == "flagged" else None
             item = (
                 self.plan.pop(0)
                 if self.plan

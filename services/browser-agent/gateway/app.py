@@ -89,6 +89,27 @@ def screen_summary(gate: dict | None) -> dict | None:
     return None
 
 
+GATE_DETAIL_HEADER = "X-BA-Gate-Detail"
+
+
+def gate_headers(gate: dict | None) -> dict[str, str]:
+    """X-BA-Gate: clean|flagged, plus, when flagged, X-BA-Gate-Detail: the first flagged chunk's per-screener
+    verdicts as compact JSON (no page text), so the controller's §12a record says who flagged it (R36 follow-up)."""
+    flagged = bool((gate or {}).get("flagged"))
+    headers = {"X-BA-Gate": "flagged" if flagged else "clean"}
+    summary = screen_summary(gate) if flagged else None
+    if summary:
+        chunk = next((c for c in gate.get("chunks") or [] if c.get("flagged")), {})
+        detail = {
+            "jev_choice": summary["jev_choice"],
+            "jev_confidence": summary["jev_confidence"],
+            "safety_verdict": summary["safety_verdict"],
+            "safety_model": (chunk.get("safety") or {}).get("model"),
+        }
+        headers[GATE_DETAIL_HEADER] = json.dumps(detail, separators=(",", ":"))
+    return headers
+
+
 def _bearer(request: Request) -> str | None:
     auth = request.headers.get("authorization") or ""
     return auth[7:].strip() if auth.lower().startswith("bearer ") else None
@@ -205,7 +226,7 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
             screener.screen, body["messages"], report, session.tagged_only
         )
         forward = {**body, "messages": messages}
-        gate_header = "flagged" if gate.get("flagged") else "clean"
+        gate_header = gate_headers(gate)
         chars = _prompt_chars(body["messages"])
         if body.get("stream"):
             return await _stream(forward, body["model"], report, gate, gate_header, chars)
@@ -222,7 +243,7 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
                 gate=gate,
                 prompt_chars=chars,
             )
-            return JSONResponse({"error": exc.detail}, status_code=502, headers={"X-BA-Gate": gate_header})
+            return JSONResponse({"error": exc.detail}, status_code=502, headers=gate_header)
         report(
             upstream="vultr",
             purpose="chat",
@@ -233,7 +254,7 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
             gate=gate,
             prompt_chars=chars,
         )
-        return JSONResponse(data, headers={"X-BA-Gate": gate_header})
+        return JSONResponse(data, headers=gate_header)
 
     async def _stream(forward, model, report, gate, gate_header, chars):
         try:
@@ -249,7 +270,7 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
                 gate=gate,
                 prompt_chars=chars,
             )
-            return JSONResponse({"error": exc.detail}, status_code=502, headers={"X-BA-Gate": gate_header})
+            return JSONResponse({"error": exc.detail}, status_code=502, headers=gate_header)
         t0 = time.monotonic()
 
         def gen():
@@ -286,7 +307,7 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
                     est_tokens=est,
                 )
 
-        return StreamingResponse(gen(), media_type="text/event-stream", headers={"X-BA-Gate": gate_header})
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=gate_header)
 
     @app.get("/v1/models")
     def models(request: Request):

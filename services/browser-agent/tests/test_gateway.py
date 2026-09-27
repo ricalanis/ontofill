@@ -638,3 +638,35 @@ def test_tagged_service_screens_only_page_content(tmp_path):
         headers=auth(token),
     )
     assert r.status_code == 200 and jev.call_count == 1  # the page span is screened
+
+
+@respx.mock
+def test_a_flag_carries_each_screeners_verdict_without_page_text(env):
+    """The controller's quarantine record names who flagged it (Jev injection 0.93 while content safety said safe),
+    from X-BA-Gate-Detail; a clean call sends no detail."""
+    respx.post(f"{JEV}/v1/systemone").mock(return_value=jev_answer("injection", 0.93))
+    respx.post(f"{VULTR}/chat/completions").mock(
+        side_effect=lambda req: (
+            safety_answer("safe")
+            if json.loads(req.content)["model"] == "nemotron-3.5-content-safety"
+            else chat_ok()
+        )
+    )
+    tok = env.open_session()
+    r = env.client.post(
+        "/v1/chat/completions", json=body(f"<page_content>{INJECTED}</page_content>"), headers=auth(tok)
+    )
+    assert r.headers["X-BA-Gate"] == "flagged"
+    detail = json.loads(r.headers["X-BA-Gate-Detail"])
+    assert detail == {
+        "jev_choice": "injection",
+        "jev_confidence": 0.93,
+        "safety_verdict": "safe",
+        "safety_model": "nemotron-3.5-content-safety",
+    }
+    assert "IGNORE" not in r.headers["X-BA-Gate-Detail"]
+    respx.post(f"{JEV}/v1/systemone").mock(return_value=jev_answer("benign", 0.99))
+    r = env.client.post(
+        "/v1/chat/completions", json=body("<page_content>Proveedor SA</page_content>"), headers=auth(tok)
+    )
+    assert r.headers["X-BA-Gate"] == "clean" and "X-BA-Gate-Detail" not in r.headers

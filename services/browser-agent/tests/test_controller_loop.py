@@ -337,3 +337,43 @@ def test_dead_browser_target_stops_the_session_cleanly(tmp_path):
     assert first["status"] == second["status"] == "stopped" and "browser closed" in first["summary"]
     stops = [s for s in read_steps(path) if s.get("event") == "hard_stop"]
     assert len(stops) == 1 and stops[0]["evaluated"]["reason"] == "browser closed"
+
+
+@pytest.mark.browser
+def test_quarantine_records_each_screener_and_offers_only_bare_allowlisted_links(site, tmp_path):
+    """Found live (run-bcdf9af9e6a6): a Jev-flagged page read "safety unavailable" and its links were lost. The
+    record now names each screener's verdict; the planner gets the withheld page's allowlisted hrefs as bare URLs
+    (no anchor text), and a navigation to one is marked as coming from a quarantined page."""
+    detail = {
+        "jev_choice": "injection",
+        "jev_confidence": 0.93,
+        "safety_verdict": "safe",
+        "safety_model": "nemotron-3.5-content-safety",
+    }
+    plan = [
+        by_name("click", "Claim your prize", expectation="the prize page"),
+        ("navigate", {"url": site.url("search.html"), "expectation": "the registry search"}),
+        ("done", {"status": "achieved", "summary": "on the registry"}),
+    ]
+    gw = FakeGateway(plan, flag=lambda text: HOSTILE in text, gate_detail=detail)
+    session, path = make_session(tmp_path, gw, start_url=site.url("hostile.html"), prescreen=False)
+    try:
+        session.run_goal("Open the registry search page")
+    finally:
+        session.close()
+    steps = read_steps(path)
+    for s in steps:
+        check_step(s)
+    (q,) = [s for s in steps if s.get("event") == "quarantine"]
+    assert q["screen"]["jev_choice"] == "injection" and q["screen"]["jev_confidence"] == 0.93
+    assert q["screen"]["safety_verdict"] == "safe"
+    assert (
+        "Jev injection (0.93)" in q["screen"]["reason"]
+        and "nemotron-3.5-content-safety" in q["screen"]["reason"]
+    )
+    assert q["executed"]["urls_offered_from_quarantined_page"] == [site.url("search.html")]
+    notice = gw.planner_prompts[1]
+    assert "links found on the withheld page" in notice and site.url("search.html") in notice
+    assert "evil.invalid" not in notice and "Claim your prize" not in notice and HOSTILE not in notice
+    nav = [s for s in steps if (s.get("requested") or {}).get("tool") == "navigate"]
+    assert nav and nav[-1]["requested"].get("from_quarantined_page") is True

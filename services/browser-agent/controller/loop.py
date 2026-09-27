@@ -123,6 +123,7 @@ class Session:
         self.scrutiny = False  # set once any screen flags page content in this session (one-way)
         self.prescreen = prescreen  # controller-side Jev injection screen before the planner sees a page
         self._withheld: dict[str, str | None] = {}  # page-block digest -> capture key, for flagged pages
+        self._offered: dict[str, list[str]] = {}  # page-block digest -> bare allowlisted URLs offered from it
         self._screened: set[str] = set()
         self.closed = False
         self._obs: Observation | None = None
@@ -475,6 +476,8 @@ class Session:
 
     def _withhold(self, digest: str, obs: Observation) -> None:
         self._withheld[digest] = obs.screenshot_key
+        # bare allowlisted links from the withheld page, offered to the planner and marked in the trace
+        self._offered[digest] = screen.quarantine_urls(obs, self.allowed_domains)
         self.metrics.jev_flagged += 1
         self.scrutiny = True
 
@@ -483,13 +486,19 @@ class Session:
     ) -> tuple[Action | None, dict]:
         model = config.VISION_MODEL if self.vision_grounding else config.PLANNER_MODEL
         self.metrics.turns += 1
-        withheld = screen.withheld_notice(self._withheld[digest]) if digest in self._withheld else None
+        withheld = (
+            screen.withheld_notice(self._withheld[digest], self._offered.get(digest))
+            if digest in self._withheld
+            else None
+        )
         msgs = planner.messages(goal, obs, history, vision=self.vision_grounding, withheld=withheld)
         error, usage, gateway = None, None, None
         action = None
         try:
             response = self._chat(model, msgs, tools=planner.TOOLS, tool_choice="auto", temperature=0)
-            gateway = screen.gateway_screen(self._gate_hook(response))
+            gateway = screen.gateway_screen(
+                self._gate_hook(response), getattr(self.gateway, "last_gate_detail", None)
+            )
             usage = self._usage_vultr(model, response)
             action, note = planner.parse(response)
             error = None if action else note
@@ -513,6 +522,7 @@ class Session:
                     "discarded_proposal": action.as_dict() if action else None,
                     "withheld_from_planning": True,
                     "captured_as": obs.screenshot_key,
+                    "urls_offered_from_quarantined_page": self._offered.get(digest, []),
                 },
                 evaluated={"status": "quarantined_continue", "reason": record["reason"]},
                 event="quarantine",
@@ -560,9 +570,12 @@ class Session:
         self._record_blocked(result.blocked_hosts)
         after = self._look()
         blocked = sorted(set(result.blocked_hosts) | set(after.blocked_hosts))
+        from_quarantine = action.tool == "navigate" and any(
+            str(action.args.get("url", "")) in urls for urls in self._offered.values()
+        )
         act_step = self._emit(
             observed=obs.summary(),
-            requested=action.as_dict(),
+            requested=action.as_dict() | ({"from_quarantined_page": True} if from_quarantine else {}),
             executed=result.as_dict() | {"url_after": after.url, "blocked_hosts": blocked},
             evaluated={"ok": result.ok, **({"error": result.error} if result.error else {})},
             parent_step_id=parent_id,

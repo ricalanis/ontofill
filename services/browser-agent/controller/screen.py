@@ -67,10 +67,24 @@ def controller_screen(jev_call, chunk: str) -> dict | None:
     )
 
 
-def gateway_screen(gate: str | None) -> dict | None:
+def gateway_screen(gate: str | None, detail: dict | None = None) -> dict | None:
     if gate not in ("clean", "flagged"):
         return None
     flagged = gate == "flagged"
+    if flagged and detail:
+        conf = detail.get("jev_confidence")
+        jev = f"Jev {detail.get('jev_choice') or 'n/a'}" + (f" ({conf:.2f})" if conf is not None else "")
+        safety = f"content safety {detail.get('safety_verdict')}" + (
+            f" ({detail['safety_model']})" if detail.get("safety_model") else ""
+        )
+        return record(
+            flagged=True,
+            by="gateway",
+            jev_choice=detail.get("jev_choice"),
+            jev_confidence=conf,
+            safety_verdict=detail.get("safety_verdict") or "unavailable",
+            reason=f"gateway flagged: {jev}; {safety}",
+        )
     return record(
         flagged=flagged,
         by="gateway",
@@ -80,8 +94,42 @@ def gateway_screen(gate: str | None) -> dict | None:
     )
 
 
-def withheld_notice(screenshot_key: str | None) -> str:
-    return (
+MAX_OFFERED_URLS = 40
+MAX_URL_CHARS = 300
+
+
+def quarantine_urls(obs, allowed_domains: list[str]) -> list[str]:
+    """Links on a withheld page that the planner may still use: bare <a href> URLs only (no anchor text or page
+    content), http(s), on an allowed host, length-capped, and never a URL whose decoded form holds whitespace (so
+    no sentence can ride in a query string). The same trust level as navigating the allowlist by hand."""
+    from urllib.parse import unquote, urlsplit
+
+    from controller.backend import host_allowed
+
+    out: list[str] = []
+    for el in getattr(obs, "elements", None) or []:
+        href = getattr(el, "href", None)
+        if getattr(el, "kind", None) != "link" or not isinstance(href, str) or len(href) > MAX_URL_CHARS:
+            continue
+        parts = urlsplit(href)
+        if parts.scheme not in ("http", "https") or not host_allowed(parts.hostname, allowed_domains):
+            continue
+        if any(ch.isspace() for ch in unquote(href)) or href in out:
+            continue
+        out.append(href)
+        if len(out) >= MAX_OFFERED_URLS:
+            break
+    return out
+
+
+def withheld_notice(screenshot_key: str | None, urls: list[str] | None = None) -> str:
+    notice = (
         f"[page content withheld: flagged as a possible prompt injection; captured as {screenshot_key}; "
         "choose back, navigate within the allowed domains, or done]"
     )
+    if urls:
+        notice += (
+            "\n[links found on the withheld page (untrusted, bare URLs on allowed domains only; you may "
+            "navigate to one):\n" + "\n".join(urls) + "\n]"
+        )
+    return notice
