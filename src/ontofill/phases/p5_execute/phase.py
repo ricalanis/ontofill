@@ -243,7 +243,8 @@ def _format(url: str) -> str | None:
             re.IGNORECASE,
         )
         if match:
-            return (match.group(1) or match.group(2)).lower()
+            detected = (match.group(1) or match.group(2)).lower()
+            return "jsonl" if detected == "ndjson" else detected
     return None
 
 

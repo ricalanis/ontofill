@@ -8,7 +8,7 @@ from ontofill_scrape.models import ParsedFile
 from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p5_execute import execute_objective
-from ontofill.phases.p5_execute.phase import _execute_nested_records
+from ontofill.phases.p5_execute.phase import _execute_nested_records, _format
 from ontofill.phases.p5_execute.record_mapping import (
     extract_record_instances,
     record_mapping_model_schema,
@@ -17,6 +17,11 @@ from ontofill.phases.p5_execute.record_mapping import (
     validate_record_mapping_against_records,
 )
 from ontofill.refiner import MemorySilverStore, refine_observations
+
+
+def test_ndjson_url_uses_the_supported_jsonl_parse_format() -> None:
+    assert _format("https://data.example.test/releases.ndjson") == "jsonl"
+    assert _format("https://data.example.test/releases.ndjson.gz") == "jsonl"
 
 
 def _ontology() -> dict:
