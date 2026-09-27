@@ -40,7 +40,8 @@
 </section>
 {% endif %}
 
-<form method="post" action="{{ base }}/approvals" class="review">
+{% set readonly = identity_mode == "readonly" %}
+{% if readonly %}<div class="review">{% else %}<form method="post" action="{{ base }}/approvals" class="review">{% endif %}
   <input type="hidden" name="phase_dir" value="{{ a.phase_dir }}">
   {% if a.checkpoint == "action" %}{% include "_review_action.html" %}{% endif %}
   {% if docs.prd %}{% include "_review_prd.html" %}{% endif %}
@@ -53,6 +54,7 @@
   {% if not a.approved and a.checkpoint != "action" %}
   <section class="signoff" aria-labelledby="signoff-h">
     <h2 id="signoff-h">Sign off</h2>
+    {% if readonly %}<p class="note">Waiting for an approver.</p>{% include "_readonly_note.html" %}{% else %}
     {% if backend == "recorded" %}<p class="note">This artifact came from recorded (simulated) inference. You can approve it to test the flow, but it will not satisfy the checkpoint on a live run: the engine regenerates it with Vultr inference first.</p>{% endif %}
     {% if a.checkpoint in ("prd", "factors", "ontology") %}
     <p class="note">Approve to let the run continue. Deny to send it back: the engine archives this draft and regenerates it with your reason as a human revision.</p>
@@ -71,7 +73,8 @@
       <button type="submit"{% if not can_decide %} disabled{% endif %}>Approve this checkpoint</button>
     </div>
     {% endif %}
+    {% endif %}
   </section>
   {% endif %}
-</form>
+{% if readonly %}</div>{% else %}</form>{% endif %}
 {% endblock %}

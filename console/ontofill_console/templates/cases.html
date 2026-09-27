@@ -5,7 +5,7 @@
 {% set RUN_STATE = {"running": "run", "paused": "pause", "failed": "block", "done": "done"} %}
 {% block main %}
 {{ v.head("Cases", "Every case package the engine works on: the question it answers, its latest run, and what is waiting for a person.", "ONTOFILL_CONSOLE_CASES registry · brief.md · runs/<case>/latest.json") }}
-<p class="case-actions">{% if registry_enabled() %}<a class="btn" href="/cases/new">New case</a> <a class="btn btn--quiet" href="/cases-archived">Archived cases</a>{% else %}<span class="source">case registry not configured (ONTOFILL_CASES_ROOT): cases come from ONTOFILL_CONSOLE_CASES</span>{% endif %}</p>
+<p class="case-actions">{% if registry_enabled() %}{% if identity_mode != "readonly" %}<a class="btn" href="/cases/new">New case</a> {% endif %}<a class="btn btn--quiet" href="/cases-archived">Archived cases</a>{% else %}<span class="source">case registry not configured (ONTOFILL_CASES_ROOT): cases come from ONTOFILL_CONSOLE_CASES</span>{% endif %}</p>
 {% include "_runner_kill.html" %}
 {% if rows %}
 <ul class="strips">

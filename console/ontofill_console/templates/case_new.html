@@ -4,7 +4,9 @@
 {% block head %}<link rel="stylesheet" href="/static/case-admin.css">{% endblock %}
 {% block main %}
 {{ v.head("New case", "A case starts from one question. It becomes the case's brief.md exactly as you type it; the engine does everything else (the definition, the sources, the data) and stops at each checkpoint for a person.", "writes <cases root>/<id>/case/brief.md · <id>/lake.yaml · cases.json · decisions.jsonl") }}
-{% if not registry_on %}
+{% if identity_mode == "readonly" %}
+<div class="empty"><b>Cases are created on the approvers' console</b><span>This console is read-only: it shows every case and decides nothing.</span></div>
+{% elif not registry_on %}
 <div class="empty"><b>The case registry is not configured</b><span>Set <span class="mono">ONTOFILL_CASES_ROOT</span> to a writable directory to create cases here.</span></div>
 {% else %}
 {% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}

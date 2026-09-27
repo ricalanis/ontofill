@@ -14,6 +14,7 @@
     <li>Request from a direct mesh address (refused for decisions): {{ "yes" if w.direct_denied else "no" }}</li>
     <li>Decisions enabled: {{ "yes" if w.group_verified else "no" }}</li>
   </ul>
+  {% elif w.identity_mode == "readonly" %}<p>Read-only viewer: this console shows every page and records nothing. Every write is refused (403) whatever headers arrive; approvals and runner actions are made on the approvers' console.</p>
   {% elif w.identity_mode == "local" %}<p>Local mode: decisions take a typed name (development only).</p>
   {% elif w.identity_detected %}<p>Signing as: (identity detected, value hidden), from <span class="mono">{{ w.used_header }}</span>.</p>
   {% else %}<p class="signer--none">No usable identity header: decisions are disabled.</p>{% endif %}

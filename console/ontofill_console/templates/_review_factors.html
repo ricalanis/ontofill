@@ -12,6 +12,8 @@
       </div>
       {% if a.approved %}
         <p class="factor__decided factor__decided--{{ decided or 'none' }}">{{ decided or "no decision recorded" }}</p>
+      {% elif identity_mode == "readonly" %}
+        <p class="factor__decided factor__decided--none">awaiting an approver</p>
       {% else %}
       <fieldset class="decide">
         <legend class="visually-hidden">Decision for {{ f.label }}</legend>

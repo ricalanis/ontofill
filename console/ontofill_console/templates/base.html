@@ -33,6 +33,8 @@
     {# Never an email or any header value: NetBird forwards only the group (CONTRACT v1.0.4a); names are self-declared per decision. #}
     {% if identity_mode == "sso-group" %}
     <span class="whoami {% if not group_verified %}whoami--none{% endif %}" title="{{ 'Decisions record group:' ~ approver_group ~ ' and the name you declare' if group_verified else 'Only members of group:' ~ approver_group ~ ' can decide' }}">{% if group_verified %}group:{{ approver_group }} · names self-declared{% else %}not in group:{{ approver_group }} · read-only{% endif %}</span>
+    {% elif identity_mode == "readonly" %}
+    <span class="whoami" title="This console only shows: approvals and runner actions are made on the approvers' console">read-only viewer</span>
     {% elif identity_mode == "local" %}
     <span class="whoami" title="Development only: names are typed, nothing is verified">local mode · names self-declared</span>
     {% else %}

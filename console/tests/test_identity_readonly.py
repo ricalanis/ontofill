@@ -22,11 +22,22 @@ def viewer(root, cases_dir, tmp_path):  # noqa: F811
     return TestClient(create_app(settings_from_env(env)), client=("100.82.93.149", 50000))
 
 
-def test_pages_render_and_say_decisions_are_disabled(viewer):
-    for page in PAGES:
-        assert viewer.get(page, headers=FORGED).status_code == 200, page
+def test_pages_render_as_a_read_only_viewer_with_no_write_form(viewer):
+    for page in (*PAGES, "/cases/libraries/manage"):
+        r = viewer.get(page, headers=FORGED)
+        assert r.status_code == 200, page
+        html = r.text
+        assert "read-only viewer" in html, page  # the masthead says what this console is
+        assert 'method="post"' not in html, page  # no decision, runner, kill or case-edit form
+        assert not any(f'name="{n}"' in html for n in ("decision", "action", "state", "question")), page
+        assert "No signed-in identity" not in html and "sign-in URL" not in html, page  # not the misleading no-identity copy
+        assert 'name="display_name"' not in html and 'name="approver"' not in html, page
     html = viewer.get(PRD_PAGE, headers=FORGED).text
-    assert "decisions are disabled" in html and 'name="display_name"' not in html and 'name="approver"' not in html
+    assert "Read-only console: approvals and runner actions are made on the approvers' console." in html
+    assert "Waiting for an approver" in html
+    assert 'href="/cases/new"' not in viewer.get("/", headers=FORGED).text
+    assert "Cases are created on the approvers" in viewer.get("/cases/new", headers=FORGED).text
+    assert "Read-only viewer" in viewer.get("/whoami", headers=FORGED).text
 
 
 @pytest.mark.parametrize("url,form", [

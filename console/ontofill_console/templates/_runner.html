@@ -4,6 +4,7 @@
   <h2 class="section-h" id="runner-h">Runner</h2>
   <p class="signer" data-runner-state="{{ runner.state or 'unknown' }}">{{ runner.text }}{% if runner.run_id %} · <span class="mono">{{ runner.run_id }}</span>{% endif %}</p>
   {% if runner.reason and runner.state in ("failed", "budget_stop", "waiting_approval") %}<p class="source">{{ runner.reason }}</p>{% endif %}
+  {% if identity_mode == "readonly" %}{% include "_readonly_note.html" %}{% else %}
   <form method="post" action="/cases/{{ case.id }}/runner">
     {% include "_runner_signer.html" %}
     {% set can_act = (identity_mode == "local") or (identity_mode == "sso-group" and group_verified) or (identity_mode == "sso" and identity) %}
@@ -12,5 +13,6 @@
     {% else %}<button type="submit" name="action" value="pause"{% if not can_act %} disabled{% endif %}>Pause</button>
     {% if runner.state == "failed" %}<button type="submit" name="action" value="resume"{% if not can_act %} disabled{% endif %}>Retry once</button>{% endif %}{% endif %}
   </form>
+  {% endif %}
 </section>
 {% endif %}

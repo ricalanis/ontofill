@@ -24,7 +24,12 @@
     {% else %}<p class="muted">Registered from the environment (ONTOFILL_CONSOLE_CASES): read-only here.</p>{% endif %}
   </section>
 
-  {% if meta and registry_on %}
+  {% if identity_mode == "readonly" %}
+  <section class="panel" aria-labelledby="edit-h">
+    <h2 class="section-h" id="edit-h">Changes</h2>
+    <p class="signer signer--readonly">Read-only console: the question, budget and archive state are changed on the approvers' console.</p>
+  </section>
+  {% elif meta and registry_on %}
   <section class="panel" aria-labelledby="edit-h">
     {% if not started and not meta.archived %}
     <h2 class="section-h" id="edit-h">Edit the question (no run yet)</h2>

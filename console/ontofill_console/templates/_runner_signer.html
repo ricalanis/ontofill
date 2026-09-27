@@ -1,5 +1,7 @@
 {# Who a runner action is recorded as. Unlike approval pages, the SSO identity value is never shown here. #}
-{% if identity_mode == "sso-group" %}
+{% if identity_mode == "readonly" %}
+      {% include "_readonly_note.html" %}
+{% elif identity_mode == "sso-group" %}
 {% if group_verified %}
       <p class="signer">Verified: member of <strong class="mono">{{ approver_group }}</strong> via NetBird SSO; name self-declared.</p>
       <label for="runner_name">Your name (self-declared)</label>

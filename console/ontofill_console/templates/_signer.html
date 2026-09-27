@@ -1,6 +1,8 @@
 {# Who the decision is recorded as: the SSO identity (deployed) or a typed name (local mode only). Never both. #}
 {% for rel, digest in digests.items() %}<input type="hidden" name="artifact_sha256.{{ rel }}" value="{{ digest or '' }}">{% endfor %}
-{% if identity_mode == "sso-group" %}
+{% if identity_mode == "readonly" %}
+      {% include "_readonly_note.html" %}
+{% elif identity_mode == "sso-group" %}
 {% if group_verified %}
       <p class="signer">Verified: member of <strong class="mono">{{ approver_group }}</strong> via NetBird SSO; name self-declared.</p>
       <label for="display_name">Your name (self-declared)</label>

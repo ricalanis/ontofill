@@ -23,6 +23,7 @@
   <h2 id="signoff-h">Approve or deny</h2>
   <p class="note">Approving lets the agent perform exactly this action, once, in its sandbox. Denying stops it; the engine records the reason and moves on without it.</p>
   {% if backend == "recorded" %}<p class="note">This request came from recorded (simulated) inference. Answering it tests the flow only.</p>{% endif %}
+  {% if identity_mode == "readonly" %}<p class="note">Waiting for an approver.</p>{% include "_readonly_note.html" %}{% else %}
   <div class="action-gate">
     {% include "_signer.html" %}
     <label for="reason">Reason (required to deny)</label>
@@ -32,5 +33,6 @@
       <button type="submit" name="decision" value="deny" class="btn--deny"{% if not can_decide %} disabled{% endif %}>Deny</button>
     </div>
   </div>
+  {% endif %}
 </section>
 {% endif %}
