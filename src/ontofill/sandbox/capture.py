@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox.domains import registrable_domain, same_registrable_domain
@@ -31,6 +31,12 @@ from ontofill.sandbox.jobs import (
 from ontofill.sandbox.limits import SandboxLimits
 
 _DOMAIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
+_NETWORK_AUTH_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|credential|authorization|bearer|"
+    r"session|csrf|sig(?:nature)?|access[_-]?key|auth|jwt|sas)"
+)
+_NETWORK_MIME = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z", re.IGNORECASE)
+_NETWORK_REQUEST_LIMIT = 40
 _IMAGE_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _REMOTE_OUTPUT_LIMIT = 32 * 1024 * 1024
@@ -92,6 +98,72 @@ def _safe_capture_url(value: object) -> str | None:
         return f"{parsed.scheme.lower()}://{host}{port}{parsed.path}"[:2048]
     except ValueError:
         return None
+
+
+def _validated_network_requests(value: object) -> list[dict]:
+    """Recheck untrusted pod metadata before exposing discovery leads."""
+    if not isinstance(value, list):
+        return []
+    records: list[dict] = []
+    seen: set[str] = set()
+    for item in value[:120]:
+        if not isinstance(item, Mapping) or item.get("method") != "GET":
+            continue
+        kind = item.get("resource_type")
+        url = item.get("url")
+        if kind not in {"xhr", "fetch", "download"} or not isinstance(url, str):
+            continue
+        if len(url) > 2048 or any(ord(char) < 32 for char in url):
+            continue
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            query = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.username
+            or parsed.password
+            or port not in {None, 80, 443}
+            or not host
+            or "." not in host
+            or ".." in host
+            or not host.strip("0123456789.")
+            or host.endswith((".local", ".localhost", ".internal", ".onion"))
+            or not _DOMAIN.fullmatch(host)
+        ):
+            continue
+        try:
+            ipaddress.ip_address(host)
+            continue
+        except ValueError:
+            pass
+        if any(
+            _NETWORK_AUTH_KEY.search(key)
+            or re.search(r"(?i)\bbearer\s+\S+|^eyJ[A-Za-z0-9_-]{12,}\.", parameter)
+            or re.fullmatch(r"[A-Za-z0-9_=-]{40,}", parameter)
+            for key, parameter in query
+        ):
+            continue
+        url = parsed._replace(fragment="").geturl()
+        if url in seen:
+            continue
+        status = item.get("status")
+        if status is not None and (type(status) is not int or not 100 <= status < 400):
+            continue
+        row: dict = {"url": url, "method": "GET", "resource_type": kind}
+        if status is not None:
+            row["status"] = status
+        content_type = item.get("content_type")
+        if isinstance(content_type, str) and _NETWORK_MIME.fullmatch(content_type):
+            row["content_type"] = content_type.casefold()
+        seen.add(url)
+        records.append(row)
+        if len(records) >= _NETWORK_REQUEST_LIMIT:
+            break
+    return records
 
 
 class CaptureIntegrityError(CaptureError):
@@ -1716,6 +1788,10 @@ def capture_url(
                 on_trace(row)
         raise capture_error
     assert job_result is not None
+    if settings is None:
+        job_result["network_requests"] = _validated_network_requests(
+            pod_result.get("network_requests")
+        )
     if settings is None and on_trace is not None:
         for row in job_result["trace"]:
             on_trace(row)

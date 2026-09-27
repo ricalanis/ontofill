@@ -341,3 +341,7 @@ P3 rejects CSS, scripts, source maps, favicons, fonts, and image leads before a 
 DONE: a synthetic provider with CSS, favicon, image, and a valid entity page captures only the entity page; the trace names each static skip. `uv run pytest -q tests/test_r55_static_assets.py`, then full pytest, Ruff lint and format checks, and `git diff --check` pass.
 
 Constraints: engine-owned P3 code and tests only; no case or approvals, no VM pull while an engine process runs, no credentials.
+
+# Current goal: bounded SPA network leads
+
+Capture safe GET XHR/fetch/download request metadata inside the disposable browser pod and return at most 40 validated public URLs to P3. A blocked off-host request may remain a lead without response status. No response bodies, private URLs, or credential-bearing queries leave the pod; the host validates the same boundary before exposing metadata. DONE: red-to-green synthetic request and host tests, managed focused pytest/Ruff gate, local commit.

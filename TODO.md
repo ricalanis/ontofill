@@ -664,3 +664,11 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r55_static
 2. [ ] Filter by URL suffix and known MIME at the shared lead boundary; refuse static capture responses.
 3. [ ] Run focused and full gates, review and push public main.
 4. [ ] Deploy with R54/R53 in a confirmed zero-engine window; rebuild parse pod and report live SHA.
+
+# R53 SPA network request capture
+
+- FILES: `sandbox/agent-pod/capture.py`, `src/ontofill/sandbox/capture.py`, new focused tests, `GOAL.md`, `TODO.md`.
+- TASK: Emit bounded safe GET request metadata from the sandbox browser and validate it on the host for P3 discovery leads.
+- DONE: managed focused synthetic pod and host pytest plus Ruff lint/format and `git diff --check`.
+- FORMAT: Ruff check and format on touched Python files.
+- CHECK RESULT: managed `r53-spa-final` passed 41 focused tests (1 live-dependent skip), Ruff lint/format and `git diff --check` (exit 0). The initial red test failed because the host validator was absent; the synthetic browser now emits a GET XHR missing from DOM plus a blocked off-host GET with no response status.

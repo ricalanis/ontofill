@@ -15,7 +15,7 @@ import ssl
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 from urllib.request import (
     HTTPRedirectHandler,
     HTTPSHandler,
@@ -50,6 +50,97 @@ _BOT_CHALLENGE_TEXT = (
     "verify that you are human",
     "complete the security check",
 )
+_NETWORK_URL_AUTH_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|credential|authorization|bearer|"
+    r"session|csrf|sig(?:nature)?|access[_-]?key|auth|jwt|sas)"
+)
+_NETWORK_MIME = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z", re.IGNORECASE)
+_NETWORK_REQUEST_LIMIT = 40
+
+
+def _safe_network_url(value: object) -> str | None:
+    """Keep only bounded public URLs without embedded credential material."""
+    if not isinstance(value, str) or len(value) > 2048 or any(ord(char) < 32 for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        host = (parsed.hostname or "").casefold().rstrip(".")
+        query = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username
+        or parsed.password
+        or port not in {None, 80, 443}
+        or not host
+        or "." not in host
+        or ".." in host
+        or not host.strip("0123456789.")
+        or host.endswith((".local", ".localhost", ".internal", ".onion"))
+        or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", host)
+    ):
+        return None
+    try:
+        import ipaddress
+
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    if any(
+        _NETWORK_URL_AUTH_KEY.search(key)
+        or re.search(r"(?i)\bbearer\s+\S+|^eyJ[A-Za-z0-9_-]{12,}\.", value)
+        or re.fullmatch(r"[A-Za-z0-9_=-]{40,}", value)
+        for key, value in query
+    ):
+        return None
+    return parsed._replace(fragment="").geturl()
+
+
+class NetworkRequestRecorder:
+    """One bounded set of GET request leads observed inside the browser pod."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+        self._by_url: dict[str, dict] = {}
+
+    def observe_request(self, request) -> None:
+        try:
+            if request.method.upper() != "GET" or request.resource_type not in {"xhr", "fetch"}:
+                return
+            url = _safe_network_url(request.url)
+        except (AttributeError, ValueError):
+            return
+        if url is None or url in self._by_url or len(self.records) >= _NETWORK_REQUEST_LIMIT:
+            return
+        record = {"url": url, "method": "GET", "resource_type": request.resource_type}
+        self.records.append(record)
+        self._by_url[url] = record
+
+    def observe_response(self, response) -> None:
+        try:
+            url = _safe_network_url(response.request.url)
+            record = self._by_url.get(url or "")
+            if record is None:
+                return
+            status = response.status
+            if type(status) is int and 100 <= status < 400:
+                record["status"] = status
+            content_type = str(response.headers.get("content-type") or "").split(";", 1)[0]
+            if _NETWORK_MIME.fullmatch(content_type):
+                record["content_type"] = content_type.casefold()
+        except (AttributeError, ValueError):
+            return
+
+    def observe_download(self, download) -> None:
+        url = _safe_network_url(getattr(download, "url", None))
+        if url is None or url in self._by_url or len(self.records) >= _NETWORK_REQUEST_LIMIT:
+            return
+        record = {"url": url, "method": "GET", "resource_type": "download"}
+        self.records.append(record)
+        self._by_url[url] = record
 
 
 class StepLimitReached(RuntimeError):
@@ -454,6 +545,7 @@ async def capture() -> None:
                 proxy={"server": proxy_url, "bypass": "<-loopback>"},
             )
             page = await context.new_page()
+            network_requests = NetworkRequestRecorder()
             navigation_chain: list[str] = []
             redirect_location_reads: list[asyncio.Task] = []
             main_frame_responses: list[object] = []
@@ -503,6 +595,7 @@ async def capture() -> None:
                     await asyncio.gather(*redirect_location_reads, return_exceptions=True)
 
             def observe_response(response) -> None:
+                network_requests.observe_response(response)
                 try:
                     request = response.request
                     if request.is_navigation_request() and request.frame == page.main_frame:
@@ -515,6 +608,7 @@ async def capture() -> None:
                     )
 
             def observe_download(download) -> None:
+                network_requests.observe_download(download)
                 download_url = getattr(download, "url", None)
                 if isinstance(download_url, str) and download_url:
                     download_urls.append(download_url)
@@ -524,6 +618,7 @@ async def capture() -> None:
                 # Keep the attempted main-frame URL even when the proxy rejects it
                 # and Playwright later reports a navigation error.
                 record_navigation(route.request)
+                network_requests.observe_request(route.request)
                 if route.request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
                     await route.continue_()
                 else:
@@ -531,7 +626,11 @@ async def capture() -> None:
 
             await context.route("**/*", read_only)
 
-            page.on("request", record_navigation)
+            def observe_request(request) -> None:
+                record_navigation(request)
+                network_requests.observe_request(request)
+
+            page.on("request", observe_request)
             page.on("response", observe_response)
             page.on("download", observe_download)
             budget.take()
@@ -705,6 +804,7 @@ async def capture() -> None:
                     "status": http_status,
                     "navigation_attempts": [navigation_attempt],
                     **({"capture_reason": "bot_challenge"} if bot_challenge else {}),
+                    "network_requests": network_requests.records,
                     **preflight,
                     "steps": budget.steps,
                     "peak_memory_mb": peak_memory_mb(),
