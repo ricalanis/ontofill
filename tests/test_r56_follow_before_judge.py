@@ -385,6 +385,7 @@ def test_query_plan_appends_model_generated_subject_standard_names():
     )
 
     query_text = " ".join(query.text for query in queries).casefold()
-    assert "open contracting data standard" in query_text
+    assert "ocds" in query_text
     assert "contrataciones abiertas" in query_text
+    assert all(len(query.text.split()) <= 14 for query in queries)
     assert "https://" not in query_text

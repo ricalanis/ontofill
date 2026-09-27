@@ -183,6 +183,7 @@ def test_primary_entity_query_uses_ontology_anchor_and_model_local_terms() -> No
                     {
                         "property_id": "status",
                         "query": "localized roster open dataset API enrolled in program",
+                        "standard_terms": ["Record Exchange Standard", "RES"],
                     }
                 ]
             }
@@ -326,6 +327,7 @@ def test_query_plan_uses_hierarchy_and_local_english_variants() -> None:
                         "property_id": "status",
                         "query": "consulta local de registros por identificador",
                         "english_query": "official registry records by identifier",
+                        "standard_terms": ["Record Exchange Standard", "RES"],
                     }
                 ]
             }
@@ -398,6 +400,7 @@ def test_query_batch_is_capped_and_repeated_model_plan_rotates(tmp_path) -> None
                         "property_id": "status",
                         "query": "public status registry records",
                         "english_query": "public status registry records",
+                        "standard_terms": ["Record Exchange Standard", "RES"],
                     }
                 ]
             }

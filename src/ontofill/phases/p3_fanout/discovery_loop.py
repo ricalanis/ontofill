@@ -257,6 +257,29 @@ def _summary_text(value: object, limit: int = 180) -> str:
     return text[:limit]
 
 
+def _compact_standard_hint(terms: list[str]) -> str:
+    """Keep a model-named publication standard searchable without bloating a query."""
+    cleaned = [" ".join(term.split()) for term in terms if term.strip()]
+    if not cleaned:
+        return ""
+    acronyms = [match.group() for term in cleaned for match in re.finditer(r"\b[A-Z]{2,8}\b", term)]
+    acronym = acronyms[0] if acronyms else ""
+    if not acronym:
+        formal = cleaned[0].split()
+        if len(formal) >= 3 and all(word[:1].isupper() for word in formal):
+            acronym = "".join(word[0] for word in formal)[:8]
+    local = (
+        next((term for term in cleaned[1:] if acronym.casefold() not in term.casefold()), "")
+        if acronym
+        else cleaned[0]
+    )
+    local_words = local.split()
+    if len(local_words) > 3:
+        local = " ".join(local_words[-2:])
+    hint = " ".join(dict.fromkeys(part for part in (acronym, local) if part))
+    return " ".join(hint.split()[:4])
+
+
 def _capture_error_text(error: Exception) -> str:
     """Prefer the substrate's bounded, URL-sanitized first failure line."""
     return _summary_text(getattr(error, "first_line", None) or str(error), 300)
@@ -2185,13 +2208,19 @@ class DiscoveryLoop:
                         for term in item.get("standard_terms", [])
                         if isinstance(term, str) and term.strip()
                     ][:3]
-                    standard_phrase = " ".join(dict.fromkeys(standard_terms))[:130]
+                    standard_phrase = _compact_standard_hint(standard_terms)
 
                     def query_with_standards(query: str, phrase: str = standard_phrase) -> str:
                         if not phrase:
-                            return query[:220]
-                        query_limit = max(1, 219 - len(phrase))
-                        return f"{query[:query_limit].rstrip()} {phrase}"
+                            return " ".join(query.split()[:12])
+                        missing = [
+                            word
+                            for word in phrase.split()
+                            if word.casefold() not in query.casefold().split()
+                        ]
+                        suffix = " ".join(missing)
+                        allowance = max(1, 12 - len(missing))
+                        return " ".join([*query.split()[:allowance], suffix]).strip()
 
                     planned_by_gap.setdefault(property_id, []).extend(
                         query
@@ -2232,10 +2261,8 @@ class DiscoveryLoop:
             terms_by_gap[gap] = terms
             candidates = []
             for planned in planned_by_gap.get(gap, []):
-                text = (
-                    " ".join(planned.split())
-                    if reuse_theme_pass
-                    else " ".join(f"{planned} {terms}".split())[:240]
+                text = " ".join(
+                    (planned if reuse_theme_pass else f"{planned} {terms}").split()[:14]
                 )
                 if text and text not in candidates:
                     candidates.append(text)

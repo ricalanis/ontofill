@@ -142,7 +142,8 @@ def test_live_query_plan_requires_model_named_standard_terms() -> None:
         1,
         set(),
     )
-    assert queries and "Example Exchange Standard EES" in queries[0].text
+    assert queries and "EES" in queries[0].text
+    assert len(queries[0].text.split()) <= 14
 
 
 def test_jsonl_release_resources_are_recognized_without_accepting_arbitrary_gzip():
