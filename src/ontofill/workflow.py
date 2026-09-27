@@ -438,6 +438,8 @@ def _publish_decision_calls(
     for call in getattr(decision, "call_log", [])[start:]:
         provenance = {key: call[key] for key in ("backend", "model", "at")}
         step = _trace_step(run_id, phase, provenance, "decision.complete_json", call["purpose"])
+        if isinstance(call.get("step_id"), str) and call["step_id"]:
+            step["step_id"] = call["step_id"]
         step["mode"] = "D1"
         step["source_id"] = source_id or call.get("source_id")
         step["objective_id"] = objective_id or call.get("objective_id")
@@ -674,7 +676,8 @@ def run_case(
         raise ValueError("budget_usd must be nonnegative")
     if decision is None:
         if os.getenv("ONTOFILL_GATEWAY_TOKEN") or os.getenv("VULTR_INFERENCE_API_KEY"):
-            decision = VultrDecisionClient.from_env()
+            run_id = run_id or "run-" + uuid.uuid4().hex[:12]
+            decision = VultrDecisionClient.from_env(run_id=run_id)
         else:
             decision = _preview_decision((original / "brief.md").read_text(encoding="utf-8"))
     if decision.backend not in {"recorded", "vultr"}:
@@ -685,6 +688,8 @@ def run_case(
     run_id = run_id or (("mock-" if mock else "run-") + uuid.uuid4().hex[:12])
     if mock != run_id.startswith("mock-"):
         raise ValueError("recorded runs require mock- IDs; live runs reserve them")
+    if isinstance(decision, VultrDecisionClient):
+        decision.run_id = run_id
     case_id = _case_id(original)
     if mock:
         case_dir, default_lake = _scratch_case(original, run_id)

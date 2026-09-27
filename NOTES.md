@@ -1,5 +1,10 @@
 # Strategy and assumptions
 
+## R29 integration (2026-09-27)
+- Independent inference and sandbox outcome branches were reviewed and cherry-picked on current main. Workflow now assigns a run ID before the gateway model catalog call and binds each decision call's gateway step ID to the same trace step.
+- Initial direct focused check passed 60 tests with 2 opt-in skips, then Ruff flagged a mutable class test fixture (`RUF012`) in the new workflow attribution test. The fixture is moved into `__init__`; the next managed focused gate checks it. This is a style-only failure, not a production behavior failure.
+- The P3/status worker passed its module-focused gate (34 tests and Ruff). Its workflow integration fixture then failed twice for distinct harness assumptions: expected exit 0 in a recorded preview that correctly pauses at PRD, then seeded a fake source trace before workflow's `trace_before` snapshot. It corrected the fixture to append after the snapshot and stopped under progress guard. I own the independent integrated check of that final seam.
+
 ## R26c narrow domain denial (2026-09-27)
 - Red baseline: all three new recorded regressions failed as intended: the fourth human denial created false SECONDARY subjects, the engine redrafted the whole PRD, and the model schema left publisher tier optional.
 - First focused post-change check: 14 passed, 1 failed. The remaining failure was a test fixture mismatch: the synthetic v4 declared two prior revisions inside `prd.json` but did not create their archived denial markers, so `checkpoint_revisions` correctly assigned the active denial `n=1` rather than the real case's `n=3`. The fixture now creates synthetic archived markers; no production change is needed for that failure.

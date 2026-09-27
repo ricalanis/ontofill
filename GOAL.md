@@ -1,4 +1,10 @@
-# Current goal: R26c live PRD redraft after a narrow human deny
+# Current goal: R29 run observability
+
+Attribute every gateway inference request to its engine run and trace step; separate sandbox task outcomes from proof integrity; show source labels/hosts and a stop reason in live run status. Existing artifacts remain valid.
+
+DONE: synthetic HTTP and workflow tests join X-Run-Id/X-BA-Step-Id to trace; job tests show HTTP refusal with sound proof; P3/status tests show source identity and a nonempty stop reason. Full engine pytest and Ruff, runner as relevant, pre-push scan, public main push, and control VM fast-forward pass. A live run is then checked by the orchestrator for gateway attribution.
+
+## Prior R26c goal
 
 Preserve a reviewed PRD while correcting only the field named by a new digest-verified denial; keep the authority policy valid under all human revisions.
 

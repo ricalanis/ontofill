@@ -1,5 +1,11 @@
 # Work list
 
+## R29 current slice
+- [x] Review and integrate independent inference-header and sandbox-outcome lanes.
+- [ ] Wire workflow run_id before model catalog request and reuse each inference call's step_id in its trace row.
+- [ ] Integrate P3 source labels/hosts and stop reasons; verify its corrected workflow fixture after the worker's guard pause.
+- [ ] Run full managed gate, pre-push scan, push only main, fast-forward VM, and hand live attribution check to orchestrator.
+
 ## R26c current slice
 - [x] Reproduce false secondary subjects, full redraft and optional tier with the recorded v4 plus fourth denial.
 - [x] Require tier in new live PRD tool output, preserving legacy artifact validation.
