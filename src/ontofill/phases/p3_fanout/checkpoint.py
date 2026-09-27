@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import tempfile
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,8 +25,10 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 from jsonschema import ValidationError
 
 from ontofill.contracts import validate_document
+from ontofill.phases.p3_fanout.leads import public_url
 
 SCHEMA_VERSION = 1
+MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024
 CAPTURE_TTL = timedelta(hours=6)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BRONZE_KEY = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -91,31 +94,72 @@ def _bounded_text(value: str, field: str, maximum: int, *, single_line: bool = F
     return clean
 
 
-def normalize_url(value: str) -> str:
-    """Normalize a public HTTP(S) URL and reject embedded or query-string credentials."""
+def _public_dns_host(value: str) -> bool:
+    """Reject IP literals, local names, and malformed host labels before reuse."""
+    host = value.casefold().rstrip(".")
+    if not host or len(host) > 253:
+        return False
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return False
+    labels = host.split(".")
+    if len(labels) < 2 or labels[-1].isdigit():
+        return False
+    if labels[-1] in {"arpa", "internal", "invalid", "local", "localhost", "metadata"}:
+        return False
+    return all(
+        1 <= len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(char.isalnum() or char == "-" for char in label)
+        for label in labels
+    )
+
+
+def _url_identity(value: str) -> tuple[str, str]:
+    """Return a query-free URL and a digest of the full runtime URL identity."""
     raw = _bounded_text(value, "url", 2048, single_line=True)
     try:
         parsed = urlsplit(raw)
         port = parsed.port
     except ValueError as exc:
         raise ValueError("url is malformed") from exc
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("url must be an absolute HTTP(S) URL")
+    if not public_url(raw) or not parsed.hostname or not _public_dns_host(parsed.hostname):
+        raise ValueError("url must have a public DNS host and use HTTP(S)")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("url may not contain user credentials")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("url port must be between 1 and 65535")
     if any(
         _AUTH_QUERY_KEY.search(key) for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
     ):
         raise ValueError("url may not contain credential query parameters")
 
-    host = parsed.hostname.lower()
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
+    host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
     default_port = (parsed.scheme.lower() == "http" and port == 80) or (
         parsed.scheme.lower() == "https" and port == 443
     )
     netloc = host if port is None or default_port else f"{host}:{port}"
-    return urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, ""))
+    canonical = urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", "", ""))
+    runtime = urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, ""))
+    return canonical, hashlib.sha256(runtime.encode("utf-8")).hexdigest()
+
+
+def normalize_url(value: str) -> str:
+    """Return a canonical URL without query values or fragments."""
+    return _url_identity(value)[0]
+
+
+def url_digest(value: str) -> str:
+    """Digest the full HTTP(S) URL identity without retaining query values."""
+    return _url_identity(value)[1]
 
 
 def _source_identity(value: str) -> str:
@@ -207,12 +251,28 @@ class Lead:
     provider: str
     url: str
     source_identity: str
+    url_digest: str | None = None
+    property_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "query", _bounded_text(self.query, "query", 500, single_line=True))
         object.__setattr__(self, "provider", _bounded_text(self.provider, "provider", 100))
-        object.__setattr__(self, "url", normalize_url(self.url))
+        safe_url, computed_digest = _url_identity(self.url)
+        object.__setattr__(self, "url", safe_url)
+        object.__setattr__(
+            self,
+            "url_digest",
+            _digest(self.url_digest, "url_digest")
+            if self.url_digest is not None
+            else computed_digest,
+        )
         object.__setattr__(self, "source_identity", _source_identity(self.source_identity))
+        property_ids = tuple(
+            _bounded_text(item, "property_id", 240, single_line=True) for item in self.property_ids
+        )
+        if any(not _IDENTIFIER.fullmatch(item) for item in property_ids):
+            raise ValueError("property IDs must be stable identifiers")
+        object.__setattr__(self, "property_ids", tuple(dict.fromkeys(property_ids)))
 
 
 @dataclass(frozen=True)
@@ -222,9 +282,18 @@ class CaptureRecord:
     bronze_key: str
     metadata_digest: str
     captured_at: datetime
+    url_digest: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "url", normalize_url(self.url))
+        safe_url, computed_digest = _url_identity(self.url)
+        object.__setattr__(self, "url", safe_url)
+        object.__setattr__(
+            self,
+            "url_digest",
+            _digest(self.url_digest, "url_digest")
+            if self.url_digest is not None
+            else computed_digest,
+        )
         object.__setattr__(self, "source_identity", _source_identity(self.source_identity))
         _bronze_key(self.bronze_key)
         _digest(self.metadata_digest, "metadata_digest")
@@ -320,7 +389,22 @@ def _empty(inputs: CheckpointInputs, now: datetime) -> P3Checkpoint:
     return P3Checkpoint(inputs=inputs, updated_at=now)
 
 
-def _to_document(checkpoint: P3Checkpoint) -> dict[str, object]:
+def _to_document(
+    checkpoint: P3Checkpoint, generated_by: Mapping[str, str] | None = None
+) -> dict[str, object]:
+    provenance = generated_by or {
+        "backend": "recorded",
+        "model": "p3-checkpoint",
+        "at": _timestamp(checkpoint.updated_at),
+    }
+    backend = provenance.get("backend")
+    if backend not in {"recorded", "vultr", "jev"}:
+        raise ValueError("checkpoint generated_by backend is unsupported")
+    model = _bounded_text(str(provenance.get("model") or ""), "model", 200, single_line=True)
+    generated_at = provenance.get("at") or _timestamp(checkpoint.updated_at)
+    if not isinstance(generated_at, str):
+        raise TypeError("checkpoint generated_by.at must be text")
+    _parse_timestamp(generated_at, "generated_by.at")
     return {
         "schema_version": checkpoint.schema_version,
         "inputs": {
@@ -332,6 +416,7 @@ def _to_document(checkpoint: P3Checkpoint) -> dict[str, object]:
             "critic_version": checkpoint.inputs.critic_version,
         },
         "updated_at": _timestamp(checkpoint.updated_at),
+        "generated_by": {"backend": backend, "model": model, "at": generated_at},
         "query_runs": [
             {
                 "query": item.query,
@@ -346,13 +431,16 @@ def _to_document(checkpoint: P3Checkpoint) -> dict[str, object]:
                 "query": item.query,
                 "provider": item.provider,
                 "url": item.url,
+                "url_digest": item.url_digest,
                 "source_identity": item.source_identity,
+                "property_ids": list(item.property_ids),
             }
             for item in checkpoint.leads
         ],
         "captures": [
             {
                 "url": item.url,
+                "url_digest": item.url_digest,
                 "source_identity": item.source_identity,
                 "bronze_key": item.bronze_key,
                 "metadata_digest": item.metadata_digest,
@@ -389,7 +477,10 @@ def _from_document(document: dict[str, object]) -> P3Checkpoint:
         inputs=inputs,
         updated_at=_parse_timestamp(document["updated_at"], "updated_at"),
         query_runs=tuple(QueryRun(**item) for item in document["query_runs"]),
-        leads=tuple(Lead(**item) for item in document["leads"]),
+        leads=tuple(
+            Lead(**{**item, "property_ids": tuple(item["property_ids"])})
+            for item in document["leads"]
+        ),
         captures=tuple(
             CaptureRecord(
                 **{
@@ -415,8 +506,10 @@ def _from_document(document: dict[str, object]) -> P3Checkpoint:
     )
 
 
-def _validate_checkpoint(checkpoint: P3Checkpoint) -> dict[str, object]:
-    document = _to_document(checkpoint)
+def _validate_checkpoint(
+    checkpoint: P3Checkpoint, generated_by: Mapping[str, str] | None = None
+) -> dict[str, object]:
+    document = _to_document(checkpoint, generated_by)
     validate_document(_CHECKPOINT_NAME, document)
     return document
 
@@ -424,7 +517,11 @@ def _validate_checkpoint(checkpoint: P3Checkpoint) -> dict[str, object]:
 def load(path: Path) -> LoadResult:
     """Load a checkpoint; missing, corrupt, or unsupported files return no reusable state."""
     try:
-        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        with Path(path).open("rb") as handle:
+            payload = handle.read(MAX_CHECKPOINT_BYTES + 1)
+        if len(payload) > MAX_CHECKPOINT_BYTES:
+            return LoadResult(None, "invalid")
+        document = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
         validate_document(_CHECKPOINT_NAME, document)
         if not isinstance(document, dict):
             return LoadResult(None, "invalid")
@@ -432,7 +529,15 @@ def load(path: Path) -> LoadResult:
         _validate_checkpoint(checkpoint)
     except FileNotFoundError:
         return LoadResult(None, "missing")
-    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError, TypeError, ValueError):
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValidationError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ):
         return LoadResult(None, "invalid")
     return LoadResult(checkpoint, "loaded")
 
@@ -455,12 +560,28 @@ def _fsync_directory(directory: Path) -> None:
         os.close(directory_fd)
 
 
-def save(path: Path, checkpoint: P3Checkpoint) -> None:
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("checkpoint JSON contains a duplicate key")
+        document[key] = value
+    return document
+
+
+def save(
+    path: Path,
+    checkpoint: P3Checkpoint,
+    *,
+    generated_by: Mapping[str, str] | None = None,
+) -> None:
     """Atomically persist a validated checkpoint in a same-directory temporary file."""
-    document = _validate_checkpoint(checkpoint)
+    document = _validate_checkpoint(checkpoint, generated_by)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if len(payload.encode("utf-8")) > MAX_CHECKPOINT_BYTES:
+        raise ValueError("checkpoint exceeds the maximum file size")
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
     )
@@ -610,13 +731,17 @@ def reuse(
     """
     if checkpoint.inputs != inputs:
         return None
-    target_url = normalize_url(url)
+    try:
+        target_url, target_digest = _url_identity(url)
+    except (TypeError, ValueError):
+        return None
     target_identity = _source_identity(source_identity)
     current_time = _utc(now or _now(), "now")
     matches = [
         item
         for item in checkpoint.captures
         if item.url == target_url
+        and item.url_digest == target_digest
         and item.source_identity == target_identity
         and (item.bronze_key, item.metadata_digest) in verified_captures
         and timedelta(0) <= current_time - item.captured_at <= CAPTURE_TTL

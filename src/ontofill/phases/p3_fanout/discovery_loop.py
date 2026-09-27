@@ -43,7 +43,9 @@ from ontofill.case.checkpoints import (
 from ontofill.contracts import validate_document
 from ontofill.inference import DecisionClient, complete_validated, generated_by
 from ontofill.inference.page_content import screened_page_content
+from ontofill.lake.storage import metadata_bytes
 from ontofill.phase_loop import CheckResult, LoopBudget, LoopResult, PhaseLoop
+from ontofill.phases.p3_fanout import checkpoint as p3_checkpoint
 from ontofill.phases.p3_fanout.authority import (
     GOVERNMENT_LEVELS,
     authority_matrix_tier,
@@ -3002,10 +3004,14 @@ class DiscoveryLoop:
         ontology: Mapping,
         decision: DecisionClient,
         case_dir: Path,
+        *,
+        restored_capture: Mapping | None = None,
     ) -> dict | None:
         url = candidate["url"]
         host = (urlsplit(url).hostname or "").lower()
-        source_id = str(candidate.get("source_review_id") or _source_id(url))
+        source_id = str(
+            candidate.get("source_review_id") or candidate.get("source_id") or _source_id(url)
+        )
         self.source_display_by_id[source_id] = source_display_identity(
             url, candidate.get("title"), source_id
         )
@@ -3043,9 +3049,13 @@ class DiscoveryLoop:
             **({"sibling_domains": sibling_domains} if sibling_domains else {}),
             **({"asset_suffixes": asset_suffixes} if asset_suffixes else {}),
         }
-        attempts = 1
+        attempts = 0 if restored_capture is not None else 1
         try:
-            captured = self.capture(url, **capture_kwargs)
+            captured = (
+                dict(restored_capture)
+                if restored_capture is not None
+                else self.capture(url, **capture_kwargs)
+            )
         except (*PROVIDER_ERRORS, subprocess.SubprocessError) as exc:  # the lead stays a lead
             trace_start = len(self.trace)
             self.trace.extend(getattr(exc, "trace", None) or [])
@@ -4100,6 +4110,106 @@ class DiscoveryLoop:
         objectives_path = case_dir / "03-fanout/objectives.json"
         sources_dir = case_dir / "03-fanout/sources"
         ledger_path = objectives_path.parent / "surface-map/discovery.json"
+        checkpoint_file = p3_checkpoint.checkpoint_path(case_dir)
+        checkpoint_inputs = p3_checkpoint.CheckpointInputs.from_content(
+            prd=(case_dir / "01-scope/prd.json").read_bytes(),
+            ontology=json.dumps(ontology, sort_keys=True, ensure_ascii=False),
+            authority=json.dumps(policy, sort_keys=True, ensure_ascii=False),
+            approvals=json.dumps(
+                _source_review_cache_keys(sources_dir), sort_keys=True, ensure_ascii=False
+            ),
+            p3_algorithm_version="p3-discovery-loop-v5-checkpoint",
+            critic_version="critic-"
+            + hashlib.sha256(
+                f"{decision.backend}:{getattr(decision, 'model', 'default')}:capability-v1".encode()
+            ).hexdigest()[:16],
+        )
+        loaded_checkpoint = p3_checkpoint.load(checkpoint_file)
+        checked_checkpoint = p3_checkpoint.check(loaded_checkpoint.checkpoint, checkpoint_inputs)
+        checkpoint_state = checked_checkpoint.checkpoint
+        checkpoint_query_runs = {
+            (item.query, item.provider): item for item in checkpoint_state.query_runs
+        }
+        checkpoint_leads = {
+            (item.url_digest, item.source_identity): item for item in checkpoint_state.leads
+        }
+        checkpoint_captures = {
+            (item.bronze_key, item.metadata_digest): item for item in checkpoint_state.captures
+        }
+        checkpoint_verdicts = {
+            (item.capture_digest, item.critic_version): item
+            for item in checkpoint_state.critic_verdicts
+        }
+
+        def persist_checkpoint(
+            iteration: int, gaps_to_save: Sequence[str], draft_to_save: Mapping | None = None
+        ) -> None:
+            nonlocal checkpoint_state
+            if isinstance(draft_to_save, Mapping):
+                for lead in draft_to_save.get("leads", {}).values():
+                    if not isinstance(lead, Mapping):
+                        continue
+                    url = lead.get("url")
+                    providers = lead.get("providers")
+                    property_ids = lead.get("property_ids")
+                    if (
+                        not isinstance(url, str)
+                        or not public_url(url)
+                        or not isinstance(providers, list)
+                        or not providers
+                        or not isinstance(property_ids, list)
+                    ):
+                        continue
+                    provider = str(providers[0])[:100]
+                    source_identity = str(lead.get("source_id") or _source_id(url))
+                    try:
+                        saved_lead = p3_checkpoint.Lead(
+                            query=f"lead from {provider}",
+                            provider=provider,
+                            url=url,
+                            source_identity=source_identity,
+                            property_ids=tuple(
+                                item for item in property_ids if isinstance(item, str)
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    checkpoint_leads[(saved_lead.url_digest, source_identity)] = saved_lead
+            checkpoint_state = p3_checkpoint.P3Checkpoint(
+                inputs=checkpoint_inputs,
+                updated_at=datetime.now(UTC),
+                query_runs=tuple(checkpoint_query_runs.values()),
+                leads=tuple(checkpoint_leads.values()),
+                captures=tuple(checkpoint_captures.values()),
+                critic_verdicts=tuple(checkpoint_verdicts.values()),
+                iteration_count=max(checkpoint_state.iteration_count, iteration),
+                gap_state=tuple(
+                    p3_checkpoint.GapState(gap, "open", "needs_source", 1)
+                    for gap in dict.fromkeys(gaps_to_save)
+                ),
+            )
+            p3_checkpoint.save(
+                checkpoint_file,
+                checkpoint_state,
+                generated_by={
+                    **self.provenance,
+                    "at": datetime.now(UTC).isoformat(),
+                },
+            )
+
+        self._step(
+            {"tool": "p3.discovery.checkpoint", "cache": "03-fanout/cache/p3-checkpoint.json"},
+            {
+                "status": loaded_checkpoint.reason,
+                "reused_parts": list(checked_checkpoint.reused_parts),
+                "invalidated_parts": list(checked_checkpoint.invalidated_parts),
+            },
+            {"outcome": "checkpoint filtered against current P3 inputs"},
+        )
+        persist_checkpoint(
+            checkpoint_state.iteration_count,
+            checkpoint_state.gap_state and [g.gap_id for g in checkpoint_state.gap_state],
+        )
         request_key = hashlib.sha256(
             json.dumps(
                 [
@@ -4308,6 +4418,149 @@ class DiscoveryLoop:
         tried_queries: set[str] = set()
         tried_publishers: set[str] = set()
         verdicts: dict[str, dict[str, str | None]] = {}
+        verified_pairs: set[tuple[str, str]] = set()
+        verified_metadata: dict[tuple[str, str], tuple[dict[str, str], bytes]] = {}
+        for record in checkpoint_state.captures:
+            try:
+                bronze = self.lake.read_key(record.bronze_key)
+                metadata = self.lake.read_metadata(record.bronze_key)
+                if not isinstance(metadata, dict):
+                    continue
+                metadata_digest = hashlib.sha256(metadata_bytes(metadata)).hexdigest()
+                if (
+                    f"sha256:{hashlib.sha256(bronze).hexdigest()}" != record.bronze_key
+                    or metadata_digest != record.metadata_digest
+                    or metadata.get("source_id") != record.source_identity
+                ):
+                    continue
+                actual_url = metadata.get("url")
+                if not isinstance(actual_url, str) or not public_url(actual_url):
+                    continue
+                host = (urlsplit(actual_url).hostname or "").lower()
+                trusted, _reason = authority_result(actual_url, policy=dict(policy))
+                if not host or not _public_dns_host(host) or not trusted:
+                    continue
+                captured_at_raw = metadata.get("captured_at")
+                if not isinstance(captured_at_raw, str):
+                    continue
+                captured_at = datetime.fromisoformat(captured_at_raw)
+                if captured_at.tzinfo is None or captured_at.astimezone(UTC) != record.captured_at:
+                    continue
+                verified_pairs.add((record.bronze_key, metadata_digest))
+                verified_metadata[(record.bronze_key, metadata_digest)] = (metadata, bronze)
+            except (OSError, TypeError, ValueError, KeyError):
+                continue
+        restored_capture_by_source: dict[str, dict] = {}
+        for record in checkpoint_state.captures:
+            verified = (record.bronze_key, record.metadata_digest)
+            entry = verified_metadata.get(verified)
+            if entry is None:
+                continue
+            metadata, bronze = entry
+            actual_url = metadata.get("url")
+            if not isinstance(actual_url, str):
+                continue
+            try:
+                reusable = p3_checkpoint.reuse(
+                    checkpoint_state,
+                    checkpoint_inputs,
+                    url=actual_url,
+                    source_identity=record.source_identity,
+                    verified_captures=verified_pairs,
+                )
+            except ValueError:
+                reusable = None
+            if reusable is None:
+                continue
+            content_type = str(metadata.get("content_type") or "text/html")
+            extension = Path(urlsplit(actual_url).path).suffix.casefold()
+            is_document = extension in _DATASET_FILE_SUFFIXES and content_type != "text/html"
+            capture = {
+                "url": actual_url,
+                "status": 200,
+                "redirect_chain": [actual_url],
+                "html_key": None if is_document else record.bronze_key,
+                "document_key": record.bronze_key if is_document else None,
+                "document_content_type": content_type if is_document else None,
+                "document_size_bytes": len(bronze) if is_document else None,
+            }
+            restored_capture_by_source[record.source_identity] = capture
+        restored_checkpoint_leads: dict[str, dict] = {}
+        restored_capture_by_url: dict[str, dict] = {}
+        for lead in checkpoint_state.leads:
+            capture = restored_capture_by_source.get(lead.source_identity)
+            runtime_url = capture.get("url") if capture else lead.url
+            try:
+                if not isinstance(runtime_url, str) or not public_url(runtime_url):
+                    continue
+                if capture is None and p3_checkpoint.url_digest(runtime_url) != lead.url_digest:
+                    continue
+                host = (urlsplit(runtime_url).hostname or "").lower()
+                trusted, _reason = authority_result(runtime_url, policy=dict(policy))
+                if not host or not _public_dns_host(host) or not trusted:
+                    continue
+            except ValueError:
+                continue
+            restored = {
+                "url": runtime_url,
+                "source_id": lead.source_identity,
+                "title": f"Cached lead from {host}"[:200],
+                "snippet": "Lead restored from the P3 checkpoint; capture evidence is revalidated.",
+                "discovered_by": lead.provider,
+                "query": lead.query,
+                "property_ids": list(lead.property_ids),
+                "providers": [lead.provider],
+                "iteration": 0,
+            }
+            restored_checkpoint_leads[runtime_url] = restored
+            if capture is not None:
+                restored_capture_by_url[runtime_url] = capture
+        pending_checkpoint_leads = set(restored_checkpoint_leads) - known_urls
+        checkpoint_open_gaps = {
+            item.gap_id for item in checkpoint_state.gap_state if item.status == "open"
+        }
+        resume_checkpoint_work = (
+            bool(pending_checkpoint_leads) or checkpoint_open_gaps == set(targets)
+        ) and "leads" not in checked_checkpoint.invalidated_parts
+        if resume_checkpoint_work:
+            tried_queries.update(
+                item.query for item in checkpoint_query_runs.values() if item.status == "completed"
+            )
+
+        def remember_capture(candidate: Mapping) -> None:
+            if candidate.get("status") != "captured":
+                return
+            bronze_key = candidate.get("capture_key")
+            if not isinstance(bronze_key, str):
+                return
+            try:
+                bronze = self.lake.read_key(bronze_key)
+                metadata = self.lake.read_metadata(bronze_key)
+                if f"sha256:{hashlib.sha256(bronze).hexdigest()}" != bronze_key or not isinstance(
+                    metadata, dict
+                ):
+                    return
+                metadata_url = (
+                    metadata.get("url") or candidate.get("landing_url") or candidate.get("url")
+                )
+                source_identity = metadata.get("source_id") or candidate.get("source_id")
+                captured_at_raw = metadata.get("captured_at")
+                if not isinstance(metadata_url, str) or not isinstance(source_identity, str):
+                    return
+                if not isinstance(captured_at_raw, str):
+                    return
+                metadata_digest = hashlib.sha256(metadata_bytes(metadata)).hexdigest()
+                captured_at = datetime.fromisoformat(captured_at_raw)
+                record = p3_checkpoint.CaptureRecord(
+                    metadata_url,
+                    source_identity,
+                    bronze_key,
+                    metadata_digest,
+                    captured_at,
+                )
+            except (OSError, TypeError, ValueError, KeyError):
+                return
+            checkpoint_captures[(bronze_key, metadata_digest)] = record
 
         def coverage(draft: dict | None) -> dict[str, set[str]]:
             hosts = {target: set(prior_cover[target]) for target in targets}
@@ -4336,14 +4589,19 @@ class DiscoveryLoop:
             return [target for target in targets if len(hosts[target]) < coverage_target[target]]
 
         def gather(iteration: int, previous_draft: dict | None) -> dict:
+            nonlocal resume_checkpoint_work
             gaps_now = open_gaps(previous_draft)[: self.max_queries]
-            queries = (
-                self._plan_queries(
-                    decision, brief, ontology, policy, gaps_now, iteration, tried_queries
+            if resume_checkpoint_work and iteration == 1:
+                queries = []
+                resume_checkpoint_work = False
+            else:
+                queries = (
+                    self._plan_queries(
+                        decision, brief, ontology, policy, gaps_now, iteration, tried_queries
+                    )
+                    if gaps_now
+                    else []
                 )
-                if gaps_now
-                else []
-            )
             tried_queries.update(query.text for query in queries)
             return {
                 "iteration": iteration,
@@ -4357,6 +4615,8 @@ class DiscoveryLoop:
                 "candidates": {},
                 "leads": deepcopy({**saved_redirect_leads, **approved_packet_leads}),
             }
+            for cached_url, cached_lead in restored_checkpoint_leads.items():
+                draft["leads"].setdefault(cached_url, deepcopy(cached_lead))
             queries = tuple(LeadQuery(pid, text) for pid, text in context["queries"])
             if not queries and not context["gaps"]:
                 return draft
@@ -4389,10 +4649,12 @@ class DiscoveryLoop:
                 attempts_before = len(provider.attempts)
                 trace_before = len(getattr(provider, "trace", []))
                 jobs_before = len(getattr(provider, "jobs", []))
+                provider_status = "completed"
                 try:
                     found: list[Lead] = provider.leads(lead_context)
                 except PROVIDER_ERRORS as exc:  # a failing provider falls through to the next
                     found = []
+                    provider_status = "error"
                     provider.attempts.append(
                         {
                             "provider": provider.name,
@@ -4441,6 +4703,10 @@ class DiscoveryLoop:
                     entry["score"] = max(entry.get("score", 0), lead.score)
                     if lead.publisher:
                         tried_publishers.add(lead.publisher)
+                for query in queries:
+                    checkpoint_query_runs[(query.text, provider.name)] = p3_checkpoint.QueryRun(
+                        query.text, provider.name, iteration, provider_status
+                    )
             for name, _, _ in lead_context.publisher_names:
                 tried_publishers.add(name)
 
@@ -4475,6 +4741,8 @@ class DiscoveryLoop:
                     if lead.discovered_by not in entry["providers"]:
                         entry["providers"].append(lead.discovered_by)
                     entry["property_ids"] = sorted(set(entry["property_ids"]) | {gap})
+
+            persist_checkpoint(iteration, context["gaps"], draft)
 
             open_now = set(context["gaps"])
             for lead in draft["leads"].values():
@@ -4562,11 +4830,13 @@ class DiscoveryLoop:
             # Keep the full ordinary queue; actual children displace its tail only
             # after a chosen, captured portal proves that it has a child route.
             capture_queue_limit = max(1, self.max_captures)
-            chosen: list[dict] = []
+            chosen: list[dict] = [
+                item for item in pool if item.get("url") in restored_capture_by_url
+            ][:capture_queue_limit]
             per_host: dict[str, int] = {}
             # A one-capture round must preserve the highest-ranked lead. There
             # is no remaining slot to follow a portal child in that round.
-            if self.max_captures > 1 and followable_portals:
+            if self.max_captures > 1 and followable_portals and followable_portals[0] not in chosen:
                 portal = followable_portals[0]
                 chosen.append(portal)
                 host = urlsplit(portal["url"]).hostname or ""
@@ -4699,6 +4969,11 @@ class DiscoveryLoop:
                     "status": "pending",
                     "covers": [],
                     **(
+                        {"source_id": str(lead["source_id"])}
+                        if isinstance(lead.get("source_id"), str)
+                        else {}
+                    ),
+                    **(
                         {"source_id": lead["review_source_id"]}
                         if lead.get("redirect_review_required")
                         or lead.get("source_review_required")
@@ -4737,9 +5012,32 @@ class DiscoveryLoop:
                         else {}
                     ),
                 }
-                redirect_lead = self._capture_lead(candidate, policy, ontology, decision, case_dir)
+                restored_capture = restored_capture_by_url.pop(lead["url"], None)
+                if restored_capture is not None:
+                    safe_cached_url = p3_checkpoint.normalize_url(str(restored_capture["url"]))
+                    self._step(
+                        {
+                            "tool": "p3.discovery.capture",
+                            "url": safe_cached_url,
+                            "capture_key": restored_capture.get("html_key")
+                            or restored_capture.get("document_key"),
+                        },
+                        {"status": "reused from checkpoint"},
+                        {"outcome": "fresh bronze and sidecar verification passed"},
+                        source_id=candidate.get("source_id"),
+                    )
+                redirect_lead = self._capture_lead(
+                    candidate,
+                    policy,
+                    ontology,
+                    decision,
+                    case_dir,
+                    restored_capture=restored_capture,
+                )
+                remember_capture(candidate)
                 draft["candidates"][lead["url"]] = candidate
                 candidate_urls.add(url_identity(lead["url"]))
+                persist_checkpoint(iteration, context["gaps"], draft)
                 parent_url = str(candidate.get("landing_url") or lead["url"])
                 parent_policy_trusted, _parent_reason = authority_result(
                     parent_url, policy=dict(policy)
@@ -4978,6 +5276,7 @@ class DiscoveryLoop:
                                 review_source_id=redirect_lead["review_source_id"],
                                 review_fingerprint=redirect_lead["review_fingerprint"],
                             )
+                persist_checkpoint(iteration, context["gaps"], draft)
                 if str(candidate.get("capture_reason") or "").startswith("redirect_"):
                     # A redirect is its own authority boundary. Process its new
                     # lead/review before dispatching more candidates this round.
@@ -4986,12 +5285,55 @@ class DiscoveryLoop:
 
         def critique(draft: dict, _context: dict, _iteration: int) -> dict:
             nonlocal verdicts
-            if not any(item["status"] == "captured" for item in draft["candidates"].values()):
+            captured_candidates = {
+                url: item
+                for url, item in draft["candidates"].items()
+                if item["status"] == "captured"
+            }
+            if not captured_candidates:
                 verdicts = {}
                 return {"accepted": True, "reason": "no newly captured pages to review"}
-            if decision.backend == "vultr":
+
+            verdicts = {}
+            uncached_candidates = dict(captured_candidates)
+            cached_candidates: set[str] = set()
+            for url, candidate in captured_candidates.items():
+                capture_key = candidate.get("capture_key")
+                cached = checkpoint_verdicts.get((capture_key, checkpoint_inputs.critic_version))
+                if cached is None or cached.decision != "accepted":
+                    continue
+                code_verdict = self._code_verdicts({"candidates": {url: candidate}}, ontology).get(
+                    url, {}
+                )
+                accepted_ids = {
+                    property_id
+                    for property_id in candidate.get("property_ids", [])
+                    if code_verdict.get(property_id) is None
+                }
+                if accepted_ids != set(cached.capability_ids):
+                    continue
+                verdicts[url] = code_verdict
+                uncached_candidates.pop(url, None)
+                cached_candidates.add(url)
+                self._step(
+                    {"tool": "critic.phase3.capability", "capture_key": capture_key},
+                    {"status": "reused from checkpoint"},
+                    {"outcome": "critic version and capture digest matched"},
+                    source_id=candidate.get("source_id"),
+                )
+
+            def candidate_subset(items: Mapping[str, dict]) -> dict:
+                subset = deepcopy(draft)
+                subset["candidates"] = dict(items)
+                return subset
+
+            if decision.backend == "vultr" and uncached_candidates:
+                model_paths = deepcopy(self._page_access_paths)
                 try:
-                    verdicts = self._model_verdicts(decision, draft, ontology, policy)
+                    model_verdicts = self._model_verdicts(
+                        decision, candidate_subset(uncached_candidates), ontology, policy
+                    )
+                    verdicts.update(model_verdicts)
                 except PROVIDER_ERRORS as exc:
                     self._step(
                         {"tool": "critic.phase3.capability"},
@@ -5002,13 +5344,88 @@ class DiscoveryLoop:
                         },
                         mode="D1",
                     )
-                    verdicts = self._code_verdicts(draft, ontology)
-                    for per_property in verdicts.values():
+                    fallback_verdicts = self._code_verdicts(
+                        candidate_subset(uncached_candidates), ontology
+                    )
+                    verdicts.update(fallback_verdicts)
+                    for per_property in fallback_verdicts.values():
                         for property_id, reason in per_property.items():
                             if reason is None:
                                 per_property[property_id] = "model source confirmation unavailable"
-            else:
-                verdicts = self._code_verdicts(draft, ontology)
+                else:
+                    model_paths.update(self._page_access_paths)
+                    # A model verdict is reusable only when the deterministic
+                    # path reconstruction agrees on both supported properties
+                    # and their bounded access-path evidence.
+                    for url, candidate in uncached_candidates.items():
+                        model_path = model_paths.get(url, {})
+                        model_verdict = verdicts.get(url, {})
+                        code_verdict = self._code_verdicts(
+                            {"candidates": {url: candidate}}, ontology
+                        ).get(url, {})
+                        code_path = self._page_access_paths.get(url, {})
+                        model_ok = {
+                            property_id
+                            for property_id in candidate.get("property_ids", [])
+                            if model_verdict.get(property_id) is None
+                        }
+                        code_ok = {
+                            property_id
+                            for property_id in candidate.get("property_ids", [])
+                            if code_verdict.get(property_id) is None
+                        }
+                        if model_ok != code_ok or not model_ok:
+                            continue
+
+                        def path_signature(path: Mapping) -> tuple:
+                            return tuple(
+                                path.get(field)
+                                for field in (
+                                    "kind",
+                                    "url",
+                                    "capture_key",
+                                    "access_path_quote",
+                                    "form_index",
+                                    "link_index",
+                                )
+                            )
+
+                        if all(
+                            path_signature(model_path.get(property_id, {}))
+                            == path_signature(code_path.get(property_id, {}))
+                            for property_id in model_ok
+                        ):
+                            cached_candidates.add(url)
+                        # Restore model-validated paths after using the code
+                        # critic to rebuild the safe current-run context.
+                        self._page_access_paths[url] = model_path
+            elif uncached_candidates:
+                code_verdicts = self._code_verdicts(candidate_subset(uncached_candidates), ontology)
+                verdicts.update(code_verdicts)
+                cached_candidates.update(
+                    url
+                    for url, per_property in code_verdicts.items()
+                    if per_property and all(reason is None for reason in per_property.values())
+                )
+
+            for url in cached_candidates:
+                candidate = captured_candidates[url]
+                per_property = verdicts.get(url, {})
+                if not candidate.get("property_ids") or any(
+                    per_property.get(pid) for pid in candidate["property_ids"]
+                ):
+                    continue
+                capture_key = candidate.get("capture_key")
+                if isinstance(capture_key, str):
+                    checkpoint_verdicts[(capture_key, checkpoint_inputs.critic_version)] = (
+                        p3_checkpoint.CriticVerdict(
+                            capture_digest=capture_key,
+                            critic_version=checkpoint_inputs.critic_version,
+                            decision="accepted",
+                            capability_ids=tuple(sorted(candidate["property_ids"])),
+                        )
+                    )
+            persist_checkpoint(_iteration, _context.get("gaps", ()), draft)
             rejected = [
                 f"{url}: {property_id}: {reason}"
                 for url, per_property in verdicts.items()
@@ -5061,6 +5478,7 @@ class DiscoveryLoop:
                 for target in targets
                 if len(hosts[target]) < required[target]
             )
+            persist_checkpoint(_iteration, open_gaps(draft), draft)
             return CheckResult(not objections, objections)
 
         loop = PhaseLoop[dict](

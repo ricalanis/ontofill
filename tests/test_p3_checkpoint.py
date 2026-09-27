@@ -112,7 +112,68 @@ def test_restart_loads_typed_state_and_returns_same_recent_capture(tmp_path) -> 
     assert "budget" not in document
     assert "raw_page_text" not in document
     assert "live_view_url" not in document
+    assert document["generated_by"]["backend"] == "recorded"
     assert path.parent == tmp_path / "03-fanout" / "cache"
+
+
+def test_url_query_values_are_not_persisted_but_remain_part_of_identity(tmp_path) -> None:
+    inputs = make_inputs()
+    secret_value = "opaque-unrecognized-signature-value"
+    raw_url = f"https://registry.example.gov/datasets?custom={secret_value}"
+    state = P3Checkpoint(
+        inputs=inputs,
+        updated_at=NOW,
+        leads=(
+            Lead(
+                "registry records", "search", raw_url, "source-123", property_ids=("supplier/name",)
+            ),
+        ),
+        captures=(
+            CaptureRecord(
+                raw_url,
+                "source-123",
+                BRONZE_KEY,
+                METADATA_DIGEST,
+                NOW,
+            ),
+        ),
+    )
+    path = checkpoint_path(tmp_path)
+    save(
+        path,
+        state,
+        generated_by={"backend": "recorded", "model": "synthetic", "at": NOW.isoformat()},
+    )
+
+    payload = path.read_text(encoding="utf-8")
+    loaded = load(path).checkpoint
+    assert secret_value not in payload
+    assert "custom=" not in payload
+    assert loaded is not None
+    assert loaded.leads[0].url == "https://registry.example.gov/datasets"
+    assert loaded.leads[0].property_ids == ("supplier/name",)
+    assert (
+        reuse(
+            loaded,
+            inputs,
+            url=raw_url,
+            source_identity="source-123",
+            verified_captures={(BRONZE_KEY, METADATA_DIGEST)},
+            now=NOW,
+        )
+        is not None
+    )
+    assert (
+        reuse(
+            loaded,
+            inputs,
+            url="https://registry.example.gov/datasets?custom=different-value",
+            source_identity="source-123",
+            verified_captures={(BRONZE_KEY, METADATA_DIGEST)},
+            now=NOW,
+        )
+        is None
+    )
 
 
 def test_capture_reuse_expires_after_six_hours(tmp_path) -> None:
@@ -125,7 +186,7 @@ def test_capture_reuse_expires_after_six_hours(tmp_path) -> None:
     at_limit = reuse(
         state,
         inputs,
-        url=capture.url,
+        url="https://registry.example.gov/datasets?id=12",
         source_identity=capture.source_identity,
         verified_captures=verified,
         now=NOW + CAPTURE_TTL,
@@ -133,7 +194,7 @@ def test_capture_reuse_expires_after_six_hours(tmp_path) -> None:
     expired = reuse(
         state,
         inputs,
-        url=capture.url,
+        url="https://registry.example.gov/datasets?id=12",
         source_identity=capture.source_identity,
         verified_captures=verified,
         now=NOW + CAPTURE_TTL + timedelta(seconds=1),
@@ -258,7 +319,7 @@ def test_reuse_requires_fresh_external_bronze_and_metadata_verification() -> Non
         reuse(
             rechecked,
             changed_prd,
-            url=capture.url,
+            url="https://registry.example.gov/datasets?id=12",
             source_identity=capture.source_identity,
             verified_captures={(capture.bronze_key, capture.metadata_digest)},
             now=NOW,
@@ -274,6 +335,11 @@ def test_corrupt_and_unmodeled_cache_content_fails_closed(tmp_path) -> None:
 
     save(path, make_checkpoint())
     document = json.loads(path.read_text(encoding="utf-8"))
+    document["leads"][0]["url"] += "?opaque=unrecognized-signed-token"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    assert load(path).reason == "invalid"
+
+    document["leads"][0]["url"] = "https://registry.example.gov/datasets"
     document["raw_page_text"] = "captured page bytes must not be persisted"
     path.write_text(json.dumps(document), encoding="utf-8")
     assert load(path).checkpoint is None
@@ -291,6 +357,47 @@ def test_urls_with_credentials_are_rejected_before_cache_write() -> None:
             "https://records.example.gov/search?access_token=secret-value",
             "Records Publisher",
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "http://localhost/data",
+        "https://metadata.internal/data",
+        "https://192.0.2.10/data",
+        "https://127.0.0.1/data",
+    ),
+)
+def test_checkpoint_refuses_non_public_hosts(url: str) -> None:
+    with pytest.raises(ValueError, match="public DNS host"):
+        Lead("public data registry", "search", url, "Records Publisher")
+
+    state = make_checkpoint()
+    capture = state.captures[0]
+    assert (
+        reuse(
+            state,
+            state.inputs,
+            url=url,
+            source_identity=capture.source_identity,
+            verified_captures={(capture.bronze_key, capture.metadata_digest)},
+            now=NOW,
+        )
+        is None
+    )
+
+
+def test_checkpoint_accepts_authorship_backend_from_common_schema(tmp_path) -> None:
+    path = tmp_path / "p3-checkpoint.json"
+    save(
+        path,
+        make_checkpoint(),
+        generated_by={"backend": "jev", "model": "reviewer-v1", "at": NOW.isoformat()},
+    )
+
+    loaded = load(path)
+    assert loaded.reason == "loaded"
+    assert loaded.checkpoint is not None
 
 
 def test_save_replaces_atomically_and_preserves_old_file_on_replace_error(
@@ -311,6 +418,20 @@ def test_save_replaces_atomically_and_preserves_old_file_on_replace_error(
     assert path.read_bytes() == previous_bytes
     assert list(tmp_path.glob(".p3-checkpoint.json.*.tmp")) == []
     assert path.stat().st_mode & 0o077 == 0
+
+
+def test_load_rejects_duplicate_keys_and_oversized_files(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "p3-checkpoint.json"
+    path.write_text('{"schema_version": 1, "schema_version": 1}', encoding="utf-8")
+    assert load(path).reason == "invalid"
+
+    monkeypatch.setattr(p3_checkpoint, "MAX_CHECKPOINT_BYTES", 4)
+    path.write_bytes(b"12345")
+    assert load(path).reason == "invalid"
+
+    monkeypatch.setattr(p3_checkpoint, "MAX_CHECKPOINT_BYTES", 8 * 1024 * 1024)
+    path.write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="utf-8")
+    assert load(path).reason == "invalid"
 
 
 def test_content_digest_uses_exact_input_bytes() -> None:

@@ -1,3 +1,20 @@
+# Current task: durable P3 discovery resume integration
+
+FILES: `src/ontofill/phases/p3_fanout/checkpoint.py`, `schemas/p3-checkpoint.schema.json`, `tests/test_p3_checkpoint.py`, `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_p3_checkpoint_integration.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Resume P3 provider, lead, capture, and critic progress from a safe per-case checkpoint while preserving fresh bronze/sidecar and policy verification, six-hour capture TTL, critic-version binding, targeted approval invalidation, and R56 follow-before-judge. Cache no query values, page text, or credentials; write atomically and emit reuse steps in the current run trace.
+DONE: managed focused tests prove restart avoids duplicate discovery/capture/critique, changed approvals preserve unrelated valid progress, URL query values never persist, stale/corrupt state fails closed, and reused bronze passes fresh metadata/policy checks; Ruff lint/format and `git diff --check` pass.
+FORMAT: `uv run ruff check` and `uv run ruff format --check` on changed Python paths; JSON-tool parse the checkpoint schema.
+
+- [x] Make checkpoint URL persistence credential-safe: retain canonical public scheme/host/path plus a full runtime URL digest, and verify `public_url`/host before reuse.
+- [x] Integrate checkpoint lifecycle with each discovery iteration, including resumed capture context before portal-child follow and critic verdict cache.
+- [x] Add a bounded restart/approval-change regression without duplicate provider, capture, or critic calls.
+- [x] Run the managed focused integration gate and record command/result.
+- [x] Commit locally and report the SHA to root; do not push/deploy.
+
+CHECK: The API gate passed 20 tests, Ruff lint/format, schema JSON parsing, and diff check. The crash-window restart integration passed without provider, capture, or critic duplication; it also covers model `property_quote` differing from the deterministic route, and the cache reuses the accepted verdict only after deterministic validation. Approval changes retain query progress while invalidating leads, captures, verdicts, and gap state. The first shared regression gate found that treating every saved completed query as globally tried suppressed an outer reopen after its prior source was already published. Query suppression is now scoped to pending checkpoint leads or a matching nonempty persisted gap set; the outer-reopen regression passes. The first combined gate then found two Ruff formatting wraps in that predicate; after formatting, the combined successor gate passed 55 tests plus Ruff lint/format, schema parsing, and `git diff --check`.
+
+---
+
 # P3 durable checkpoint
 
 FILES: `src/ontofill/phases/p3_fanout/checkpoint.py`, `schemas/p3-checkpoint.schema.json`, `tests/test_p3_checkpoint.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.

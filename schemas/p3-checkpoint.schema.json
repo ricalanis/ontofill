@@ -8,6 +8,7 @@
     "schema_version",
     "inputs",
     "updated_at",
+    "generated_by",
     "query_runs",
     "leads",
     "captures",
@@ -19,6 +20,16 @@
     "schema_version": {"const": 1},
     "inputs": {"$ref": "#/$defs/inputs"},
     "updated_at": {"type": "string", "format": "date-time"},
+    "generated_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "model", "at"],
+      "properties": {
+        "backend": {"enum": ["recorded", "vultr", "jev"]},
+        "model": {"type": "string", "minLength": 1, "maxLength": 200},
+        "at": {"type": "string", "format": "date-time"}
+      }
+    },
     "query_runs": {
       "type": "array",
       "maxItems": 2000,
@@ -52,7 +63,7 @@
     "id": {"type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9_.:/-]+$"},
     "reason_code": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$"},
     "source_identity": {"type": "string", "minLength": 1, "maxLength": 512},
-    "url": {"type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "pattern": "^https?://"},
+    "url": {"type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "pattern": "^https?://[^?#]+$"},
     "inputs": {
       "type": "object",
       "additionalProperties": false,
@@ -87,20 +98,28 @@
     "lead": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["query", "provider", "url", "source_identity"],
+      "required": ["query", "provider", "url", "url_digest", "source_identity", "property_ids"],
       "properties": {
         "query": {"type": "string", "minLength": 1, "maxLength": 500},
         "provider": {"type": "string", "minLength": 1, "maxLength": 100},
         "url": {"$ref": "#/$defs/url"},
-        "source_identity": {"$ref": "#/$defs/source_identity"}
+        "url_digest": {"$ref": "#/$defs/sha256"},
+        "source_identity": {"$ref": "#/$defs/source_identity"},
+        "property_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/id"}
+        }
       }
     },
     "capture": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "source_identity", "bronze_key", "metadata_digest", "captured_at"],
+      "required": ["url", "url_digest", "source_identity", "bronze_key", "metadata_digest", "captured_at"],
       "properties": {
         "url": {"$ref": "#/$defs/url"},
+        "url_digest": {"$ref": "#/$defs/sha256"},
         "source_identity": {"$ref": "#/$defs/source_identity"},
         "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
         "metadata_digest": {"$ref": "#/$defs/sha256"},
