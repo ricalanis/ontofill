@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -240,6 +243,11 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         "Produce the smallest useful data schema for this case. Use stable snake_case IDs. "
         "Choose a primary class, title and identifier properties for every class, typed properties, "
         "relations, rules, source classes and public alignment URIs. Mark DoD properties. "
+        "Every relation must have a typed match using same_value over one property from each "
+        "endpoint class. Every executable rule must have a nonempty predicate.all list using only "
+        "same_value, equals, and date_before over typed property IDs; checks and verify remain "
+        "human-readable descriptions and are never executable. Omit a relation or rule when its "
+        "match or predicate cannot be stated with typed properties. "
         "Allowed datatypes: string, integer, number, boolean, date, datetime, uri. "
         "Each class title_property and identifier_property must name a property whose domain is that class. "
         "All relation domain/range and property domains must name declared classes. "
@@ -302,18 +310,25 @@ def _schema_proposal() -> dict:
     schema = load_schema("ontology")
     names = ("primary_class", "classes", "properties", "relations", "rules", "source_classes")
     limits = {"classes": 6, "properties": 24, "relations": 12, "rules": 12, "source_classes": 8}
+    properties = {
+        name: {
+            **schema["properties"][name],
+            **({"maxItems": limits[name]} if name in limits else {}),
+            **({"minItems": 1} if name == "source_classes" else {}),
+        }
+        for name in names
+    }
+    properties["relations"]["items"] = {
+        "allOf": [{"$ref": "#/$defs/relation"}, {"required": ["match"]}]
+    }
+    properties["rules"]["items"] = {
+        "allOf": [{"$ref": "#/$defs/rule"}, {"required": ["predicate"]}]
+    }
     return {
         "type": "object",
         "additionalProperties": False,
         "required": list(names),
-        "properties": {
-            name: {
-                **schema["properties"][name],
-                **({"maxItems": limits[name]} if name in limits else {}),
-                **({"minItems": 1} if name == "source_classes" else {}),
-            }
-            for name in names
-        },
+        "properties": properties,
         "$defs": schema["$defs"],
     }
 
@@ -346,18 +361,127 @@ def _validate_ontology(ontology: dict) -> None:
     for item in ontology["relations"]:
         if item["domain"] not in classes or item["range"] not in classes:
             raise ValueError("relation domain and range must refer to ontology classes")
+        match = item.get("match")
+        if match is not None and item["symmetric"] and item["domain"] != item["range"]:
+            raise ValueError("symmetric relation domain and range must be the same class")
+        if match is not None:
+            domain_property = properties.get(match["domain_property"])
+            range_property = properties.get(match["range_property"])
+            if (
+                domain_property is None
+                or range_property is None
+                or domain_property["domain"] != item["domain"]
+                or range_property["domain"] != item["range"]
+            ):
+                raise ValueError("relation match properties must belong to their endpoint classes")
+            if _semantic_datatype(domain_property["datatype"]) != _semantic_datatype(
+                range_property["datatype"]
+            ):
+                raise ValueError("relation match properties must have the same datatype")
+            if item["symmetric"] and match["domain_property"] != match["range_property"]:
+                raise ValueError(
+                    "symmetric relation must match the same property on both endpoints"
+                )
+    for item in ontology["rules"]:
+        predicate = item.get("predicate")
+        if predicate is None:
+            continue
+        operand_domains = set()
+        for term in predicate["all"]:
+            operation = term["op"]
+            if operation == "same_value":
+                left = properties.get(term["left_property"])
+                right = properties.get(term["right_property"])
+                operands = [left, right]
+                if any(prop is None for prop in operands):
+                    raise ValueError("rule predicate references an unknown property")
+                if _semantic_datatype(left["datatype"]) != _semantic_datatype(right["datatype"]):
+                    raise ValueError("same_value predicate properties must have the same datatype")
+            elif operation == "equals":
+                prop = properties.get(term["property"])
+                if prop is None:
+                    raise ValueError("rule predicate references an unknown property")
+                _validate_typed_literal(term["value"], prop["datatype"])
+                operands = [prop]
+            elif operation == "date_before":
+                earlier = properties.get(term["earlier_property"])
+                later = properties.get(term["later_property"])
+                operands = [earlier, later]
+                if any(prop is None for prop in operands):
+                    raise ValueError("rule predicate references an unknown property")
+                earlier_type = _semantic_datatype(earlier["datatype"])
+                later_type = _semantic_datatype(later["datatype"])
+                if earlier_type not in {"date", "datetime"} or earlier_type != later_type:
+                    raise ValueError("date_before properties must share date or datetime datatype")
+            else:
+                raise ValueError("unsupported rule predicate operator")
+            operand_domains.update(prop["domain"] for prop in operands)
+        if len(operand_domains) != 1:
+            raise ValueError("all rule predicate properties must belong to one class")
+
+
+def _semantic_datatype(datatype: str) -> str:
+    name = datatype.rsplit("#", 1)[-1].rsplit("/", 1)[-1].rsplit(":", 1)[-1].lower()
+    aliases = {
+        "text": "string",
+        "normalizedstring": "string",
+        "token": "string",
+        "int": "integer",
+        "long": "integer",
+        "nonnegativeinteger": "integer",
+        "decimal": "number",
+        "float": "number",
+        "double": "number",
+        "bool": "boolean",
+        "date-time": "datetime",
+        "url": "uri",
+        "anyuri": "uri",
+    }
+    return aliases.get(name, name)
+
+
+def _validate_typed_literal(value: object, datatype: str) -> None:
+    kind = _semantic_datatype(datatype)
+    valid = False
+    if kind == "string":
+        valid = isinstance(value, str)
+    elif kind == "boolean":
+        valid = isinstance(value, bool)
+    elif kind == "integer":
+        valid = isinstance(value, int) and not isinstance(value, bool)
+    elif kind == "number":
+        valid = (
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        )
+    elif kind == "date" and isinstance(value, str):
+        try:
+            valid = date.fromisoformat(value).isoformat() == value
+        except ValueError:
+            valid = False
+    elif kind == "datetime" and isinstance(value, str):
+        try:
+            valid = datetime.fromisoformat(value).tzinfo is not None
+        except ValueError:
+            valid = False
+    elif kind == "uri" and isinstance(value, str):
+        valid = bool(urlparse(value).scheme)
+    if not valid:
+        raise ValueError(f"equals predicate literal does not match datatype {datatype}")
 
 
 def _draft_dod_queries(prd: dict, ontology: dict, decision: DecisionClient) -> dict:
     schema = model_output_schema("dod-queries")
     prompt = (
         "Compile every approved definition-of-done criterion into exactly one safe declarative "
-        "query. Use only ontology class/property IDs and the supported aggregate/condition operators. "
+        "query. Use only ontology class/property/relation IDs and the supported aggregate/condition operators. "
         "For a per-entity completeness criterion, use entities_meeting_completeness with "
         "class equal to the primary class, properties='dod', and min_ratio copied from the PRD. "
+        "For a criterion that counts linked records, use count_entities_with_relation and its "
+        "relation_id; class_id, if included, must be the relation domain. "
         "Copy each criterion's target and comparison operator exactly. Do not write SQL or code. "
         f"Criteria: {prd['definition_of_done']}. Classes: {ontology['classes']}. "
-        f"Properties: {ontology['properties']}. Source classes: {ontology.get('source_classes', [])}."
+        f"Properties: {ontology['properties']}. Relations: {ontology['relations']}. "
+        f"Source classes: {ontology.get('source_classes', [])}."
     )
     result = decision.complete_json("phase2.dod_queries", prompt, schema)
     result["generated_by"] = generated_by(decision)
@@ -373,6 +497,7 @@ def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:
         raise ValueError("DoD queries must cover each approved criterion exactly once")
     classes = {item["id"] for item in ontology["classes"]}
     properties = {item["id"]: item for item in ontology["properties"]}
+    relations = {item["id"]: item for item in ontology.get("relations", [])}
     for query in queries:
         criterion = criteria[query["criterion_id"]]
         if query["target"] != criterion["target"] or query["operator"] != criterion["operator"]:
@@ -393,6 +518,13 @@ def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:
             if criterion.get("min_ratio") is None:
                 raise ValueError("completeness query requires an approved PRD min_ratio")
         class_id = query.get("class_id", query.get("class"))
+        if query["aggregate"] == "count_entities_with_relation":
+            relation = relations.get(query["relation_id"])
+            if relation is None:
+                raise ValueError("DoD query references an unknown relation")
+            if class_id is not None and class_id != relation["domain"]:
+                raise ValueError("relation count class must equal the relation domain")
+            class_id = relation["domain"]
         if class_id is not None and class_id not in classes:
             raise ValueError("DoD query references an unknown class")
         listed = query.get("properties", [])

@@ -86,8 +86,56 @@
         "label": {"type": "string", "minLength": 1},
         "domain": {"type": "string", "minLength": 1},
         "range": {"type": "string", "minLength": 1},
-        "symmetric": {"type": "boolean"}
+        "symmetric": {"type": "boolean"},
+        "match": {"$ref": "#/$defs/relation_match"}
       }
+    },
+    "relation_match": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op", "domain_property", "range_property"],
+      "properties": {
+        "op": {"const": "same_value"},
+        "domain_property": {"type": "string", "minLength": 1},
+        "range_property": {"type": "string", "minLength": 1}
+      }
+    },
+    "predicate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["all"],
+      "properties": {
+        "all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/predicate_term"}}
+      }
+    },
+    "predicate_term": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["op", "left_property", "right_property"],
+          "properties": {
+            "op": {"const": "same_value"},
+            "left_property": {"type": "string", "minLength": 1},
+            "right_property": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["op", "property", "value"],
+          "properties": {
+            "op": {"const": "equals"},
+            "property": {"type": "string", "minLength": 1},
+            "value": {"type": ["string", "number", "boolean"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["op", "earlier_property", "later_property"],
+          "properties": {
+            "op": {"const": "date_before"},
+            "earlier_property": {"type": "string", "minLength": 1},
+            "later_property": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
     },
     "rule": {
       "type": "object", "additionalProperties": false,
@@ -102,7 +150,8 @@
           ]
         },
         "verify": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-        "shacl_shape": {"type": "string", "minLength": 1}
+        "shacl_shape": {"type": "string", "minLength": 1},
+        "predicate": {"$ref": "#/$defs/predicate"}
       }
     },
     "source_class": {

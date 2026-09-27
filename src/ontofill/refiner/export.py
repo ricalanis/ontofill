@@ -17,7 +17,10 @@ from ontofill.refiner.core import (
     SCHEMA_ROOT,
     _canonical,
     _datatype,
+    _evaluate_rule,
     _ontology_declarations,
+    _relation_pairs,
+    _signal_definitions,
     stable_value_id,
 )
 from ontofill.refiner.provenance import validate_generated_by, validate_run_provenance
@@ -198,8 +201,7 @@ def _check_lineage(
 
 def _validate_entities(entities: Sequence[dict], ontology: dict, lake: GoldLake) -> None:
     classes, properties = _ontology_declarations(ontology)
-    relations = {item["id"]: item for item in ontology.get("relations", [])}
-    rules = {item["id"]: item for item in ontology.get("rules", [])}
+    relations, rules = _signal_definitions(ontology, classes, properties)
     by_id = {entity["id"]: entity for entity in entities}
     source_classes = {item["id"] for item in ontology.get("source_classes", [])}
     if len(by_id) != len(entities):
@@ -223,6 +225,11 @@ def _validate_entities(entities: Sequence[dict], ontology: dict, lake: GoldLake)
                 item["source_type"] not in source_classes for item in value["evidence"]
             ):
                 raise ValueError("evidence source class is absent from ontology")
+        link_keys = {
+            (link["property"], link["target"], link["via_value_id"]) for link in entity["links"]
+        }
+        if len(link_keys) != len(entity["links"]):
+            raise ValueError("duplicate gold relation link")
         for link in entity["links"]:
             relation = relations.get(link["property"])
             if (
@@ -235,11 +242,53 @@ def _validate_entities(entities: Sequence[dict], ontology: dict, lake: GoldLake)
             target_class = by_id[link["target"]]["class"]
             if target_class != relation["range"]:
                 raise ValueError("entity link target class differs from ontology relation")
+            if relation.get("match") is not None:
+                match = relation["match"]
+                source_field = entity["properties"][match["domain_property"]]
+                target_field = by_id[link["target"]]["properties"][match["range_property"]]
+                if (
+                    source_field["status"] != "gold"
+                    or not source_field["evidence"]
+                    or source_field["value_id"] != link["via_value_id"]
+                    or target_field["status"] != "gold"
+                    or not target_field["evidence"]
+                    or source_field["value"] != target_field["value"]
+                ):
+                    raise ValueError("entity link does not satisfy its typed relation match")
         for flag in entity["flags"]:
-            if flag["rule_id"] not in rules or not set(flag["evidence_value_ids"]).issubset(
-                value_ids
+            rule = rules.get(flag["rule_id"])
+            if (
+                rule is None
+                or rule.get("predicate") is None
+                or not set(flag["evidence_value_ids"]).issubset(value_ids)
             ):
                 raise ValueError("entity flag lacks ontology rule or evidence value")
+    for relation in relations.values():
+        if relation.get("match") is None:
+            continue
+        expected = _relation_pairs(entities, relation)
+        actual = {
+            (entity["id"], link["target"], link["via_value_id"])
+            for entity in entities
+            for link in entity["links"]
+            if link["property"] == relation["id"]
+        }
+        if actual != expected:
+            raise ValueError("gold links do not match the ontology's typed relation predicate")
+    for entity in entities:
+        actual_flags = {
+            (flag["rule_id"], flag["label"], tuple(flag["evidence_value_ids"]))
+            for flag in entity["flags"]
+        }
+        expected_flags = set()
+        for rule in rules.values():
+            if rule.get("predicate") is None:
+                continue
+            evidence_value_ids = _evaluate_rule(entity, rule, properties)
+            if evidence_value_ids is not None:
+                expected_flags.add((rule["id"], rule["label"], tuple(evidence_value_ids)))
+        if actual_flags != expected_flags or len(actual_flags) != len(entity["flags"]):
+            raise ValueError("gold flags do not match evidence-backed typed rule predicates")
 
 
 def _matches(entity: dict, query: dict) -> bool:
@@ -270,6 +319,12 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int:
     property_ids = query.get("properties", [])
     if aggregate == "count_entities":
         return len(selected)
+    if aggregate == "count_entities_with_relation":
+        relation_id = query["relation_id"]
+        return sum(
+            any(link["property"] == relation_id for link in entity.get("links", []))
+            for entity in selected
+        )
     if aggregate == "count_entities_with_properties":
         return sum(
             all(
@@ -337,6 +392,7 @@ def _metrics(
     decisions_by_backend: dict[str, int] | None,
 ) -> dict:
     classes, properties = _ontology_declarations(ontology)
+    relations, _ = _signal_definitions(ontology, classes, properties)
     by_class = {
         class_id: [entity for entity in entities if entity["class"] == class_id]
         for class_id in classes
@@ -423,13 +479,21 @@ def _metrics(
             raise ValueError("completeness query must use the primary class")
         listed = query.get("properties", [])
         listed = [] if listed == "dod" else listed
+        validation_class_id = class_id
+        if query["aggregate"] == "count_entities_with_relation":
+            relation = relations.get(query["relation_id"])
+            if relation is None:
+                raise ValueError(f"DoD query has unknown relation: {query['relation_id']}")
+            if class_id is not None and class_id != relation["domain"]:
+                raise ValueError("relation count class must equal the relation domain")
+            validation_class_id = relation["domain"]
         for property_id in [
             *listed,
             *(c["property"] for c in query.get("conditions", [])),
         ]:
             if property_id not in properties:
                 raise ValueError(f"DoD query has unknown property: {property_id}")
-            if class_id and properties[property_id]["domain"] != class_id:
+            if validation_class_id and properties[property_id]["domain"] != validation_class_id:
                 raise ValueError(f"DoD property {property_id} is outside query class")
         evaluation_query = query
         if query["aggregate"] == "entities_meeting_completeness":
@@ -444,7 +508,7 @@ def _metrics(
         actual = _query_actual(entities, evaluation_query)
         readable = query["aggregate"]
         arguments = []
-        for key in ("class_id", "class", "properties", "min_ratio", "conditions"):
+        for key in ("class_id", "class", "relation_id", "properties", "min_ratio", "conditions"):
             if query.get(key):
                 arguments.append(f"{key}={_canonical(query[key])}")
         if arguments:
