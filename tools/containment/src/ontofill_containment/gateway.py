@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 import httpx
+from ontofill.inference.decision import GENERATOR_PREFERENCES
 from ontofill.inference.page_content import screened_page_content
 
 
@@ -34,10 +35,16 @@ class Gateway:
                 f"{self.base}/models", headers={"Authorization": f"Bearer {self.token}"}
             )
             response.raise_for_status()
-            available = [item["id"] for item in response.json().get("data", []) if item.get("id")]
+            available = {item["id"] for item in response.json().get("data", []) if item.get("id")}
             if not available:
                 raise RuntimeError("gateway returned no models")
-            self._model = configured if configured in available else available[0]
+            preferred = [model for model in GENERATOR_PREFERENCES if model in available]
+            if configured and configured in available:
+                self._model = configured
+            elif preferred:
+                self._model = preferred[0]
+            else:
+                raise RuntimeError("no chat model available through the gateway")
         return self._model
 
     def screen_page(self, html: str, *, step_id: str) -> dict:

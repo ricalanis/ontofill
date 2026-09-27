@@ -6,6 +6,7 @@ Both fixtures are the engine's existing ones; nothing hostile is authored here.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -31,6 +32,7 @@ from .support import (
     probe_pod,
     ssh_run,
     step_id,
+    streamed_pod_transport,
 )
 
 HOSTILE_FIXTURE = "hostile.html"
@@ -68,8 +70,16 @@ def quarantine_step(
     screened: Mapping,
     provenance: Mapping,
     step: str | None = None,
+    probe_blocked: list[str] | None = None,
 ) -> dict:
     """The §12a step: a screened observation flagged by the gateway is withheld from planning."""
+    observed: dict = {
+        "url": url,
+        "page_key": page_key,
+        "blocked_requests": blocked_requests,
+    }
+    if probe_blocked:
+        observed["isolation_probe_blocked"] = probe_blocked
     record = {
         "step_id": step or step_id(),
         "run_id": run_id,
@@ -79,11 +89,7 @@ def quarantine_step(
         "tdd_path": TDD_PATH,
         "mode": "S1",
         "event": "quarantine",
-        "observed": {
-            "url": url,
-            "page_key": page_key,
-            "blocked_requests": blocked_requests,
-        },
+        "observed": observed,
         "requested": {"tool": "screen.page_content"},
         "executed": {"gate": screened["gate"], "model": screened["model"], "by": "gateway"},
         "evaluated": {"status": "quarantined", "reason": screened["screen"]["reason"]},
@@ -275,7 +281,7 @@ def run_hostile_page(
     server_factory: Callable = FixtureServer,
 ) -> dict:
     content = fixture_text(HOSTILE_FIXTURE)
-    with server_factory(HOSTILE_FIXTURE, content) as server:
+    with server_factory(HOSTILE_FIXTURE, content) as server, streamed_pod_transport():
         result = capture(
             server.url(),
             allowed_domains=[ALLOWED_DOMAIN],
@@ -300,17 +306,28 @@ def run_hostile_page(
             if event.get("decision") == "block" and event.get("host")
         }
     )
+    page_hosts = _hosts_referenced(result["html"])
+    page_blocked = [host for host in blocked if host in page_hosts]
     step = quarantine_step(
         run_id=run_id,
         capture_step_id=capture_step_id,
         url=result["url"],
         page_key=result["html_key"],
-        blocked_requests=blocked,
+        blocked_requests=page_blocked,
+        probe_blocked=[host for host in blocked if host not in page_hosts],
         screened=screened,
         provenance=provenance,
     )
     feed.append_step(step)
-    return {"quarantine": step["step_id"], "blocked": blocked}
+    return {"quarantine": step["step_id"], "blocked": page_blocked}
+
+
+def _hosts_referenced(html: str) -> set[str]:
+    """Hosts the fixture page itself tries to reach (the exfiltration attempts)."""
+    return {
+        match.split("/")[0].split("@")[-1].split(":")[0]
+        for match in re.findall(r"https?://([^\s\"'<>)]+)", html)
+    }
 
 
 def run_destructive_loop(

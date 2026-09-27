@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import subprocess
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
+from ontofill.sandbox import capture as _capture_module
 from ontofill.sandbox.capture import _REPO_ROOT, _docker
 from ontofill.sandbox.cells import _host_iptables, _remote_ssh_target, _ssh_prefix
 
@@ -48,6 +52,47 @@ def step_id() -> str:
 
 def docker(*args: str, timeout: int = 120, check: bool = True, input_text: str | None = None):
     return _docker(*args, timeout=timeout, check=check, input_text=input_text)
+
+
+@contextmanager
+def streamed_pod_transport() -> Iterator[None]:
+    """Make the capture path's remote output copy work for runsc pods.
+
+    `ontofill.sandbox.capture` transfers a remote pod's `/out` with `docker cp`, which the
+    remote daemon cannot read from a runsc container (the repair runner already streams
+    through `docker exec` for the same reason). This patches only that call for the life of
+    the block; every other Docker command is unchanged. It is a tool-local workaround for an
+    engine limitation, not a change to engine code.
+    """
+    real = _capture_module._docker
+
+    def streamed(*args: str, **kwargs: Any):
+        if args and args[0] == "cp" and len(args) == 3 and ":/out/." in str(args[1]):
+            name = str(args[1]).split(":", 1)[0]
+            destination = Path(str(args[2]))
+            destination.mkdir(parents=True, exist_ok=True)
+            listed = real(
+                "exec",
+                name,
+                "python",
+                "-c",
+                "import os; print('\\n'.join(sorted(f for f in os.listdir('/out') "
+                "if os.path.isfile('/out/' + f))))",
+                check=False,
+                timeout=30,
+            )
+            for filename in listed.stdout.split():
+                encoded = real("exec", name, "base64", f"/out/{filename}", timeout=60)
+                (destination / filename).write_bytes(base64.b64decode(encoded.stdout))
+            return subprocess.CompletedProcess(list(args), 0, "", "")
+
+        return real(*args, **kwargs)
+
+    _capture_module._docker = streamed
+    try:
+        yield
+    finally:
+        _capture_module._docker = real
 
 
 def ssh_run(
@@ -106,7 +151,6 @@ class FixtureServer:
 
     def _rule(self) -> tuple[str, ...]:
         return (
-            "INPUT",
             "-i",
             "docker0",
             "-s",
@@ -125,15 +169,15 @@ class FixtureServer:
 
     def _install_rule(self) -> None:
         _host_iptables("-I", "INPUT", "1", *self._rule())
-        if _host_iptables("-C", *self._rule(), check=False).returncode:
+        if _host_iptables("-C", "INPUT", *self._rule(), check=False).returncode:
             raise RuntimeError("fixture firewall rule could not be verified")
         self._rule_installed = True
 
     def _remove_rule(self) -> None:
         if not self._rule_installed or self.subnet is None:
             return
-        _host_iptables("-D", *self._rule(), check=False)
-        if _host_iptables("-C", *self._rule(), check=False).returncode == 0:
+        _host_iptables("-D", "INPUT", *self._rule(), check=False)
+        if _host_iptables("-C", "INPUT", *self._rule(), check=False).returncode == 0:
             raise RuntimeError("fixture firewall rule could not be removed")
         self._rule_installed = False
 

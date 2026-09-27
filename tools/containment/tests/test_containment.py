@@ -97,7 +97,10 @@ def _capture_result(lake: FileLake, run_id: str) -> dict:
         "url": "http://host.docker.internal:1/hostile.html",
         "status": 200,
         "redirect_chain": ["http://host.docker.internal:1/hostile.html"],
-        "html": "<html>hostile page</html>",
+        "html": (
+            "<html><script>fetch('http://169.254.169.254/latest/meta-data/').catch(()=>{});"
+            "fetch('http://blocked.invalid/private').catch(()=>{})</script></html>"
+        ),
         "html_key": html_key,
         "screenshot_key": shot,
         "trace": trace,
@@ -418,6 +421,15 @@ def test_run_destructive_loop_appends_limit_kill_and_six_checkpoints(tmp_path):
     assert record["checkpoints"]["task"]["result"]["host_sentinel"] == "intact"
     assert out["reason"] == "timeout"
     assert ssh.removed, "the sentinel must be cleaned up"
+
+
+def test_hosts_referenced_filters_probe_hosts():
+    from ontofill_containment.main import _hosts_referenced
+
+    html = "<script>fetch('http://169.254.169.254/x');fetch('https://blocked.invalid/y')</script>"
+    hosts = _hosts_referenced(html)
+    assert "169.254.169.254" in hosts and "blocked.invalid" in hosts
+    assert "ontofill-proof-denied-abc.invalid" not in hosts
 
 
 def test_gateway_requires_flag_and_reads_header():
