@@ -256,3 +256,35 @@ def test_live_pages_fit_phone_width(server, cases_dir):
                 assert page.locator(".live-ind .chip.st-run").count() == 1
                 assert page.evaluate("document.documentElement.scrollWidth") <= width, (url, width)
         browser.close()
+
+
+@pytest.mark.ui
+def test_live_polling_waits_while_a_person_types(server, cases_dir):
+    """A field with focus or an edit pauses live polling, so a refresh never wipes a typed name or reason."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    set_status(cases_dir, state="running", updated_at=iso(datetime.now(UTC)))
+    with playwright.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        hits = []
+        page.on("request", lambda r: hits.append(r.url) if r.url.split("?")[0].endswith("/operation") else None)
+        page.goto(f"{server}/cases/libraries/operation")
+        page.evaluate(
+            "document.querySelector('[data-live-region]').insertAdjacentHTML('beforeend', '<input id=\"typed\">')"
+        )
+        page.fill("#typed", "Ana")
+        n = len(hits)
+        page.wait_for_timeout(6000)  # more than two poll intervals
+        assert len(hits) == n, "no poll while a field has focus and an edit"
+        assert page.input_value("#typed") == "Ana"
+        page.evaluate("() => { const f = document.querySelector('#typed'); f.value = ''; f.blur(); }")
+        page.wait_for_timeout(6000)
+        assert len(hits) > n, "polling resumes once the person is done"
+        browser.close()
+
+
+def test_runner_and_kill_actions_confirm(client):
+    page = client.get("/cases/libraries?runner=start").text
+    assert 'role="status">Start requested: the runner launches a new run' in page
+    assert 'role="status">Kill switch on' in client.get("/?kill=on").text
+    assert "Start requested" not in client.get("/cases/libraries?runner=bogus").text

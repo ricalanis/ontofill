@@ -1,6 +1,7 @@
 // Ontofill Console · live streaming for the viz views (operation, needs you). Progressive enhancement, no libraries.
 // While the page's [data-live-root] carries data-live="1" (a run in motion), re-fetch this same URL every few seconds,
 // parse it, and swap only the [data-live-region] elements whose HTML changed, keeping focus and open <details>.
+// While a form field has focus or holds an edit, polling waits: a refresh never wipes what a person is typing.
 // Polling pauses while the tab is hidden, backs off on errors, and stops for good once the fetched page is no longer
 // live (the run finished): recorded and finished runs never poll.
 (() => {
@@ -106,8 +107,24 @@
     if (!stopped) timer = setTimeout(tick, ms);
   }
 
+  // A person is using a form (a field has focus, or holds something they typed or picked): leave the page alone
+  // until they are done, so a refresh never wipes a name or a reason.
+  function editing() {
+    const fields = document.querySelectorAll("#main input, #main textarea, #main select");
+    for (const f of fields) {
+      if (f === document.activeElement) return true;
+      if (f.type === "checkbox" || f.type === "radio") {
+        if (f.checked !== f.defaultChecked) return true;
+      } else if (f.tagName === "SELECT") {
+        if ([...f.options].some((o) => o.selected !== o.defaultSelected)) return true;
+      } else if (f.type !== "hidden" && f.value !== f.defaultValue) return true;
+    }
+    return false;
+  }
+
   async function tick() {
     if (stopped || busy || document.hidden) return; // visibilitychange resumes a hidden tab
+    if (editing()) return schedule(base);
     busy = true;
     try {
       const res = await fetch(window.location.href, {

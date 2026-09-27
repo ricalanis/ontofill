@@ -21,6 +21,8 @@
   <h1>{{ case.title }}</h1>
   <p class="source">case {{ case.id }}{% if domain and domain.usable() %} · primary class: {{ domain.class_label(plural=True)|lower }}{% endif %}</p>
 </section>
+{% set runner_done = request.query_params.get("runner") %}
+{% if runner_done in ("start", "pause", "resume") %}<p class="notice" role="status">{{ {"start": "Start requested: the runner launches a new run within a few seconds. Its state shows under Runner below and on Watch.", "pause": "Pause requested: the runner pauses the run at its next step.", "resume": "Resume requested: the runner resumes the run within a few seconds."}[runner_done] }}</p>{% endif %}
 {% include "_question.html" %}
 {% if case.meta %}<p class="case-meta">created {{ (case.meta.created_at or "")[:16]|replace("T", " ") }}{% if case.meta.created_by and case.meta.created_by.unverified_name %} by {{ case.meta.created_by.unverified_name }} (self-declared){% endif %} · budget ${{ case.meta.budget_usd }} · up to phase {{ case.meta.to_phase or 5 }}{% if case.meta.archived %} · ARCHIVED{% endif %} · <a href="/cases/{{ case.id }}/manage">manage the case</a></p>
 {% elif registry_enabled is defined and registry_enabled() %}<p class="case-meta"><a href="/cases/{{ case.id }}/manage">case record</a></p>{% endif %}
