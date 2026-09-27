@@ -9,7 +9,32 @@ different subjects. [Proveedor Abierto](https://github.com/ricalanis/proveedor-a
 is the reference case used to exercise the engine.
 
 **For judges:** [Live, read-only Ontofill Console](https://ontofill-console-judges.eu1.netbird.services).
-The password is linked from [Proveedor Abierto's For judges section](https://github.com/ricalanis/proveedor-abierto#for-judges).
+The password is linked from [Proveedor Abierto's For judges section](https://github.com/ricalanis/proveedor-abierto#for-judges),
+which also states where each case stands.
+
+## What is proven live (Sun 27 Sep)
+
+- **Two Vultr VMs, one boundary.** The control VM plans every phase on Vultr Serverless Inference and dispatches
+  work; the sandbox VM runs each job in a gVisor (`runsc`) cell with memory, CPU, process and time caps, and
+  destroys it afterwards. Every job reports six proof checks: host check, task result, where it ran, isolation
+  probe (BLOCKED), teardown, and secret hygiene (0 keys in the cell; cloud metadata IP and mesh BLOCKED).
+- **One key, outside the sandbox.** Only the inference gateway on the control VM holds the Vultr key. It issues
+  per-session tokens, attributes every call to a run and step, and screens captured page text before it reaches a
+  model. The console's Inference view shows each call and its provider.
+- **Containment.** A hostile page (prompt injection plus attempts to reach the metadata IP) is quarantined and
+  flagged, and a destructive extractor loop is killed by its cell's limits with the host untouched
+  (`tools/containment`, recorded run in the console).
+- **Pattern A, self-healing extractors.** The engine writes an extractor and runs it in a networkless cell against
+  stored captures. Live runs show both halves: a passing extractor promoted to a versioned macro, and a failing one
+  whose output diff is fed back for a patch and retry, then escalated to the browser after the attempt cap.
+- **People only approve.** A run stops at the PRD, factors, ontology and source-review checkpoints. Each decision in
+  the console is bound to the sha256 of the exact artifact reviewed and appended to the case's decision log; a deny
+  with a reason makes the engine redraft. The runner service resumes the run with no operator in the loop.
+- **Generic by construction.** The same code runs the Mexican procurement case and an unrelated San Francisco
+  library case, each from a one-paragraph brief.
+- **Honest gap.** The reference case has **no engine gold yet**: its primary procurement portal needs a data API
+  that the sandbox egress allowlist refused (fix in review), and the source critic accepted none of the other
+  candidates. The console shows every one of those runs, reviews and failures.
 
 ## How it works
 
@@ -42,9 +67,22 @@ License: Apache-2.0. See `docs/planning/01-engine-definition.md`.
 
 ## Built during the event
 
-Before the event, this repository contained the definition documents and empty package scaffold.
-During the event, the engine implementation, runnable services, schemas, tests, and a recorded
-five-phase run were added in dated local commits. The Git history records each build slice.
+Built during the Vultr Agent Arena (Sat 11:30 → Sun 12:00 PT). Before the event this repository held the
+definition documents and an empty package scaffold (`a648775`, Sat 13:31). Everything else was built during the
+event, in the granular public [commit history](https://github.com/ricalanis/ontofill/commits/main)
+(about 400 commits; the suite runs 720 tests on `main`). By work block:
+
+| When (PT) | What was built | Example commits |
+|-----------|----------------|-----------------|
+| Sat 13:31–14:13 | Contract, file and S3 lake adapters, the scrape toolkit, live run feed, sandbox job proof feed | `56f7324`, `571aaae`, `a7e2cd1` |
+| Sat 14:53–15:51 | Live Vultr typed decisions with an independent critic, ontology-driven refine and export, the native gVisor browser cell | `5c44202`, `2818822`, `6076a6d` |
+| Sat 16:03–18:15 | Vultr provisioning, isolated Skyvern cell, checkpoint deny steering, PRD and gateway proof checkpoints, the engine on the screened gateway token | `dd811a8`, `62126e8`, `1ef6e4d` |
+| Sat 18:48–20:56 | P5 connected to the browser controller, teardown proof, containment command, runner service with kill switch, console Inference and Summary views, honest taxonomy metrics, screening of captured content | `7774775`, `a86cb3c`, `fdc8dd7`, `bf8d9b2` |
+| Sat 21:10–Sun 03:47 | Sandbox document parsing, stable digest-bound approvals, source-review checkpoint, direct document parsing in P5, reviewed download gate, jurisdiction guard | `e2429dc`, `91d2c82`, `fd9ce1f`, `e76d552` |
+| Sun 04:46–10:24 | Fixes driven by the real case's live runs: budget and wall-clock accounting, wide authority policy, entity anchors and query rotation for discovery, the document profiler, SPA request capture, P2 rule salvage | `936d0cc`, `b217f02`, `933ce27`, `0474139`, `f9a3fb7` |
+
+Each live failure on the real case was filed with its evidence, fixed in code with a test, deployed in a window
+with no engine running, and rerun. Nothing in a run was edited by hand.
 
 ## Try a second brief through the ontology checkpoint
 
