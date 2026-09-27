@@ -54,6 +54,18 @@ which also states where each case stands.
   The case is now approved through the ontology and discovering sources. One defect is in progress: criteria
   written as "≤ 0" compile to counts that can never be met.
 
+## Post-submission updates
+
+The project was submitted on Sun 27 Sep before the 12:00 PT deadline, and the 1-minute video is fixed as of then.
+Every change after submission is listed here, newest first, with its commit. Text written before submission is
+kept; where a fact changed, the text carries an "Updated HH:MM" note. The running status of both cases is in
+[Proveedor Abierto's "Where things stand"](https://github.com/ricalanis/proveedor-abierto#where-things-stand-sun-27-sep-1755-utc).
+
+| When (PT) | Commit | What changed |
+|-----------|--------|--------------|
+| Sun 11:49 | [`0b81af0`](https://github.com/ricalanis/ontofill/commit/0b81af0) | The status bullets above now match the submitted claims. They still read "six defects, five fixed" and "the run continues". |
+| Sun 11:44–11:48 | [`e226669`](https://github.com/ricalanis/ontofill/commit/e226669), [`52235c5`](https://github.com/ricalanis/ontofill/commit/52235c5) | R64/R64b definition-of-done fixes: "≤ 0" criteria and explicit completeness shares no longer compile to counts that can never be met. Awaiting deploy at the SF case's next checkpoint. |
+
 ## How it works
 
 The engine turns a question into a reviewed PRD, an inferred ontology, confirmed sources,
