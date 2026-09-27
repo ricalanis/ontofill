@@ -152,7 +152,7 @@ class Runner:
             self.state.set_status(cid, handled_retry_at=retry, last_trigger=None)
             status = self.state.status(cid)
         lake = self.lake(cid)
-        run_id = lake.latest_run_id()
+        run_id = lake.active_run_id()
         lstatus = (lake.status(run_id) if run_id else None) or {}
 
         start = control.get("start_requested") if isinstance(control.get("start_requested"), dict) else None

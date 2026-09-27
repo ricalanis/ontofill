@@ -210,3 +210,19 @@ def test_failed_stays_failed_until_console_resume(setup, monkeypatch):
     r.env["FAKE_MODE"] = "done"
     run_until_idle(r)
     assert len(calls(setup)) == 2 and r.state.status("c1")["state"] == "done"
+
+
+def test_a_finished_proof_run_does_not_hide_the_paused_run(setup, monkeypatch):
+    """A later, finished run in the same lake (e.g. a proof written into a scratch lake) must not make the runner
+    lose the case's paused run: it follows the most recent paused run instead of latest.json."""
+    lake = setup["lake"]
+    proof = lake / "runs" / "c1" / "proof-run"
+    proof.mkdir(parents=True)
+    (proof / "status.json").write_text(json.dumps({"state": "done", "phase": 5}))
+    (lake / "runs" / "c1" / "latest.json").write_text(json.dumps({"run_id": "proof-run"}))
+    monkeypatch.setenv("FAKE_MODE", "pause:factors")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    c = calls(setup)
+    assert len(c) == 1 and c[0]["run_id"] == "run-abc"
