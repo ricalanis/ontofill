@@ -311,16 +311,18 @@ class PhaseLoop(Generic[T]):
             if self._budget_reached():
                 return self._finish(artifact, iteration, "budget", objections)
 
-            def reviewed() -> CheckResult:
-                verdict = _critique(critique(artifact, context, iteration))
+            def reviewed(
+                draft: T = artifact, gathered: object = context, number: int = iteration
+            ) -> CheckResult:
+                verdict = _critique(critique(draft, gathered, number))
                 if not verdict.passed or not prior_rejections:
                     return verdict
                 unresolved = []
                 for rejected_draft, objection in prior_rejections:
                     if objection_addressed is None:
-                        changed = _draft_sha256(rejected_draft) != _draft_sha256(artifact)
+                        changed = _draft_sha256(rejected_draft) != _draft_sha256(draft)
                     else:
-                        changed = objection_addressed(rejected_draft, artifact, objection)
+                        changed = objection_addressed(rejected_draft, draft, objection)
                     if not changed:
                         unresolved.append(f"Prior objection subject unchanged: {objection}")
                 return CheckResult(False, tuple(unresolved)) if unresolved else verdict
