@@ -439,6 +439,329 @@ def _pod_exit_reason(name: str, result: subprocess.CompletedProcess[str]) -> str
     return None
 
 
+def _spider_settings(options: Mapping[str, object]) -> dict:
+    expected = {
+        "max_depth",
+        "page_cap",
+        "delay_seconds",
+        "max_redirects",
+        "max_redirects_total",
+        "max_response_bytes",
+    }
+    if set(options) != expected:
+        raise ValueError("spider options must contain the exact bounded crawl policy")
+    if type(options["max_depth"]) is not int or not 0 <= options["max_depth"] <= 2:
+        raise ValueError("spider max_depth must be between 0 and 2")
+    if type(options["page_cap"]) is not int or not 1 <= options["page_cap"] <= 50:
+        raise ValueError("spider page_cap must be between 1 and 50")
+    if (
+        isinstance(options["delay_seconds"], bool)
+        or not isinstance(options["delay_seconds"], (int, float))
+        or not 0.25 <= float(options["delay_seconds"]) <= 60
+    ):
+        raise ValueError("spider delay_seconds must be between 0.25 and 60")
+    for key, lower, upper in (("max_redirects", 1, 10), ("max_redirects_total", 1, 250)):
+        if type(options[key]) is not int or not lower <= options[key] <= upper:
+            raise ValueError(f"spider {key} must be between {lower} and {upper}")
+    if (
+        type(options["max_response_bytes"]) is not int
+        or not 1024 <= options["max_response_bytes"] <= 512 * 1024
+    ):
+        raise ValueError("spider max_response_bytes must be between 1 KiB and 512 KiB")
+    return dict(options)
+
+
+def _safe_output_file(output: Path, name: object, pattern: re.Pattern) -> Path | None:
+    if not isinstance(name, str) or not pattern.fullmatch(name) or Path(name).name != name:
+        return None
+    path = output / name
+    return path if path.is_file() else None
+
+
+def _persist_spider_output(
+    *,
+    output: Path,
+    result: Mapping,
+    lake: FileLake | S3Lake,
+    source_id: str,
+    objective_id: str | None,
+    run_id: str,
+    step_id: str,
+    job_id: str,
+    generated_by: dict,
+    redirect_domain: str,
+    limits: SandboxLimits,
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    pages = result.get("pages")
+    robots = result.get("robots")
+    if not isinstance(pages, list) or not isinstance(robots, list):
+        raise CaptureError("spider pod returned no page and robots manifests")
+    page_cap = result.get("crawl", {}).get("page_cap")
+    if type(page_cap) is not int or not 1 <= page_cap <= 50 or len(pages) > page_cap:
+        raise CaptureError("spider pod exceeded its configured page cap")
+    page_rows: list[dict] = []
+    page_traces: list[dict] = []
+    robot_rows: list[dict] = []
+    robot_traces: list[dict] = []
+    page_file = re.compile(r"page-\d{4}\.(?:html|bin)\Z")
+    robot_file = re.compile(r"robots-\d{4}\.txt\Z")
+    for item in robots:
+        if not isinstance(item, dict):
+            raise CaptureError("spider pod returned an invalid robots record")
+        record = dict(item)
+        path = _safe_output_file(output, record.get("file_name"), robot_file)
+        key = None
+        if path is not None:
+            key = lake.put_bytes(
+                path.read_bytes(),
+                {
+                    "content_type": "text/plain",
+                    "url": record.get("url"),
+                    "source_id": source_id,
+                    "step_id": step_id,
+                    "captured_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        record["bronze_key"] = key
+        record.pop("file_name", None)
+        robot_rows.append(record)
+        trace_id = f"step:{uuid.uuid4().hex}"
+        status = record.get("http_status")
+        robot_traces.append(
+            _trace(
+                step_id=trace_id,
+                run_id=run_id,
+                phase=3,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=f"03-fanout/surface-map/{source_id}/site-graph.json",
+                observed={"url": record.get("url"), "http_status": status},
+                requested={"url": record.get("url"), "method": "GET", "resource": "robots.txt"},
+                executed={
+                    "network_request": status is not None,
+                    "bronze_key": key,
+                    "job_id": job_id,
+                },
+                evaluated={
+                    "status": "captured" if record.get("decision") == "allow" else "blocked",
+                    "reason": record.get("decision"),
+                },
+                ts=datetime.now(UTC).isoformat(),
+                generated_by=generated_by,
+                parent_step_id=step_id,
+            )
+        )
+    for item in pages:
+        if not isinstance(item, dict) or item.get("method") != "GET":
+            raise CaptureError("spider pod returned a non-GET page record")
+        record = dict(item)
+        requested_url = record.get("requested_url")
+        final_url = record.get("final_url")
+        chain = record.get("redirect_chain")
+        if (
+            not isinstance(requested_url, str)
+            or not isinstance(final_url, str)
+            or not isinstance(chain, list)
+            or not chain
+            or chain[0] != requested_url
+            or chain[-1] != final_url
+            or any(
+                not isinstance(url, str)
+                or not _allowed_host(url, [redirect_domain])
+                or not same_registrable_domain(requested_url, url)
+                for url in chain
+            )
+            or not _allowed_host(final_url, [redirect_domain])
+            or not same_registrable_domain(requested_url, final_url)
+        ):
+            raise CaptureBlocked("spider pod returned a page outside the registrable domain", [])
+        path = _safe_output_file(output, record.get("file_name"), page_file)
+        if path is None:
+            continue
+        captured_at = datetime.now(UTC).isoformat()
+        content_type = str(record.get("content_type") or "application/octet-stream")
+        key = lake.put_bytes(
+            path.read_bytes(),
+            {
+                "content_type": content_type,
+                "url": final_url,
+                "captured_at": captured_at,
+                "source_id": source_id,
+                "step_id": step_id,
+            },
+        )
+        trace_id = f"step:{uuid.uuid4().hex}"
+        record.update(
+            url=requested_url,
+            final_url=final_url,
+            bronze_key=key,
+            job_id=job_id,
+            trace_step_id=trace_id,
+        )
+        record.pop("file_name", None)
+        page_rows.append(record)
+        status = record.get("status")
+        page_traces.append(
+            _trace(
+                step_id=trace_id,
+                run_id=run_id,
+                phase=3,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=f"03-fanout/surface-map/{source_id}/site-graph.json",
+                observed={
+                    "url": final_url,
+                    "requested_url": requested_url,
+                    "http_status": status,
+                    "depth": record.get("depth"),
+                    "redirect_chain": chain,
+                },
+                requested={"url": requested_url, "method": "GET", "depth": record.get("depth")},
+                executed={
+                    "network_request": True,
+                    "bronze_key": key,
+                    "content_type": content_type,
+                    "job_id": job_id,
+                },
+                evaluated={
+                    "status": "captured"
+                    if isinstance(status, int) and 200 <= status < 300
+                    else "failed",
+                    "reason": record.get("blocked_reason"),
+                },
+                ts=captured_at,
+                generated_by=generated_by,
+                parent_step_id=step_id,
+            )
+        )
+    return page_rows, robot_rows, page_traces, robot_traces
+
+
+def _spider_job_result(
+    *,
+    output: Path,
+    result: Mapping,
+    lake: FileLake | S3Lake,
+    run_id: str,
+    phase: int,
+    source_id: str,
+    objective_id: str | None,
+    tdd_path: str,
+    step_id: str,
+    job_id: str,
+    requested: dict,
+    provenance: dict,
+    host: dict,
+    pod: dict,
+    isolation: dict,
+    secrets: dict,
+    redirect_domain: str,
+    limits: SandboxLimits,
+    started_at: str,
+    pod_steps: int,
+    peak_memory_mb: float,
+    egress_events: list[dict],
+) -> tuple[dict, list[dict]]:
+    crawl = result.get("crawl")
+    if not isinstance(crawl, Mapping):
+        raise CaptureError("spider pod returned no crawl summary")
+    page_rows, robot_rows, page_traces, robot_traces = _persist_spider_output(
+        output=output,
+        result=result,
+        lake=lake,
+        source_id=source_id,
+        objective_id=objective_id,
+        run_id=run_id,
+        step_id=step_id,
+        job_id=job_id,
+        generated_by=provenance,
+        redirect_domain=redirect_domain,
+        limits=limits,
+    )
+    status = result.get("status")
+    status = status if type(status) is int and 0 <= status <= 599 else 0
+    summary = dict(crawl)
+    root_trace = _trace(
+        step_id=step_id,
+        run_id=run_id,
+        phase=phase,
+        source_id=source_id,
+        objective_id=objective_id,
+        tdd_path=tdd_path,
+        observed={
+            "seed_url": result.get("url"),
+            "http_status": status,
+            "crawl": summary,
+            "captured_pages": len(page_rows),
+        },
+        requested=requested,
+        executed={
+            "network_request": bool(result.get("request_count")),
+            "job_id": job_id,
+            "page_bronze_keys": [row["bronze_key"] for row in page_rows],
+            "robots_bronze_keys": [row["bronze_key"] for row in robot_rows],
+        },
+        evaluated={
+            "status": "captured",
+            "reason": summary.get("stop_reason"),
+            "proof_checkpoint": "dispatch_result",
+        },
+        ts=datetime.now(UTC).isoformat(),
+        mode="S1",
+        generated_by=provenance,
+    )
+    proof_rows = _proof_rows(
+        step_id=step_id,
+        run_id=run_id,
+        phase=phase,
+        source_id=source_id,
+        objective_id=objective_id,
+        tdd_path=tdd_path,
+        mode="S1",
+        generated_by=provenance,
+        host=host,
+        pod=pod,
+        isolation=isolation,
+        secrets=secrets,
+    )
+    proof = {
+        "dispatch_result": {
+            "url": result.get("url"),
+            "status": status,
+            "job_id": job_id,
+            "crawl": summary,
+            "pages_captured": len(page_rows),
+            "robots_captured": sum(row.get("bronze_key") is not None for row in robot_rows),
+        },
+        "host_check": host,
+        "pod_identity": pod,
+        "isolation_probe": isolation,
+        "secrets": secrets,
+    }
+    job = {
+        "url": result.get("url"),
+        "status": status,
+        "redirect_chain": result.get("redirect_chain", [result.get("url")]),
+        "trace": [root_trace, *proof_rows],
+        "egress_events": egress_events,
+        "proof": proof,
+        "started_at": started_at,
+        "limits": limits.as_dict(),
+        "usage": {
+            "peak_memory_mb": peak_memory_mb,
+            "wall_s": 0,
+            "steps": pod_steps,
+        },
+        "job_id": job_id,
+        "crawl": summary,
+        "pages": page_rows,
+        "robots": robot_rows,
+        "edges": result.get("edges", []),
+        "page_trace": [*robot_traces, *page_traces],
+    }
+    return job, job["page_trace"]
+
+
 def _run_agent_pod(
     name: str, output: Path, *args: str, limits: SandboxLimits | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -501,20 +824,32 @@ def capture_url(
     generated_by: dict | None = None,
     limits: SandboxLimits | Mapping[str, object] | None = None,
     redirect_domain: str | None = None,
+    spider_options: Mapping[str, object] | None = None,
+    job_id: str | None = None,
 ) -> dict:
-    """Capture a public page; only the proxy container can leave the internal network."""
+    """Capture a public page or one bounded gVisor spider job."""
     domains = _domains(allowed_domains)
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
+    settings = _spider_settings(spider_options) if spider_options is not None else None
+    if settings is not None:
+        if redirect_domain is None:
+            redirect_domain = registrable_domain(urlsplit(url).hostname or "")
+        if limits is None:
+            limits = SandboxLimits(timeout_s=300, max_steps=300)
+        job_id = job_id or f"job:{uuid.uuid4().hex}"
     budget = SandboxLimits.from_value(limits)
     started_monotonic = time.monotonic()
     request = {
         "url": url,
         "allowed_domains": domains,
-        "capture": ["html", "a11y", "screenshot"],
+        "capture": ["site_graph"] if settings is not None else ["html", "a11y", "screenshot"],
         "limits": budget.as_dict(),
     }
+    if settings is not None:
+        request["spider"] = settings
+        request["job_id"] = job_id
     if not _allowed_host(url, domains):
         row = _trace(
             step_id=step_id,
@@ -551,8 +886,18 @@ def capture_url(
             )
             raise CaptureBlocked("redirect domain must be the URL's registrable domain", [row])
 
+    if settings is not None:
+        selected_runtime = os.environ.get("ONTOFILL_SANDBOX_RUNTIME")
+        if not _remote_docker() and selected_runtime != "runsc":
+            raise CaptureError("site spider requires ONTOFILL_SANDBOX_RUNTIME=runsc")
+        if selected_runtime is not None and selected_runtime != "runsc":
+            raise CaptureError("site spider requires the runsc gVisor runtime")
     agent_image, egress_image = _images()
     host, runtime_args = _host_check()
+    if settings is not None and (
+        host.get("runtime") != "runsc" or not host.get("runtime_available")
+    ):
+        raise CaptureError("site spider requires a verified available runsc runtime")
     denied_host = _denied_probe_host(domains)
     suffix = uuid.uuid4().hex[:12]
     network = f"ontofill-sandbox-{suffix}"
@@ -629,6 +974,12 @@ def capture_url(
                 "-e",
                 "PROXY_URL=http://egress:8888",
                 "-e",
+                "CAPTURE_MODE=" + ("spider" if settings is not None else "page"),
+                "-e",
+                "SPIDER_ALLOWED_DOMAIN=" + (redirect_domain or ""),
+                "-e",
+                "SPIDER_CONFIG=" + json.dumps(settings or {}),
+                "-e",
                 "PROBE_DENIED_HOST=" + denied_host,
                 "-e",
                 "PROBE_MESH_IP=" + _mesh_probe_ip(),
@@ -664,191 +1015,221 @@ def capture_url(
                 raise CaptureError(f"sandbox isolation proof failed: {isolation}")
             if not secrets["ok"]:
                 raise CaptureError("sandbox secret hygiene proof failed")
-            final_url = result["url"]
-            redirect_chain = result.get("redirect_chain")
-            if not isinstance(redirect_chain, list) or not all(
-                isinstance(item, str) for item in redirect_chain
-            ):
-                redirect_chain = [url]
-            elif not redirect_chain or redirect_chain[0] != url:
-                redirect_chain = [url, *redirect_chain]
-            navigation_error = result.get("navigation_error")
-            invalid_redirect = redirect_domain is not None and any(
-                not _allowed_host(item, domains) or not same_registrable_domain(url, item)
-                for item in [*redirect_chain, final_url]
-            )
-            if navigation_error or invalid_redirect:
-                blocked = invalid_redirect
-                reason = (
-                    "redirect_outside_registrable_domain" if blocked else "sandbox_navigation_error"
-                )
-                status = result.get("status")
-                status = int(status) if isinstance(status, int) else 0
-                captured_at = datetime.now(UTC).isoformat()
-                redirect_result = {
-                    "url": final_url,
-                    "status": status,
-                    "redirect_chain": redirect_chain,
-                    "navigation_error": navigation_error,
-                    "reason": reason,
-                    "egress_events": events,
-                }
-                row = _trace(
-                    step_id=step_id,
+            if settings is not None:
+                job_result, _ = _spider_job_result(
+                    output=output,
+                    result=result,
+                    lake=lake,
                     run_id=run_id,
                     phase=phase,
                     source_id=source_id,
                     objective_id=objective_id,
                     tdd_path=tdd_path,
-                    observed={"url": final_url, "redirect_chain": redirect_chain},
+                    step_id=step_id,
+                    job_id=job_id or "",
                     requested=request,
-                    executed={"network_request": True},
-                    evaluated={
-                        "status": "blocked" if blocked else "failed",
-                        "reason": reason,
-                        "proof_checkpoint": "dispatch_result",
-                    },
-                    ts=captured_at,
-                    generated_by=provenance,
-                    event="hard_stop" if blocked else None,
+                    provenance=provenance,
+                    host=host,
+                    pod=pod_identity,
+                    isolation=isolation,
+                    secrets=secrets,
+                    redirect_domain=redirect_domain or "",
+                    limits=budget,
+                    started_at=timestamp,
+                    pod_steps=pod_steps,
+                    peak_memory_mb=peak_memory_mb,
+                    egress_events=events,
                 )
-                trace_rows = [
-                    row,
-                    *_proof_rows(
-                        step_id=step_id,
-                        run_id=run_id,
-                        phase=phase,
-                        source_id=source_id,
-                        objective_id=objective_id,
-                        tdd_path=tdd_path,
-                        mode="S1",
-                        generated_by=provenance,
-                        host=host,
-                        pod=pod_identity,
-                        isolation=isolation,
-                        secrets=secrets,
-                    ),
-                ]
-                proof = {
-                    "dispatch_result": redirect_result,
-                    "host_check": host,
-                    "pod_identity": pod_identity,
-                    "isolation_probe": isolation,
-                    "secrets": secrets,
-                }
-                job_result = {
-                    "url": final_url,
-                    "status": status,
-                    "redirect_chain": redirect_chain,
-                    "trace": trace_rows,
-                    "egress_events": events,
-                    "proof": proof,
-                    "started_at": timestamp,
-                    "limits": budget.as_dict(),
-                    "usage": {
-                        "peak_memory_mb": peak_memory_mb,
-                        "wall_s": 0,
-                        "steps": pod_steps,
-                    },
-                }
-                message = (
-                    "redirect left the registrable domain"
-                    if blocked
-                    else "sandbox navigation failed"
-                )
-                capture_error = CaptureBlocked(message, trace_rows, job_result)
+                trace_rows = job_result["trace"]
+                proof = job_result["proof"]
             else:
-                captured_at = datetime.now(UTC).isoformat()
-                metadata = {
-                    "url": final_url,
-                    "captured_at": captured_at,
-                    "source_id": source_id,
-                    "step_id": step_id,
-                }
-                html_bytes = (output / "page.html").read_bytes()
-                html_key = lake.put_bytes(html_bytes, {**metadata, "content_type": "text/html"})
-                a11y_key = lake.put_bytes(
-                    (output / "a11y.txt").read_bytes(),
-                    {**metadata, "content_type": "text/plain"},
+                final_url = result["url"]
+                redirect_chain = result.get("redirect_chain")
+                if not isinstance(redirect_chain, list) or not all(
+                    isinstance(item, str) for item in redirect_chain
+                ):
+                    redirect_chain = [url]
+                elif not redirect_chain or redirect_chain[0] != url:
+                    redirect_chain = [url, *redirect_chain]
+                navigation_error = result.get("navigation_error")
+                invalid_redirect = redirect_domain is not None and any(
+                    not _allowed_host(item, domains) or not same_registrable_domain(url, item)
+                    for item in [*redirect_chain, final_url]
                 )
-                screenshot_key = lake.put_bytes(
-                    (output / "screenshot.png").read_bytes(),
-                    {**metadata, "content_type": "image/png"},
-                )
-                keys = {
-                    "html_key": html_key,
-                    "a11y_key": a11y_key,
-                    "screenshot_key": screenshot_key,
-                }
-                row = _trace(
-                    step_id=step_id,
-                    run_id=run_id,
-                    phase=phase,
-                    source_id=source_id,
-                    objective_id=objective_id,
-                    tdd_path=tdd_path,
-                    observed={
+                if navigation_error or invalid_redirect:
+                    blocked = invalid_redirect
+                    reason = (
+                        "redirect_outside_registrable_domain"
+                        if blocked
+                        else "sandbox_navigation_error"
+                    )
+                    status = result.get("status")
+                    status = int(status) if isinstance(status, int) else 0
+                    captured_at = datetime.now(UTC).isoformat()
+                    redirect_result = {
                         "url": final_url,
-                        "status": result["status"],
+                        "status": status,
                         "redirect_chain": redirect_chain,
-                    },
-                    requested=request,
-                    executed={"network_request": True, **keys},
-                    evaluated={
-                        "status": "captured",
-                        "bronze_objects": 3,
-                        "proof_checkpoint": "dispatch_result",
-                    },
-                    ts=captured_at,
-                    generated_by=provenance,
-                )
-                row["screenshot_key"] = screenshot_key
-                trace_rows = [
-                    row,
-                    *_proof_rows(
+                        "navigation_error": navigation_error,
+                        "reason": reason,
+                        "egress_events": events,
+                    }
+                    row = _trace(
                         step_id=step_id,
                         run_id=run_id,
                         phase=phase,
                         source_id=source_id,
                         objective_id=objective_id,
                         tdd_path=tdd_path,
-                        mode="S1",
+                        observed={"url": final_url, "redirect_chain": redirect_chain},
+                        requested=request,
+                        executed={"network_request": True},
+                        evaluated={
+                            "status": "blocked" if blocked else "failed",
+                            "reason": reason,
+                            "proof_checkpoint": "dispatch_result",
+                        },
+                        ts=captured_at,
                         generated_by=provenance,
-                        host=host,
-                        pod=pod_identity,
-                        isolation=isolation,
-                        secrets=secrets,
-                    ),
-                ]
-                proof = {
-                    "dispatch_result": {
+                        event="hard_stop" if blocked else None,
+                    )
+                    trace_rows = [
+                        row,
+                        *_proof_rows(
+                            step_id=step_id,
+                            run_id=run_id,
+                            phase=phase,
+                            source_id=source_id,
+                            objective_id=objective_id,
+                            tdd_path=tdd_path,
+                            mode="S1",
+                            generated_by=provenance,
+                            host=host,
+                            pod=pod_identity,
+                            isolation=isolation,
+                            secrets=secrets,
+                        ),
+                    ]
+                    proof = {
+                        "dispatch_result": redirect_result,
+                        "host_check": host,
+                        "pod_identity": pod_identity,
+                        "isolation_probe": isolation,
+                        "secrets": secrets,
+                    }
+                    job_result = {
+                        "url": final_url,
+                        "status": status,
+                        "redirect_chain": redirect_chain,
+                        "trace": trace_rows,
+                        "egress_events": events,
+                        "proof": proof,
+                        "started_at": timestamp,
+                        "limits": budget.as_dict(),
+                        "usage": {
+                            "peak_memory_mb": peak_memory_mb,
+                            "wall_s": 0,
+                            "steps": pod_steps,
+                        },
+                    }
+                    message = (
+                        "redirect left the registrable domain"
+                        if blocked
+                        else "sandbox navigation failed"
+                    )
+                    capture_error = CaptureBlocked(message, trace_rows, job_result)
+                else:
+                    captured_at = datetime.now(UTC).isoformat()
+                    metadata = {
+                        "url": final_url,
+                        "captured_at": captured_at,
+                        "source_id": source_id,
+                        "step_id": step_id,
+                    }
+                    html_bytes = (output / "page.html").read_bytes()
+                    html_key = lake.put_bytes(html_bytes, {**metadata, "content_type": "text/html"})
+                    a11y_key = lake.put_bytes(
+                        (output / "a11y.txt").read_bytes(),
+                        {**metadata, "content_type": "text/plain"},
+                    )
+                    screenshot_key = lake.put_bytes(
+                        (output / "screenshot.png").read_bytes(),
+                        {**metadata, "content_type": "image/png"},
+                    )
+                    keys = {
+                        "html_key": html_key,
+                        "a11y_key": a11y_key,
+                        "screenshot_key": screenshot_key,
+                    }
+                    row = _trace(
+                        step_id=step_id,
+                        run_id=run_id,
+                        phase=phase,
+                        source_id=source_id,
+                        objective_id=objective_id,
+                        tdd_path=tdd_path,
+                        observed={
+                            "url": final_url,
+                            "status": result["status"],
+                            "redirect_chain": redirect_chain,
+                        },
+                        requested=request,
+                        executed={"network_request": True, **keys},
+                        evaluated={
+                            "status": "captured",
+                            "bronze_objects": 3,
+                            "proof_checkpoint": "dispatch_result",
+                        },
+                        ts=captured_at,
+                        generated_by=provenance,
+                    )
+                    row["screenshot_key"] = screenshot_key
+                    trace_rows = [
+                        row,
+                        *_proof_rows(
+                            step_id=step_id,
+                            run_id=run_id,
+                            phase=phase,
+                            source_id=source_id,
+                            objective_id=objective_id,
+                            tdd_path=tdd_path,
+                            mode="S1",
+                            generated_by=provenance,
+                            host=host,
+                            pod=pod_identity,
+                            isolation=isolation,
+                            secrets=secrets,
+                        ),
+                    ]
+                    proof = {
+                        "dispatch_result": {
+                            "url": final_url,
+                            "status": result["status"],
+                            "redirect_chain": redirect_chain,
+                            **keys,
+                        },
+                        "host_check": host,
+                        "pod_identity": pod_identity,
+                        "isolation_probe": isolation,
+                        "secrets": secrets,
+                    }
+                    job_result = {
+                        **keys,
+                        "html": html_bytes.decode("utf-8"),
                         "url": final_url,
                         "status": result["status"],
                         "redirect_chain": redirect_chain,
-                        **keys,
-                    },
-                    "host_check": host,
-                    "pod_identity": pod_identity,
-                    "isolation_probe": isolation,
-                    "secrets": secrets,
-                }
-                job_result = {
-                    **keys,
-                    "html": html_bytes.decode("utf-8"),
-                    "url": final_url,
-                    "status": result["status"],
-                    "redirect_chain": redirect_chain,
-                    "trace": trace_rows,
-                    "egress_events": events,
-                    "proof": proof,
-                    "started_at": timestamp,
-                    "limits": budget.as_dict(),
-                    "usage": {
-                        "peak_memory_mb": result.get("peak_memory_mb", 0),
-                        "wall_s": 0,
-                        "steps": result["steps"],
-                    },
-                }
+                        "trace": trace_rows,
+                        "egress_events": events,
+                        "proof": proof,
+                        "started_at": timestamp,
+                        "limits": budget.as_dict(),
+                        "usage": {
+                            "peak_memory_mb": result.get("peak_memory_mb", 0),
+                            "wall_s": 0,
+                            "steps": result["steps"],
+                        },
+                    }
     except SandboxLimitExceeded as exc:
         limit_error = exc
         trace_rows = exc.trace

@@ -87,6 +87,14 @@ combined R1+R5 full managed check. With the fixture fix and digest-bound
 approvals in place, the final delivery check passed: 246 tests, 3 skips, Ruff lint and format
 clean. No live case files were touched.
 
+### R15 implementation strategy
+
+The capture branch keeps spider policy inside the agent pod and delegates one crawl to one `runsc` job. A P3 site-graph helper will classify captured page types against the active ontology, validate bronze and case artifacts against the additive v1.0.3 schema, and rank existing source objectives from recorded graph coverage. P4 will use the graph as planning context without changing TDD's existing schema. Workflow and `outer_gap.py` are R2-owned integration surfaces, so this branch exposes a bounded consumer API and sends root the exact post-R2 wiring proposal rather than editing them. No case data or source URLs are added.
+
+The first managed R15 run found three targeted defects: the pure policy default exceeded its new response-byte ceiling, the graph producer returned a private trace field in the strict schema envelope, and the synthetic proof/job fixture did not match the job schema or preserve the crawl job ID. After those fixes, the second run passed 19 tests and failed only because the robots fixture expected an `allow` decision even though it disallows `/private`; `RobotFileParser` records `disallow` when that rule is evaluated. Root authorized one additional distinct-strategy run after correcting that fixture expectation. It passed all 20 focused tests. No live cell was started while R16 proof is active.
+
+The authorized R15 attempt 6 gave the synthetic provider a real lead and passed 39 focused tests. At integration, 48 tests passed twice. The combined Ruff gate then failed once on an import-order error and once on three formatting differences. The manual formatting hypothesis is exhausted; the formatter has now normalized those files. No third combined check or public push occurs without a fresh authorization under the progress guard.
+
 <!-- agent-session-state:begin -->
 Last session end: 2026-09-27T00:52:14.923428+00:00
 Changed paths:
