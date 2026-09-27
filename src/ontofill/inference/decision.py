@@ -10,9 +10,12 @@ import os
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -35,6 +38,58 @@ TOKEN_PRICES: dict[str, tuple[float, float]] = {
     "deepseek-v4.1-flash": (0.15, 0.60),
     "qwen3.8-27b": (0.15, 1.00),
 }
+
+_Attribution = tuple[str | None, str | None]
+_ACTIVE_ATTRIBUTION: ContextVar[_Attribution | None] = ContextVar(
+    "ontofill_inference_attribution", default=None
+)
+
+
+def _checked_id(name: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"inference {name} must be a nonempty string")
+    return value
+
+
+def _new_step_id() -> str:
+    return f"step:{uuid4().hex}"
+
+
+@contextmanager
+def inference_attribution(run_id: str, step_id: str | None = None):
+    """Set the run and optional existing trace step for nested inference calls.
+
+    If ``step_id`` is omitted, each HTTP request gets its own generated trace id.
+    ContextVar keeps nested/concurrent execution contexts isolated.
+    """
+    attribution = (_checked_id("run_id", run_id), _checked_id("step_id", step_id))
+    token = _ACTIVE_ATTRIBUTION.set(attribution)
+    try:
+        yield
+    finally:
+        _ACTIVE_ATTRIBUTION.reset(token)
+
+
+def _resolved_attribution(
+    run_id: str | None, step_id: str | None, *, generate_step: bool = False
+) -> _Attribution:
+    active = _ACTIVE_ATTRIBUTION.get()
+    resolved_run_id = active[0] if active and active[0] is not None else run_id
+    resolved_step_id = active[1] if active and active[1] is not None else step_id
+    if generate_step and resolved_step_id is None:
+        resolved_step_id = _new_step_id()
+    return resolved_run_id, resolved_step_id
+
+
+def _auth_headers(api_key: str, run_id: str | None, step_id: str | None) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if run_id is not None:
+        headers["X-Run-Id"] = run_id
+    if step_id is not None:
+        headers["X-BA-Step-Id"] = step_id
+    return headers
 
 
 def _family(model: str) -> str:
@@ -189,6 +244,8 @@ class VultrDecisionClient:
         fallback_model: str | None = None,
         base_url: str = "https://api.vultrinference.com/v1",
         client: httpx.Client | None = None,
+        run_id: str | None = None,
+        step_id: str | None = None,
     ) -> None:
         if not api_key or not model:
             raise ValueError("Vultr inference requires an API key and model")
@@ -202,11 +259,23 @@ class VultrDecisionClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.client = client or httpx.Client(timeout=120)
+        active = _ACTIVE_ATTRIBUTION.get()
+        self.run_id = _checked_id(
+            "run_id", run_id if run_id is not None else (active[0] if active else None)
+        )
+        self.step_id = _checked_id("step_id", step_id)
+        self.catalog_step_id: str | None = None
         self.decisions_by_backend = {"vultr": 0}
         self.call_log: list[dict[str, object]] = []
 
     @classmethod
-    def from_env(cls, *, client: httpx.Client | None = None) -> VultrDecisionClient:
+    def from_env(
+        cls,
+        *,
+        client: httpx.Client | None = None,
+        run_id: str | None = None,
+        step_id: str | None = None,
+    ) -> VultrDecisionClient:
         gateway_token = os.environ.get("ONTOFILL_GATEWAY_TOKEN")
         key = gateway_token or os.environ.get("VULTR_INFERENCE_API_KEY", "")
         if not key:
@@ -215,8 +284,20 @@ class VultrDecisionClient:
         if gateway_token and urlsplit(base_url).hostname == "api.vultrinference.com":
             raise RuntimeError("set VULTR_INFERENCE_BASE_URL to the screened gateway")
         transport = client or httpx.Client(timeout=120)
+        active = _ACTIVE_ATTRIBUTION.get()
+        catalog_run_id = _checked_id(
+            "run_id", run_id if run_id is not None else (active[0] if active else None)
+        )
+        catalog_step_id = (
+            _checked_id(
+                "step_id",
+                step_id if step_id is not None else (active[1] if active is not None else None),
+            )
+            or _new_step_id()
+        )
         response = transport.get(
-            f"{base_url.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}
+            f"{base_url.rstrip('/')}/models",
+            headers=_auth_headers(key, catalog_run_id, catalog_step_id),
         )
         response.raise_for_status()
         available = {item["id"] for item in response.json().get("data", []) if item.get("id")}
@@ -250,7 +331,7 @@ class VultrDecisionClient:
         fallback = next(
             (candidate for candidate in FALLBACK_PREFERENCES if candidate in available), None
         )
-        return cls(
+        decision = cls(
             api_key=key,
             model=model,
             critic_model=critic,
@@ -260,7 +341,10 @@ class VultrDecisionClient:
             fallback_model=fallback,
             base_url=base_url,
             client=transport,
+            run_id=catalog_run_id,
         )
+        decision.catalog_step_id = catalog_step_id
+        return decision
 
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
         structured_request = purpose.startswith("phase1.prd") or purpose in {
@@ -352,11 +436,14 @@ class VultrDecisionClient:
                     "type": "json_schema",
                     "json_schema": {"name": "emit", "strict": True, "schema": tool_schema},
                 }
+            run_id, step_id = _resolved_attribution(self.run_id, self.step_id, generate_step=True)
             record: dict[str, object] = {
                 "purpose": purpose,
                 "model": selected,
                 "backend": "vultr",
                 "at": datetime.now(UTC).isoformat(),
+                "run_id": run_id,
+                "step_id": step_id,
                 "attempt": attempt + 1,
                 "method": "json_schema" if use_json_schema else "forced_tool",
                 "max_completion_tokens": body["max_completion_tokens"],
@@ -366,7 +453,7 @@ class VultrDecisionClient:
             try:
                 response = self.client.post(
                     f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=_auth_headers(self.api_key, run_id, step_id),
                     json=body,
                 )
                 response.raise_for_status()

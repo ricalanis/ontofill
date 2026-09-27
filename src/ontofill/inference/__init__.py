@@ -7,6 +7,7 @@ from ontofill.inference.decision import (
     VultrDecisionClient,
     complete_validated,
     generated_by,
+    inference_attribution,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "VultrDecisionClient",
     "complete_validated",
     "generated_by",
+    "inference_attribution",
 ]

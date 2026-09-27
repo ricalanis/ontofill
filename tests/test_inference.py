@@ -3,7 +3,12 @@ import json
 import httpx
 import pytest
 
-from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
+from ontofill.inference import (
+    RecordedDecisionClient,
+    VultrDecisionClient,
+    generated_by,
+    inference_attribution,
+)
 from ontofill.inference.decision import _tool_schema
 
 SCHEMA = {
@@ -403,3 +408,71 @@ def test_gateway_token_precedes_legacy_key(monkeypatch) -> None:
     monkeypatch.delenv("ONTOFILL_GATEWAY_TOKEN")
     VultrDecisionClient.from_env(client=httpx.Client(transport=httpx.MockTransport(handle)))
     assert seen[-1] == "Bearer synthetic-legacy"
+
+
+def test_gateway_requests_carry_attribution_without_logging_auth_secrets(monkeypatch) -> None:
+    secret = "synthetic-gateway-secret"
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": model}
+                        for model in (
+                            "glm-5.3-flash",
+                            "qwen3.8-flash-next",
+                            "minimax-m3",
+                            "glm-5.3",
+                        )
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "emit", "arguments": '{"choice":"first"}'}}
+                            ]
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            },
+        )
+
+    monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", secret)
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "https://gateway.example.test/v1")
+    monkeypatch.delenv("VULTR_INFERENCE_API_KEY", raising=False)
+    transport = httpx.Client(transport=httpx.MockTransport(handle))
+
+    client = VultrDecisionClient.from_env(client=transport, run_id="run:attributed")
+    client.complete_json("phase2.classify", "classify", SCHEMA)
+    client.complete_json("phase2.classify", "classify without an explicit step", SCHEMA)
+    with inference_attribution("run:attributed", "step:existing-trace-step"):
+        client.complete_json("phase2.classify", "classify again", SCHEMA)
+
+    catalog, generated_step_call, second_generated_step_call, existing_step_call = requests
+    assert catalog.method == "GET"
+    assert catalog.headers["X-Run-Id"] == "run:attributed"
+    assert catalog.headers["X-BA-Step-Id"] == client.catalog_step_id
+    assert client.catalog_step_id.startswith("step:")
+    assert generated_step_call.headers["X-Run-Id"] == "run:attributed"
+    assert generated_step_call.headers["X-BA-Step-Id"] == client.call_log[0]["step_id"]
+    assert client.call_log[0]["step_id"].startswith("step:")
+    assert second_generated_step_call.headers["X-Run-Id"] == "run:attributed"
+    assert second_generated_step_call.headers["X-BA-Step-Id"] == client.call_log[1]["step_id"]
+    assert client.call_log[1]["step_id"].startswith("step:")
+    assert client.call_log[1]["step_id"] != client.call_log[0]["step_id"]
+    assert existing_step_call.headers["X-Run-Id"] == "run:attributed"
+    assert existing_step_call.headers["X-BA-Step-Id"] == "step:existing-trace-step"
+    assert client.call_log[2]["step_id"] == "step:existing-trace-step"
+    assert all(call["run_id"] == "run:attributed" for call in client.call_log)
+    assert secret not in repr(client.call_log)
