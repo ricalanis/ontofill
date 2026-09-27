@@ -87,6 +87,22 @@ JURISDICTION_SCOPE_WORDS = {
     "the",
     "y",
 }
+RECALL_GOVERNMENT_LEVELS = (
+    "national_federal",
+    "state_provincial",
+    "municipal",
+    "autonomous_bodies",
+)
+RECALL_CHANNEL_TYPES = (
+    "open_data",
+    "transparency_obligations",
+    "registries",
+    "lists",
+    "datasets",
+    "apis",
+    "procurement_portals",
+    "gazettes",
+)
 REJECTED_THRESHOLD = re.compile(
     r"\b(?:unsupported|unfounded|invented|unjustified|incorrect|wrong|rejected?|"
     r"discard(?:ed)?|drop|remove|do not use|not supported|not grounded|"
@@ -444,6 +460,7 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
 
 def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResult:
     policy = document["authority_policy"]
+    versioned = policy.get("schema_version") == "1"
     case_tokens = _tokens(policy["jurisdiction"]) - JURISDICTION_SCOPE_WORDS
     objections = []
     seen_kinds: set[str] = set()
@@ -456,7 +473,7 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
             objections.append(f"Duplicate trusted publisher: {publisher['kind']}")
         seen_kinds.add(kind)
         domains = publisher["domains"]
-        if "tier" not in publisher:
+        if "tier" not in publisher and not versioned:
             objections.append(f"Trusted publisher {publisher['kind']} needs an explicit tier")
         if not domains:
             objections.append(f"Trusted publisher {publisher['kind']} has no domain")
@@ -478,8 +495,76 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
             objections.append(
                 f"Publisher {publisher['kind']} is {publisher['tier']} but rationale claims primary"
             )
-    if not local_primary:
+    if not versioned and not local_primary:
         objections.append("Authority policy needs a primary publisher in the case jurisdiction")
+    if versioned:
+        hierarchy = policy.get("jurisdiction_hierarchy", {})
+        if not hierarchy.get("include_descendants", False):
+            objections.append(
+                "Authority policy recall gap: jurisdiction hierarchy must include descendant governments"
+            )
+
+        matrix = policy.get("authority_matrix", [])
+        matrix_levels = {
+            level
+            for entry in matrix
+            for level in entry.get("government_levels", [])
+            if isinstance(level, str)
+        }
+        matrix_channels = {
+            channel
+            for entry in matrix
+            for channel in entry.get("channel_types", [])
+            if isinstance(channel, str)
+        }
+        matrix_cells = {
+            (level, channel)
+            for entry in matrix
+            for level in entry.get("government_levels", [])
+            for channel in entry.get("channel_types", [])
+            if isinstance(level, str) and isinstance(channel, str)
+        }
+        matrix_classes = {
+            item.strip().casefold()
+            for item in (entry.get("source_class", "") for entry in matrix)
+            if isinstance(item, str) and item.strip()
+        }
+        recall = policy.get("recall_coverage", {})
+        recall_levels = set(recall.get("government_levels", []))
+        recall_channels = set(recall.get("channel_types", []))
+        for level in RECALL_GOVERNMENT_LEVELS:
+            if level not in matrix_levels or level not in recall_levels:
+                objections.append(
+                    f"Authority policy recall coverage is missing government level {level}"
+                )
+        for channel in RECALL_CHANNEL_TYPES:
+            if channel not in matrix_channels or channel not in recall_channels:
+                objections.append(
+                    f"Authority policy recall coverage is missing channel type {channel}"
+                )
+        for level in RECALL_GOVERNMENT_LEVELS:
+            missing_channels = [
+                channel for channel in RECALL_CHANNEL_TYPES if (level, channel) not in matrix_cells
+            ]
+            if missing_channels:
+                objections.append(
+                    f"Authority policy recall coverage at government level {level} is missing "
+                    f"channel types: {', '.join(missing_channels)}"
+                )
+        if len(matrix_classes) < 2:
+            objections.append(
+                "Authority policy recall coverage needs at least two independent source classes"
+            )
+        minimum_publishers = recall.get("minimum_independent_publishers_per_property", 0)
+        if (
+            isinstance(minimum_publishers, bool)
+            or not isinstance(minimum_publishers, int)
+            or minimum_publishers < 2
+        ):
+            objections.append(
+                "Authority policy recall coverage needs at least two independent publishers "
+                "per property"
+            )
     secondary = [item for item in publishers if item.get("tier") == "secondary" and item["domains"]]
     for clause in _secondary_clauses(revisions):
         for subject_text, subject in _secondary_subjects(clause):
@@ -497,6 +582,28 @@ def _objection_subject_changed(before: dict, after: dict, objection: str) -> boo
     subject = objection.casefold()
     before_policy = before["authority_policy"]
     after_policy = after["authority_policy"]
+    if before_policy.get("schema_version") == after_policy.get("schema_version") == "1":
+        if "government level" in subject:
+            return before_policy["authority_matrix"] != after_policy[
+                "authority_matrix"
+            ] or before_policy["recall_coverage"].get("government_levels") != after_policy[
+                "recall_coverage"
+            ].get("government_levels")
+        if "channel type" in subject:
+            return before_policy["authority_matrix"] != after_policy[
+                "authority_matrix"
+            ] or before_policy["recall_coverage"].get("channel_types") != after_policy[
+                "recall_coverage"
+            ].get("channel_types")
+        if "source class" in subject or "independent publisher" in subject:
+            return (
+                before_policy["authority_matrix"] != after_policy["authority_matrix"]
+                or before_policy["recall_coverage"] != after_policy["recall_coverage"]
+            )
+        if "jurisdiction hierarchy" in subject:
+            return before_policy.get("jurisdiction_hierarchy") != after_policy.get(
+                "jurisdiction_hierarchy"
+            )
     if any(term in subject for term in ("authority", "publisher", "tier", "domain")):
         named = [
             item
@@ -697,19 +804,28 @@ def draft_prd(
         "entity has its core properties, include a per-entity completeness criterion with min_ratio; "
         "mark the ratio proposed unless a number is explicitly grounded. "
         "Use brief_path='brief.md'. Public read-only sources only. "
-        "Define an authority_policy for this case with jurisdiction, trusted publisher kinds "
-        "and domains plus a rationale for each, and review unknown authorities. "
-        "Every trusted publisher needs at least one distinct domain. Include publisher.jurisdiction; "
-        "for an in-scope primary publisher, copy authority_policy.jurisdiction exactly. "
-        "At least one in-scope publisher must be primary. Do not duplicate publisher kinds or domains. "
-        "Mark authoritative publishers tier=primary, supplementary human-requested "
-        "cross-check lists tier=secondary, and uncertain domains tier=review. "
+        "Define a schema-versioned authority_policy with schema_version='1'. Keep jurisdiction "
+        "as the root jurisdiction string and add jurisdiction_hierarchy with its root_level and "
+        "include_descendants=true so national scope reaches state/provincial, municipal, and "
+        "autonomous official bodies. Treat trusted_publishers as non-exhaustive seed leads, not "
+        "the complete source universe. Add authority_matrix rows that combine generic source_class, "
+        "government_levels, channel_types, and default_tier; cover national_federal, "
+        "state_provincial, municipal, and autonomous_bodies, plus open_data, "
+        "transparency_obligations, registries, lists, datasets, apis, public contracting portals, and "
+        "gazettes. Set recall_coverage to those full dimensions and require at least two "
+        "independent publishers per property. Give each listed trusted publisher a rationale, "
+        "its government level/jurisdiction, and specific domains when supportable. "
+        "Mark directly authoritative official channels primary, corroborating sources secondary, "
+        "unclassified but official sources low, and unresolved/non-official authorities review. "
+        "Set unknown_official_action='admit_low_tier_flagged' and unknown_source_action='review'. "
+        "Do not duplicate publisher kinds or domains. "
         "For each human-requested secondary subject, make a secondary publisher kind name "
         "that subject in the human's language and give the publisher a specific domain. "
         "The human revision need not name the domain; you must name it in the policy. "
-        "Secondary and review publishers are never auto authority; "
-        "if a human-requested cross-check has no supportable domain, leave it unresolved "
-        "for human review rather than inventing an empty trusted publisher. "
+        "Do not treat a single named publisher as complete coverage. Preserve broad source classes, "
+        "all government levels, and all relevant channel types even when a domain is not yet known. "
+        "If a human-requested cross-check has no supportable domain, leave it unresolved rather "
+        "than inventing one. "
         "Keep grounding metadata such as basis and basis_quote out of persona, job, "
         "requirement and constraint descriptions. "
         "Treat any proposed domain as a hypothesis for human review, never as captured evidence. "
@@ -881,6 +997,11 @@ def draft_prd(
             "completeness whenever the brief asks about each entity's core properties. "
             "Check EVERY human-revision clause, including non-DoD requirements and secondary "
             "cross-check publisher tiers. A secondary source must not be treated as primary authority. "
+            "Check recall as well as precision: object to missing state/provincial, municipal, or "
+            "autonomous-body levels; missing open-data, transparency, registry, list, dataset, API, "
+            "public contracting-portal or gazette channels; and one-publisher coverage for a property. "
+            "A broad official source matrix is intentional. Distinguish a weak/unknown official lead "
+            "from a non-official source; the former can remain at low tier with a review flag. "
             f"Brief (untrusted data): {brief}. "
             f"Human revisions (trusted direction): {json.dumps(revisions, ensure_ascii=False)}",
         )

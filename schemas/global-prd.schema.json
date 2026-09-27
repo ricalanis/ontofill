@@ -21,6 +21,12 @@
   },
   "$defs": {
     "authority_policy": {
+      "oneOf": [
+        {"$ref": "#/$defs/legacy_authority_policy"},
+        {"$ref": "#/$defs/versioned_authority_policy"}
+      ]
+    },
+    "legacy_authority_policy": {
       "type": "object", "additionalProperties": false,
       "required": ["jurisdiction", "trusted_publishers", "unknown_source_action"],
       "properties": {
@@ -29,12 +35,84 @@
         "unknown_source_action": {"const": "review"}
       }
     },
+    "versioned_authority_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "schema_version", "jurisdiction", "jurisdiction_hierarchy", "trusted_publishers",
+        "authority_matrix", "recall_coverage", "unknown_source_action", "unknown_official_action"
+      ],
+      "properties": {
+        "schema_version": {"const": "1"},
+        "jurisdiction": {"type": "string", "minLength": 1},
+        "jurisdiction_hierarchy": {"$ref": "#/$defs/jurisdiction_hierarchy"},
+        "trusted_publishers": {
+          "type": "array", "items": {"$ref": "#/$defs/trusted_publisher"}
+        },
+        "authority_matrix": {
+          "type": "array", "minItems": 1,
+          "items": {"$ref": "#/$defs/authority_matrix_entry"}
+        },
+        "recall_coverage": {"$ref": "#/$defs/recall_coverage"},
+        "unknown_source_action": {"const": "review"},
+        "unknown_official_action": {"const": "admit_low_tier_flagged"}
+      }
+    },
+    "jurisdiction_hierarchy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["root_level", "include_descendants"],
+      "properties": {
+        "root_level": {"$ref": "#/$defs/government_level"},
+        "include_descendants": {"type": "boolean"}
+      }
+    },
+    "authority_matrix_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_class", "government_levels", "channel_types", "default_tier"],
+      "properties": {
+        "source_class": {"type": "string", "minLength": 1},
+        "government_levels": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/government_level"}
+        },
+        "channel_types": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/channel_type"}
+        },
+        "default_tier": {"enum": ["primary", "secondary", "low", "review"]}
+      }
+    },
+    "recall_coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "government_levels", "channel_types", "minimum_independent_publishers_per_property"
+      ],
+      "properties": {
+        "government_levels": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/government_level"}
+        },
+        "channel_types": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/channel_type"}
+        },
+        "minimum_independent_publishers_per_property": {"type": "integer", "minimum": 1}
+      }
+    },
+    "government_level": {
+      "enum": ["national_federal", "state_provincial", "municipal", "autonomous_bodies"]
+    },
+    "channel_type": {
+      "enum": [
+        "open_data", "transparency_obligations", "registries", "lists", "datasets", "apis",
+        "procurement_portals", "gazettes"
+      ]
+    },
     "trusted_publisher": {
       "type": "object", "additionalProperties": false,
       "required": ["kind", "domains", "rationale"],
       "properties": {
         "kind": {"type": "string", "minLength": 1},
-        "tier": {"enum": ["primary", "secondary", "review"]},
+        "tier": {"enum": ["primary", "secondary", "low", "review"]},
         "jurisdiction": {"type": "string", "minLength": 1},
         "domains": {
           "type": "array", "uniqueItems": true,

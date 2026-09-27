@@ -23,6 +23,7 @@ from ontofill.refiner.provenance import validate_generated_by, validate_run_prov
 
 ONTO = Namespace("https://ontofill.dev/ontology/")
 SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
+AUTHORITY_TIER_RANK = {"primary": 4, "secondary": 3, "low": 2, "review": 1, "unknown": 0}
 
 
 def _canonical(value: object) -> str:
@@ -48,6 +49,8 @@ class Observation:
     confidence: float = 1.0
     classified_as: tuple[str, ...] = ()
     value_id: str = field(default="")
+    authority_tier: str = "unknown"
+    publisher_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.value_id:
@@ -589,6 +592,14 @@ def refine_observations(
                 or not 0 <= observation.confidence <= 1
             ):
                 raise ValueError("confidence must be between 0 and 1")
+            if observation.authority_tier not in AUTHORITY_TIER_RANK:
+                raise ValueError(
+                    "authority_tier must be primary, secondary, low, review, or unknown"
+                )
+            if observation.publisher_id is not None and (
+                not isinstance(observation.publisher_id, str) or not observation.publisher_id
+            ):
+                raise ValueError("publisher_id must be a non-empty string when present")
             if observation.value_id != stable_value_id(
                 observation.entity_id, observation.property_id, observation.value
             ):
@@ -617,21 +628,44 @@ def refine_observations(
             grouped: dict[str, list[Observation]] = defaultdict(list)
             for item in property_candidates:
                 grouped[_canonical(item.value)].append(item)
+
+            def value_rank(group: list[Observation]) -> tuple[int, int, float, str]:
+                best_tier = max(AUTHORITY_TIER_RANK[item.authority_tier] for item in group)
+                independent_sources = {
+                    item.publisher_id or str(item.evidence["source_id"])
+                    for item in group
+                    if item.publisher_id or item.evidence.get("source_id")
+                }
+                best_confidence = max(item.confidence for item in group)
+                return (
+                    -best_tier,
+                    -len(independent_sources),
+                    -best_confidence,
+                    _canonical(group[0].value),
+                )
+
+            chosen_value = min(grouped, key=lambda value: value_rank(grouped[value]))
+            chosen_group = grouped[chosen_value]
             chosen = min(
-                property_candidates,
-                key=lambda item: (-item.confidence, _canonical(item.value), item.value_id),
+                chosen_group,
+                key=lambda item: (
+                    -AUTHORITY_TIER_RANK[item.authority_tier],
+                    -item.confidence,
+                    str(item.evidence.get("source_id", "")),
+                    item.value_id,
+                ),
             )
+            # A conflict remains unresolved in gold, but its receipts include every
+            # competing observation so review can compare the source values.
+            evidence_candidates = property_candidates if len(grouped) > 1 else chosen_group
             evidence = sorted(
-                {
-                    _canonical(item.evidence): item.evidence
-                    for item in grouped[_canonical(chosen.value)]
-                }.values(),
+                {_canonical(item.evidence): item.evidence for item in evidence_candidates}.values(),
                 key=_canonical,
             )
             values[property_id] = {
                 "value_id": chosen.value_id,
                 "value": chosen.value,
-                "confidence": chosen.confidence,
+                "confidence": max(item.confidence for item in chosen_group),
                 "status": "gold" if len(grouped) == 1 else "conflict",
                 "evidence": evidence,
                 "generated_by": validate_generated_by(chosen.generated_by),

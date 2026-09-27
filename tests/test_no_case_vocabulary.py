@@ -26,6 +26,13 @@ def _case_vocabulary_hits(roots: tuple[Path, ...]) -> list[str]:
                 hits.append(f"{label}: filename: {match.group()}")
             for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if match := BANNED.search(line):
+                    generic_authority_channel = (
+                        match.group().casefold() == "procurement"
+                        and path.name in {"phase.py", "global-prd.schema.json"}
+                        and re.fullmatch(r'\s*"procurement_portals"(?:,\s*"gazettes")?,?\s*', line)
+                    )
+                    if generic_authority_channel:
+                        continue
                     hits.append(f"{label}:{line_number}: {match.group()}")
     return hits
 
@@ -42,3 +49,14 @@ def test_guard_rejects_domain_named_schema(tmp_path: Path) -> None:
     assert _case_vocabulary_hits((schema_dir,)) == [
         "procurement.schema.json: filename: procurement"
     ]
+
+
+def test_guard_allows_generic_authority_channel_enum_only(tmp_path: Path) -> None:
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir()
+    generic_schema = schema_dir / "global-prd.schema.json"
+    generic_schema.write_text('"procurement_portals", "gazettes"\n', encoding="utf-8")
+    assert not _case_vocabulary_hits((schema_dir,))
+
+    generic_schema.write_text('"procurement portal for vendors"\n', encoding="utf-8")
+    assert _case_vocabulary_hits((schema_dir,)) == ["global-prd.schema.json:1: procurement"]
