@@ -182,6 +182,19 @@ def test_proxy_exact_host_mode_refuses_subdomains_before_connect(monkeypatch) ->
     assert not module.allowed("child.records.example.org")
     assert not module.allowed("other.example.org")
 
+    monkeypatch.setattr(
+        module,
+        "_resolve_address_detail",
+        lambda *_args: pytest.fail("a refused host must not reach DNS or connect"),
+    )
+    rejected = []
+    handler = object.__new__(module.ProxyHandler)
+    handler.path = "child.records.example.org:443"
+    handler.command = "CONNECT"
+    handler.reject = lambda host, reason: rejected.append((host, reason))
+    handler.do_CONNECT()
+    assert rejected == [("child.records.example.org", "domain_not_allowed")]
+
 
 @pytest.mark.skipif(
     os.environ.get("ONTOFILL_RUN_CONTAINMENT") != "1",
