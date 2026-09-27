@@ -27,7 +27,7 @@ from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
 from ontofill.phases.p5_execute.controller import execute_controller
 from ontofill.phases.p5_execute.source_review import (
-    MAX_NEW_LINK_CANDIDATES_PER_OBJECTIVE,
+    MAX_PENDING_LINK_CANDIDATES_PER_PAGE,
     SourceReviewPending,
     canonical_link_url,
     link_candidate_directory,
@@ -912,7 +912,8 @@ def execute_objective(
         parent_capture_key = page.get("html_key")
         page_url = page.get("url")
         seen_link_urls: set[str] = set()
-        new_external_candidates = 0
+        pending_external_candidates = 0
+        omitted_external_candidates = 0
         for link_index, link in enumerate(_parsed_links(page_parse)):
             document_format = _format(link.url)
             if document_format is None:
@@ -943,11 +944,10 @@ def execute_objective(
             existing_candidate = (candidate_dir / "candidate.json").is_file()
             if (
                 not existing_candidate
-                and new_external_candidates >= MAX_NEW_LINK_CANDIDATES_PER_OBJECTIVE
+                and pending_external_candidates >= MAX_PENDING_LINK_CANDIDATES_PER_PAGE
             ):
+                omitted_external_candidates += 1
                 continue
-            if not existing_candidate:
-                new_external_candidates += 1
             try:
                 review_status, approved_url, review_dir = review_link_candidate(
                     case_dir=case_dir,
@@ -974,6 +974,7 @@ def execute_objective(
                 continue
             if review_status == "pending":
                 pending_links.append((link.url, review_dir, document_format))
+                pending_external_candidates += 1
             elif review_status == "approved" and approved_url is not None:
                 approved_host = reviewable_download_host(approved_url, tdd["allowed_domains"])
                 if approved_host is None:
@@ -983,6 +984,32 @@ def execute_objective(
                 candidates.append(link)
                 approved_link_targets[link.url] = (approved_host, approved_url)
             # A valid DENY is intentionally omitted from this run's candidates.
+        if omitted_external_candidates:
+            traces.append(
+                {
+                    "step_id": f"step:{uuid.uuid4().hex}",
+                    "run_id": run_id,
+                    "phase": 5,
+                    "source_id": source_id,
+                    "objective_id": objective_id,
+                    "tdd_path": tdd_path,
+                    "mode": "D0",
+                    "observed": {"parent_page_url": page_url},
+                    "requested": {
+                        "tool": "source.review.omissions",
+                        "candidate_limit": MAX_PENDING_LINK_CANDIDATES_PER_PAGE,
+                    },
+                    "executed": {"network_request": False},
+                    "evaluated": {
+                        "status": "bounded_omissions",
+                        "omitted_count": omitted_external_candidates,
+                    },
+                    "parent_step_id": traces[-1]["step_id"] if traces else None,
+                    "value_ids": [],
+                    "ts": datetime.now(UTC).isoformat(),
+                    "generated_by": provenance,
+                }
+            )
     if pending_links:
         for link_url, review_dir, _link_format in pending_links:
             traces.append(
@@ -1013,6 +1040,7 @@ def execute_objective(
             trace=traces,
             sandbox_jobs=jobs,
             reason="off-domain document link requires digest-bound source approval",
+            review_directories=[review_dir for _link_url, review_dir, _format in pending_links],
         )
     candidate_count = len(candidates)
     downloaded = None

@@ -24,11 +24,17 @@ from ontofill.phases.p3_fanout.authority import authority_result, source_fingerp
 _DNS_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _LINK_TEXT_LIMIT = 500
-MAX_NEW_LINK_CANDIDATES_PER_OBJECTIVE = 3
+MAX_PENDING_LINK_CANDIDATES_PER_PAGE = 300
 
 
 class SourceReviewPending(RuntimeError):
-    """P5 found an unapproved source link and must pause before executing it."""
+    """P5 found unapproved page links and must pause before executing any of them.
+
+    A pause may contain multiple per-link packets. ``directory`` remains the first
+    pending packet for existing callers; ``review_directories`` lists the full
+    unresolved batch. Consumers can present one batch, but each packet still needs
+    its own digest-bound approve or deny decision.
+    """
 
     def __init__(
         self,
@@ -36,8 +42,10 @@ class SourceReviewPending(RuntimeError):
         trace: list[dict],
         sandbox_jobs: list[dict],
         reason: str,
+        review_directories: list[Path] | tuple[Path, ...] = (),
     ) -> None:
         self.directory = directory
+        self.review_directories = tuple(dict.fromkeys([directory, *review_directories]))
         self.trace = trace
         self.sandbox_jobs = sandbox_jobs
         self.reason = reason

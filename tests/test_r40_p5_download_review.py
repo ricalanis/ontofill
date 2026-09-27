@@ -285,19 +285,78 @@ def test_same_domain_download_remains_on_tdd_allowlist(tmp_path) -> None:
     assert not (tmp_path / "03-fanout/sources").exists()
 
 
-def test_review_staging_is_deduplicated_and_capped_before_writes(tmp_path) -> None:
-    links = [f"https://blob.example.test/files/{index}.csv" for index in range(4)]
+def test_page_review_batches_12_unique_links_and_deduplicates(tmp_path) -> None:
+    links = [f"https://blob.example.test/files/{index}.csv" for index in range(12)]
     html = "<main>" + "".join(
         f'<a href="{url}">Data {index}</a>' for index, url in enumerate(links)
     )
-    html += f'<a href="{links[0]}">Repeated first link</a></main>'
+    html += (
+        f'<a href="{links[0]}">Repeated first link</a>'
+        f'<a href="{links[0].replace("blob", "BLOB")}">Same link with host case changed</a></main>'
+    )
     _, _, fetch_calls, _, _, run = _make_case(tmp_path, html)
 
-    with pytest.raises(SourceReviewPending):
+    with pytest.raises(SourceReviewPending) as stopped:
+        run(RecordedDecisionClient({}))
+
+    candidates = sorted((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
+    assert len(candidates) == 12
+    assert len(stopped.value.review_directories) == 12
+    for path in candidates:
+        candidate = json.loads(path.read_text(encoding="utf-8"))
+        pending_text = (path.parent / "APPROVAL_PENDING.md").read_text(encoding="utf-8")
+        assert candidate["fingerprint"] in pending_text
+        relative = path.relative_to(tmp_path).as_posix()
+        assert relative in pending_text
+    assert not fetch_calls
+    for path in candidates:
+        candidate = json.loads(path.read_text(encoding="utf-8"))
+        decision = "deny" if candidate["url"] == links[0] else "approve"
+        _source_approval(tmp_path, path, decision)
+        relative = path.relative_to(tmp_path).as_posix()
+        approval = load_verified_approval(path.parent / "APPROVED", tmp_path, [relative], "source")
+        assert (
+            approval["artifact_sha256"][relative] == hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+
+    result = run(
+        RecordedDecisionClient(
+            {
+                "phase5.select_download": [{"index": 0}],
+                "phase5.map_columns": [_MAPPING],
+            }
+        )
+    )
+    assert result.observations
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0][0] == links[1]
+    assert fetch_calls[0][1]["allowed_domains"] == ["blob.example.test"]
+    assert fetch_calls[0][1]["exact_hosts"] == ["blob.example.test"]
+
+
+def test_page_review_records_eligible_links_omitted_past_packet_ceiling(tmp_path) -> None:
+    links = [f"https://blob.example.test/files/{index}.csv" for index in range(305)]
+    html = (
+        "<main>"
+        + "".join(f'<a href="{url}">Data {index}</a>' for index, url in enumerate(links))
+        + "</main>"
+    )
+    _, _, fetch_calls, _, _, run = _make_case(tmp_path, html)
+
+    with pytest.raises(SourceReviewPending) as stopped:
         run(RecordedDecisionClient({}))
 
     candidates = list((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
-    assert len(candidates) == 3
+    assert len(candidates) == 300
+    omissions = [
+        step
+        for step in stopped.value.trace
+        if step["requested"].get("tool") == "source.review.omissions"
+    ]
+    assert len(omissions) == 1
+    assert omissions[0]["evaluated"]["omitted_count"] == 5
+    assert omissions[0]["executed"]["network_request"] is False
+    validate_document("trace-step", omissions[0])
     assert not fetch_calls
 
 

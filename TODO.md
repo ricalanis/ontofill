@@ -462,4 +462,11 @@ Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2
 2. [x] Contain D0 transport CaptureError, preserving the prior page trace and leaving safety errors fatal.
 3. [x] Integrate the proxy pod fix and its HTTP/HTTPS `NO_PROXY` tests.
 4. [x] Run the full gate: 584 passed, 5 skipped after the live proxy IP, origin Host, and remote payload fixes; Ruff lint and format clean.
-5. [ ] Run the pre-push scan, push, deploy in the authorized zero-engine window, and prove a live XLS fetch/parse in scratch.
+5. [ ] The pre-push scan, public push and live scratch XLS fetch/parse passed; deploy the final SHA at the next zero-engine checkpoint.
+
+## R46 batch linked-document review
+
+1. [x] Review the isolated worker patch and focused 10-test gate.
+2. [x] Compose the worker code with R47; the per-link approval and exact-host fetch paths remain intact.
+3. [x] Run the full managed gate: 585 passed, 5 skipped; Ruff lint/format clean.
+4. [ ] Run the pre-push scan, push, and schedule the VM pull for an idle checkpoint.

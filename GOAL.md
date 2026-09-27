@@ -194,3 +194,9 @@ Constraints: own only the parse-pod runner, sandbox parse adapter, focused synth
 Keep a failed D0 document fetch attached to its source and preserve sandbox receipts, so the next source can run. Containment failures remain hard stops.
 
 DONE: a recorded failed fetch followed by a successful objective passes, the proxy route has a focused test, and the full pytest and Ruff gates pass before release.
+
+## Current task: R46 batch linked-document review
+
+Stage every eligible off-domain document link from one captured page in one bounded pending round, while keeping per-link digest decisions, exact-host fetch and denial skips.
+
+DONE: the synthetic N-link batch, dedupe, approval/deny continuation and omission cap pass; the full engine gate passes after integration with R47.
