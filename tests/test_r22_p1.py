@@ -93,9 +93,10 @@ def test_invalid_authority_semantics_retry_with_exact_feedback(tmp_path) -> None
     reason = "Authority policy needs a primary publisher in the case jurisdiction"
     assert document["authority_policy"]["trusted_publishers"]
     assert len(decision.calls) == 2
-    assert f"<page_content>{reason}</page_content>" in decision.calls[1][1]
+    assert f"<page_content>{reason}" in decision.calls[1][1]
+    assert "primary publisher jurisdictions: none</page_content>" in decision.calls[1][1]
     assert decision.call_log[0]["status"] == "validation_failed"
-    assert decision.call_log[0]["reason"] == reason
+    assert decision.call_log[0]["reason"].startswith(reason)
     assert decision.call_log[1]["status"] == "ok"
 
 

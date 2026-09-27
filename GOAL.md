@@ -365,3 +365,6 @@ The engine consumes a complete networkless document profile in P3 source capabil
 DONE: synthetic PDF profile tests show bounded P3 headers/samples and P5 literal cells with page/row selectors; incomplete/aggregate profiles refuse. Full pytest, Ruff lint/format and diff gate pass. Public main push follows a pre-push scan; VM deployment waits for zero engine processes.
 
 Constraints: P3/P5 consumers only, no parser/profiler files (sibling owns those), no case or APPROVED edits, no historical trace invention.
+# Current goal: generic primary publisher jurisdiction for new cases
+
+P1 normalizes a primary trusted publisher with an omitted jurisdiction to the policy's root jurisdiction, and matches country abbreviations to a fuller name inside a city scope. A mismatch objection names the compared values so bounded inference retries can correct it. DONE: synthetic city and foreign-country tests, full pytest, Ruff, public push; VM deployment only with both live cases stopped or paused.

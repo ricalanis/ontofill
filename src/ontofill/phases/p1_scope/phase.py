@@ -260,6 +260,29 @@ def _jurisdiction_matches(left: str, right: str) -> bool:
     right_words = _tokens(right) - JURISDICTION_SCOPE_WORDS - JURISDICTION_LABEL_WORDS
     if left_words & right_words:
         return True
+
+    # Country abbreviations can be shorter than their expanded names inside
+    # a city or regional scope (for example, a three-letter abbreviation and
+    # the initials of a two-word country name). Compare only short codes and
+    # whole-name initials, never arbitrary word prefixes.
+    def short_codes(text: str) -> set[str]:
+        words = [
+            word
+            for word in re.findall(r"[a-z0-9]+", text.casefold())
+            if word not in JURISDICTION_SCOPE_WORDS
+        ]
+        codes = {word for word in words if 2 <= len(word) <= 3}
+        if 2 <= len(words) <= 3 and all(len(word) > 3 for word in words):
+            codes.add("".join(word[0] for word in words))
+        return codes
+
+    for first in short_codes(left):
+        for second in short_codes(right):
+            if first == second or (
+                {len(first), len(second)} == {2, 3}
+                and (first.startswith(second) or second.startswith(first))
+            ):
+                return True
     for first in left_words:
         for second in right_words:
             common = 0
@@ -270,6 +293,14 @@ def _jurisdiction_matches(left: str, right: str) -> bool:
             if common >= 5 and len(first) - common <= 2 and len(second) - common <= 2:
                 return True
     return False
+
+
+def _inherit_primary_jurisdictions(document: dict) -> None:
+    """Give an unscoped primary publisher the PRD's reviewed root scope."""
+    policy = document["authority_policy"]
+    for publisher in policy["trusted_publishers"]:
+        if publisher.get("tier") == "primary" and not publisher.get("jurisdiction"):
+            publisher["jurisdiction"] = policy["jurisdiction"]
 
 
 def _kind_token_matches(subject_token: str, kind_token: str) -> bool:
@@ -540,14 +571,25 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
                 objections.append(f"Duplicate trusted domain: {domain}")
             seen_domains.add(normalized)
         if publisher.get("tier") == "primary":
-            if _jurisdiction_matches(policy["jurisdiction"], publisher.get("jurisdiction", "")):
+            if _jurisdiction_matches(
+                policy["jurisdiction"], publisher.get("jurisdiction") or policy["jurisdiction"]
+            ):
                 local_primary = True
         elif "tier" in publisher and _claims_primary(publisher["rationale"]):
             objections.append(
                 f"Publisher {publisher['kind']} is {publisher['tier']} but rationale claims primary"
             )
     if not local_primary:
-        objections.append("Authority policy needs a primary publisher in the case jurisdiction")
+        primary_scopes = [
+            f"{item['kind']}: {item.get('jurisdiction') or '(missing)'}"
+            for item in publishers
+            if item.get("tier") == "primary"
+        ]
+        objections.append(
+            "Authority policy needs a primary publisher in the case jurisdiction "
+            f"{policy['jurisdiction']!r}; primary publisher jurisdictions: "
+            + ("; ".join(primary_scopes[:3]) or "none")
+        )
     if versioned:
         hierarchy = policy.get("jurisdiction_hierarchy", {})
         if not hierarchy.get("include_descendants", False):
@@ -926,6 +968,7 @@ def draft_prd(
 
     def normalize_prd(raw: dict) -> dict:
         result = deepcopy(raw)
+        _inherit_primary_jurisdictions(result)
         _apply_human_authority_revisions(result, revisions)
         _remove_grounding_notes(result)
         _ground_criteria(result, brief, revisions, budget_usd)

@@ -701,3 +701,11 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `src/ontofill/phases/p
 2. [ ] Feed complete profile headers/samples to P3 critic; adapt PDF table receipts for P5 mapping and deterministic extraction.
 3. [ ] Compose with parser-bound worker, run managed full gate, scan and push main.
 4. [ ] Deploy only at a fresh zero-engine window and run safe live proof.
+# P1 jurisdiction gate
+
+FILES: `src/ontofill/phases/p1_scope/phase.py`, `tests/test_p1_jurisdiction.py`, task notes. TASK: unblock legitimate primary publishers in city cases. DONE: GOAL.md gate. FORMAT: Ruff.
+
+1. [x] Red synthetic city/country and missing-jurisdiction tests.
+2. [x] Normalize missing primary scope and include actual compared scopes in feedback.
+3. [ ] Full managed gate, pre-push scan, public push.
+4. [ ] Guarded VM deploy in coordinated two-case window.
