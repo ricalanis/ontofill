@@ -3300,25 +3300,7 @@ class DiscoveryLoop:
                 "leads": deepcopy({**saved_redirect_leads, **approved_packet_leads}),
             }
             queries = tuple(LeadQuery(pid, text) for pid, text in context["queries"])
-            if not queries:
-                if context["gaps"]:
-                    diagnostic = (
-                        "no provider call dispatched: query planner exhausted new queries "
-                        f"with {len(context['gaps'])} discovery gap(s) still open"
-                    )
-                    self._step(
-                        {"tool": "source.discover.dispatch", "iteration": iteration},
-                        {"status": "blocked", "provider_calls": 0},
-                        {"reason": diagnostic, "stop_reason": "no_provider_dispatch"},
-                    )
-                    raise NoConfirmedSources(
-                        context["gaps"],
-                        [attempt["query"] for attempt in self.attempts],
-                        [diagnostic],
-                        iterations=iteration,
-                        stop_reason="no_provider_dispatch",
-                        dispatch_diagnostic=diagnostic,
-                    )
+            if not queries and not context["gaps"]:
                 return draft
             portal_limit = max(1, self.max_queries)
             portal_urls: list[str] = []
@@ -3345,7 +3327,7 @@ class DiscoveryLoop:
             )
             dispatch_attempts = 0
             leads_found = 0
-            for provider in self.providers:
+            for provider in self.providers if queries else ():
                 attempts_before = len(provider.attempts)
                 trace_before = len(getattr(provider, "trace", []))
                 jobs_before = len(getattr(provider, "jobs", []))
@@ -3401,30 +3383,12 @@ class DiscoveryLoop:
                     entry["score"] = max(entry.get("score", 0), lead.score)
                     if lead.publisher:
                         tried_publishers.add(lead.publisher)
-            if dispatch_attempts == 0 and leads_found == 0:
-                diagnostic = (
-                    "no provider call dispatched: configured providers returned "
-                    "without an attempt or lead"
-                )
-                self._step(
-                    {"tool": "source.discover.dispatch", "iteration": iteration},
-                    {"status": "blocked", "provider_calls": 0},
-                    {"reason": diagnostic, "stop_reason": "no_provider_dispatch"},
-                )
-                raise NoConfirmedSources(
-                    context["gaps"],
-                    [attempt["query"] for attempt in self.attempts],
-                    [diagnostic],
-                    iterations=iteration,
-                    stop_reason="no_provider_dispatch",
-                    dispatch_diagnostic=diagnostic,
-                )
             for name, _, _ in lead_context.publisher_names:
                 tried_publishers.add(name)
 
             # Keep trusted publisher roots in the frontier even when search found
             # other leads; an official landing page may link to the actual records.
-            for domain in _policy_domains(policy):
+            for domain in _policy_domains(policy) if queries else ():
                 url = f"https://{domain}/"
                 for gap in context["gaps"]:
                     lead = Lead(
@@ -3461,6 +3425,27 @@ class DiscoveryLoop:
                     == "approved"
                 )
             ]
+            if dispatch_attempts == 0 and leads_found == 0 and not pool:
+                diagnostic = (
+                    "no provider call dispatched: query planner exhausted new queries "
+                    f"with {len(context['gaps'])} discovery gap(s) still open"
+                    if not queries
+                    else "no provider call dispatched: configured providers returned "
+                    "without an attempt or lead"
+                )
+                self._step(
+                    {"tool": "source.discover.dispatch", "iteration": iteration},
+                    {"status": "blocked", "provider_calls": 0},
+                    {"reason": diagnostic, "stop_reason": "no_provider_dispatch"},
+                )
+                raise NoConfirmedSources(
+                    context["gaps"],
+                    [attempt["query"] for attempt in self.attempts],
+                    [diagnostic],
+                    iterations=iteration,
+                    stop_reason="no_provider_dispatch",
+                    dispatch_diagnostic=diagnostic,
+                )
             pool.sort(key=lambda lead: self._rank_lead(lead, policy, ontology), reverse=True)
             chosen: list[dict] = []
             per_host: dict[str, int] = {}

@@ -311,10 +311,12 @@ def test_tavily_request_follows_policy_caches_and_never_logs_key(tmp_path) -> No
     # Cached by query fingerprint: the same request costs no credit or HTTP call.
     assert len(provider.leads(context)) == 2
     assert len(requests) == 1 and provider.credits == 1 and provider.cache_hits == 1
-    # Later iterations widen to every approved domain in prefer mode.
+    # Later iterations search beyond listed publishers while excluding common
+    # social/blog intermediaries. A matching page still needs sandbox proof.
     wider = LeadContext("brief", ontology, POLICY, (query,), iteration=2)
-    assert provider.request_body(query, wider)["include_domains_mode"] == "prefer"
-    assert "region.example.test" in provider.request_body(query, wider)["include_domains"]
+    broad_body = provider.request_body(query, wider)
+    assert "include_domains" not in broad_body
+    assert {"facebook.com", "wordpress.com"} <= set(broad_body["exclude_domains"])
     # Credit budget is enforced before calling.
     provider.leads(LeadContext("brief", ontology, POLICY, (LeadQuery("x", "other"),), 1))
     provider.leads(LeadContext("brief", ontology, POLICY, (LeadQuery("x", "third"),), 1))

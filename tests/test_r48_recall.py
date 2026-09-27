@@ -406,6 +406,9 @@ def test_approved_document_from_prior_run_is_parsed_and_confirmed(tmp_path, monk
         "_model_verdicts",
         lambda _decision, draft, case_ontology, _policy: loop._code_verdicts(draft, case_ontology),
     )
+    # A verified, unprocessed source packet still enters capture even when the
+    # query planner has exhausted novel provider searches for this round.
+    monkeypatch.setattr(loop, "_plan_queries", lambda *_args: [])
     result = loop.discover_sources(tmp_path, ontology, FakeVultr(), gaps=("name",))
     assert url in captured_urls
     assert candidate_path.read_bytes() == candidate_bytes

@@ -67,6 +67,19 @@ _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
 _P3_QUERIES_PER_ITERATION = 4
 _TAVILY_CREDITS_PER_QUERY = 1
+_BROAD_SEARCH_EXCLUDE_DOMAINS = (
+    "facebook.com",
+    "instagram.com",
+    "linkedin.com",
+    "tiktok.com",
+    "x.com",
+    "youtube.com",
+    "reddit.com",
+    "medium.com",
+    "wordpress.com",
+    "blogspot.com",
+    "news.google.com",
+)
 _CKAN_MAX_SCORE = 8.0
 _CKAN_MAX_RESOURCES = 20
 _CKAN_QUERY_VARIANTS = 3
@@ -1132,9 +1145,13 @@ class TavilyLeadProvider(LeadProvider):
         elif primary and context.iteration == 1:
             body["include_domains"] = primary[:300]
             body["include_domains_mode"] = "restrict"
-        elif primary or other:
-            body["include_domains"] = (primary + other)[:300]
-            body["include_domains_mode"] = "prefer"
+        elif context.iteration >= 2:
+            # Second pass discovers official publishers absent from the approved
+            # list. Search results remain leads until capture and authority check.
+            body["exclude_domains"] = list(_BROAD_SEARCH_EXCLUDE_DOMAINS)
+        elif other:
+            body["include_domains"] = other[:300]
+            body["include_domains_mode"] = "restrict"
         jurisdiction = str(context.policy.get("jurisdiction") or "")
         if jurisdiction and self.country_resolver is not None:
             if jurisdiction not in self._country:
