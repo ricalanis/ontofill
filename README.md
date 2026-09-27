@@ -55,6 +55,80 @@ bounded collection, and linked data with evidence for each value. See
 [From an open question to linked data](docs/planning/04-question-to-linked-data.md)
 for the steps and the artifacts they produce.
 
+## The engine in three diagrams
+
+**1. Global: two Vultr VMs, one boundary.** People reach the system only through the NetBird proxy. The control
+plane plans on Vultr Serverless Inference through the gateway, which holds the only key, and dispatches jobs one way
+to gVisor cells that hold no secrets.
+
+```mermaid
+flowchart TB
+  people["People<br/>judges: password · approvers: SSO"] -->|HTTPS| nb["NetBird reverse proxy<br/>TLS + auth · zero inbound ports"]
+  nb -->|WireGuard| cp
+  subgraph cp["VX1 #1 · control plane"]
+    engine["Engine P1–P5 + runner"]
+    gw["Inference gateway<br/>only Vultr key · per-session tokens · page-text screening"]
+    ctl["Browser controller"]
+    ui["Console + product"]
+    db[("Postgres + Oxigraph<br/>silver · gold")]
+    engine --> gw
+    engine --> ctl
+    engine --> db
+    ui --> db
+  end
+  gw -->|every LLM call| vsi["Vultr Serverless Inference"]
+  ctl -->|dispatch over NetBird · one way| sb
+  subgraph sb["VX1 #2 · sandbox host · zero secrets"]
+    cell["gVisor runsc cell<br/>Chromium or parse job<br/>mem · CPU · pids · time caps<br/>destroyed after every job"]
+    proxy["Egress allowlist proxy<br/>GET only"]
+    cell --> proxy
+  end
+  proxy --> web["Public web<br/>allowlisted publisher hosts"]
+  engine -->|raw captures| bronze[("Vultr Object Storage<br/>bronze, content-addressed")]
+```
+
+**2. The council: how the engine decides.** Every phase runs the same bounded loop. A planner proposes, a critic
+from another model family objects, and code checks the exit criteria. A person approves or denies with a reason, and
+that reason becomes a human revision the loop can never override. The models choose within typed options; code owns
+the order, the budgets and the stop rules.
+
+```mermaid
+flowchart LR
+  g["1 Gather<br/>research ledger · leads · sandbox captures"] --> p["2 Propose<br/>planner glm-5.3, best of N"]
+  p --> c["3 Critique<br/>critic from another family<br/>minimax-m3 / qwen3.8-27b"]
+  c --> r["4 Revise<br/>answer each objection"]
+  r --> k{"5 Check in code<br/>exit criteria pass?<br/>no blocking objection?"}
+  k -->|not yet, within budget| c
+  k -->|yes| h["6 Human gate<br/>approve · bound to the file's sha256"]
+  h -->|deny + reason| p
+  h -->|approve| next["Next phase"]
+  s["Safety screen<br/>page text screened before any model;<br/>flagged pages quarantined"] -.-> p
+  s -.-> c
+```
+
+The same loop drafts the PRD (P1), the ontology (P2), judges sources (P3), writes each per-source plan (P4), and
+runs the gap loop after gold.
+
+**3. Extraction: from a plan to gold with receipts.** Each (source, objective) gets a plan. Execution starts at the
+cheapest mode and climbs only when a check fails. Bronze is kept, so a changed ontology re-refines gold without
+browsing again.
+
+```mermaid
+flowchart LR
+  plan["Plan per source<br/>properties · path · allowed domains · mode range"] --> cell
+  subgraph cell["Execute in a gVisor cell · zero secrets"]
+    d0["D0 download + parse"] --> d1["D1 macro"] --> s1["S1 agent loop<br/>+ Vultr vision verify"] --> s2["S2 Skyvern"]
+  end
+  cell --> bronze[("Bronze<br/>raw captures")]
+  d1 <-->|failing extractor| pa["Pattern A: write → test in a networkless cell<br/>→ stderr fed back → patch → promote to a macro"]
+  bronze --> silver[("Silver<br/>observations + evidence<br/>conflicts kept")]
+  silver --> refine["Refine<br/>reconcile · SHACL"] --> gold[("Gold<br/>values with receipts")]
+  gold --> dod{"DoD met?"}
+  dod -->|gap| reopen["Reopen P3 sources · P4 plan · P2 ontology (human gate)"]
+  reopen -.-> plan
+  bronze -.->|ontology changed: re-refine, no re-browse| refine
+```
+
 ## Runs on Vultr and NetBird
 
 Vultr provides inference, the control and sandbox VMs, and the evidence lake. NetBird
