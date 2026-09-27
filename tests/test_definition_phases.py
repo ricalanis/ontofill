@@ -36,7 +36,15 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
         ],
         "authority_policy": {
             "jurisdiction": "Example City",
-            "trusted_publishers": [],
+            "trusted_publishers": [
+                {
+                    "kind": "Example City archive",
+                    "tier": "primary",
+                    "jurisdiction": "Example City",
+                    "domains": ["archive.example.test"],
+                    "rationale": "The synthetic local publisher for this test.",
+                }
+            ],
             "unknown_source_action": "review",
         },
     }

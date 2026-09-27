@@ -1,6 +1,7 @@
 """PRD targets identify their source and ungrounded numbers stay proposed."""
 
 import json
+from copy import deepcopy
 
 import httpx
 
@@ -8,7 +9,9 @@ from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
 from ontofill.phases.p1_scope.phase import (
     _apply_human_authority_revisions,
+    _authority_policy_check,
     _ground_criteria,
+    _objection_subject_changed,
     draft_prd,
 )
 from ontofill.phases.p3_fanout.authority import authority_result
@@ -39,7 +42,15 @@ def _prd_response(criterion: dict | None = None) -> dict:
         ],
         "authority_policy": {
             "jurisdiction": "Example City",
-            "trusted_publishers": [],
+            "trusted_publishers": [
+                {
+                    "kind": "Example City archive",
+                    "tier": "primary",
+                    "jurisdiction": "Example City",
+                    "domains": ["city.example.test"],
+                    "rationale": "A local public publisher.",
+                }
+            ],
             "unknown_source_action": "review",
         },
     }
@@ -216,27 +227,221 @@ def test_human_secondary_revision_downgrades_named_model_domain() -> None:
         document,
         [{"reason": "Keep the community listing as a secondary cross-check."}],
     )
-    assert publishers[0]["tier"] == "secondary"
-    assert publishers[1]["tier"] == "review"
+    assert publishers[1]["tier"] == "secondary"
+    assert publishers[0]["tier"] == "primary"
+    assert publishers[2].get("tier", "primary") == "primary"
     assert not authority_result(
         "https://community.example.test/rooms", policy=document["authority_policy"]
     )[0]
-    assert not authority_result(
+    assert authority_result(
         "https://archive.example.test/rooms", policy=document["authority_policy"]
     )[0]
 
     unknown = _prd_response()
-    unknown_publisher = publishers[1].copy()
-    unknown_publisher.pop("tier")
+    unknown_publisher = publishers[2].copy()
+    unknown_publisher.pop("tier", None)
     unknown["authority_policy"]["trusted_publishers"] = [unknown_publisher]
     _apply_human_authority_revisions(
         unknown,
         [{"reason": "Keep the unnamed supplementary list as a secondary cross-check."}],
     )
-    assert unknown["authority_policy"]["trusted_publishers"][0]["tier"] == "review"
-    assert not authority_result(
-        "https://archive.example.test/rooms", policy=unknown["authority_policy"]
-    )[0]
+    assert unknown["authority_policy"]["trusted_publishers"][0].get("tier", "primary") == "primary"
+    assert not _authority_policy_check(
+        unknown, [{"reason": "Keep the unnamed supplementary list as a secondary cross-check."}]
+    ).passed
+
+
+def test_shared_generic_word_does_not_demote_unrelated_publishers() -> None:
+    document = _prd_response()
+    publishers = document["authority_policy"]["trusted_publishers"]
+    publishers.extend(
+        [
+            {
+                "kind": "City archive",
+                "jurisdiction": "Example City",
+                "domains": ["archive.example.test"],
+                "rationale": "Publishes community records.",
+            },
+            {
+                "kind": "Public directory",
+                "jurisdiction": "Example City",
+                "domains": ["directory.example.test"],
+                "rationale": "Publishes community reports.",
+            },
+        ]
+    )
+    revision = [{"reason": "Keep the community listing as a secondary cross-check."}]
+    _apply_human_authority_revisions(document, revision)
+    assert all(item.get("tier", "primary") == "primary" for item in publishers)
+    assert any(
+        "Human secondary cross-check lacks" in issue
+        for issue in _authority_policy_check(document, revision).objections
+    )
+
+
+def test_overlapping_publisher_kinds_match_only_the_full_named_kind() -> None:
+    document = _prd_response()
+    publishers = document["authority_policy"]["trusted_publishers"]
+    publishers.extend(
+        [
+            {
+                "kind": "Registry",
+                "jurisdiction": "Example City",
+                "domains": ["registry.example.test"],
+                "rationale": "An official registry.",
+            },
+            {
+                "kind": "US Registry",
+                "jurisdiction": "Other Place",
+                "domains": ["us-registry.example.test"],
+                "rationale": "A supplementary registry.",
+            },
+        ]
+    )
+    revision = [{"reason": "Keep US Registry as a secondary cross-check."}]
+    _apply_human_authority_revisions(document, revision)
+    assert publishers[1].get("tier", "primary") == "primary"
+    assert publishers[2]["tier"] == "secondary"
+    assert _authority_policy_check(document, revision).passed
+
+
+def test_authority_policy_requires_local_primary_domains_and_unique_publishers() -> None:
+    document = _prd_response()
+    revision = [{"reason": "Keep the community listing as a secondary cross-check."}]
+    document["authority_policy"]["trusted_publishers"].append(
+        {
+            "kind": "Community listing",
+            "tier": "secondary",
+            "jurisdiction": "Other City",
+            "domains": ["community.example.test"],
+            "rationale": "A community listing for comparison.",
+        }
+    )
+    assert _authority_policy_check(document, revision).passed
+
+    invalid = deepcopy(document)
+    publishers = invalid["authority_policy"]["trusted_publishers"]
+    publishers[0]["tier"] = "secondary"
+    publishers[1]["domains"] = []
+    publishers.append(deepcopy(publishers[0]))
+    result = _authority_policy_check(invalid, revision)
+    assert not result.passed
+    assert any("primary publisher in the case jurisdiction" in issue for issue in result.objections)
+    assert any("has no domain" in issue for issue in result.objections)
+    assert any("Duplicate trusted publisher" in issue for issue in result.objections)
+    assert any("Duplicate trusted domain" in issue for issue in result.objections)
+    generic_claim = deepcopy(document)
+    generic_claim["authority_policy"]["trusted_publishers"][1]["rationale"] = (
+        "A primary public portal for city records."
+    )
+    assert not _authority_policy_check(generic_claim, revision).passed
+
+
+def test_objection_subject_in_rationale_needs_semantic_correction() -> None:
+    before = _prd_response()
+    before["authority_policy"]["trusted_publishers"].append(
+        {
+            "kind": "Procurement portal",
+            "tier": "secondary",
+            "jurisdiction": "Example City",
+            "domains": ["portal.example.test"],
+            "rationale": "CivicPortal is the primary portal for public records.",
+        }
+    )
+    objection = (
+        "authority_policy tier contradiction: CivicPortal tagged secondary "
+        "while its rationale says primary"
+    )
+    text_only = deepcopy(before)
+    text_only["authority_policy"]["trusted_publishers"][-1]["rationale"] = (
+        "CivicPortal is a primary public portal with a new description."
+    )
+    assert not _objection_subject_changed(before, text_only, objection)
+    review_only = deepcopy(before)
+    review_only["authority_policy"]["trusted_publishers"][-1]["tier"] = "review"
+    assert not _objection_subject_changed(before, review_only, objection)
+    corrected_rationale = deepcopy(before)
+    corrected_rationale["authority_policy"]["trusted_publishers"][-1]["rationale"] = (
+        "CivicPortal is a secondary cross-check for public records."
+    )
+    assert _objection_subject_changed(before, corrected_rationale, objection)
+    assert _authority_policy_check(corrected_rationale, []).passed
+    corrected = deepcopy(text_only)
+    corrected["authority_policy"]["trusted_publishers"][-1]["tier"] = "primary"
+    assert _objection_subject_changed(before, corrected, objection)
+
+
+def test_live_prd_cannot_clear_tier_objection_by_critic_flip(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text(
+        "Find 5 reading rooms, with 80% of required fields per room.", encoding="utf-8"
+    )
+    draft = _prd_response()
+    draft["authority_policy"]["trusted_publishers"].append(
+        {
+            "kind": "Procurement portal",
+            "tier": "secondary",
+            "jurisdiction": "Example City",
+            "domains": ["portal.example.test"],
+            "rationale": "CivicPortal is the primary portal for public records.",
+        }
+    )
+    critic_calls = 0
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal critic_calls
+        body = json.loads(request.content)
+        if body["model"] == "minimax-m3":
+            critic_calls += 1
+            return _tool_response(
+                {
+                    "accepted": critic_calls == 2,
+                    "reason": "authority_policy tier contradiction: CivicPortal tagged secondary "
+                    "while its rationale says primary",
+                }
+            )
+        fields = body["tools"][0]["function"]["parameters"]["required"]
+        return _tool_response({name: draft[name] for name in fields})
+
+    decision = VultrDecisionClient(
+        api_key="test-only",
+        model="glm-5.3-flash",
+        prd_model="glm-5.3",
+        critic_model="minimax-m3",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    steps: list[dict] = []
+    document = draft_prd(tmp_path, decision, budget_usd=1, emit=steps.append)
+    assert critic_calls == 2
+    assert any(
+        "Prior objection subject unchanged: authority_policy tier contradiction" in issue
+        for issue in document["open_issues"]
+    )
+    assert any("rationale claims primary" in issue for issue in document["open_issues"])
+    assert (tmp_path / "01-scope/prd.json").exists()
+    assert steps[-1]["loop"]["stop_reason"] == "max_iterations"
+    digests = [
+        step["loop"]["draft_sha256"]
+        for step in steps
+        if step["loop"]["role"] in {"propose", "critique", "revise", "check"}
+    ]
+    assert len(set(digests)) == 1
+
+
+def test_schema_valid_cached_prd_with_invalid_authority_is_regenerated(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text(
+        "Find 5 reading rooms, with 80% of required fields per room.", encoding="utf-8"
+    )
+    decision = RecordedDecisionClient({"phase1.prd": [_prd_response(), _prd_response()]})
+    draft_prd(tmp_path, decision)
+    path = tmp_path / "01-scope/prd.json"
+    invalid = json.loads(path.read_text())
+    invalid["authority_policy"]["trusted_publishers"] = []
+    invalid["open_issues"] = ["Earlier loop did not resolve authority"]
+    path.write_text(json.dumps(invalid), encoding="utf-8")
+    regenerated = draft_prd(tmp_path, decision)
+    assert len(decision.calls) == 2
+    assert _authority_policy_check(regenerated, []).passed
+    assert regenerated == json.loads(path.read_text())
 
 
 def test_rejected_live_prd_persists_open_issues_and_human_cross_check(tmp_path) -> None:
@@ -278,11 +483,18 @@ def test_rejected_live_prd_persists_open_issues_and_human_cross_check(tmp_path) 
     revised["requirements"][0]["description"] = "Show evidence; basis=human, quote: reviewer"
     revised["authority_policy"]["trusted_publishers"] = [
         {
+            "kind": "Example City archive",
+            "tier": "primary",
+            "jurisdiction": "Example City",
+            "domains": ["city.example.test"],
+            "rationale": "A local public publisher.",
+        },
+        {
             "kind": "Registry",
             "tier": "secondary",
             "domains": ["registry.example.test"],
             "rationale": "Use as a supplementary cross-check only.",
-        }
+        },
     ]
     calls: list[dict] = []
 
@@ -321,10 +533,10 @@ def test_rejected_live_prd_persists_open_issues_and_human_cross_check(tmp_path) 
     assert any(
         item["tier"] == "secondary" for item in document["authority_policy"]["trusted_publishers"]
     )
-    assert any(
-        denial["reason"] in item["rationale"]
+    assert document["revisions"][0]["reason"] == denial["reason"]
+    assert all(
+        item["kind"] != "Human-requested cross-check"
         for item in document["authority_policy"]["trusted_publishers"]
-        if item["tier"] == "secondary"
     )
     trusted, reason = authority_result(
         "https://registry.example.test/rooms", policy=document["authority_policy"]

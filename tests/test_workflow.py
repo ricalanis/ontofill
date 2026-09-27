@@ -139,10 +139,8 @@ def test_recorded_default_pauses_at_first_checkpoint(tmp_path, capsys) -> None:
         encoding="utf-8",
     )
     assert run_case(case, run_id=run_id, decision=_preview_decision("Public reading rooms")) == 3
-    assert (
-        "APPROVED exists but the artifact was produced by the recorded backend"
-        in capsys.readouterr().out
-    )
+    assert "recorded artifacts cannot satisfy" in capsys.readouterr().out
+    assert list((scratch / "01-scope").glob("APPROVED.stale.*"))
     assert sorted(path.name for path in case.iterdir()) == ["brief.md"]
     assert not lake.exists(f"runs/{case.name}/latest.json")
 

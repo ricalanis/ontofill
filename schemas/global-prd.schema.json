@@ -35,6 +35,7 @@
       "properties": {
         "kind": {"type": "string", "minLength": 1},
         "tier": {"enum": ["primary", "secondary", "review"]},
+        "jurisdiction": {"type": "string", "minLength": 1},
         "domains": {
           "type": "array", "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$"}

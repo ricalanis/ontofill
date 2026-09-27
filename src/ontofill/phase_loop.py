@@ -6,9 +6,12 @@ the stopping rules, budget accounting, and trace shape.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Generic, Literal, TypeVar
@@ -75,6 +78,26 @@ def _check(result: CheckResult | bool) -> CheckResult:
     raise TypeError("phase check must return bool or CheckResult")
 
 
+def _draft_sha256(artifact: object) -> str | None:
+    if artifact is None:
+        return None
+
+    def content(value: object) -> object:
+        if isinstance(value, Mapping):
+            return {key: content(item) for key, item in value.items() if key != "generated_by"}
+        if isinstance(value, (list, tuple)):
+            return [content(item) for item in value]
+        return value
+
+    try:
+        encoded = json.dumps(
+            content(artifact), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 class PhaseLoop(Generic[T]):
     """Run one phase until its code check and critic pass, or a bound stops it.
 
@@ -130,6 +153,7 @@ class PhaseLoop(Generic[T]):
         *,
         verdict: Callable[[T], str] | None = None,
         objections: Callable[[T], tuple[str, ...]] | None = None,
+        draft: object | None = None,
     ) -> T:
         before = len(self.call_log) if self.call_log is not None else 0
         result = call()
@@ -142,6 +166,7 @@ class PhaseLoop(Generic[T]):
             verdict=verdict(result) if verdict else "completed",
             objections=objections(result) if objections else (),
             executed={"status": "completed", "calls": len(calls)},
+            draft_sha256=_draft_sha256(result if role in {"propose", "revise"} else draft),
         )
         return result
 
@@ -189,6 +214,7 @@ class PhaseLoop(Generic[T]):
         objections: tuple[str, ...] = (),
         stop_reason: StopReason | None = None,
         executed: dict | None = None,
+        draft_sha256: str | None = None,
     ) -> None:
         if self.emit is None:
             return
@@ -210,6 +236,8 @@ class PhaseLoop(Generic[T]):
             loop["model"] = usage["model"]
         if stop_reason is not None:
             loop["stop_reason"] = stop_reason
+        if draft_sha256 is not None:
+            loop["draft_sha256"] = draft_sha256
         self.emit(
             {
                 "step_id": f"loop-{self.phase}-{iteration}-{role}-{uuid.uuid4().hex[:12]}",
@@ -247,6 +275,7 @@ class PhaseLoop(Generic[T]):
             objections=objections,
             stop_reason=reason,
             executed={"stop_reason": reason},
+            draft_sha256=_draft_sha256(artifact),
         )
         return LoopResult(artifact, iteration, reason, self.usd, objections)
 
@@ -259,6 +288,7 @@ class PhaseLoop(Generic[T]):
         revise: Callable[[T, CheckResult, object, int], T],
         check: Callable[[T, object, int], CheckResult | bool],
         gate: Callable[[T, int], bool | None] | None = None,
+        objection_addressed: Callable[[T, T, str], bool] | None = None,
     ) -> LoopResult[T]:
         if self._used:
             raise RuntimeError("a PhaseLoop instance runs once")
@@ -266,6 +296,7 @@ class PhaseLoop(Generic[T]):
         self._started = self.monotonic()
         artifact: T | None = None
         objections: tuple[str, ...] = ()
+        prior_rejections: list[tuple[T, str]] = []
         if self._budget_reached():
             return self._finish(None, 0, "budget", ())
         for iteration in range(1, self.budget.max_iterations + 1):
@@ -279,17 +310,37 @@ class PhaseLoop(Generic[T]):
             )
             if self._budget_reached():
                 return self._finish(artifact, iteration, "budget", objections)
+
+            def reviewed() -> CheckResult:
+                verdict = _critique(critique(artifact, context, iteration))
+                if not verdict.passed or not prior_rejections:
+                    return verdict
+                unresolved = []
+                for rejected_draft, objection in prior_rejections:
+                    if objection_addressed is None:
+                        changed = _draft_sha256(rejected_draft) != _draft_sha256(artifact)
+                    else:
+                        changed = objection_addressed(rejected_draft, artifact, objection)
+                    if not changed:
+                        unresolved.append(f"Prior objection subject unchanged: {objection}")
+                return CheckResult(False, tuple(unresolved)) if unresolved else verdict
+
             critic = self._stage(
                 "critique",
                 iteration,
-                lambda draft=artifact, value=context, n=iteration: _critique(
-                    critique(draft, value, n)
-                ),
+                reviewed,
                 verdict=lambda result: "accepted" if result.passed else "rejected",
                 objections=lambda result: result.objections,
+                draft=artifact,
             )
             if self._budget_reached():
                 return self._finish(artifact, iteration, "budget", critic.objections)
+            if not critic.passed:
+                prior_rejections.extend(
+                    (deepcopy(artifact), objection)
+                    for objection in critic.objections
+                    if not objection.startswith("Prior objection subject unchanged:")
+                )
             artifact = self._stage(
                 "revise",
                 iteration,
@@ -305,6 +356,7 @@ class PhaseLoop(Generic[T]):
                 lambda draft=artifact, value=context, n=iteration: _check(check(draft, value, n)),
                 verdict=lambda result: "passed" if result.passed else "failed",
                 objections=lambda result: result.objections,
+                draft=artifact,
             )
             objections = (*critic.objections, *checked.objections)
             if self._budget_reached():
@@ -324,5 +376,6 @@ class PhaseLoop(Generic[T]):
                     verdict="continue",
                     objections=objections,
                     executed={"next_iteration": iteration + 1},
+                    draft_sha256=_draft_sha256(artifact),
                 )
         return self._finish(artifact, self.budget.max_iterations, "max_iterations", objections)

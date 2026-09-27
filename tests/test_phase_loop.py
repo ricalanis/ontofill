@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -76,6 +77,88 @@ def test_rejected_draft_gets_revised_and_rechecked_with_live_trace(tmp_path: Pat
     assert steps[-1]["loop"]["stop_reason"] == "checks_passed"
     assert all(step["event"] == "loop" for step in steps)
     feed.close()
+
+
+def test_critic_flip_cannot_clear_unchanged_objection_subject() -> None:
+    steps: list[dict] = []
+    seen_by_critic: list[dict] = []
+    original = {"authority_policy": {"publishers": [{"tier": "secondary"}]}}
+
+    def critique(artifact: dict, _context: object, iteration: int) -> dict:
+        seen_by_critic.append(artifact)
+        return {
+            "accepted": iteration == 2,
+            "reason": "authority_policy tier contradicts primary rationale",
+        }
+
+    result = PhaseLoop[dict](
+        phase=1,
+        run_id="mock-flip",
+        generated_by=RECORDED,
+        budget=LoopBudget(max_iterations=2),
+        emit=steps.append,
+    ).run(
+        gather=lambda _iteration, previous: {"previous": previous},
+        propose=lambda context, _iteration: context["previous"] or original,
+        critique=critique,
+        revise=lambda artifact, *_args: artifact,
+        check=lambda *_args: True,
+        objection_addressed=lambda before, after, _objection: (
+            before["authority_policy"] != after["authority_policy"]
+        ),
+    )
+    assert result.stop_reason == "max_iterations"
+    assert any("subject unchanged" in issue for issue in result.objections)
+    assert seen_by_critic == [original, original]
+    draft_steps = [
+        step for step in steps if step["loop"]["role"] in {"propose", "critique", "revise", "check"}
+    ]
+    digests = {step["loop"]["draft_sha256"] for step in draft_steps}
+    assert digests == {
+        hashlib.sha256(
+            json.dumps(original, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    }
+    assert steps[-1]["loop"]["draft_sha256"] in digests
+
+
+def test_next_critique_consumes_latest_revised_draft() -> None:
+    seen: list[int] = []
+    steps: list[dict] = []
+
+    def critique(artifact: dict, _context: object, _iteration: int) -> dict:
+        seen.append(artifact["revision"])
+        return {"accepted": artifact["revision"] == 2, "reason": "target needs revision"}
+
+    result = PhaseLoop[dict](
+        phase=1,
+        run_id="mock-carry",
+        generated_by=RECORDED,
+        budget=LoopBudget(max_iterations=2),
+        emit=steps.append,
+    ).run(
+        gather=lambda _iteration, previous: {"previous": previous},
+        propose=lambda context, _iteration: context["previous"] or {"revision": 1},
+        critique=critique,
+        revise=lambda artifact, verdict, *_args: (
+            {"revision": 2} if not verdict.passed else artifact
+        ),
+        check=lambda *_args: True,
+        objection_addressed=lambda before, after, _objection: before != after,
+    )
+    assert result.stop_reason == "checks_passed"
+    assert seen == [1, 2]
+    revised = next(
+        step
+        for step in steps
+        if step["loop"]["iteration"] == 1 and step["loop"]["role"] == "revise"
+    )
+    proposed = next(
+        step
+        for step in steps
+        if step["loop"]["iteration"] == 2 and step["loop"]["role"] == "propose"
+    )
+    assert revised["loop"]["draft_sha256"] == proposed["loop"]["draft_sha256"]
 
 
 def test_live_spend_budget_stops_before_next_model_stage() -> None:
@@ -263,3 +346,6 @@ def test_loop_schema_and_metrics_reject_invalid_rows() -> None:
     invalid = {**trace[-1], "loop": {**trace[-1]["loop"], "role": "invented"}}
     with pytest.raises(ValidationError):
         Draft202012Validator(trace_schema["$defs"]["loop"]).validate(invalid["loop"])
+    invalid_digest = {**trace[-1]["loop"], "draft_sha256": "not-a-digest"}
+    with pytest.raises(ValidationError):
+        Draft202012Validator(trace_schema["$defs"]["loop"]).validate(invalid_digest)

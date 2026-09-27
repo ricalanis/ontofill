@@ -52,6 +52,8 @@ def library_decisions() -> RecordedDecisionClient:
                         "trusted_publishers": [
                             {
                                 "kind": "city library office",
+                                "tier": "primary",
+                                "jurisdiction": "Example City",
                                 "domains": ["libraries.example.test"],
                                 "rationale": "Official directory for this synthetic city",
                             }

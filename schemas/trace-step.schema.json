@@ -49,6 +49,7 @@
         "iteration": {"type": "integer", "minimum": 1},
         "role": {"enum": ["gather", "propose", "critique", "revise", "check", "decide"]},
         "model": {"type": "string", "minLength": 1},
+        "draft_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "verdict": {"type": "string", "minLength": 1},
         "objections": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "stop_reason": {"enum": ["checks_passed", "budget", "human", "max_iterations"]}

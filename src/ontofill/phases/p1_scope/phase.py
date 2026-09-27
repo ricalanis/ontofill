@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -20,7 +21,7 @@ from ontofill.case.checkpoints import (
 )
 from ontofill.contracts import model_output_schema, validate_document
 from ontofill.inference import DecisionClient, generated_by
-from ontofill.phase_loop import LoopBudget, PhaseLoop
+from ontofill.phase_loop import CheckResult, LoopBudget, PhaseLoop
 
 NUMBER_TOKEN = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?\s*%?")
 PERCENT_METRIC = re.compile(
@@ -31,19 +32,41 @@ SECONDARY_REQUEST = re.compile(r"secondary|secundari|cross[ -]?check|contraste",
 SECONDARY_STOPWORDS = {
     "check",
     "cross",
+    "crosschecks",
+    "for",
+    "human",
     "keep",
+    "kept",
     "list",
     "lists",
     "only",
+    "requested",
+    "remain",
     "secondary",
     "secundaria",
     "secundario",
     "source",
     "sources",
+    "supplementary",
     "the",
     "them",
     "these",
     "with",
+}
+JURISDICTION_SCOPE_WORDS = {
+    "and",
+    "de",
+    "del",
+    "federal",
+    "government",
+    "local",
+    "national",
+    "of",
+    "public",
+    "regional",
+    "state",
+    "the",
+    "y",
 }
 REJECTED_THRESHOLD = re.compile(
     r"\b(?:unsupported|unfounded|invented|unjustified|incorrect|wrong|rejected?|"
@@ -85,6 +108,99 @@ def _number_clauses(text: str) -> tuple[str, str]:
         else:
             supported.append(clause)
     return "\n".join(supported), "\n".join(rejected)
+
+
+def _tokens(text: str) -> set[str]:
+    plain = unicodedata.normalize("NFKD", text.casefold())
+    plain = "".join(char for char in plain if not unicodedata.combining(char))
+    return set(re.findall(r"[a-z0-9]+", plain))
+
+
+def _secondary_clauses(revisions: list[dict]) -> list[str]:
+    return [
+        clause.strip()
+        for revision in revisions
+        for clause in re.split(r";\s*|(?<=[.!?])\s+|\n+", revision["reason"])
+        if SECONDARY_REQUEST.search(clause)
+    ]
+
+
+def _subject_tokens(text: str) -> set[str]:
+    return {
+        token[:-1] if token.endswith("s") and len(token) > 4 else token
+        for token in _tokens(text)
+        if len(token) >= 3 and token not in SECONDARY_STOPWORDS
+    }
+
+
+def _secondary_subjects(clause: str) -> list[tuple[str, set[str]]]:
+    marker = SECONDARY_REQUEST.search(clause)
+    assert marker is not None
+    named_part = clause[: marker.start()] or clause[marker.end() :]
+    parts = re.split(r"\s*(?:/|,|\band\b|\by\b)\s*", named_part, flags=re.IGNORECASE)
+    return [(part, subject) for part in parts if (subject := _subject_tokens(part))]
+
+
+def _named_secondary_matches(
+    subject_text: str, subject: set[str], publishers: list[dict]
+) -> list[dict]:
+    direct_domains = [
+        item
+        for item in publishers
+        if any(domain.casefold() in subject_text.casefold() for domain in item["domains"])
+    ]
+    if direct_domains:
+        longest = max(
+            len(domain)
+            for item in direct_domains
+            for domain in item["domains"]
+            if domain.casefold() in subject_text.casefold()
+        )
+        exact = [
+            item
+            for item in direct_domains
+            if any(
+                len(domain) == longest and domain.casefold() in subject_text.casefold()
+                for domain in item["domains"]
+            )
+        ]
+        return exact if len(exact) == 1 else []
+    normalized_subject = " ".join(subject_text.casefold().split())
+    direct_kinds = [
+        item
+        for item in publishers
+        if re.search(
+            rf"(?<!\w){re.escape(' '.join(item['kind'].casefold().split()))}(?!\w)",
+            normalized_subject,
+        )
+    ]
+    if direct_kinds:
+        longest = max(len(item["kind"]) for item in direct_kinds)
+        exact = [item for item in direct_kinds if len(item["kind"]) == longest]
+        return exact if len(exact) == 1 else []
+    distinctive: list[dict] = []
+    for token in subject:
+        owners = [
+            item
+            for item in publishers
+            if token
+            in _subject_tokens(f"{item['kind']} {item['rationale']} {' '.join(item['domains'])}")
+        ]
+        if len(owners) == 1 and owners[0] not in distinctive:
+            distinctive.append(owners[0])
+    return distinctive if len(distinctive) == 1 else []
+
+
+def _claims_primary(rationale: str) -> bool:
+    return bool(
+        re.search(
+            r"^\s*(?:(?:a|an|the)\s+)?primary\b|"
+            r"\b(?:is|serves as|acts as|classified as|designated as|(?<!not )as)\s+"
+            r"(?:(?:a|an|the)\s+)?primary\b",
+            rationale,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _ground_criteria(
@@ -139,49 +255,134 @@ def _ground_criteria(
 
 def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> None:
     publishers = document["authority_policy"]["trusted_publishers"]
-    for revision in revisions:
-        reason = revision["reason"]
-        if not SECONDARY_REQUEST.search(reason):
-            continue
-        subject = {
-            token[:5]
-            for token in re.findall(r"\w{3,}", reason.casefold())
-            if token not in SECONDARY_STOPWORDS
-        }
-        primary = [item for item in publishers if item.get("tier", "primary") == "primary"]
-        matched = [
-            item
-            for item in primary
-            if any(domain.casefold() in reason.casefold() for domain in item["domains"])
-            or subject
-            & {
-                token[:5]
-                for token in re.findall(
-                    r"\w{3,}",
-                    f"{item['kind']} {item['rationale']} {' '.join(item['domains'])}".casefold(),
-                )
-                if token not in SECONDARY_STOPWORDS
-            }
-        ]
-        # A named match is a secondary cross-check. Other model-proposed
-        # primary domains remain ambiguous until source-level human review.
-        for item in matched:
-            item["tier"] = "secondary"
-        for item in primary:
-            if item not in matched:
-                item["tier"] = "review"
-        if not any(
-            item.get("tier") == "secondary" and reason.casefold() in item["rationale"].casefold()
-            for item in publishers
+    for clause in _secondary_clauses(revisions):
+        for subject_text, subject in _secondary_subjects(clause):
+            candidates = [item for item in publishers if item.get("tier") != "secondary"]
+            for item in _named_secondary_matches(subject_text, subject, candidates):
+                item["tier"] = "secondary"
+
+
+def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResult:
+    policy = document["authority_policy"]
+    case_tokens = _tokens(policy["jurisdiction"]) - JURISDICTION_SCOPE_WORDS
+    objections = []
+    seen_kinds: set[str] = set()
+    seen_domains: set[str] = set()
+    local_primary = False
+    publishers = policy["trusted_publishers"]
+    for publisher in publishers:
+        kind = " ".join(publisher["kind"].casefold().split())
+        if kind in seen_kinds:
+            objections.append(f"Duplicate trusted publisher: {publisher['kind']}")
+        seen_kinds.add(kind)
+        domains = publisher["domains"]
+        if not domains:
+            objections.append(f"Trusted publisher {publisher['kind']} has no domain")
+        for domain in domains:
+            normalized = domain.casefold().rstrip(".")
+            if normalized in seen_domains:
+                objections.append(f"Duplicate trusted domain: {domain}")
+            seen_domains.add(normalized)
+        if publisher.get("tier", "primary") == "primary":
+            publisher_tokens = _tokens(publisher.get("jurisdiction", "")) - JURISDICTION_SCOPE_WORDS
+            if case_tokens and publisher_tokens & case_tokens:
+                local_primary = True
+        elif _claims_primary(publisher["rationale"]):
+            objections.append(
+                f"Publisher {publisher['kind']} is {publisher['tier']} but rationale claims primary"
+            )
+    if not local_primary:
+        objections.append("Authority policy needs a primary publisher in the case jurisdiction")
+    secondary = [item for item in publishers if item.get("tier") == "secondary" and item["domains"]]
+    for clause in _secondary_clauses(revisions):
+        subjects = _secondary_subjects(clause)
+        if not subjects or any(
+            not _named_secondary_matches(subject_text, subject, secondary)
+            for subject_text, subject in subjects
         ):
-            publishers.append(
-                {
-                    "kind": "Human-requested cross-check",
-                    "tier": "secondary",
-                    "domains": [],
-                    "rationale": reason,
+            objections.append(
+                f"Human secondary cross-check lacks a named publisher/domain: {clause}"
+            )
+    return CheckResult(not objections, tuple(objections))
+
+
+def _objection_subject_changed(before: dict, after: dict, objection: str) -> bool:
+    """Require a diff at the field and publisher named by a prior objection."""
+    subject = objection.casefold()
+    before_policy = before["authority_policy"]
+    after_policy = after["authority_policy"]
+    if any(term in subject for term in ("authority", "publisher", "tier", "domain")):
+        named = [
+            item
+            for item in before_policy["trusted_publishers"]
+            if item["kind"].casefold() in subject
+            or any(domain.casefold() in subject for domain in item["domains"])
+            or any(
+                token in subject
+                for token in _tokens(item["rationale"])
+                if len(token) >= 5
+                and token not in SECONDARY_STOPWORDS
+                and token
+                not in {
+                    "primary",
+                    "official",
+                    "trusted",
+                    "authority",
+                    "publisher",
+                    "rationale",
+                    "domain",
                 }
             )
+        ]
+        if named:
+            for old in named:
+                current = next(
+                    (
+                        item
+                        for item in after_policy["trusted_publishers"]
+                        if item["kind"].casefold() == old["kind"].casefold()
+                    ),
+                    None,
+                )
+                if current is None:
+                    continue
+                if "tier" in subject and "primary" in subject and old.get("tier") == "secondary":
+                    if current.get("tier") == "primary":
+                        continue
+                    if (
+                        current.get("tier") in {"secondary", "review"}
+                        and current["rationale"] != old["rationale"]
+                        and not _claims_primary(current["rationale"])
+                    ):
+                        continue
+                    return False
+                fields = (
+                    ("tier",)
+                    if "tier" in subject
+                    else ("domains", "jurisdiction", "rationale", "tier")
+                )
+                if all(old.get(field) == current.get(field) for field in fields):
+                    return False
+            return True
+        return False
+    if any(term in subject for term in ("target", "criterion", "definition_of_done", "dod")):
+        old_items = before["definition_of_done"]
+        new_items = after["definition_of_done"]
+        named = [
+            item
+            for item in old_items
+            if item["id"].casefold() in subject or item["metric"].casefold() in subject
+        ]
+        if not named:
+            named = [item for item in old_items if str(item["target"]) in subject]
+        if named:
+            by_id = {item["id"]: item for item in new_items}
+            return all(by_id.get(item["id"]) != item for item in named)
+        return old_items != new_items
+    for section in ("requirements", "constraints", "non_goals", "personas", "jobs_to_be_done"):
+        if section in subject:
+            return before[section] != after[section]
+    return False
 
 
 def _remove_grounding_notes(document: dict) -> None:
@@ -211,7 +412,7 @@ def draft_prd(
         output.parent, "prd", ["prd.json", "prd.md", "prd.input.sha256"]
     )
     digest = hashlib.sha256(
-        json.dumps([brief, revisions, budget_usd, "prd-steering-v2"], ensure_ascii=False).encode()
+        json.dumps([brief, revisions, budget_usd, "prd-steering-v3"], ensure_ascii=False).encode()
     ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
     if output.exists():
@@ -226,7 +427,8 @@ def draft_prd(
             except ValidationError:
                 pass
             else:
-                return document
+                if _authority_policy_check(document, revisions).passed:
+                    return document
     prompt = (
         "Draft the global PRD from this brief. Include personas, jobs, "
         "requirements traced to jobs, constraints, non-goals, and measurable completion criteria. "
@@ -242,10 +444,14 @@ def draft_prd(
         "Use brief_path='brief.md'. Public read-only sources only. "
         "Define an authority_policy for this case with jurisdiction, trusted publisher kinds "
         "and domains plus a rationale for each, and review unknown authorities. "
+        "Every trusted publisher needs at least one distinct domain. Include publisher.jurisdiction; "
+        "for an in-scope primary publisher, copy authority_policy.jurisdiction exactly. "
+        "At least one in-scope publisher must be primary. Do not duplicate publisher kinds or domains. "
         "Mark authoritative publishers tier=primary, supplementary human-requested "
         "cross-check lists tier=secondary, and uncertain domains tier=review. "
         "Secondary and review publishers are never auto authority; "
-        "use domains=[] when the brief or human revision provides no exact domain. "
+        "if a human-requested cross-check has no supportable domain, leave it unresolved "
+        "for human review rather than inventing an empty trusted publisher. "
         "Keep grounding metadata such as basis and basis_quote out of persona, job, "
         "requirement and constraint descriptions. "
         "Treat any proposed domain as a hypothesis for human review, never as captured evidence. "
@@ -328,9 +534,30 @@ def draft_prd(
         )
         return complete(repaired)
 
-    def check(artifact: dict, _context: dict, _iteration: int) -> bool:
+    check_objections: tuple[str, ...] = ()
+
+    def check(artifact: dict, _context: dict, _iteration: int) -> CheckResult:
+        nonlocal check_objections
         validate_document("global-prd", artifact)
-        return artifact["brief_path"] == "brief.md"
+        issues = list(_authority_policy_check(artifact, revisions).objections)
+        if artifact["brief_path"] != "brief.md":
+            issues.append("PRD brief_path must be brief.md")
+        check_objections = tuple(issues)
+        return CheckResult(not issues, check_objections)
+
+    def propose(context: dict, iteration: int) -> dict:
+        previous = context["previous"]
+        if previous is None:
+            return complete(prompt)
+        if check_objections and decision.backend == "vultr":
+            return complete(
+                prompt
+                + "\nThe prior draft failed code-owned checks: "
+                + json.dumps(check_objections, ensure_ascii=False)
+                + "\nRepair the latest revised draft: "
+                + json.dumps(previous, ensure_ascii=False)
+            )
+        return previous
 
     loop = PhaseLoop[dict](
         phase=1,
@@ -342,10 +569,11 @@ def draft_prd(
     )
     result = loop.run(
         gather=lambda _iteration, previous: {"previous": previous},
-        propose=lambda context, _iteration: context["previous"] or complete(prompt),
+        propose=propose,
         critique=critique,
         revise=revise,
         check=check,
+        objection_addressed=_objection_subject_changed,
     )
     if result.artifact is None:
         marker = output.parent / "APPROVED"
