@@ -38,6 +38,10 @@ from .support import (
 HOSTILE_FIXTURE = "hostile.html"
 DESTRUCTIVE_FIXTURE = "destructive_loop.py"
 ALLOWED_DOMAIN = "host.docker.internal"
+CONTAINMENT_RUN_PREFIX = "containment-demo-"
+_CONTAINMENT_RUN_ID = re.compile(
+    rf"{re.escape(CONTAINMENT_RUN_PREFIX)}[A-Za-z0-9][A-Za-z0-9_.-]*\Z"
+)
 
 
 def _usage(model: str, raw: Mapping) -> dict:
@@ -483,16 +487,30 @@ def containment_provenance(gateway: Gateway) -> dict:
     return {"backend": "vultr", "model": gateway.model, "at": iso_now()}
 
 
+def _require_fresh_demo_run(lake, case_id: str, run_id: str) -> None:
+    if not isinstance(run_id, str) or not _CONTAINMENT_RUN_ID.fullmatch(run_id):
+        raise ValueError("run id must use the containment-demo-<suffix> form")
+    prefix = f"runs/{case_id}/{run_id}"
+    existing = [
+        name
+        for name in ("status.json", "trace.live.jsonl", "jobs.jsonl")
+        if lake.exists(f"{prefix}/{name}")
+    ]
+    if existing:
+        raise FileExistsError("containment demo run already has feed artifacts")
+
+
 def run_containment(
     case_dir: Path, run_id: str | None = None, *, gateway: Gateway | None = None
 ) -> dict:
-    """Append both containment proofs to one real run's feed. Returns a summary."""
+    """Create a standalone demo run with both containment proofs. Returns a summary."""
     case_dir = case_dir.resolve()
     if not case_dir.is_dir():
         raise FileNotFoundError(f"case directory does not exist: {case_dir}")
     lake = lake_for_case(case_dir)
     case_id = case_id_for(case_dir)
-    run_id = run_id or default_run_id()
+    run_id = default_run_id() if run_id is None else run_id
+    _require_fresh_demo_run(lake, case_id, run_id)
     gateway = gateway or Gateway()
     provenance = containment_provenance(gateway)
 

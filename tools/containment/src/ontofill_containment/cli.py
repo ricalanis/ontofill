@@ -1,4 +1,4 @@
-"""`ontofill-containment --case <case_dir> --run-id <id>` entry point."""
+"""`ontofill-containment` standalone live sandbox demo entry point."""
 
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ from pathlib import Path
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ontofill-containment",
-        description="Run the containment fixtures against a run's feed (append-only).",
+        description="Create a fresh containment-demo run for the live sandbox fixtures.",
     )
     parser.add_argument("--case", type=Path, required=True, help="path to the case directory")
     parser.add_argument(
-        "--run-id", help="run id to append to (default containment-demo-<yyyymmddhhmm>)"
+        "--run-id",
+        help="fresh containment-demo-<suffix> id (default containment-demo-<yyyymmddhhmm>)",
     )
     args = parser.parse_args(argv)
 

@@ -1,8 +1,9 @@
 # ontofill-containment (R8)
 
 Run the engine's **existing** containment fixtures against the production sandbox
-substrate and append their proof to a real run's feed, so the Ontofill Console's
-run view shows them like any other step. It authors no new hostile content: it
+substrate as a standalone live sandbox demo. It creates a dedicated run feed for
+the Ontofill Console. This demo stays separate from any question→gold investigation
+run and never adds steps to an existing run. It authors no new hostile content: it
 serves `sandbox/fixtures/hostile.html` and runs
 `sandbox/fixtures/destructive_loop.py`.
 
@@ -12,10 +13,13 @@ ontofill-containment --case <case_dir> --run-id <id>
 
 * `--case` — the case directory the run belongs to (its `lake.yaml`/`LAKE_ROOT`
   is resolved exactly like `ontofill run`).
-* `--run-id` — defaults to `containment-demo-<yyyymmddhhmm>` (UTC).
+* `--run-id` — must be a fresh `containment-demo-<suffix>` ID; it defaults to
+  `containment-demo-<yyyymmddhhmm>` (UTC).
 
-It **appends** to `runs/<case_id>/<run_id>/trace.live.jsonl` and `jobs.jsonl` and
-never rewrites an existing line; every step id is unique.
+The command refuses a run ID with any existing `status.json`, `trace.live.jsonl`,
+or `jobs.jsonl` feed before it contacts the gateway or writes run artifacts. For
+the new demo run, it appends trace and job records and never rewrites a line; every
+step ID is unique.
 
 ## What it records
 
@@ -49,11 +53,11 @@ This mirrors the per-cell firewall rules in `ontofill.sandbox.cells`.
 ## Run
 
 ```sh
-# on the control VM, from the engine checkout
+# on the control VM, from the engine checkout; this creates a standalone demo run
 set -a; . /opt/ontofill/engine.env; set +a
 set -a; . /opt/ontofill/browser-agent.env; set +a   # ONTOFILL_SANDBOX_DOCKER_HOST, DOCKER_SSH_COMMAND
 export LAKE_ROOT=/srv/demo-library/lake
-tools/containment/bin/ontofill-containment --case /srv/demo-library/case --run-id containment-demo-<ts>
+tools/containment/bin/ontofill-containment --case /srv/demo-library/case --run-id containment-demo-<fresh-suffix>
 ```
 
 ## Tests

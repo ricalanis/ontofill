@@ -578,6 +578,86 @@ def test_hosts_referenced_filters_probe_hosts():
     assert "ontofill-proof-denied-abc.invalid" not in hosts
 
 
+@pytest.mark.parametrize("run_id", ["procurement-run", "containment-demo-"])
+def test_run_containment_requires_demo_id_before_writing(monkeypatch, tmp_path, run_id):
+    from ontofill_containment import main as main_mod
+
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    lake = FileLake(tmp_path / "lake")
+    monkeypatch.setattr(main_mod, "lake_for_case", lambda _case: lake)
+    monkeypatch.setattr(main_mod, "case_id_for", lambda _case: "case")
+
+    class UnusedGateway:
+        @property
+        def model(self):
+            raise AssertionError("an invalid run id must be rejected before contacting gateway")
+
+    with pytest.raises(ValueError, match="containment-demo"):
+        main_mod.run_containment(case_dir, run_id, gateway=UnusedGateway())
+    assert not (lake.root / "runs").exists()
+
+
+@pytest.mark.parametrize("filename", ["status.json", "trace.live.jsonl", "jobs.jsonl"])
+def test_run_containment_refuses_any_existing_feed_before_writing(monkeypatch, tmp_path, filename):
+    from ontofill_containment import main as main_mod
+
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    lake = FileLake(tmp_path / "lake")
+    run_id = "containment-demo-existing"
+    existing_key = f"runs/case/{run_id}/{filename}"
+    existing_bytes = b"preserve this existing feed\n"
+    lake.write_key(existing_key, existing_bytes)
+    monkeypatch.setattr(main_mod, "lake_for_case", lambda _case: lake)
+    monkeypatch.setattr(main_mod, "case_id_for", lambda _case: "case")
+
+    class UnusedGateway:
+        @property
+        def model(self):
+            raise AssertionError("an existing run must be rejected before contacting gateway")
+
+    with pytest.raises(FileExistsError, match="already has feed artifacts"):
+        main_mod.run_containment(case_dir, run_id, gateway=UnusedGateway())
+
+    assert lake.read_key(existing_key) == existing_bytes
+    for other in {"status.json", "trace.live.jsonl", "jobs.jsonl"} - {filename}:
+        assert not lake.exists(f"runs/case/{run_id}/{other}")
+    assert not lake.exists("runs/case/latest.json")
+
+
+def test_run_containment_creates_fresh_demo_run(monkeypatch, tmp_path):
+    from ontofill_containment import main as main_mod
+
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    lake = FileLake(tmp_path / "lake")
+    monkeypatch.setattr(main_mod, "lake_for_case", lambda _case: lake)
+    monkeypatch.setattr(main_mod, "case_id_for", lambda _case: "case")
+    monkeypatch.setattr(main_mod, "run_hostile_page", lambda **_kwargs: {"quarantine": "step:q"})
+    monkeypatch.setattr(
+        main_mod,
+        "run_destructive_loop",
+        lambda **_kwargs: {"limit_kill": "step:k"},
+    )
+
+    class DemoGateway:
+        model = "glm-5.3-flash"
+
+    run_id = "containment-demo-fresh"
+    summary = main_mod.run_containment(case_dir, run_id, gateway=DemoGateway())
+
+    assert summary == {
+        "run_id": run_id,
+        "case_id": "case",
+        "hostile": {"quarantine": "step:q"},
+        "destructive": {"limit_kill": "step:k"},
+    }
+    status = json.loads(lake.read_key(f"runs/case/{run_id}/status.json"))
+    assert status["state"] == "done"
+    assert json.loads(lake.read_key("runs/case/latest.json")) == {"run_id": run_id}
+
+
 def test_gateway_requires_gateway_token_even_if_legacy_key_is_set(monkeypatch):
     import httpx
 
