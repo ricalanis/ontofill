@@ -42,11 +42,16 @@ which also states where each case stands.
   renders inside the sandbox. Only a trusted publisher's sibling hosts were added, GET only; third-party hosts stay
   blocked and POSTs are refused, so the blast radius stayed zero while egress widened. The engine run
   continues after submission; its status is live on the judges console, with every run, review and failure.
-- **Building in the open.** A simpler second case (San Francisco library branches) surfaced five engine defects
-  that the hard case had hidden. Four are fixed with tests: city-level jurisdictions in P1, invalid ontology rules
-  set aside with salvage in P2, a core PRD field never bound to a property (the second fix, `3c1a2b0`, is verified
-  on a live rerun), and exhausted phases reported as needs-human instead of a crash. One is in progress: ontology
-  rules are red-flag patterns, but the rule critic judged them as passing checks, so no rule could pass.
+- **Building in the open.** A simpler second case (San Francisco library branches) surfaced six engine defects
+  that the hard case had hidden. Five are fixed with tests:
+  - city-level jurisdictions in P1
+  - invalid ontology rules, now set aside with salvage in P2
+  - a rule critic that read red-flag rules as passing checks (`829559e`)
+  - a core PRD field never bound to a property (`3c1a2b0`, verified live)
+  - exhausted phases reported as a crash instead of needs-human
+
+  One is in progress: compiled DoD thresholds re-authored instead of copied from the approved PRD. On `93816dc` the
+  case passed the ontology schema for the first time.
 
 ## How it works
 
