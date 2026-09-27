@@ -1,0 +1,10 @@
+{% set p = m.panel %}
+<ol class="timeline" aria-label="Phases">
+  {% for n, name in PHASES %}
+  {% set st = "done" if (n < p.phase or p.state == "done") else ("current" if n == p.phase else "todo") %}
+  <li class="timeline__phase timeline__phase--{{ st }}" data-k="phase-{{ n }}" {% if st == "current" %}aria-current="step"{% endif %}>
+    <span class="timeline__n mono">{{ n }}</span> {{ name }}
+    {% if p.checkpoint and CHECKPOINT_PHASE.get(p.checkpoint) == n %}<span class="timeline__wait">waiting for {{ p.checkpoint }} approval</span>{% endif %}
+  </li>
+  {% endfor %}
+</ol>

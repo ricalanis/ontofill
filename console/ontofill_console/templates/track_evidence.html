@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Evidence{% endblock %}
+{% block main %}
+{% set STATUS = {"proven": "Proven", "partial": "Partial", "failed": "Failed", "no proof yet": "No proof yet", "see screen": "See screen"} %}
+<section class="page-head">
+  <h1>Evidence</h1>
+  <p class="lede">The track's requirements, each with the proof we already have on disk. This page reads saved files only
+    (the track checklist, a saved remote verification, the sandbox proof in the run feed, the spend history). It calls no
+    API and probes nothing. Where those files cannot prove a row, it links to the screen that shows it.</p>
+</section>
+
+<section class="dod" aria-labelledby="ev-sum-h">
+  <h2 id="ev-sum-h" class="visually-hidden">Sources</h2>
+  <dl class="dod__grid">
+    <div class="dod__item"><dt>Remote verification</dt>
+      {% if ev.verify.source %}<dd><span class="dod__num">{{ ev.verify.result or "?" }}</span><span class="dod__of">saved {{ ev.verify.saved_at }}</span></dd>
+      {% else %}<dd class="muted">No saved output yet</dd>{% endif %}</div>
+    <div class="dod__item"><dt>Sandbox jobs with proof</dt>
+      {% if ev.jobs %}<dd><span class="dod__num">{{ ev.jobs.jobs }}</span><span class="dod__of">run <span class="mono">{{ ev.jobs.run_id }}</span></span></dd>
+      {% else %}<dd class="muted">No sandbox jobs yet</dd>{% endif %}</div>
+    <div class="dod__item"><dt>Credit used</dt>
+      {% if ev.spend and ev.spend.credit_used is number %}<dd><span class="dod__num">${{ "%.2f"|format(ev.spend.credit_used) }}</span>{% if ev.spend.credit_total is number %}<span class="dod__of">of ${{ "%.0f"|format(ev.spend.credit_total) }}</span>{% endif %}</dd>
+      {% else %}<dd class="muted">No spend snapshot yet</dd>{% endif %}</div>
+  </dl>
+  {% if synthetic %}<p class="note muted">The run feed on this instance is synthetic fixture data; its sandbox proof demonstrates the screens, not the live sandbox.</p>{% endif %}
+</section>
+
+<section class="block" aria-labelledby="ev-h">
+  <h2 id="ev-h">Requirement by requirement</h2>
+  {% if not ev.rows %}<p class="empty">The track checklist was not found.</p>{% else %}
+  <table class="ledger evidence-table">
+    <thead><tr><th scope="col">Requirement</th><th scope="col">Our answer</th><th scope="col">Proof</th></tr></thead>
+    <tbody>{% for r in ev.rows %}
+      <tr>
+        <th scope="row">{{ r.requirement }}</th>
+        <td>{{ r.answer }}</td>
+        <td><span class="ev-status ev-status--{{ r.status|replace(' ', '-') }}">{{ STATUS.get(r.status, r.status) }}</span>
+          {% for n in r.notes %}<span class="sub">{{ n }}</span>{% endfor %}
+          {% if r.link %}<a class="sub" href="{{ r.link }}">Open the screen</a>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="note muted">Checklist source: <span class="mono">{{ ev.checklist_src }}</span>.</p>
+  {% endif %}
+</section>
+
+{% if ev.live_view.source %}
+<section class="block" aria-labelledby="ev-lv-h">
+  <h2 id="ev-lv-h">Per-cell live view (NetBird expose)</h2>
+  <p class="note muted">A running cell's browser, published as a read-only view that dies with the session. Checked from outside, saved {{ ev.live_view.saved_at }}{% if ev.live_view.result %}: {{ ev.live_view.result }}{% endif %}.</p>
+  <ul class="ev-lines mono">{% for kind, text in ev.live_view.lines %}<li class="ev-line ev-line--{{ kind|lower }}">{{ kind }} · {{ text }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if ev.verify.source %}
+<section class="block" aria-labelledby="ev-v-h">
+  <h2 id="ev-v-h">Saved remote verification</h2>
+  <p class="note muted"><span class="mono">deploy/verify.sh remote</span>, saved {{ ev.verify.saved_at }}: ports closed from the internet and unauthenticated requests refused.</p>
+  <ul class="ev-lines mono">{% for kind, text in ev.verify.lines %}<li class="ev-line ev-line--{{ kind|lower }}">{{ kind }} · {{ text }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% endblock %}

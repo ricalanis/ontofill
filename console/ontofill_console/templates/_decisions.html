@@ -1,0 +1,12 @@
+{# Rows from the case's append-only decisions.jsonl (newest first). #}
+<table class="ledger decisions">
+  <thead><tr><th scope="col">When (UTC)</th><th scope="col">Checkpoint</th><th scope="col">Decision</th><th scope="col">By</th><th scope="col">Reason</th><th scope="col">Artifact</th></tr></thead>
+  <tbody>{% for d in log %}
+    <tr><td class="mono">{{ (d.ts or "")[:16]|replace("T", " ") }}</td>
+      <td><span class="mono">{{ d.phase_dir }}</span>{% if d.checkpoint %} · {{ d.checkpoint }}{% endif %}{% if d.run_id %}<span class="sub mono">{{ d.run_id }}</span>{% endif %}</td>
+      <td>{% if d.decision == "deny" %}<span class="approval__state--denied">denied</span>{% else %}approved{% endif %}</td>
+      <td>{{ d.approver }}<span class="sub muted">{{ "SSO" if d.identity_source == "sso" else "local" }}</span></td>
+      <td>{{ d.reason or "—" }}</td>
+      <td>{% for rel, h in (d.artifact_sha256 or {}).items() %}<span class="sub mono" title="{{ h }}">{{ rel.rsplit("/", 1)[-1] }} {{ (h or "")[:10] }}</span>{% endfor %}</td></tr>
+  {% endfor %}</tbody>
+</table>

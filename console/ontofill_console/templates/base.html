@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Cases{% endblock %} · Ontofill Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/tokens.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/console.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="masthead">
+    <div class="masthead__id">
+      <a class="wordmark" href="/">Ontofill Console</a>
+      <span class="runline mono" title="What this page reads">
+        {% if case %}{{ case.id }}{% if live_run_id %} · {{ live_run_id }}{% endif %}{% else %}{{ cases|length }} case{{ "" if cases|length == 1 else "s" }}{% endif %}
+      </span>
+    </div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="/" {% if nav == "cases" %}aria-current="page"{% endif %}>Cases</a>
+      <a href="/spend" {% if nav == "spend" %}aria-current="page"{% endif %}>Spend</a>
+      <a href="/evidence" {% if nav == "evidence" %}aria-current="page"{% endif %}>Evidence</a>
+      <a href="/whoami" {% if nav == "whoami" %}aria-current="page"{% endif %}>Identity</a>
+    </nav>
+    <span class="role role--{{ 'approver' if identity else 'investigator' }}" title="Whether decisions can be recorded">{% if identity %}Signed in{% elif identity_mode == "local" %}Local mode{% else %}No signed-in identity{% endif %}</span>
+  </header>
+  {% if case %}
+  <nav class="subnav" aria-label="{{ case.title }}">
+    <span class="subnav__case">{{ case.title }}</span>
+    <a href="{{ base }}" {% if nav == "overview" %}aria-current="page"{% endif %}>Overview</a>
+    <a href="{{ base }}/runs" {% if nav == "run" %}aria-current="page"{% endif %}>Runs</a>
+    <a href="{{ base }}/approvals" {% if nav == "approvals" %}aria-current="page"{% endif %}>Approvals{% if case.pending %} <span class="count mono">{{ case.pending }}</span>{% endif %}</a>
+  </nav>
+  {% endif %}
+  {% if backend == "recorded" %}
+  <p class="banner banner--sim" role="note"><strong>Simulated inference.</strong> What this page shows came from recorded model responses, not live calls to Vultr Serverless Inference. It does not count toward the definition of done.</p>
+  {% endif %}
+  {% if preview %}
+  <p class="banner banner--sim" role="note"><strong>Preview past a checkpoint.</strong> This output was produced beyond a checkpoint no one has approved yet (developer preview).</p>
+  {% endif %}
+  {% if synthetic %}
+  <p class="banner" role="note"><strong>Synthetic fixture data.</strong> Everything in this case is invented for rehearsal and tests.</p>
+  {% endif %}
+  <main id="main">
+    {% block main %}{% endblock %}
+  </main>
+  <footer class="colophon">
+    Ontofill Console: runs, approvals and proof for every case the engine works on. Decisions are recorded with the signed-in identity and the exact artifact they approve.
+  </footer>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ case.title }}{% endblock %}
+{% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action"} %}
+{% block main %}
+<section class="page-head">
+  <h1>{{ case.title }}</h1>
+  {% if brief %}<p class="lede">{{ brief }}</p>{% endif %}
+  <p class="note muted">Case <span class="mono">{{ case.id }}</span>{% if domain and domain.usable() %} · about {{ domain.class_label(plural=True)|lower }}{% endif %}</p>
+</section>
+
+<section class="block" aria-labelledby="latest-h">
+  <h2 id="latest-h">Latest run</h2>
+  {% if latest %}
+  <p><a class="mono" href="{{ base }}/runs/{{ latest.run_id }}">{{ latest.run_id }}</a> · <span class="run-state run-state--{{ latest.state }}">{{ latest.state or "unknown" }}</span>{% if latest.checkpoint_pending %} · paused at <strong>{{ latest.checkpoint_pending }}</strong>{% endif %}</p>
+  {% else %}<p class="empty">No run feed for this case yet{% if lake_error %} ({{ lake_error }}){% endif %}.</p>{% endif %}
+</section>
+
+<section class="block" aria-labelledby="pending-h">
+  <h2 id="pending-h">Waiting for a decision</h2>
+  {% if waiting %}
+  <ul class="plain">{% for a in waiting %}<li><a href="{{ base }}/approvals/{{ a.phase_dir }}">{% if a.checkpoint == "action" %}Action: {{ a.meta.intended_action or "unnamed action" }}{% else %}{{ CP_NAMES.get(a.checkpoint, "Checkpoint") }}{% endif %}</a> <span class="mono muted">{{ a.phase_dir }}</span></li>{% endfor %}</ul>
+  {% else %}<p class="empty">Nothing is waiting.</p>{% endif %}
+</section>
+
+{% if log %}
+<section class="block" aria-labelledby="log-h">
+  <h2 id="log-h">Decision history</h2>
+  {% include "_decisions.html" %}
+</section>
+{% endif %}
+{% endblock %}

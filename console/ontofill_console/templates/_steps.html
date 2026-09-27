@@ -1,0 +1,52 @@
+{% set PHASE_NAMES = {1: "scope", 2: "ontology", 3: "fan out", 4: "local scoping", 5: "execute"} %}
+{% set STOP_LABELS = {"checks_passed": "checks passed", "budget": "budget reached", "human": "a person decided", "max_iterations": "iteration cap"} %}
+{% set EVENT_LABELS = {"escalation": "Escalated: the cheaper mode failed its check", "crystallization": "Crystallized into a reusable macro", "repair": "Self-healing: code attempt", "hard_stop": "Hard stop: login, captcha or policy; flagged for a human", "failure": "Failed check", "verify": "Vision check", "action_gate": "Approve-before-submit gate", "limit_kill": "Stopped by a resource limit", "quarantine": "Hostile page quarantined: withheld from planning, kept as evidence", "loop": "Loop step"} %}
+{% set VERDICT_LABELS = {"achieved": "achieved", "not_achieved": "not achieved", "uncertain": "uncertain"} %}
+{% set KILL_LABELS = {"timeout": "wall-clock timeout", "memory": "memory cap", "pids": "process cap", "max_steps": "step cap"} %}
+{% for it in items %}{% if it.thread %}{% set t = it.thread %}{% include "_loop_thread.html" %}{% else %}{% set s = it.step %}{% set d = s.detail or {} %}
+{% if s.kind == "loop" and d.role == "decide" and d.phase == "outer" %}
+<li class="step step--reopen" data-step="{{ s.step_id }}">
+  <span class="step__time mono">{{ (s.ts or "")[11:19] }}</span>
+  <span class="mode-badge mode-badge--{{ s.mode }}" title="{{ MODE_NAMES.get(s.mode, s.mode) }}">{{ s.mode }}</span>
+  <div class="step__body">
+    {% if d.reopen %}<p class="step__what reopen">Reopened phase {{ d.reopen }} ({{ PHASE_NAMES.get(d.reopen, "") }}){% if d.reason %}: {{ d.reason }}{% endif %}</p>
+    {% else %}<p class="step__what reopen reopen--none">Gap loop: no reopen needed{% if d.reason %} · {{ d.reason }}{% endif %}</p>{% endif %}
+    <p class="step__did">Gap loop decision {{ d.iteration }}{% if d.stop_reason %} · stopped: {{ STOP_LABELS.get(d.stop_reason, d.stop_reason) }}{% endif %}{% if d.model %} · <span class="mono muted">{{ d.model }}</span>{% endif %}</p>
+  </div>
+</li>
+{% else %}
+<li class="step{% if s.event %} step--{{ s.event }}{% endif %}{% if s.kind == 'verify' %} step--verdict-{{ d.verdict }}{% endif %}" data-step="{{ s.step_id }}">
+  <span class="step__time mono">{{ (s.ts or "")[11:19] }}</span>
+  <span class="mode-badge mode-badge--{{ s.mode }}" title="{{ MODE_NAMES.get(s.mode, s.mode) }}">{{ s.mode }}</span>
+  <div class="step__body">
+    {% if s.kind == "verify" %}
+    <p class="step__what"><span class="verdict verdict--{{ d.verdict }}">{{ VERDICT_LABELS.get(d.verdict, d.verdict) }}</span> Vision check of the page after the action{% if d.backend %} · <span class="backend backend--{{ d.backend }}">{{ "Vultr" if d.backend == "vultr" else d.backend|capitalize }}</span>{% endif %}{% if d.model %} <span class="mono muted">{{ d.model }}</span>{% endif %}</p>
+    <p class="step__did">Goal: {{ d.goal or "—" }}{% if d.confidence is number %} · confidence <span class="mono">{{ "%.2f"|format(d.confidence) }}</span>{% endif %}</p>
+    {% if d.reason %}<p class="step__eval">{{ d.reason }}</p>{% endif %}
+    {% elif s.kind == "repair" %}
+    <p class="step__what"><span class="step__phase">Phase {{ s.phase }}</span>{% if s.source_id %} · <span class="mono">{{ s.source_id }}</span>{% endif %} · Code attempt {{ d.attempt or "?" }}{% if d.max_attempts %} of {{ d.max_attempts }}{% endif %}: <span class="repair-result repair-result--{{ d.result }}">{{ d.result or "?" }}</span></p>
+    {% if d.test %}<p class="step__did">Tested on {{ d.test.pages or "?" }} stored pages{% if d.test.precision is number %} · precision <span class="mono">{{ "%.2f"|format(d.test.precision) }}</span>{% endif %}{% if d.test.coverage is number %} · coverage <span class="mono">{{ "%.2f"|format(d.test.coverage) }}</span>{% endif %}</p>{% endif %}
+    {% if d.stderr %}<details class="attempt"><summary>stderr fed back to the model</summary><pre class="record record--short">{{ d.stderr }}</pre></details>{% endif %}
+    {% if d.patch %}<details class="attempt"><summary>Patch</summary><pre class="record record--short">{{ d.patch }}</pre></details>{% endif %}
+    <p class="step__eval">{% if d.diff_key %}<a href="{{ base }}/bronze/{{ d.diff_key|urlencode }}" target="_blank" rel="noopener">diff</a>{% endif %}{% if d.code_key %}{% if d.diff_key %} · {% endif %}<a href="{{ base }}/bronze/{{ d.code_key|urlencode }}" target="_blank" rel="noopener">code</a>{% endif %}</p>
+    {% elif s.kind == "gate" %}
+    <p class="step__what"><span class="risk risk--{{ d.risk_tier }}">{{ d.risk_tier or "?" }}</span> {{ d.action or s.requested|brief }}</p>
+    <p class="step__did">Decided by <span class="mono">{{ d.decided_by or "—" }}</span> · <span class="gate-outcome gate-outcome--{{ d.outcome }}">{{ (d.outcome or "?")|replace("_", " ") }}</span>{% if d.outcome == "pending_approval" %} · <span class="muted">waiting for the approver</span>{% endif %}</p>
+    {% elif s.kind == "quarantine" %}
+    <p class="step__what"><span class="step__phase">Phase {{ s.phase }}</span>{% if s.source_id %} · <span class="mono">{{ s.source_id }}</span>{% endif %} · {{ s.observed|brief }}</p>
+    <p class="step__did">Flagged by the {{ "inference gateway" if d.by == "gateway" else (d.by or "screen") }}{% if d.jev_choice %} · <span class="backend backend--jev">Jev</span> <span class="mono">{{ d.jev_choice }}</span>{% if d.jev_confidence is number %} ({{ "%.2f"|format(d.jev_confidence) }}){% endif %}{% endif %}{% if d.safety_verdict %} · content safety <span class="mono">{{ d.safety_verdict }}</span>{% endif %}</p>
+    {% if d.reason %}<p class="step__eval">{{ d.reason }}</p>{% endif %}
+    {% elif s.kind == "kill" %}
+    <p class="step__what"><span class="step__phase">Phase {{ s.phase }}</span>{% if s.source_id %} · <span class="mono">{{ s.source_id }}</span>{% endif %} · {{ s.requested|brief }}</p>
+    <p class="step__did">Stopped by the {{ KILL_LABELS.get(d.reason, d.reason or "limit") }}. The pod was destroyed; the host was not touched.</p>
+    {% else %}
+    <p class="step__what">{% if (s.generated_by or {}).backend == "jev" %}<span class="backend backend--jev">Jev</span> {% endif %}<span class="step__phase">Phase {{ s.phase }}</span>{% if s.source_id %} · <span class="mono">{{ s.source_id }}</span>{% endif %} · {{ s.requested|brief }}</p>
+    <p class="step__did">{{ s.executed|brief }}</p>
+    <p class="step__eval">{{ s.evaluated|brief }}{% if s.value_ids %} <span class="step__values mono">+{{ s.value_ids|length }} {{ "value" if s.value_ids|length == 1 else "values" }}</span>{% endif %}</p>
+    {% endif %}
+    {% if s.event and s.kind != "verify" %}<p class="event event--{{ s.event }}">{{ EVENT_LABELS.get(s.event, s.event|replace("_", " ")) }}</p>{% endif %}
+  </div>
+  {% set shot = d.screenshot_key or s.screenshot_key %}
+  {% if shot %}<a class="step__thumb" href="{{ base }}/bronze/{{ shot|urlencode }}" target="_blank" rel="noopener"><img src="{{ base }}/bronze/{{ shot|urlencode }}" alt="Capture from {{ s.source_id or 'this step' }}" width="112" height="63" loading="lazy"></a>{% endif %}
+</li>
+{% endif %}{% endif %}{% endfor %}

@@ -1,0 +1,36 @@
+{% set m = a.meta %}
+{% set key = m.screenshot_key %}
+<section class="block action-review" aria-labelledby="action-h">
+  <h2 id="action-h">What the agent wants to do</h2>
+  <p class="action-review__intent">{{ m.intended_action or "The request does not say which action." }}</p>
+  <dl class="facts">
+    <div><dt>Risk tier</dt><dd>{% if a.risk_tier %}<span class="risk risk--{{ a.risk_tier|lower }}">{{ a.risk_tier }}</span>{% else %}<span class="muted">not stated</span>{% endif %}</dd></div>
+    <div><dt>Job</dt><dd class="mono">{{ m.job_id or "—" }}</dd></div>
+    <div><dt>Requested</dt><dd class="mono">{{ m.requested_at or "—" }}</dd></div>
+  </dl>
+  {% if m.reason %}<p class="note">Why it stopped: {{ m.reason }}</p>{% endif %}
+  <figure class="shot action-review__shot">
+    {% if key and has_screenshot %}
+    <a href="{{ base }}/bronze/{{ key|urlencode }}" target="_blank" rel="noopener"><img src="{{ base }}/bronze/{{ key|urlencode }}" alt="Screenshot of the page where the agent wants to act, captured before the action"></a>
+    {% else %}
+    <figcaption class="note muted">Screenshot not available in this lake{% if key %} (<span class="mono">{{ key[:23] }}…</span>){% endif %}. Check the job's captures before approving.</figcaption>
+    {% endif %}
+  </figure>
+</section>
+
+{% if not a.approved %}
+<section class="signoff" aria-labelledby="signoff-h">
+  <h2 id="signoff-h">Approve or deny</h2>
+  <p class="note">Approving lets the agent perform exactly this action, once, in its sandbox. Denying stops it; the engine records the reason and moves on without it.</p>
+  {% if backend == "recorded" %}<p class="note">This request came from recorded (simulated) inference. Answering it tests the flow only.</p>{% endif %}
+  <div class="action-gate">
+    {% include "_signer.html" %}
+    <label for="reason">Reason (required to deny)</label>
+    <textarea id="reason" name="reason" rows="3" maxlength="{{ reason_max }}">{{ reason }}</textarea>
+    <div class="action-gate__buttons">
+      <button type="submit" name="decision" value="approve"{% if not can_decide %} disabled{% endif %}>Approve this action</button>
+      <button type="submit" name="decision" value="deny" class="btn--deny"{% if not can_decide %} disabled{% endif %}>Deny</button>
+    </div>
+  </div>
+</section>
+{% endif %}

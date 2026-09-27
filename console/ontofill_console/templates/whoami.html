@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Identity{% endblock %}
+{% block main %}
+<section class="page-head">
+  <h1>Identity</h1>
+  <p class="lede">What the console receives from the sign-in proxy. Header names only: this page never shows a header's value.</p>
+</section>
+<section class="block" aria-labelledby="who-h">
+  <h2 id="who-h">Signing as</h2>
+  {% if w.identity_mode == "local" %}<p>Local mode: decisions take a typed name (development only).</p>
+  {% elif w.identity_detected %}<p>Signing as: (identity detected, value hidden), from <span class="mono">{{ w.used_header }}</span>.</p>
+  {% else %}<p class="signer--none">No usable identity header: decisions are disabled.</p>{% endif %}
+</section>
+<section class="block" aria-labelledby="cand-h">
+  <h2 id="cand-h">Candidate identity headers</h2>
+  <table class="ledger">
+    <thead><tr><th scope="col">Header</th><th scope="col">Present</th><th scope="col">Non-empty</th><th scope="col">Usable</th><th scope="col">Used</th></tr></thead>
+    <tbody>{% for c in w.candidates %}
+      <tr><th scope="row" class="mono">{{ c.name }}</th><td>{{ "yes" if c.present else "no" }}</td><td>{{ "yes" if c.non_empty else "no" }}</td>
+        <td>{{ "yes" if c.usable else "no" }}</td><td>{{ "yes" if c.name == w.used_header else "—" }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+<section class="block" aria-labelledby="names-h">
+  <h2 id="names-h">All request headers received ({{ w.header_names|length }})</h2>
+  <ul class="plain mono">{% for n in w.header_names %}<li>{{ n }}</li>{% endfor %}</ul>
+</section>
+{% endblock %}

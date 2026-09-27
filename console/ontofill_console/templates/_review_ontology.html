@@ -1,0 +1,41 @@
+{% set onto = docs.ontology %}
+{% set CRITIC = {"Good-Exclusive": "good, exclusive", "Good-Overlapping": "good, overlaps a sibling", "Redundant": "redundant", "Bad": "bad"} %}
+{% macro tree(nodes) %}
+<ul class="tree">
+  {% for n in nodes %}
+  <li><span class="tree__label">{{ n.label }}</span> <span class="critic critic--{{ n.critic_label }}">{{ CRITIC.get(n.critic_label, n.critic_label) }}</span> <span class="mono muted">L{{ n.level }}</span>
+    {% if n.children %}{{ tree(n.children) }}{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+<section class="block" aria-labelledby="tax-h">
+  <h2 id="tax-h">Taxonomies</h2>
+  <p class="muted note">Approve numbers, not vibes. Soundness is the share of nodes the critic judged good. Coverage is how much of the observed domain the tree accounts for. Redundant and bad nodes are flagged for pruning.</p>
+  {% for tax in onto.taxonomies %}{% set st = taxonomy_stats(tax) %}
+  <div class="taxonomy">
+    <h3>{{ tax.root_label }} <span class="mono muted">factor {{ tax.factor_id }}</span></h3>
+    <dl class="tax-stats">
+      <div><dt>Soundness</dt><dd class="mono">{{ "%.2f"|format(tax.soundness) }}</dd></div>
+      <div><dt>Coverage</dt><dd class="mono">{{ "%.2f"|format(tax.coverage) }}</dd></div>
+      <div><dt>Nodes by level</dt><dd class="mono">{% for lv, n in st.levels.items() %}L{{ lv }}: {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</dd></div>
+      <div><dt>Critic</dt><dd>{% for label, n in st.critic.items() %}<span class="critic critic--{{ label }}">{{ CRITIC.get(label, label) }} {{ n }}</span> {% endfor %}</dd></div>
+    </dl>
+    {{ tree(tax.children) }}
+  </div>
+  {% endfor %}
+</section>
+<section class="block" aria-labelledby="schema-h">
+  <h2 id="schema-h">Schema</h2>
+  <div class="two-lists">
+    <div>
+      <h3>Classes</h3>
+      <table class="ledger"><tbody>{% for c in onto.classes %}<tr><th scope="row" class="mono">{{ c.id }}</th><td>{% if safe_url(c.aligned_to) %}<a href="{{ c.aligned_to }}" target="_blank" rel="noopener">{{ c.aligned_to }}</a>{% else %}{{ c.aligned_to }}{% endif %}</td></tr>{% endfor %}</tbody></table>
+    </div>
+    <div>
+      <h3>Properties</h3>
+      <table class="ledger"><tbody>{% for pr in onto.properties %}<tr><th scope="row" class="mono">{{ pr.id }}</th><td class="mono">{{ pr.datatype }}</td><td>{% if pr.aligned_to and safe_url(pr.aligned_to) %}<a href="{{ pr.aligned_to }}" target="_blank" rel="noopener">{{ pr.aligned_to.rsplit("/", 1)[-1] }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table>
+    </div>
+  </div>
+  <p class="note">SHACL shapes: <a class="mono" href="{{ base }}/files/{{ onto.shacl_path }}" target="_blank" rel="noopener">{{ onto.shacl_path }}</a></p>
+</section>

@@ -1,0 +1,80 @@
+{% set p = m.panel %}{% set mt = p.metrics %}
+<section class="panel-block" aria-labelledby="dod-live-h">
+  <h2 id="dod-live-h" class="visually-hidden">Progress</h2>
+  <dl class="live-stats">
+    {% set total = (mt.entities_total or {}).get(domain.primary_class) %}
+    {% set meeting = (mt.entities_meeting_dod or {}).get(domain.primary_class) %}
+    <div><dt>{{ domain.class_label(plural=True) }} found</dt><dd class="mono" data-k="sup-total">{{ total if total is not none else "—" }}</dd></div>
+    <div><dt>Meeting the definition of done</dt><dd class="mono" data-k="sup-80">{{ meeting if meeting is not none else "—" }}</dd></div>
+    <div><dt>Values captured</dt><dd class="mono" data-k="values">{{ p.value_count }}</dd></div>
+    <div><dt>Steps</dt><dd class="mono" data-k="steps">{{ p.step_count }}</dd></div>
+  </dl>
+</section>
+<section class="panel-block" aria-labelledby="fields-live-h">
+  <h2 id="fields-live-h">Definition-of-done properties in gold</h2>
+  <table class="bars bars--compact">
+    <colgroup><col class="col-label"><col><col class="col-num"></colgroup>
+    <tbody>
+    {% for f in p.fields %}
+      <tr>
+        <th scope="row">{{ f.label }}</th>
+        <td class="bars__track"><span class="bar" data-k="bar-{{ f.name }}" style="--v: {{ ((f.ratio or 0) * 100)|round(1) }}%"></span><span class="bars__target" aria-hidden="true"></span></td>
+        <td class="num mono" data-k="pct-{{ f.name }}">{{ f.ratio|pct if f.ratio is not none else "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section class="panel-block" aria-labelledby="modes-live-h">
+  <h2 id="modes-live-h">Where inference is spent</h2>
+  <table class="bars bars--compact">
+    <colgroup><col class="col-label"><col><col class="col-num"></colgroup>
+    <tbody>
+    {% for mode, n in p.modes.items() %}
+      <tr>
+        <th scope="row"><span class="mode-badge mode-badge--{{ mode }}">{{ mode }}</span> {{ MODE_NAMES[mode] }}</th>
+        <td class="bars__track"><span class="bar bar--quiet" data-k="mode-{{ mode }}" style="--v: {{ ((n / p.mode_total * 100) if p.mode_total else 0)|round(1) }}%"></span></td>
+        <td class="num mono" data-k="mode-n-{{ mode }}">{{ n }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="events">
+    <span class="event event--escalation">Escalations <span class="mono" data-k="ev-esc">{{ p.events.escalation }}</span></span>
+    <span class="event event--crystallization">Crystallized <span class="mono" data-k="ev-cry">{{ p.events.crystallization }}</span></span>
+    <span class="event event--repair">Repairs <span class="mono" data-k="ev-rep">{{ p.events.repair }}</span></span>
+    <span class="event event--hard_stop">Hard stops <span class="mono" data-k="ev-stop">{{ p.events.hard_stop }}</span></span>
+    <span class="event event--failure">Failed checks <span class="mono" data-k="ev-fail">{{ p.events.failure }}</span></span>
+  </p>
+  <p class="events">
+    <span class="event">Vision checks <span class="mono" data-k="ev-ver">{{ p.events.verify }}</span>: <span class="mono" data-k="ev-ver-ok">{{ p.verdicts.achieved }}</span> achieved, <span class="mono" data-k="ev-ver-no">{{ p.verdicts.not_achieved }}</span> not achieved, <span class="mono" data-k="ev-ver-un">{{ p.verdicts.uncertain }}</span> uncertain</span>
+    <span class="event event--action_gate">Gated actions <span class="mono" data-k="ev-gate">{{ p.events.action_gate }}</span></span>
+    <span class="event event--limit_kill">Limit kills <span class="mono" data-k="ev-kill">{{ p.events.limit_kill }}</span></span>
+    <span class="event event--quarantine">Hostile pages quarantined <span class="mono" data-k="ev-quar">{{ p.events.quarantine }}</span></span>
+  </p>
+  {% if p.loops and (p.loops.rows or p.loops.reopened) %}
+  <p class="events loops-line">
+    <span class="event loops-line__label">Loops</span>
+    {% for r in p.loops.rows %}<span class="event" data-k="loop-{{ loop.index }}">{{ "Gap loop" if r.phase == "outer" else "P" ~ r.phase }} <span class="mono">{{ r.iterations }}</span> {{ "iteration" if r.iterations == 1 else "iterations" }}{% if r.stop_label %}, {{ r.stop_label }}{% endif %}</span>
+    {% endfor %}
+    {% if p.loops.reopened %}<span class="event event--reopen" data-k="loop-reopen">Gap loop reopened: {% for ph, n in p.loops.reopened %}P{{ ph }} ×{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+  </p>
+  {% endif %}
+</section>
+<section class="panel-block" aria-labelledby="sources-live-h">
+  <h2 id="sources-live-h">Sources</h2>
+  {% if p.sources %}
+  <table class="ledger ledger--sources">
+    <thead><tr><th scope="col">Source</th><th scope="col">Found by</th><th scope="col" class="num">OK</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Values</th></tr></thead>
+    <tbody>
+    {% for src in p.sources %}{% set h = src.health or {} %}
+      <tr><th scope="row"><span class="mono">{{ src.source_id }}</span><span class="sub">{{ domain.source_label(src.source_type) }}</span></th>
+        <td class="mono found-by" data-k="found-{{ src.source_id }}">{{ src.discovered_by or "—" }}</td>
+        <td class="num mono" data-k="ok-{{ src.source_id }}">{{ h.ok or 0 }}</td>
+        <td class="num mono{% if h.failed %} failed{% endif %}" data-k="failed-{{ src.source_id }}">{{ h.failed or 0 }}</td>
+        <td class="num mono" data-k="yield-{{ src.source_id }}">{{ h.yield or 0 }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted note">No source has run yet.</p>{% endif %}
+</section>

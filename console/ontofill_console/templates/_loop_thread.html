@@ -1,0 +1,37 @@
+{% set STOP_TEXT = {"checks_passed": "checks passed", "budget": "budget reached", "human": "a person decided", "max_iterations": "iteration cap"} %}
+{% set ROLE_LABELS = {"gather": "Gather", "propose": "Proposal", "critique": "Critique", "revise": "Revision", "check": "Check", "decide": "Decision"} %}
+{% set n_it = t.iterations|length %}
+<li class="step step--thread" id="{{ t.id }}" data-step="{{ t.step_ids[0] }}" data-thread="{{ t.id }}">
+  <details class="loop"{% if t.open %} open{% endif %}>
+    <summary class="loop__summary"><span class="loop__label">{{ t.label }}</span> · {{ n_it }} {{ "iteration" if n_it == 1 else "iterations" }}{% if t.objections %} · {{ t.objections }} {{ "objection" if t.objections == 1 else "objections" }}{% endif %}{% if t.stop_label %} · stopped: {{ t.stop_label }}{% else %} · <span class="loop__running">running</span>{% endif %}{% if t.usd is not none %} · <span class="mono">${{ "%.3f"|format(t.usd) }}</span>{% endif %}</summary>
+    <ol class="loop__iterations">
+    {% for it in t.iterations %}
+      <li class="loop__iteration">
+        <p class="loop__n">Iteration {{ it.n }}</p>
+        <ul class="loop__roles">
+        {% for x in it.steps %}{% set d = x.detail %}
+          <li class="loop-role loop-role--{{ d.role }}{% if d.human %} loop-role--human{% endif %}">
+            <span class="loop-role__name">{{ ROLE_LABELS.get(d.role, d.role) }}</span>
+            <div class="loop-role__body">
+            {% if d.role == "critique" %}
+              <p>{% if d.model %}<span class="mono">{{ d.model }}</span>{% endif %}{% if d.verdict %} · verdict <span class="loop-verdict">{{ d.verdict|replace("_", " ") }}</span>{% endif %}</p>
+              {% if d.objections %}<ul class="objections">{% for o in d.objections %}<li>{{ o }}</li>{% endfor %}</ul>{% else %}<p class="muted">No objections.</p>{% endif %}
+            {% elif d.role == "revise" and d.human %}
+              <p>Revised after the approver's reason: “{{ d.reason or x.observed|brief }}”</p>
+            {% elif d.role == "check" %}
+              <p><span class="loop-check loop-check--{{ 'pass' if d.verdict in ('pass', 'passed', 'met') else 'fail' }}">{{ (d.verdict or "checked")|replace("_", " ") }}</span> {{ x.evaluated.detail if x.evaluated is mapping and x.evaluated.detail else x.evaluated|brief }}</p>
+            {% elif d.role in ("propose", "revise") %}
+              <p>{{ x.executed|brief }}{% if d.model %} <span class="mono muted">{{ d.model }}</span>{% endif %}</p>
+            {% else %}
+              <p>{{ x.observed|brief }}</p>
+            {% endif %}
+            {% if d.stop_reason %}<p class="loop__stop">Stopped: {{ STOP_TEXT.get(d.stop_reason, d.stop_reason) }}</p>{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+        </ul>
+      </li>
+    {% endfor %}
+    </ol>
+  </details>
+</li>

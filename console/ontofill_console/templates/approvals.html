@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Approvals{% endblock %}
+{% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action"} %}
+{% block main %}
+<section class="page-head">
+  <h1>Approvals</h1>
+  <p class="lede">The engine pauses at three checkpoints until a person signs off: the PRD, the factors of variation, and the ontology. It also stops before any action that is not read-only and asks here first. Your answer is written to the <span class="mono">APPROVED</span> marker, bound to the exact artifact you reviewed, and logged; the next <span class="mono">ontofill run</span> resumes from it.</p>
+</section>
+{% if done %}{% set done_item = items|selectattr("phase_dir", "equalto", done)|first %}<p class="notice" role="status">{% if done_item and done_item.decision == "deny" %}Denied <span class="mono">{{ done }}</span>.{% if done_item.checkpoint != "action" %} The engine regenerates it with your reason on the next <span class="mono">ontofill run</span>.{% else %} The run resumes on the next <span class="mono">ontofill run</span>.{% endif %}{% else %}Approved <span class="mono">{{ done }}</span>. The run resumes on the next <span class="mono">ontofill run</span>.{% endif %}</p>{% endif %}
+{% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}
+{% if items %}
+<table class="ledger ledger--approvals">
+  <thead><tr><th scope="col">Checkpoint</th><th scope="col">Phase directory</th><th scope="col">Reason</th><th scope="col">State</th></tr></thead>
+  <tbody>
+  {% for a in items %}
+    <tr>
+      <th scope="row"><a href="{{ base }}/approvals/{{ a.phase_dir }}">{% if a.checkpoint == "action" %}Action: {{ a.meta.intended_action or "unnamed action" }}{% else %}{{ CP_NAMES.get(a.checkpoint, "Checkpoint") }}{% endif %}</a>{% if a.risk_tier %} <span class="risk risk--{{ a.risk_tier|lower }}">{{ a.risk_tier }}</span>{% endif %}</th>
+      <td class="mono">{{ a.phase_dir }}</td>
+      <td>{{ a.meta.reason or "—" }}</td>
+      <td>{% if a.approved and a.decision == "deny" %}<span class="approval__state approval__state--denied">Denied by {{ a.approved.approver }}{% if a.approved.date %} · <span class="mono">{{ a.approved.date }}</span>{% endif %}</span>{% if a.approved.reason %}<span class="sub">{{ a.approved.reason }}</span>{% endif %}{% elif a.approved %}<span class="approval__state">Approved by {{ a.approved.approver }}{% if a.approved.date %} · <span class="mono">{{ a.approved.date }}</span>{% endif %}</span>{% else %}<a class="approval__state approval__state--pending" href="{{ base }}/approvals/{{ a.phase_dir }}">Review and sign off</a>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No checkpoints in this case yet.</p>
+{% endif %}
+{% if log %}
+<section class="block" aria-labelledby="log-h">
+  <h2 id="log-h">Decision history</h2>
+  <p class="note muted">Append-only: <span class="mono">decisions.jsonl</span> in the case package. Each line names who decided (from the sign-in), what, and the exact artifact bytes (sha256).</p>
+  {% include "_decisions.html" %}
+</section>
+{% endif %}
+{% endblock %}

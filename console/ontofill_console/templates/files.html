@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ path }}{% endblock %}
+{% block main %}
+<nav class="crumbs" aria-label="Breadcrumb"><a href="{{ base }}">{{ case.title }}</a> <span aria-hidden="true">/</span> <span class="mono">{{ path }}</span></nav>
+<section class="page-head"><h1 class="mono h1-path">{{ path }}</h1></section>
+<pre class="record record--doc">{{ text }}</pre>
+{% endblock %}

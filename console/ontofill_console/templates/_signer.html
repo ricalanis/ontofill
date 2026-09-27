@@ -1,0 +1,10 @@
+{# Who the decision is recorded as: the SSO identity (deployed) or a typed name (local mode only). Never both. #}
+{% for rel, digest in digests.items() %}<input type="hidden" name="artifact_sha256.{{ rel }}" value="{{ digest or '' }}">{% endfor %}
+{% if identity_mode == "local" %}
+      <label for="approver">Your name (local mode)</label>
+      <input id="approver" name="approver" type="text" required maxlength="120" autocomplete="name">
+{% elif identity %}
+      <p class="signer">Signing as <strong class="mono">{{ identity }}</strong></p>
+{% else %}
+      <p class="signer signer--none" role="alert">No signed-in identity: decisions are disabled. Open this page through the console's sign-in URL.</p>
+{% endif %}

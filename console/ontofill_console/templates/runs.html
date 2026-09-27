@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block main %}
+<section class="page-head"><h1>Runs</h1><p class="lede">Every run the engine recorded for this case, newest first.</p></section>
+{% if rows %}
+<table class="ledger">
+  <thead><tr><th scope="col">Run</th><th scope="col">State</th><th scope="col">Checkpoint</th><th scope="col">Backend</th></tr></thead>
+  <tbody>{% for r in rows %}
+    <tr><th scope="row"><a class="mono" href="{{ base }}/runs/{{ r.run_id }}">{{ r.run_id }}</a>{% if r.latest %} <span class="muted">latest</span>{% endif %}</th>
+      <td>{{ r.state or "—" }}</td><td>{{ r.checkpoint_pending or "—" }}</td><td class="mono">{{ r.backend or "—" }}</td></tr>
+  {% endfor %}</tbody>
+</table>
+{% else %}<p class="empty">No runs yet{% if lake_error %} ({{ lake_error }}){% endif %}.</p>{% endif %}
+{% endblock %}

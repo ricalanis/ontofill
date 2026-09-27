@@ -1,0 +1,43 @@
+{% set prd = docs.prd %}
+<section class="block" aria-labelledby="dod-h">
+  <h2 id="dod-h">Definition of done</h2>
+  <p class="muted note">What "finished" means for this case. Each criterion is a query over gold. Basis says where
+    each number comes from: <strong>brief</strong> (stated in the brief), <strong>human</strong> (a reviewer's
+    revision) or <strong>proposed</strong> (the engine's suggestion; check its rationale and feasibility).</p>
+  {% set BASIS = {"brief": "brief", "human": "human", "proposed": "proposed"} %}
+  <table class="ledger dod-criteria">
+    <thead><tr><th scope="col">Criterion</th><th scope="col">Metric</th><th scope="col" class="num">Target</th><th scope="col">Basis</th></tr></thead>
+    <tbody>{% for c in prd.definition_of_done %}
+      <tr><th scope="row" class="mono">{{ c.id }}</th><td class="mono">{{ c.metric }}{% if c.basis in ("brief", "human") %}
+          {% if c.basis_quote %}<q class="sub basis-quote">{{ c.basis_quote }}</q>{% else %}<span class="sub muted">No quote given for this number.</span>{% endif %}{% endif %}{% if c.basis == "proposed" %}
+          {% set why = c.rationale or c.basis_rationale %}{% set feas = c.feasibility or c.feasibility_note %}
+          {% if why %}<span class="sub">Why this number: {{ why }}</span>{% endif %}
+          {% if feas %}<span class="sub">Feasibility: {{ feas }}</span>{% endif %}
+          {% if not why and not feas %}<span class="sub muted">No rationale given for this proposed number.</span>{% endif %}{% endif %}</td>
+        <td class="num mono">{{ c.operator }} {{ c.target }}</td>
+        <td>{% if c.basis in BASIS %}<span class="basis basis--{{ c.basis }}">{{ BASIS[c.basis] }}</span>{% else %}<span class="muted">not stated</span>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+<section class="block" aria-labelledby="personas-h">
+  <h2 id="personas-h">Personas and jobs to be done</h2>
+  <div class="personas">
+  {% for p in prd.personas %}
+    <div class="persona">
+      <h3>{{ p.description }} <span class="mono muted">{{ p.id }}</span></h3>
+      <ul class="jobs">
+      {% for j in prd.jobs_to_be_done if j.persona_id == p.id %}
+        <li><strong>{{ j.description }}</strong>
+          {% set reqs = prd.requirements|selectattr("job_id", "equalto", j.id)|list %}
+          {% if reqs %}<ul class="reqs">{% for r in reqs %}<li>{{ r.description }} <span class="mono muted">{{ r.id }}</span></li>{% endfor %}</ul>{% endif %}
+        </li>
+      {% else %}<li class="muted">No jobs for this persona.</li>{% endfor %}
+      </ul>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+<section class="block two-lists">
+  <div><h2>Constraints</h2><ul>{% for c in prd.constraints %}<li>{{ c }}</li>{% else %}<li class="muted">None stated</li>{% endfor %}</ul></div>
+  <div><h2>Non-goals</h2><ul>{% for c in prd.non_goals %}<li>{{ c }}</li>{% else %}<li class="muted">None stated</li>{% endfor %}</ul></div>
+</section>

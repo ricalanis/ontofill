@@ -1,0 +1,32 @@
+# Ontofill Console on the control plane. Bind to loopback or the host's NetBird IP only; NetBird's reverse proxy (SSO,
+# approvers group) is the only way in, and it forwards the signed-in user in the identity header.
+name: ontofill-console
+
+services:
+  console:
+    build: {context: .., dockerfile: Dockerfile}
+    image: ontofill-console:local
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # id=/path/in/container[:/local/lake],… ; a case without :lake reads <case parent>/lake.yaml (mounted below)
+      ONTOFILL_CONSOLE_CASES: ${ONTOFILL_CONSOLE_CASES:-}
+      ONTOFILL_CONSOLE_IDENTITY: sso
+      ONTOFILL_CONSOLE_IDENTITY_HEADER: ${ONTOFILL_CONSOLE_IDENTITY_HEADER:-X-NetBird-User}
+      ONTOFILL_CONSOLE_SPEND_HISTORY: /evidence/spend-history.jsonl
+      ONTOFILL_CONSOLE_EVIDENCE_DIR: /evidence
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+    volumes:
+      # Case packages: read-write, because approvals write APPROVED + decisions.jsonl there (and only there).
+      - ${CONSOLE_CASE_A_HOST_DIR:-../.cache/empty-case}:/cases/a/case:rw
+      - ${CONSOLE_CASE_A_LAKE_YAML:-../.cache/empty-lake.yaml}:/cases/a/lake.yaml:ro
+      - ${CONSOLE_CASE_B_HOST_DIR:-../.cache/empty-case}:/cases/b/case:rw
+      - ${CONSOLE_CASE_B_LAKE_DIR:-../.cache/empty-lake}:/cases/b/lake:ro
+      - ${CONSOLE_EVIDENCE_HOST_DIR:-../.cache/empty-evidence}:/evidence:ro
+    ports:
+      - "${CONSOLE_BIND_IP:-127.0.0.1}:${CONSOLE_PORT:-8410}:8410"

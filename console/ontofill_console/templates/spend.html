@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Spend{% endblock %}
+{% block main %}
+<section class="page-head">
+  <h1>Spend</h1>
+  <p class="lede">What the build has cost against the Vultr credit, where the money goes, and whether it lasts until the deadline. The data comes from the read-only spend tracker's snapshots; this page never calls a billing API.</p>
+</section>
+{% if not latest %}
+<p class="empty">No spend snapshot yet. Run <span class="mono">uv run --directory tools/spend spend snapshot</span> at the workspace root (history: <span class="mono">{{ history_path }}</span>).</p>
+{% else %}
+<section class="dod" aria-labelledby="credit-h">
+  <h2 id="credit-h" class="visually-hidden">Credit</h2>
+  <dl class="dod__grid">
+    <div class="dod__item"><dt>Credit used</dt><dd><span class="dod__num">${{ "%.2f"|format(latest.credit_used) }}</span><span class="dod__of">of ${{ "%.0f"|format(latest.credit_total) }}</span></dd></div>
+    <div class="dod__item"><dt>Remaining</dt><dd><span class="dod__num">${{ "%.2f"|format(latest.credit_remaining) }}</span></dd></div>
+    <div class="dod__item"><dt>Projected by Sun 12:00 PT</dt><dd><span class="dod__num">${{ "%.2f"|format(projected) }}</span><span class="dod__of">{{ "%.1f"|format(hours_left) }} h left</span></dd>
+      <dd class="dod__state" data-met="{{ (projected <= latest.credit_total)|lower }}">{{ "Within the credit" if projected <= latest.credit_total else "Over the credit" }}</dd></div>
+  </dl>
+  <p class="note muted">Snapshot {{ latest.ts }}. Running resources cost about ${{ "%.2f"|format(latest.resource_rate_usd_per_hour or 0) }}/h. The projection takes the higher of the recent burn rate and that running rate.</p>
+</section>
+
+<section class="block" aria-labelledby="cat-h">
+  <h2 id="cat-h">Pending charges by category</h2>
+  {% set total = latest.by_category.values()|sum %}
+  <table class="bars">
+    <colgroup><col class="col-label"><col><col class="col-num"></colgroup>
+    <tbody>
+    {% for cat, usd in latest.by_category.items() %}
+      <tr><th scope="row">{{ cat|capitalize }}</th>
+        <td class="bars__track"><span class="bar bar--quiet" style="--v: {{ ((usd / total * 100) if total else 0)|round(1) }}%"></span></td>
+        <td class="num mono">${{ "%.2f"|format(usd) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block" aria-labelledby="inf-h">
+  <h2 id="inf-h">Inference by model (current month)</h2>
+  <p class="muted note">Token counts come from Vultr; the dollar column is an estimate from the public per-model price table. Billed amounts appear in pending charges.</p>
+  <table class="ledger">
+    <thead><tr><th scope="col">Model</th><th scope="col" class="num">Input tokens</th><th scope="col" class="num">Output tokens</th><th scope="col" class="num">≈ $</th></tr></thead>
+    <tbody>
+    {% for sub in latest.inference %}{% for m in sub.models %}
+      <tr><th scope="row" class="mono">{{ m.model }}</th><td class="num mono">{{ "{:,}".format(m.input_tokens) }}</td><td class="num mono">{{ "{:,}".format(m.output_tokens) }}</td><td class="num mono">{{ "%.2f"|format(m.est_usd) if m.est_usd is not none else "—" }}</td></tr>
+    {% endfor %}{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block" aria-labelledby="eng-h">
+  <h2 id="eng-h">Engine runs</h2>
+  {% set eng = latest.engine or {} %}
+  {% if eng.reported %}
+  <p class="note">Estimated from per-step usage in the engine's feeds. The story to check: inference is spent only where the web is unpredictable, so D0/D1 should cost close to nothing.</p>
+  <div class="two-lists">
+    <table class="ledger"><thead><tr><th scope="col">Execution mode</th><th scope="col" class="num">≈ $</th></tr></thead><tbody>
+      {% for mode, usd in eng.by_mode|dictsort %}<tr><th scope="row"><span class="mode-badge mode-badge--{{ mode }}">{{ mode }}</span></th><td class="num mono">{{ "%.4f"|format(usd) }}</td></tr>{% endfor %}
+    </tbody></table>
+    <table class="ledger"><thead><tr><th scope="col">Backend</th><th scope="col" class="num">≈ $</th></tr></thead><tbody>
+      {% for b, usd in eng.by_backend|dictsort %}<tr><th scope="row"><span class="backend backend--{{ b }}">{{ b }}</span></th><td class="num mono">{{ "%.4f"|format(usd) }}</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+  {% if per_entity %}<p class="note">Run <span class="mono">{{ per_entity.run_id }}</span>: ≈${{ "%.2f"|format(per_entity.usd) }}{% if per_entity.per_complete is not none %}, ≈${{ "%.3f"|format(per_entity.per_complete) }} per entity meeting the definition of done{% endif %}{% if per_entity.per_gold_value is not none %}, ≈${{ "%.4f"|format(per_entity.per_gold_value) }} per gold value{% endif %}.</p>{% endif %}
+  {% else %}
+  <p class="muted">The engine does not report per-step usage yet, so cost per run and per execution mode will appear once trace steps carry <span class="mono">usage</span>.</p>
+  {% endif %}
+</section>
+
+<section class="block" aria-labelledby="hist-h">
+  <h2 id="hist-h">Snapshots</h2>
+  <table class="ledger">
+    <thead><tr><th scope="col">When (UTC)</th><th scope="col" class="num">Used $</th><th scope="col" class="num">Left $</th><th scope="col" class="num">$/h since previous</th></tr></thead>
+    <tbody>{% for r in rows %}<tr><td class="mono">{{ r.ts }}</td><td class="num mono">{{ "%.2f"|format(r.used) }}</td><td class="num mono">{{ "%.2f"|format(r.left) }}</td><td class="num mono">{{ "%.2f"|format(r.rate) if r.rate is not none else "—" }}</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

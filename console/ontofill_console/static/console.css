@@ -1,0 +1,13 @@
+/* Ontofill Console additions on top of the shared Workbench tokens and app.css. */
+.subnav { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-sm); padding: var(--space-xs) var(--space-lg);
+  border-bottom: var(--rule-hair); background: var(--color-paper-2); }
+.subnav__case { font-weight: 600; margin-right: var(--space-sm); }
+.subnav a { color: var(--color-ink-2); text-decoration: none; padding-bottom: 2px; }
+.subnav a[aria-current="page"] { color: var(--color-ink); border-bottom: 2px solid currentColor; }
+.subnav .count { margin-left: 4px; }
+.signer { margin: 0 0 var(--space-xs); }
+.signer--none { color: var(--color-signal); }
+.cases-table .sub, .decisions .sub { display: block; font-size: var(--text-xs); }
+ul.plain { list-style: none; padding: 0; margin: 0; }
+ul.plain li { padding: 2px 0; }
+button[disabled] { opacity: 0.5; cursor: not-allowed; }

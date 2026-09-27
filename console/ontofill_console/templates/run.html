@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Live run {{ live_run_id }}{% endblock %}
+{% block main %}
+{% set p = m.panel %}
+<section class="runhead">
+  <div class="runhead__id">
+    <h1>Live run</h1>
+    <p class="mono muted">{{ live_run_id }}</p>
+  </div>
+  <p class="run-state run-state--{{ p.state }}" id="run-state" role="status">{{ p.state }}</p>
+  <a href="#proof-h">Sandbox proof</a>
+  {% if p.live_view_url and safe_url(p.live_view_url) %}<a class="btn btn--quiet" href="{{ p.live_view_url }}" target="_blank" rel="noopener">Watch the agent's browser</a>{% endif %}
+  {% if others|length > 1 %}
+  <details class="runpick"><summary>Other runs</summary><ul>{% for r in others|reverse %}<li><a class="mono" href="{{ base }}/runs/{{ r }}">{{ r }}</a></li>{% endfor %}</ul></details>
+  {% endif %}
+</section>
+<div id="timeline">{% include "_timeline.html" %}</div>
+
+<div class="runview" id="runview" data-api="{{ base }}/api/runs/{{ live_run_id }}" data-count="{{ m.steps|length }}" data-state="{{ p.state }}">
+  <section class="stream" aria-labelledby="stream-h">
+    <h2 id="stream-h">Steps, newest first</h2>
+    {% if m.steps|length > limit %}<p class="note muted">Showing the latest {{ limit }} of {{ m.steps|length }} steps. <a href="?limit=2000">Show the whole trail</a>.</p>{% endif %}
+    <p class="muted note">Each step logs what it observed, what was requested, what ran and how it was judged. The mode shows how much inference it needed: D0 is a plain download, S2 is full computer use.</p>
+    <ol class="steps" id="steps" aria-live="off" tabindex="0" aria-label="Steps, newest first">{% include "_steps.html" %}</ol>
+  </section>
+  <aside class="runpanel" id="run-panel" aria-label="Run progress">{% include "_run_panel.html" %}</aside>
+</div>
+<div id="proof">{% include "_proof.html" %}</div>
+{% endblock %}
