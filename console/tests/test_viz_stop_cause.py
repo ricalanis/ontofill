@@ -103,3 +103,14 @@ def test_summary_and_watch_say_why(client, p3_gave_up):
     c = next(x for x in w["cases"] if x["case_id"] == "libraries")
     assert c["stop_cause"]["phase"] == 3
     assert "Why it stopped" in client.get("/watch").text
+
+
+def test_pages_name_each_source_by_its_hosts(client):
+    m = client.get("/cases/libraries/api/viz/pages").json()
+    with_hosts = [g for g in m["groups"] if g["hosts"]]
+    assert with_hosts, "fixture pages carry URLs"
+    for g in with_hosts:
+        chip = next(f for f in m["source_filters"] if f["source_id"] == g["source_id"])
+        assert chip["label"].startswith(g["hosts"][0])  # the chip reads as a site, the id stays in its title
+    page = client.get("/cases/libraries/pages").text
+    assert f'title="{with_hosts[0]["source_id"]}"' in page and with_hosts[0]["hosts"][0] in page

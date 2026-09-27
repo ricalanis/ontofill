@@ -363,7 +363,7 @@ def test_pages_filters(client):
     assert [g["source_id"] for g in s["groups"]] == ["municipal-example"]
     page = client.get("/cases/libraries/pages?source=municipal-example").text
     clean(page)
-    assert 'aria-current="true">municipal-example' in page
+    assert 'title="municipal-example" aria-current="true"' in page  # the chip reads as its host; the id is its title
     none = client.get("/cases/libraries/api/viz/pages?source=nope").json()
     assert none["n_shown"] == 0 and none["empty"]
     assert "No page matches" in client.get("/cases/libraries/pages?source=nope").text

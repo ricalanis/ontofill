@@ -20,7 +20,7 @@
 <nav aria-label="Filter pages">
   <p class="pg-filters"><span>source</span>
     <a class="chip st-none" href="{{ m.clear_source }}"{% if not m.filter.source %} aria-current="true"{% endif %}>all</a>
-    {% for f in m.source_filters %}<a class="chip st-none" href="{{ f.href }}"{% if f.active %} aria-current="true"{% endif %}>{{ f.source_id }} {{ f.n }}</a>{% endfor %}
+    {% for f in m.source_filters %}<a class="chip st-none" href="{{ f.href }}" title="{{ f.source_id }}"{% if f.active %} aria-current="true"{% endif %}>{{ f.label }} {{ f.n }}</a>{% endfor %}
   </p>
   <p class="pg-filters"><span>verdict</span>
     <a class="chip st-none" href="{{ m.clear_verdict }}"{% if not m.filter.verdict %} aria-current="true"{% endif %}>all</a>
@@ -34,7 +34,7 @@
 {% for g in m.groups %}
 <section class="pg-source" aria-labelledby="src-{{ loop.index }}">
   <header class="pg-source__head">
-    <h2 id="src-{{ loop.index }}" class="mono">{{ g.source_id }}</h2>
+    <h2 id="src-{{ loop.index }}" class="mono">{% if g.hosts %}{{ g.hosts[:3]|join(", ") }}{% if g.hosts|length > 3 %} +{{ g.hosts|length - 3 }}{% endif %} <small class="muted">{{ g.source_id }}</small>{% else %}{{ g.source_id }}{% endif %}</h2>
     <span class="meta">{{ g.n_pages }} page{{ "s" if g.n_pages != 1 }} · {{ g.n_images }} screenshot{{ "s" if g.n_images != 1 }}</span>
     {% if g.live_view_url %}<a class="btn btn--quiet" href="{{ g.live_view_url }}" target="_blank" rel="noopener">Watch this cell's browser</a>{% endif %}
   </header>

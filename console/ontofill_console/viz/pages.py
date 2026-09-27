@@ -362,6 +362,12 @@ def model(
         return f"{base}/{SLUG}" + (f"?{urlencode(q)}" if q else "")
 
     sources = sorted({p["source_id"] for p in pages} | set(sg))
+    # a source id can be an opaque hash: name it by the hosts its pages were on
+    hosts = {s: sorted({p["host"] for p in pages if p["source_id"] == s and p.get("host")}) for s in sources}
+
+    def _host_label(hs: list[str]) -> str:
+        return f"{hs[0]} +{len(hs) - 1}" if len(hs) > 1 else (hs[0] if hs else "")
+
     counts = {k: sum(1 for p in pages if k in p["verdicts"] and (not source or p["source_id"] == source)) for k in RANK}
     shown = [p for p in pages if (not source or p["source_id"] == source) and (not verdict or verdict in p["verdicts"])]
     groups = []
@@ -375,6 +381,7 @@ def model(
         groups.append(
             {
                 "source_id": src,
+                "hosts": hosts.get(src) or [],
                 "n_pages": len(mine),
                 "cards": cards,
                 "more": len(mine) - len(cards),
@@ -396,6 +403,7 @@ def model(
         "source_filters": [
             {
                 "source_id": s,
+                "label": _host_label(hosts.get(s) or []) or s,
                 "n": sum(1 for p in pages if p["source_id"] == s),
                 "href": href(source=s),
                 "active": s == source,

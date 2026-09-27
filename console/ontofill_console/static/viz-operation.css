@@ -34,12 +34,12 @@ a.it:hover > * { background: var(--strip-hover); }
 .pg-filters { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-xs); align-items: center; margin: 0 0 var(--space-xs);
   font-size: var(--text-sm); }
 .pg-filters > span:first-child { color: var(--fg-3); font: var(--text-xs) var(--font-mono); min-width: 4.5rem; }
-.pg-filters a { text-decoration: none; }
+.pg-filters a { text-decoration: none; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
 .pg-filters a[aria-current="true"] { background: var(--strip-hover); }
 .pg-filters a.chip.st-none { color: var(--fg-2); }
 .pg-source { margin-top: var(--space-lg); }
 .pg-source__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2xs) var(--space-sm); margin-bottom: var(--space-xs); }
-.pg-source__head h2 { margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
+.pg-source__head h2 { margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
 .pg-source__head .meta { font: var(--text-xs) var(--font-mono); color: var(--fg-3); }
 .pg-source__head .btn { margin-left: auto; }
 .caps .cap a { display: block; text-decoration: none; color: inherit; }
