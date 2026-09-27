@@ -3,6 +3,7 @@
 .ans-head { display: grid; gap: var(--space-xs); padding-bottom: var(--space-md); border-bottom: var(--rule-strong); max-width: 1040px; }
 .ans-kicker { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
 .ans-q { margin: 0; font-size: var(--text-2xl); line-height: 1.15; font-weight: 700; max-width: 34ch; overflow-wrap: anywhere; }
+.ans-brief { margin: 0; max-width: 72ch; color: var(--fg-2); white-space: pre-line; }
 .ans-stats { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-lg); margin: 0; font-size: var(--text-sm); }
 .ans-stats b { font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
 .ans-how { max-width: 72ch; margin: var(--space-md) 0; }

@@ -5,6 +5,7 @@
 <header class="ans-head">
   <p class="ans-kicker">{{ case.title }}</p>
   <h1 class="ans-q">{{ m.question }}</h1>
+  {% if m.brief_rest %}<p class="ans-brief">{{ m.brief_rest|truncate(360, true, "…") }}</p>{% endif %}
   {% if m.has_gold %}
   <p class="ans-stats">
     <span><b>{{ m.n_cards }}</b> {{ m.class_plural|lower if m.n_cards != 1 else m.class_label|lower }}</span>
@@ -62,7 +63,7 @@
     <span><b>{{ lv.n_sources }}</b> sources touched</span>
     <span><b>{{ lv.n_captures }}</b> pages captured</span>
   </p>
-  {% if lv.reason and lv.state != "running" %}<p class="note">{{ lv.reason|truncate(300, true, "…") }}</p>{% endif %}
+  {% if lv.reason and lv.state != "running" and not lv.checkpoint %}<p class="note">{{ lv.reason|truncate(300, true, "…") }}</p>{% endif %}
   <p class="note"><a href="/cases/{{ m.case_id }}/runs/{{ lv.run_id }}">Watch the run live →</a> · <a href="/cases/{{ m.case_id }}/pages">pages it has read</a> · <a href="/cases/{{ m.case_id }}/discovery">sources it is weighing</a></p>
   {% else %}
   <p class="note">No run has started for this case yet.</p>

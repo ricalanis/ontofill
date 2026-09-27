@@ -79,12 +79,15 @@ def model(case, run: str | None = None) -> dict:
     a = Artifacts(case)
     g, run_id, note = resolve_run(a, run)
     brief = brief_text(a) or ""
-    question = next((ln.strip("# ").strip() for ln in brief.splitlines() if ln.strip()), case.id)
+    first = next((ln.strip("# ").strip() for ln in brief.splitlines() if ln.strip()), case.id)
+    cut = first.find("?")
+    question = first[: cut + 1] if 0 < cut < 300 else first  # the question itself; the rest of the brief follows it
     base = {
         "case_id": case.id,
         "case_title": getattr(case, "title", None) or case.id,
         "question": question,
         "brief": brief,
+        "brief_rest": brief.strip("# \n")[len(question) :].strip() if brief.strip("# \n").startswith(question) else "",
         "live": _live(a),
         "run_id": run_id,
     }

@@ -43,3 +43,25 @@ def test_the_question_is_the_briefs_first_line(client):
     assert m["question"] and not m["question"].startswith("#")
     assert json.dumps(m)  # the JSON twin serializes
     assert run_dir  # fixture helpers importable
+
+
+def test_the_heading_is_the_question_and_the_rest_follows(client, cases_dir):
+    """Live: the SF brief is one paragraph, so the heading was the whole paragraph. It is now the question, with the
+    rest of the brief under it."""
+    (cases_dir / "libraries" / "case" / "brief.md").write_text(
+        "Which branches offer free Wi-Fi, and when is each one open? List every branch with its address.\n"
+    )
+    m = client.get("/cases/libraries/api/viz/answer").json()
+    assert m["question"] == "Which branches offer free Wi-Fi, and when is each one open?"
+    assert m["brief_rest"] == "List every branch with its address."
+    html = client.get("/cases/libraries/answer").text
+    assert '<h1 class="ans-q">Which branches offer free Wi-Fi, and when is each one open?</h1>' in html
+
+
+def test_a_checkpoint_wait_is_said_once(client, cases_dir):
+    shutil.rmtree(cases_dir / "libraries" / "lake" / "gold")
+    html = client.get("/cases/libraries/answer").text
+    m = client.get("/cases/libraries/api/viz/answer").json()
+    if m["live"]["checkpoint"]:
+        assert html.count("waiting for") == 1
+    assert m["question"].endswith("?") or "?" not in m["brief"][:300]
