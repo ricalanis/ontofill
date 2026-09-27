@@ -147,6 +147,14 @@ def runner_overview(root: Path, now: datetime) -> dict:
     }
 
 
+def _engine_stop(x) -> dict | None:
+    """The runner's record of the engine's last exit (runner 1d4d004): exit code, when, and in which phase."""
+    if not isinstance(x, dict):
+        return None
+    keys = ("exit_code", "at", "state", "phase", "checkpoint_pending", "reason")
+    return {k: x.get(k) for k in keys}
+
+
 def case_runner(root: Path, case_id: str, evs: list[dict], ok: bool) -> dict:
     st = runner_state.status(root, case_id) if ok else {}
     ctl = runner_state.control(root, case_id) if ok else {}
@@ -182,6 +190,8 @@ def case_runner(root: Path, case_id: str, evs: list[dict], ok: bool) -> dict:
         "spent_usd_global": _num(st.get("spent_usd_global")),
         "spent_usd_global_basis": st.get("spent_usd_global_basis"),
         "last_trigger": st.get("last_trigger"),
+        "resumed_from_checkpoint": st.get("resumed_from_checkpoint"),
+        "engine_stop": _engine_stop(st.get("engine_stop")),
         "last_resume": ev(resume),
         "last_event": ev(last),
         "_status": st,
@@ -724,6 +734,7 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
             why = r["reason"] or (r["last_event"] or {}).get("detail") or ""
             if c["stop_cause"]:
                 why = f"{why} · {c['stop_cause']['text']}" if why else c["stop_cause"]["text"]
+            why = why if len(why) <= 240 else why[:239] + "…"
             add(
                 1,
                 cid,

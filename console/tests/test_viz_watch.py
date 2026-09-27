@@ -543,3 +543,37 @@ def test_global_fallback_prefers_the_gateway_log(tmp_path, monkeypatch):
     monkeypatch.setenv("ONTOFILL_CONSOLE_GATEWAY_LOG", str(log))
     usd, basis = watch._fallback_global([{"case_usd": 0.01}])
     assert usd == 0.15 and "gateway call log" in basis
+
+
+def test_engine_exit_and_long_runner_reasons(cases_dir, tmp_path):
+    """Runner 1d4d004: engine_stop records the engine's last exit; a failure reason carries the engine's last line
+    and can be long, so /watch shows it truncated with the whole text in the title."""
+    root = tmp_path / "runner"
+    long = "engine exited 1 in phase 3: " + "the critic rejected every candidate; " * 20
+    runner_case(
+        root,
+        "libraries",
+        state="failed",
+        run_id=LIVE_RID,
+        reason=long,
+        resumed_from_checkpoint="ontology",
+        engine_stop={
+            "exit_code": 1,
+            "at": ago(2),
+            "state": "failed",
+            "phase": 3,
+            "checkpoint_pending": None,
+            "reason": long,
+        },
+    )
+    live_run(cases_dir, [step(i, 10 - i, src="ok-src") for i in range(3)])
+    m = watch.model(settings(cases_dir, root), now=NOW)
+    r = case_of(m)["runner"]
+    assert r["engine_stop"]["exit_code"] == 1 and r["engine_stop"]["phase"] == 3
+    assert r["resumed_from_checkpoint"] == "ontology"
+    alert = next(a for a in m["attention"] if a["case_id"] == "libraries" and "failed" in a["text"].lower())
+    assert len(alert["text"]) < 300 and alert["text"].endswith("…")
+    app = create_app(settings(cases_dir, root))
+    html = TestClient(app).get("/watch").text
+    assert "Engine exit" in html and "code 1" in html and "· P3" in html
+    assert f'title="{long}"' in html.replace("&#39;", "'") and long not in html.split('title="')[0]
