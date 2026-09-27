@@ -4,9 +4,9 @@
 {% block main %}
 <section class="page-head">
   <h1>{{ case.title }}</h1>
-  {% if brief %}<p class="lede">{{ brief }}</p>{% endif %}
   <p class="note muted">Case <span class="mono">{{ case.id }}</span>{% if domain and domain.usable() %} · about {{ domain.class_label(plural=True)|lower }}{% endif %}</p>
 </section>
+{% include "_question.html" %}
 
 <section class="block" aria-labelledby="latest-h">
   <h2 id="latest-h">Latest run</h2>

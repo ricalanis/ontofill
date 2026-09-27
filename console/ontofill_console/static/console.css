@@ -11,3 +11,13 @@
 ul.plain { list-style: none; padding: 0; margin: 0; }
 ul.plain li { padding: 2px 0; }
 button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* The case's question (brief.md), shown on the overview, the case list and every review page */
+.question { margin: 0 0 var(--space-lg); padding: var(--space-sm) var(--space-md); border-left: 4px solid var(--color-marker);
+  background: var(--color-paper-2); max-width: 900px; display: grid; gap: var(--space-2xs); }
+.question__h { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-ink-2); }
+.question__text { margin: 0; font-size: var(--text-lg); font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.question__text p { margin: 0; }
+.question__text p + p { margin-top: var(--space-2xs); font-size: var(--text-base); font-weight: 400; }
+.question__src { font-size: var(--text-xs); color: var(--color-ink-3); }
+.case-question { display: block; font-weight: 400; font-size: var(--text-sm); color: var(--color-ink-2); max-width: 70ch; overflow-wrap: anywhere; }
