@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% import "viz/_health.html" as h %}
+{% block title %}Compare runs · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-health.css">{% endblock %}
+{% block main %}
+{% macro deltas(rows) %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th scope="col">Measure</th><th scope="col" class="num">A</th><th scope="col" class="num">B</th><th scope="col" class="num">B − A</th></tr></thead>
+  <tbody>{% for r in rows %}<tr><th scope="row">{{ r.label }}</th><td class="num">{{ r.a_text }}</td><td class="num">{{ r.b_text }}</td>
+    <td class="num">{% if r.dir %}<span class="hv-delta--{{ r.dir }}">{{ r.delta_text }}</span>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endmacro %}
+{{ v.head("What changed between two runs", "Run B against run A of the same case: metrics, completeness per definition-of-done property, entities added or removed, values that changed, and the shift between code-only and agentic steps.", "runs/<case>/<run>/status.json, trace.live.jsonl · gold/<case>/<run>/metrics.json, entities.jsonl") }}
+{{ h.question(case) }}
+
+{% if m.runs %}
+<form class="hv-pick" method="get" action="{{ base }}/compare">
+  <label>Run A<select name="run_a">{% for r in m.runs %}<option value="{{ r }}" {% if r == m.run_a %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+  <label>Run B<select name="run_b">{% for r in m.runs %}<option value="{{ r }}" {% if r == m.run_b %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+  <button type="submit" class="btn--quiet btn">Compare</button>
+</form>
+{% endif %}
+
+{% if not m.ready %}
+{{ v.empty(m.empty, "Only one run" if m.runs|length == 1 else "No runs yet") }}
+{% else %}
+<dl class="hv-stats">
+  <div><dt>A</dt><dd class="mono"><a href="{{ base }}/runs/{{ m.a_info.run_id }}">{{ m.a_info.run_id }}</a><small>{{ m.a_info.started or "—" }} · {{ m.a_info.state or "no status" }}{% if not m.a_info.gold %} · no gold{% endif %}</small></dd></div>
+  <div><dt>B</dt><dd class="mono"><a href="{{ base }}/runs/{{ m.b_info.run_id }}">{{ m.b_info.run_id }}</a><small>{{ m.b_info.started or "—" }} · {{ m.b_info.state or "no status" }}{% if not m.b_info.gold %} · no gold{% endif %}</small></dd></div>
+  <div><dt>Entities added</dt><dd>{{ m.n_added }}</dd></div>
+  <div><dt>Entities removed</dt><dd>{{ m.n_removed }}</dd></div>
+  <div><dt>Values changed</dt><dd>{{ m.n_changed }}</dd></div>
+</dl>
+
+<div class="panels">
+  <section class="panel"><h2 class="section-h">Metrics</h2>{{ deltas(m.metrics) }}</section>
+  <section class="panel"><h2 class="section-h">Execution modes (steps)</h2>{{ deltas(m.modes) }}</section>
+</div>
+
+<h2 class="section-h">Completeness per definition-of-done property</h2>
+{% if m.props %}
+<div class="hv-mrows">
+  {% for p in m.props %}
+  <div class="hv-mrow"><span>{{ p.label }} · A</span><div class="meter" role="img" aria-label="{{ p.label }} run A {{ p.a_text }}"><span style="--v: {{ p.a_pct }}%; --c: var(--heat-1)"></span></div><span class="num">{{ p.a_text }}</span></div>
+  <div class="hv-mrow"><span>{{ p.label }} · B</span><div class="meter" role="img" aria-label="{{ p.label }} run B {{ p.b_text }}"><span style="--v: {{ p.b_pct }}%; --c: var(--heat-3)"></span></div><span class="num">{{ p.b_text }}{% if p.dir %} <span class="hv-delta--{{ p.dir }}">{{ p.delta_text }}</span>{% endif %}</span></div>
+  {% endfor %}
+</div>
+{% else %}<p class="hv-note">No definition-of-done properties in the ontology.</p>{% endif %}
+
+<h2 class="section-h">Entities and values</h2>
+{% if m.entities_note %}{{ v.empty(m.entities_note, "No entity diff") }}{% else %}
+<div class="panels">
+  <section class="panel"><h3 class="section-h">Added in B · {{ m.n_added }}</h3>
+    {% if m.added %}<ul class="hv-list">{% for e in m.added %}<li>{{ e.title }} <span class="mono">{{ e.id }}</span></li>{% endfor %}</ul>{% if m.n_added > m.added|length %}<p class="hv-note">First {{ m.added|length }} of {{ m.n_added }}.</p>{% endif %}{% else %}<p class="hv-note">None.</p>{% endif %}</section>
+  <section class="panel"><h3 class="section-h">Removed in B · {{ m.n_removed }}</h3>
+    {% if m.removed %}<ul class="hv-list">{% for e in m.removed %}<li>{{ e.title }} <span class="mono">{{ e.id }}</span></li>{% endfor %}</ul>{% if m.n_removed > m.removed|length %}<p class="hv-note">First {{ m.removed|length }} of {{ m.n_removed }}.</p>{% endif %}{% else %}<p class="hv-note">None.</p>{% endif %}</section>
+</div>
+<h3 class="section-h">Values changed · {{ m.n_changed }}</h3>
+{% if m.changed %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th scope="col">Entity</th><th scope="col">Property</th><th scope="col">A</th><th scope="col">B</th></tr></thead>
+  <tbody>{% for c in m.changed %}<tr><th scope="row">{{ c.title }} <small class="mono">{{ c.entity_id }}</small></th><td>{{ c.prop }}</td>
+    <td class="diff-cell"><span class="mono">{{ c.a if c.a is not none else "—" }}</span> <small>{{ c.a_status }}</small></td>
+    <td><span class="mono">{{ c.b if c.b is not none else "—" }}</span> <small>{{ c.b_status }}</small></td></tr>{% endfor %}</tbody>
+</table></div>
+{% if m.n_changed > m.changed|length %}<p class="hv-note">First {{ m.changed|length }} of {{ m.n_changed }}.</p>{% endif %}
+{% else %}<p class="hv-note">No value differs between the two gold exports.</p>{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% import "viz/_health.html" as h %}
+{% block title %}Failures · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-health.css">{% endblock %}
+{% block main %}
+{{ v.head("What went wrong, and what was contained", "Every stop, failure, blocked domain, retry, limit kill, quarantine and held action in one run, each linked to its step; then every sandbox job against the six proof checkpoints.", "runs/<case>/<run>/trace.live.jsonl · status.json (sources[].health) · jobs.jsonl") }}
+{{ h.question(case) }}
+{{ h.runpick(m, base ~ "/failures") }}
+
+{% if m.run_id %}
+<ul class="hv-tally" aria-label="Counts by kind">
+  {% for c in m.counts %}<li class="st-{{ c.state }}{% if not c.n %} is-zero{% endif %}"><span>{{ c.label }}</span><span class="num">{{ c.n }}</span></li>{% endfor %}
+</ul>
+{% endif %}
+
+<h2 class="section-h">Events · {{ m.n_strips }} in {{ m.n_steps }} steps{% if m.run_id %} of {{ m.run_id }}{% endif %}</h2>
+{% if m.strips %}
+{{ v.legend() }}
+<ul class="strips">
+  {% for s in m.strips %}<li>{{ v.strip(s.state, s.title, s.detail, ("P" ~ s.phase if s.phase else "") ~ (" · " ~ s.mode if s.mode else ""), s.href) }}</li>{% endfor %}
+</ul>
+{% endif %}
+{% if m.empty %}{{ v.empty(m.empty, "Nothing went wrong" if m.run_id else "No run yet") }}{% endif %}
+
+<h2 class="section-h" id="cells">Sandbox jobs · six proof checkpoints</h2>
+{% if m.cells %}
+<dl class="hv-stats">
+  <div><dt>Jobs</dt><dd>{{ m.totals.jobs }}</dd></div>
+  <div><dt>All six pass</dt><dd>{{ m.totals.all_pass }}<small>of {{ m.totals.jobs }}</small></dd></div>
+  <div><dt>Any failed</dt><dd>{{ m.totals.any_fail }}</dd></div>
+  <div><dt>Teardown verified</dt><dd>{{ m.totals.teardown }}<small>of {{ m.totals.jobs }}</small></dd></div>
+  <div><dt>Limit kills</dt><dd>{{ m.totals.killed }}</dd></div>
+  <div><dt>With limits set</dt><dd>{{ m.totals.with_limits }}</dd></div>
+</dl>
+<div class="heat-wrap">
+  <div class="hv-ck" role="table" aria-label="Jobs by proof checkpoint">
+    <div role="row" style="display: contents">
+      <span class="h" role="columnheader">Job · source</span>
+      {% for c in m.checkpoints %}<span class="h h--c" role="columnheader" title="{{ c.label }}: {{ c.desc }}">{{ c.key }}</span>{% endfor %}
+      <span class="h" role="columnheader">Isolation</span><span class="h" role="columnheader">Limits</span><span class="h" role="columnheader">Usage</span>
+    </div>
+    {% for r in m.cells %}
+    <div role="row" style="display: contents">
+      <a class="job" role="rowheader" href="{{ r.href }}" title="{{ r.job_id }}">{{ r.job_id }}{% if r.source_id %} · {{ r.source_id }}{% endif %}</a>
+      {% for c in r.checkpoints %}<span class="ck ck--{{ c.state }}" role="cell" title="{{ c.label }}: {{ c.word }}" aria-label="{{ c.label }}: {{ c.word }}">{{ c.glyph }}</span>{% endfor %}
+      <span class="cellnote" role="cell">{% if r.tier %}{{ r.tier.name }}{% if r.tier.tier %} (tier {{ r.tier.tier }}){% endif %}{% else %}—{% endif %}</span>
+      <span class="cellnote" role="cell">{{ r.limits or "—" }}{% if r.killed_by %} · killed: {{ r.killed_by }}{% endif %}</span>
+      <span class="cellnote" role="cell">{{ r.usage or "not recorded" }}</span>
+    </div>
+    {% endfor %}
+    <div role="row" style="display: contents">
+      <span class="h tot" role="rowheader">Pass / fail / missing</span>
+      {% for c in m.totals.by_checkpoint %}<span class="h h--c tot" role="cell" title="{{ c.label }}">{{ c.pass }}/{{ c.fail }}/{{ c.missing }}</span>{% endfor %}
+      <span role="cell"></span><span role="cell"></span><span role="cell"></span>
+    </div>
+  </div>
+</div>
+<p class="hv-key"><span><span class="ck ck--pass">✓</span>pass</span><span><span class="ck ck--fail">✗</span>fail</span><span><span class="ck ck--pending">–</span>missing</span>{% for c in m.checkpoints %}<span>{{ c.key }}: {{ c.label }}</span>{% endfor %}</p>
+{% if m.engine_jobs %}<p class="hv-note">Engine metrics: {{ m.engine_jobs.ok }} jobs ok{% for reason, n in (m.engine_jobs.failed_by_reason or {}).items() %}, {{ n }} failed ({{ reason }}){% endfor %}.</p>{% endif %}
+{% else %}{{ v.empty(m.cells_empty, "No sandbox jobs recorded") }}{% endif %}
+{% endblock %}

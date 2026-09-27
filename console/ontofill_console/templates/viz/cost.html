@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% import "viz/_health.html" as h %}
+{% block title %}Cost · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-health.css">{% endblock %}
+{% block main %}
+{% set usd = "${:,.4f}" %}
+{% set n = "{:,}" %}
+{% set usd6 = "${:,.6f}" %}
+{{ v.head("What it cost, and where the money went", "Estimated spend of one run by phase, model, execution mode and source, per gold value, and against the run budget. Only steps that carry a price are summed; nothing is extrapolated.", "runs/<case>/<run>/trace.live.jsonl (usage) · status.json · metrics.json (loops, decisions_by_backend) · spend history") }}
+{{ h.question(case) }}
+{{ h.runpick(m, base ~ "/cost") }}
+
+{% if m.run_id %}
+<dl class="hv-stats">
+  <div><dt>Run spend</dt><dd>{{ usd.format(m.usd_total) if m.usd_total is not none else "not recorded" }}<small>{{ m.n_priced }} priced of {{ m.n_steps }} steps</small></dd></div>
+  <div><dt>Per gold value</dt><dd>{{ usd6.format(m.per_value) if m.per_value is not none else "—" }}<small>{{ m.n_values }} values ({{ m.values_from }})</small></dd></div>
+  <div><dt>Per entity meeting DoD</dt><dd>{{ usd6.format(m.per_entity) if m.per_entity is not none else "—" }}<small>{{ m.entities_meeting_dod if m.entities_meeting_dod is not none else "no" }} entities</small></dd></div>
+  <div><dt>Tokens in / out</dt><dd>{{ n.format(m.input_tokens) }} / {{ n.format(m.output_tokens) }}<small>{{ m.n_usage }} steps with usage{% if m.n_unpriced %}, {{ m.n_unpriced }} unpriced{% endif %}</small></dd></div>
+  <div><dt>Budget</dt><dd>{{ usd.format(m.budget_usd) if m.budget_usd else "not stated" }}<small>{% if m.burn is not none %}{{ (m.burn * 100)|round(1) }}% burned{% else %}no budget in status.json{% endif %}</small></dd></div>
+  {% if m.tracker_run_usd is not none %}<div><dt>Spend tracker</dt><dd>{{ usd.format(m.tracker_run_usd) }}<small>this run, snapshot {{ m.tracker_ts }}</small></dd></div>{% endif %}
+</dl>
+{% if m.budget_usd and m.burn is not none %}
+<div class="hv-mrows" aria-label="Run budget burn"><div class="hv-mrow">
+  <span>Budget burn ({{ m.spent_basis }})</span>
+  <div class="meter" role="img" aria-label="{{ (m.burn * 100)|round(1) }}% of {{ usd.format(m.budget_usd) }}"><span style="--v: {{ [m.burn * 100, 100]|min }}%; --c: {{ 'var(--st-block)' if m.burn > 1 else 'var(--st-run)' }}"></span><i style="--t: 100%"></i></div>
+  <span class="num">{{ usd.format(m.usd_total if m.usd_total is not none else m.loops_total) }} / {{ usd.format(m.budget_usd) }}</span>
+</div></div>
+{% endif %}
+{% endif %}
+
+{% if m.empty %}{{ v.empty(m.empty, "No cost recorded" if m.run_id else "No run yet") }}{% endif %}
+
+{% if m.run_id %}
+<h2 class="section-h">{{ "Spend" if m.has_cost else "Steps (no prices recorded)" }} by phase, model, mode and source</h2>
+<div class="panels">
+  {% for b in m.bars %}
+  <section class="panel hv-bars">
+    <h3>{{ b.label }}{% if b.metric == "steps" %} · steps{% endif %}</h3>
+    {% if b.rows %}{{ h.sharebar(b.rows, b.metric, usd if b.metric == "usd" else n) }}{% else %}<p class="hv-note">None.</p>{% endif %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th scope="col">{{ b.key }}</th><th scope="col" class="num">$</th><th scope="col" class="num">calls</th><th scope="col" class="num">tokens in</th><th scope="col" class="num">tokens out</th><th scope="col" class="num">steps</th></tr></thead>
+      <tbody>{% for r in b.table %}<tr><th scope="row" class="mono">{{ r.name }}</th><td class="num">{{ usd.format(r.usd) if r.priced else "—" }}</td><td class="num">{{ r.calls }}</td><td class="num">{{ n.format(r.input_tokens) }}</td><td class="num">{{ n.format(r.output_tokens) }}</td><td class="num">{{ r.steps }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </section>
+  {% endfor %}
+</div>
+
+<h2 class="section-h">Decisions and loops the engine reported</h2>
+<div class="panels">
+  <section class="panel hv-bars">
+    <h3>Decisions by inference backend{% if m.inference_backend %} · run backend {{ m.inference_backend }}{% endif %}</h3>
+    {% if m.decisions_by_backend %}{{ h.sharebar(m.decisions_by_backend, "calls", n) }}{% else %}<p class="hv-note">metrics.decisions_by_backend is not in this run's metrics.</p>{% endif %}
+    <h3>Steps attributed to a model (generated_by)</h3>
+    {% if m.steps_by_model %}{{ h.sharebar(m.steps_by_model, "steps", n) }}{% else %}<p class="hv-note">No steps.</p>{% endif %}
+  </section>
+  <section class="panel">
+    <h3 class="section-h">Loop cost by phase (metrics.loops)</h3>
+    {% if m.loops %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th scope="col">Loop</th><th scope="col" class="num">iterations</th><th scope="col" class="num">$</th></tr></thead>
+      <tbody>{% for r in m.loops %}<tr><th scope="row">{{ r.name }}</th><td class="num">{{ r.iterations if r.iterations is not none else "—" }}</td><td class="num">{{ usd.format(r.usd) }}</td></tr>{% endfor %}
+      <tr><th scope="row">Total</th><td></td><td class="num">{{ usd.format(m.loops_total) }}</td></tr></tbody>
+    </table></div>
+    {% else %}<p class="hv-note">This run's metrics carry no loops[].usd.</p>{% endif %}
+  </section>
+</div>
+{% if m.contract_request %}<p class="hv-req">{{ m.contract_request }}</p>{% endif %}
+{% endif %}
+{% endblock %}
