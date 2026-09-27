@@ -254,7 +254,10 @@ def test_recorded_multisource_batch_flattens_json_and_derives_membership(tmp_pat
     assert normalize_identifier(" Ｒ－1 ") == "r-1"
 
 
-def test_direct_document_capture_maps_literal_cells_without_refetch(tmp_path) -> None:
+@pytest.mark.parametrize("content_type", ["text/csv", "application/octet-stream"])
+def test_direct_document_capture_maps_literal_cells_without_refetch(
+    tmp_path, content_type: str
+) -> None:
     objective = {
         "id": "objective-direct",
         "source_id": "source-direct",
@@ -304,7 +307,7 @@ def test_direct_document_capture_maps_literal_cells_without_refetch(tmp_path) ->
             "url": url,
             "status": 200,
             "document_key": key,
-            "document_content_type": "text/csv",
+            "document_content_type": content_type,
             "document_size_bytes": 30,
             "trace": _trace(
                 run_id, kwargs["source_id"], kwargs["objective_id"], url, key, "step:direct"

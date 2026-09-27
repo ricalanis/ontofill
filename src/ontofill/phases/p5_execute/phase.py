@@ -215,7 +215,7 @@ def _format(url: str) -> str | None:
     return None
 
 
-def _document_format(url: str, content_type: str) -> str | None:
+def _document_format(url: str, content_type: str) -> str:
     """Choose a supported parser from a sandbox response, even for extensionless URLs."""
     mime = content_type.split(";", 1)[0].strip().casefold()
     by_mime = {
@@ -226,7 +226,7 @@ def _document_format(url: str, content_type: str) -> str | None:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
         "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
     }
-    return by_mime.get(mime) or _format(url)
+    return by_mime.get(mime) or _format(url) or "auto"
 
 
 def _parsed_links(result) -> tuple[PageLink, ...]:
@@ -894,8 +894,6 @@ def execute_objective(
     direct_key = page.get("document_key")
     if isinstance(direct_key, str):
         direct_format = _document_format(page["url"], str(page.get("document_content_type") or ""))
-        if direct_format is None:
-            return ExecutionResult([], traces, jobs, "unknown", True, "unsupported_document_format")
         try:
             parsed_result = parse_bronze(
                 lake,
