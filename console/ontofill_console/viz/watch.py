@@ -578,6 +578,11 @@ def model(settings, now: datetime | None = None, stale_min: float = STALE_MIN, e
     cases = [case_model(c, root, rover, now, stale_min, env) for c in settings.cases.values()]
     g = [c["spend"] for c in cases]
     gl_usd = max((s["global_usd"] for s in g if s["global_usd"] is not None), default=None)
+    gl_basis = "runner spent_usd_global"
+    if gl_usd is None and any(s["case_usd"] is not None for s in g):
+        # the runner writes its global figure only when it launches a run; until then, the sum of every case's
+        # priced trace steps (the same measure the runner uses per case), labelled as such
+        gl_usd, gl_basis = round(sum(s["case_usd"] or 0 for s in g), 6), "sum of the cases' traces (runner not reporting)"
     gl_cap = next((s["global_cap_usd"] for s in g if s["global_cap_usd"] is not None), None)
     for s in g:  # the gateway-wide figure is one number: the newest the runner reported for any case
         s["global_usd"] = gl_usd
@@ -592,7 +597,8 @@ def model(settings, now: datetime | None = None, stale_min: float = STALE_MIN, e
         lm["poll_ms"] = POLL_MS
     runner = {k: v for k, v in rover.items() if k != "events"}
     return {"generated_at": _iso(now), "stale_min": stale_min, "live": lm, "runner": runner,
-            "global_spend": {"global_usd": gl_usd, "global_cap_usd": gl_cap, "burn_usd_per_h": gl_burn,
+            "global_spend": {"global_usd": gl_usd, "global_basis": gl_basis if gl_usd is not None else None,
+                             "global_cap_usd": gl_cap, "burn_usd_per_h": gl_burn,
                              "projection": projection(gl_usd, gl_cap, gl_burn, now)},
             "cases": cases, "attention": items, "n_attention": len(items),
             "n_stale": sum(1 for c in cases if c["liveness"]["stale"]),
