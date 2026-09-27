@@ -491,15 +491,16 @@ class Session:
     def _extract(self, action: Action, obs: Observation, parent_id: str | None) -> dict:
         result: ActResult = self.backend.act(action)
         values = result.values or {}
-        for name, item in values.items():
-            if item.get("value") not in (None, ""):
-                self.extracted[name] = item | {"url": obs.url, "screenshot_key": obs.screenshot_key}
-        self._emit(observed=obs.summary(), requested=action.as_dict(), executed=result.as_dict(),
+        step = self._emit(observed=obs.summary(), requested=action.as_dict(), executed=result.as_dict(),
                    evaluated={"ok": result.ok, "fields_found": sorted(k for k, v in values.items()
                                                                        if v.get("value") not in (None, "")),
                               "fields_missing": sorted(k for k, v in values.items()
                                                        if v.get("value") in (None, ""))},
                    parent_step_id=parent_id, screenshot_key=obs.screenshot_key)
+        for name, item in values.items():  # CONTRACT v1.0.5 (proposed): each value cites the step that captured it
+            if item.get("value") not in (None, ""):
+                self.extracted[name] = item | {"url": obs.url, "screenshot_key": obs.screenshot_key,
+                                               "step_id": step["step_id"], "captured_at": step["ts"]}
         found = [k for k, v in values.items() if v.get("value") not in (None, "")]
         return {"history": f"extract → found {', '.join(found) or 'nothing'}",
                 **({"error": result.error} if not result.ok else {})}
