@@ -27,7 +27,7 @@ from ontofill.lake import FileLake, S3Lake
 from ontofill.lake.storage import BRONZE_KEY
 from ontofill.refiner import Observation, SilverStore
 from ontofill.runfeed import RunFeed
-from ontofill.sandbox import append_job_record
+from ontofill.sandbox import append_job_record, validate_job_record
 
 Coerce = Callable[[object, str], str | int | float | bool | None]
 _SENSITIVE_QUERY = re.compile(
@@ -156,6 +156,15 @@ def _is_mirrored_screenshot(lake: FileLake | S3Lake, key: str) -> bool:
         return False
     expected_digest = key.removeprefix("sha256:")
     return hashlib.sha256(lake.read_key(key)).hexdigest() == expected_digest
+
+
+def _cell_job_id(cell_id: object) -> str:
+    if not isinstance(cell_id, str):
+        raise TypeError("browser session open omitted its cell ID")
+    match = re.fullmatch(r"cell:([A-Za-z0-9][A-Za-z0-9_.-]*)", cell_id)
+    if match is None:
+        raise ValueError("browser controller returned an invalid cell ID")
+    return f"job:{match.group(1)}"
 
 
 def _extract_steps(steps: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
@@ -492,6 +501,7 @@ def execute_controller(
     )
     opened = controller.session_open(controller_tdd, domains, limits)
     session_id = opened["session_id"]
+    opened_cell_id = opened.get("cell_id")
     steps_path = step_root / f"{session_id}.jsonl"
     bridge: BrowserTraceBridge | None = None
     close_result: dict | None = None
@@ -549,18 +559,46 @@ def execute_controller(
             try:
                 if close_result.get("closed") is not True:
                     raise RuntimeError("browser controller did not confirm session close")
-                teardown_job = ((close_result.get("cell") or {}).get("teardown") or {}).get(
-                    "job_record"
-                )
+                cell = close_result.get("cell")
+                if not isinstance(cell, dict):
+                    raise TypeError("browser controller close omitted its cell record")
+                if cell.get("cell_id") != opened_cell_id:
+                    raise ValueError("browser controller closed a different cell")
+                if cell.get("released") is not True:
+                    raise RuntimeError("browser controller did not confirm cell release")
+                teardown = cell.get("teardown")
+                if not isinstance(teardown, dict):
+                    raise TypeError("browser controller close omitted teardown details")
+                teardown_job = teardown.get("job_record")
                 if not isinstance(teardown_job, dict):
                     raise TypeError("browser controller close omitted its teardown job record")
-                if (
-                    teardown_job.get("run_id") != run_id
-                    or teardown_job.get("source_id") != source_id
-                    or teardown_job.get("job_id") != controller_tdd["job_id"]
-                ):
-                    raise ValueError("browser teardown job belongs to another run or source")
-                append_job_record(lake, feed.case_id, teardown_job)
+                expected_job_id = _cell_job_id(opened_cell_id)
+                if teardown_job.get("job_id") != expected_job_id:
+                    raise ValueError("browser teardown job does not match the released cell")
+                checkpoints = teardown_job.get("checkpoints")
+                if not isinstance(checkpoints, dict) or set(checkpoints) != {
+                    "host",
+                    "task",
+                    "where",
+                    "isolation",
+                    "secrets",
+                    "teardown",
+                }:
+                    raise ValueError("browser teardown job omitted its six proof checkpoints")
+                validate_job_record(teardown_job)
+                if teardown_job.get("run_id") not in {"run:unattached", run_id}:
+                    raise ValueError("browser teardown job belongs to another run")
+                if teardown_job.get("source_id") not in {"source:browser-cell", source_id}:
+                    raise ValueError("browser teardown job belongs to another source")
+                # PA's current cells endpoint emits unattached attribution; bind only those fields
+                # to this validated session while preserving the substrate's measured proof.
+                attributed_job = {
+                    **teardown_job,
+                    "run_id": run_id,
+                    "source_id": source_id,
+                    "generated_by": provenance,
+                }
+                append_job_record(lake, feed.case_id, attributed_job)
             except Exception as exc:  # noqa: BLE001
                 if close_error is None:
                     close_error = exc

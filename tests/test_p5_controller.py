@@ -19,6 +19,7 @@ from tests.genericity.fixtures.libraries import library_decisions
 
 PAGE_URL = "https://libraries.example.test/branches"
 RECORDED = {"backend": "recorded", "model": "synthetic-replay", "at": "2026-09-26T00:00:00Z"}
+CELL_SUBSTRATE = {"backend": "recorded", "model": "cell-substrate", "at": "2026-09-26T00:00:00Z"}
 
 
 def test_signed_page_url_is_not_exported_as_evidence() -> None:
@@ -31,7 +32,7 @@ def test_signed_page_url_is_not_exported_as_evidence() -> None:
     )
 
 
-def _teardown_job_record(run_id: str, source_id: str, job_id: str) -> dict:
+def _teardown_job_record(job_id: str) -> dict:
     checkpoints = [
         "dispatch_result",
         "host_check",
@@ -43,11 +44,11 @@ def _teardown_job_record(run_id: str, source_id: str, job_id: str) -> dict:
     trace = [
         {
             "step_id": "step:synthetic-cell",
-            "run_id": run_id,
-            "source_id": source_id,
+            "run_id": "run:unattached",
+            "source_id": "source:browser-cell",
             "requested": {"url": PAGE_URL, "allowed_domains": ["libraries.example.test"]},
             "evaluated": {"status": "captured", "proof_checkpoint": checkpoint},
-            "generated_by": RECORDED,
+            "generated_by": CELL_SUBSTRATE,
         }
         for checkpoint in checkpoints
     ]
@@ -122,6 +123,8 @@ class FakeBrowserController:
         self.source_id = ""
         self.objective_id = ""
         self.job_id = ""
+        self.cell_id = "cell:synthetic"
+        self.teardown_record: dict | None = None
 
     def session_open(self, tdd: dict, allowed_domains: list[str], limits: dict) -> dict:
         self.calls.append("open")
@@ -156,7 +159,7 @@ class FakeBrowserController:
         )
         return {
             "session_id": self.session_id,
-            "cell_id": "cell:synthetic",
+            "cell_id": self.cell_id,
             "isolation": {
                 "provider": "recorded",
                 "runtime": "runc",
@@ -300,13 +303,14 @@ class FakeBrowserController:
     def session_close(self, session_id: str) -> dict:
         self.calls.append("close")
         assert session_id == self.session_id
-        record = _teardown_job_record(self.run_id, self.source_id, self.job_id)
+        record = _teardown_job_record("job:synthetic")
+        self.teardown_record = record
         return {
             "closed": True,
             "metrics": {},
             "token_revoked": True,
             "cell": {
-                "cell_id": "cell:synthetic",
+                "cell_id": self.cell_id,
                 "released": True,
                 "destroy_ms": 1,
                 "teardown": {"state": "destroyed", "job_record": record},
@@ -404,6 +408,24 @@ def test_s1_controller_exports_only_trace_backed_target_values(tmp_path: Path) -
         "secrets",
         "teardown",
     }
+    assert jobs[0]["run_id"] == run_id
+    assert jobs[0]["source_id"] == controller.source_id
+    assert jobs[0]["generated_by"] == dispatch["generated_by"]
+    assert jobs[0]["generated_by"] != CELL_SUBSTRATE
+    assert controller.teardown_record is not None
+    for preserved_key in (
+        "job_id",
+        "step_id",
+        "started_at",
+        "ended_at",
+        "limits",
+        "usage",
+        "checkpoints",
+    ):
+        assert jobs[0][preserved_key] == controller.teardown_record[preserved_key]
+    assert controller.teardown_record["run_id"] == "run:unattached"
+    assert controller.teardown_record["source_id"] == "source:browser-cell"
+    assert controller.teardown_record["generated_by"] == CELL_SUBSTRATE
     serialized_trace = json.dumps(trace)
     assert str(case.resolve()) not in serialized_trace
     assert "live_view_url" not in serialized_trace
