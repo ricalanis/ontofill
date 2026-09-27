@@ -7,7 +7,8 @@ import math
 import os
 import shutil
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -439,16 +440,25 @@ def _publish_decision_calls(
     run_id: str,
     phase: int,
     *,
+    end: int | None = None,
     source_id: str | None = None,
     objective_id: str | None = None,
     tdd_path: str | None = None,
     include_usage: bool = True,
 ) -> None:
-    for call in getattr(decision, "call_log", [])[start:]:
+    call_log = getattr(decision, "call_log", [])
+    for call in call_log[start:end]:
+        if call.get("backend") == "vultr" and (
+            call.get("run_id") != run_id
+            or not isinstance(call.get("step_id"), str)
+            or not call["step_id"]
+        ):
+            raise ValueError("Vultr gateway attribution is missing or belongs to another run")
         provenance = {key: call[key] for key in ("backend", "model", "at")}
         step = _trace_step(run_id, phase, provenance, "decision.complete_json", call["purpose"])
         if isinstance(call.get("step_id"), str) and call["step_id"]:
             step["step_id"] = call["step_id"]
+        step["requested"]["engine_purpose"] = call["purpose"]
         step["mode"] = "D1"
         step["source_id"] = source_id or call.get("source_id")
         step["objective_id"] = objective_id or call.get("objective_id")
@@ -466,6 +476,47 @@ def _publish_decision_calls(
             step["evaluated"]["reason"] = call["reason"]
         _publish_steps(feed, [step])
         trace.append(step)
+
+
+@contextmanager
+def _p3_decision_call_trace(feed: RunFeed, trace: list[dict], decision: object, run_id: str):
+    """Publish completed P3 decision-call slices as discovery continues."""
+    call_log = getattr(decision, "call_log", None)
+    if not isinstance(call_log, list):
+        yield
+        return
+
+    cursor = len(call_log)
+    observer_setter = getattr(decision, "set_call_observer", None)
+    has_observer = callable(observer_setter)
+    previous_observer = None
+
+    def publish_pending(calls: Sequence[Mapping[str, object]]) -> None:
+        nonlocal cursor
+        while cursor < len(call_log):
+            _publish_decision_calls(
+                feed,
+                trace,
+                decision,
+                cursor,
+                run_id,
+                3,
+                end=cursor + 1,
+            )
+            cursor += 1
+        if calls and callable(previous_observer):
+            previous_observer(calls)
+
+    if has_observer:
+        previous_observer = observer_setter(publish_pending)
+    try:
+        yield
+    finally:
+        try:
+            publish_pending(tuple(call_log[cursor:]))
+        finally:
+            if has_observer:
+                observer_setter(previous_observer)
 
 
 def _model_pause_reason(error: Exception, calls: list[dict]) -> str:
@@ -1046,20 +1097,19 @@ def run_case(
                     ),
                     spider_capture=(capture or capture_url) if not mock else None,
                 )
-            decision_start = len(getattr(decision, "call_log", []))
             trace_before = len(getattr(search_client, "trace", []))
             jobs_before = len(getattr(search_client, "jobs", []))
             try:
-                objectives = discover_objectives(
-                    case_dir,
-                    ontology,
-                    decision,
-                    search_client,
-                    gaps=discovery_gaps or None,
-                    max_sources=4 if earlier_reopens else 1,
-                )
+                with _p3_decision_call_trace(feed, trace, decision, run_id):
+                    objectives = discover_objectives(
+                        case_dir,
+                        ontology,
+                        decision,
+                        search_client,
+                        gaps=discovery_gaps or None,
+                        max_sources=4 if earlier_reopens else 1,
+                    )
             finally:
-                _publish_decision_calls(feed, trace, decision, decision_start, run_id, 3)
                 fresh_trace = getattr(search_client, "trace", [])[trace_before:]
                 source_identities = _source_display_by_id(case_dir)
                 loop_identities = getattr(search_client, "source_display_by_id", {})

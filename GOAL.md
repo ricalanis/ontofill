@@ -200,3 +200,9 @@ DONE: a recorded failed fetch followed by a successful objective passes, the pro
 Stage every eligible off-domain document link from one captured page in one bounded pending round, while keeping per-link digest decisions, exact-host fetch and denial skips.
 
 DONE: the synthetic N-link batch, dedupe, approval/deny continuation and omission cap pass; the full engine gate passes after integration with R47.
+
+## Current task: R29b engine inference attribution
+
+Give every P3 typed decision a trace step whose ID matches the gateway request, with run and semantic purpose headers. Keep the gateway's PA-owned implementation separate for its review.
+
+DONE: recorded P3 attribution checks and the full engine gate pass with no unowned service edits; public delivery waits on the normal scan and gateway hand-off.

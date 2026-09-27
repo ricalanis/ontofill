@@ -5,9 +5,11 @@ Vultr Serverless Inference is the primary typed decision backend. It discovers m
 The recorded client is a test double. The `DecisionClient` protocol also allows an optional Jev supporting client for pre-filtering or a first-pass entity match; Vultr must confirm decisions that affect gold or checkpoints. The Jev adapter awaits the synced reference guide.
 
 The Vultr client accepts `run_id` and optional `step_id` in `from_env()` for the
-initial `/models` request. If no step is supplied, that catalog request gets a
-generated `step:<uuid>` bootstrap id. Wrap execution in
-`inference_attribution(run_id, step_id)` to apply an existing trace step to
-nested calls; omit `step_id` to generate and record a distinct trace id for each
-`/chat/completions` request. Call log entries include only these ids and request
-metadata; authorization tokens are never included.
+initial `/models` request. The metadata lookup does not receive a generated step
+ID because it is not an inference call or a gateway call-log record. Wrap
+execution in `inference_attribution(run_id, step_id)` to apply an existing trace
+step to nested calls; omit `step_id` to generate and record a distinct trace ID
+for each `/chat/completions` request. Each typed decision also sends its semantic
+purpose in `X-Engine-Purpose`; the engine gateway records that with run and step
+attribution. Call-log entries include only these IDs and request metadata;
+authorization tokens are never included.

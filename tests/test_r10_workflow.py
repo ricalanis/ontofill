@@ -93,6 +93,8 @@ def test_live_refine_appends_classifier_usage_and_exports_measured_coverage(
             {
                 "purpose": "refine.classify_entities",
                 "backend": "vultr",
+                "run_id": run_id,
+                "step_id": "step:r10-classify",
                 "model": "minimax-m3",
                 "at": "2026-09-27T00:00:01+00:00",
                 "status": "ok",

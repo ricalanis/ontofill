@@ -9,7 +9,7 @@ import json
 import os
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -83,12 +83,19 @@ def _resolved_attribution(
     return resolved_run_id, resolved_step_id
 
 
-def _auth_headers(api_key: str, run_id: str | None, step_id: str | None) -> dict[str, str]:
+def _auth_headers(
+    api_key: str,
+    run_id: str | None,
+    step_id: str | None,
+    engine_purpose: str | None = None,
+) -> dict[str, str]:
     headers = {"Authorization": f"Bearer {api_key}"}
     if run_id is not None:
         headers["X-Run-Id"] = run_id
     if step_id is not None:
         headers["X-BA-Step-Id"] = step_id
+    if engine_purpose is not None:
+        headers["X-Engine-Purpose"] = engine_purpose
     return headers
 
 
@@ -218,6 +225,12 @@ def complete_validated(
             )
         else:
             return result
+        finally:
+            observer = getattr(decision, "call_observer", None)
+            if callable(observer) and isinstance(call_log, list):
+                new_calls = tuple(call_log[call_start:])
+                if new_calls:
+                    observer(new_calls)
     raise AssertionError("bounded validation loop did not return or raise")
 
 
@@ -267,6 +280,15 @@ class VultrDecisionClient:
         self.catalog_step_id: str | None = None
         self.decisions_by_backend = {"vultr": 0}
         self.call_log: list[dict[str, object]] = []
+        self.call_observer: Callable[[Sequence[Mapping[str, object]]], None] | None = None
+
+    def set_call_observer(
+        self, observer: Callable[[Sequence[Mapping[str, object]]], None] | None
+    ) -> Callable[[Sequence[Mapping[str, object]]], None] | None:
+        """Temporarily observe completed typed call-log slices without request contents."""
+        previous = self.call_observer
+        self.call_observer = observer
+        return previous
 
     @classmethod
     def from_env(
@@ -288,12 +310,9 @@ class VultrDecisionClient:
         catalog_run_id = _checked_id(
             "run_id", run_id if run_id is not None else (active[0] if active else None)
         )
-        catalog_step_id = (
-            _checked_id(
-                "step_id",
-                step_id if step_id is not None else (active[1] if active is not None else None),
-            )
-            or _new_step_id()
+        catalog_step_id = _checked_id(
+            "step_id",
+            step_id if step_id is not None else (active[1] if active is not None else None),
         )
         response = transport.get(
             f"{base_url.rstrip('/')}/models",
@@ -453,7 +472,7 @@ class VultrDecisionClient:
             try:
                 response = self.client.post(
                     f"{self.base_url}/chat/completions",
-                    headers=_auth_headers(self.api_key, run_id, step_id),
+                    headers=_auth_headers(self.api_key, run_id, step_id, purpose),
                     json=body,
                 )
                 response.raise_for_status()

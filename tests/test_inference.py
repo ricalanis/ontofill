@@ -454,25 +454,28 @@ def test_gateway_requests_carry_attribution_without_logging_auth_secrets(monkeyp
     transport = httpx.Client(transport=httpx.MockTransport(handle))
 
     client = VultrDecisionClient.from_env(client=transport, run_id="run:attributed")
-    client.complete_json("phase2.classify", "classify", SCHEMA)
-    client.complete_json("phase2.classify", "classify without an explicit step", SCHEMA)
+    client.complete_json("phase3.plan_queries", "classify", SCHEMA)
+    client.complete_json("phase3.propose_publishers", "classify without an explicit step", SCHEMA)
     with inference_attribution("run:attributed", "step:existing-trace-step"):
-        client.complete_json("phase2.classify", "classify again", SCHEMA)
+        client.complete_json("critic.phase3.capability", "classify again", SCHEMA)
 
     catalog, generated_step_call, second_generated_step_call, existing_step_call = requests
     assert catalog.method == "GET"
     assert catalog.headers["X-Run-Id"] == "run:attributed"
-    assert catalog.headers["X-BA-Step-Id"] == client.catalog_step_id
-    assert client.catalog_step_id.startswith("step:")
+    assert "X-BA-Step-Id" not in catalog.headers
+    assert client.catalog_step_id is None
     assert generated_step_call.headers["X-Run-Id"] == "run:attributed"
     assert generated_step_call.headers["X-BA-Step-Id"] == client.call_log[0]["step_id"]
+    assert generated_step_call.headers["X-Engine-Purpose"] == "phase3.plan_queries"
     assert client.call_log[0]["step_id"].startswith("step:")
     assert second_generated_step_call.headers["X-Run-Id"] == "run:attributed"
     assert second_generated_step_call.headers["X-BA-Step-Id"] == client.call_log[1]["step_id"]
+    assert second_generated_step_call.headers["X-Engine-Purpose"] == "phase3.propose_publishers"
     assert client.call_log[1]["step_id"].startswith("step:")
     assert client.call_log[1]["step_id"] != client.call_log[0]["step_id"]
     assert existing_step_call.headers["X-Run-Id"] == "run:attributed"
     assert existing_step_call.headers["X-BA-Step-Id"] == "step:existing-trace-step"
+    assert existing_step_call.headers["X-Engine-Purpose"] == "critic.phase3.capability"
     assert client.call_log[2]["step_id"] == "step:existing-trace-step"
     assert all(call["run_id"] == "run:attributed" for call in client.call_log)
     assert secret not in repr(client.call_log)

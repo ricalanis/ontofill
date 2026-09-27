@@ -469,4 +469,11 @@ Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2
 1. [x] Review the isolated worker patch and focused 10-test gate.
 2. [x] Compose the worker code with R47; the per-link approval and exact-host fetch paths remain intact.
 3. [x] Run the full managed gate: 585 passed, 5 skipped; Ruff lint/format clean.
-4. [ ] Run the pre-push scan, push, and schedule the VM pull for an idle checkpoint.
+4. [x] Pre-push scan and fast-forward public push passed at b370e4b; VM pull waits for an idle checkpoint.
+
+## R29b engine inference attribution
+
+1. [x] Review the old worker branch and identify engine-owned versus gateway-owned paths.
+2. [x] Port engine attribution and trace observer onto current main, leaving gateway-owned files aside.
+3. [x] Run the full managed gate: 590 passed, 5 skipped; Ruff lint/format clean.
+4. [ ] Pre-push scan, public push, and PA hand-off for gateway logging.
