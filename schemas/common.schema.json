@@ -42,6 +42,7 @@
         "bronze_key": {"$ref": "#/$defs/bronze_key"},
         "selector": {"$ref": "#/$defs/nonempty"},
         "screenshot_key": {"$ref": "#/$defs/bronze_key"},
+        "step_id": {"$ref": "#/$defs/nonempty"},
         "captured_at": {"type": "string", "format": "date-time"},
         "source_id": {"$ref": "#/$defs/nonempty"},
         "source_type": {"$ref": "#/$defs/nonempty"},

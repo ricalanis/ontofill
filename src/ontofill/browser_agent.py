@@ -224,6 +224,8 @@ class BrowserTraceBridge:
         captures_root: Path,
         feed: RunFeed,
         lake: FileLake | S3Lake,
+        parent_step_id: str | None = None,
+        expected_context: dict[str, str] | None = None,
     ) -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", session_id):
             raise ValueError("invalid browser session ID")
@@ -244,7 +246,11 @@ class BrowserTraceBridge:
         self.session_id = session_id
         self.feed = feed
         self.lake = lake
+        self.parent_step_id = parent_step_id
+        self.expected_context = expected_context or {}
         self._offset = 0
+        self._first_step = True
+        self._seen_step_ids: set[str] = set()
 
     def _mirror_bronze(self, key: str) -> None:
         if not BRONZE_KEY.fullmatch(key):
@@ -280,8 +286,21 @@ class BrowserTraceBridge:
             if not line.endswith(b"\n"):
                 break
             step = json.loads(line)
+            if not isinstance(step, dict):
+                raise TypeError("browser step must be an object")
             if step.get("session_id") != self.session_id:
                 raise ValueError("browser step belongs to another session")
+            if any(step.get(key) != value for key, value in self.expected_context.items()):
+                raise ValueError("browser step differs from the opened TDD context")
+            if step.get("phase") != 5 or step.get("mode") not in {"S1", "S2"}:
+                raise ValueError("browser step has an unexpected phase or mode")
+            step_id = step.get("step_id")
+            if not isinstance(step_id, str) or not step_id or step_id in self._seen_step_ids:
+                raise ValueError("browser step ID is missing or duplicated")
+            if self._first_step and self.parent_step_id is not None:
+                if step.get("parent_step_id") is not None:
+                    raise ValueError("first browser step already has a parent")
+                step = {**step, "parent_step_id": self.parent_step_id}
             for key in (
                 step.get("screenshot_key"),
                 (step.get("verify") or {}).get("screenshot_key"),
@@ -292,5 +311,7 @@ class BrowserTraceBridge:
                     self._mirror_bronze(key)
             self.feed.append_step(step)
             self._offset += len(line)
+            self._seen_step_ids.add(step_id)
+            self._first_step = False
             new += 1
         return new
