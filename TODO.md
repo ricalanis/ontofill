@@ -444,6 +444,8 @@ Managed check: `agent-progress run --task r40-parse-error --paths sandbox/parse-
 Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2 passed 26 tests, skipped 2 containment tests, and passed Ruff lint, format, and `git diff --check`.
 # R44 P3 granularity
 
+- [x] FILES: `src/ontofill/phases/p4_local_scoping/phase.py`, `tests/test_local_scope.py`. TASK: independently reject aggregate/unknown/legacy objectives before model call/cache, and scope an entity-level TDD. DONE: worker managed `p4-granularity-workflow-rejection` passed 12 P4 tests and Ruff lint/format/diff checks at `59d32af`; root composed full gate remains. FORMAT: Ruff check/format.
+
 The first full gate passed 565 tests/5 skips and failed three older synthetic fixtures that claimed per-library capability from an identity-free generic search form/table. Those fixtures now include a captured `name` field while preserving redirect and prompt-screening assertions. The second full gate passed 568 tests/5 skips and Ruff lint, then stopped on one deterministic format line; Ruff formatted it. A focused cache regression now proves old capability claims are recaptured before reuse.
 
 - [x] FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `schemas/objectives.schema.json`, `schemas/source-candidate.schema.json`, `tests/test_r44_granularity.py`. TASK: reject aggregate statistics as providers of primary-class DoD properties, accept grounded entity records, and ask for per-entity datasets. DONE: `uv run pytest -q tests/test_r44_granularity.py tests/test_r35_p3_capability.py` passed 6 tests after red baseline. FORMAT: focused Ruff check/format passed.

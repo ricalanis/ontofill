@@ -216,3 +216,113 @@ def test_invalid_local_scope_is_revised_before_any_artifact_is_written(tmp_path)
     assert len(decision.call_log) == 2
     assert decision.call_log[0]["status"] == "validation_failed"
     assert "outside the global PRD" in decision.calls[1][1]
+
+
+R44_ONTOLOGY = {
+    "version": "v1",
+    "primary_class": "catalog_item",
+    "classes": [
+        {
+            "id": "catalog_item",
+            "label": "Catalog item",
+            "identifier_property": "item_key",
+            "title_property": "display_name",
+        }
+    ],
+    "properties": [
+        {
+            "id": "item_key",
+            "label": "Item key",
+            "domain": "catalog_item",
+            "datatype": "string",
+            "dod": False,
+        },
+        {
+            "id": "display_name",
+            "label": "Display name",
+            "domain": "catalog_item",
+            "datatype": "string",
+            "dod": True,
+        },
+    ],
+}
+
+
+def granularity_objective(value: str = "entity_records") -> dict:
+    access_path = {
+        "kind": "dataset",
+        "url": "https://registry.example.invalid/catalog",
+        "capture_key": "sha256:" + "a" * 64,
+        "access_path_quote": "Download the public catalog",
+        "authority_verdict": "authoritative",
+        "critic_reason": "The public catalog is provided by the registry.",
+        "record_granularity": value,
+        "granularity_quote": (
+            "Each record has an item key and display name"
+            if value == "entity_records"
+            else "Counts grouped by category"
+        ),
+        "granularity_reason": (
+            "The captured headers identify individual catalog items."
+            if value == "entity_records"
+            else "The captured page reports grouped totals rather than item rows."
+        ),
+    }
+    return {
+        **OBJECTIVE,
+        "target_fields": ["item_key", "display_name"],
+        "access_path": {
+            "item_key": access_path,
+            "display_name": copy.deepcopy(access_path),
+        },
+    }
+
+
+@pytest.mark.parametrize("granularity", ["aggregate_statistics", "unknown", None])
+def test_r44_granularity_rejects_non_entity_primary_class_sources_before_inference(
+    tmp_path, granularity
+) -> None:
+    objective = granularity_objective(granularity or "entity_records")
+    if granularity is None:
+        objective["access_path"].pop("display_name")
+    decision = FakeDecision("recorded", "recorded-example", RESPONSE)
+
+    with pytest.raises(ModelValidationExhausted, match="entity_records"):
+        draft_local_scope(tmp_path, PRD, R44_ONTOLOGY, objective, decision)
+
+    assert decision.calls == []
+    assert not artifact_dir(tmp_path).exists()
+
+
+def test_r44_granularity_accepts_entity_records_and_scopes_tdd_to_entities(tmp_path) -> None:
+    objective = granularity_objective()
+    decision = FakeDecision("recorded", "recorded-example", RESPONSE)
+
+    _local, tdd = draft_local_scope(tmp_path, PRD, R44_ONTOLOGY, objective, decision)
+
+    assert len(decision.calls) == 1
+    prompt = decision.calls[0][1]
+    assert "one row or detail page represents one catalog_item" in prompt
+    assert "display_name" in prompt
+    assert "target_volume counts entities" in prompt
+    assert any("one primary-class entity" in rule for rule in tdd["validation_rules"])
+    assert any("aggregate statistics" in rule for rule in tdd["validation_rules"])
+
+
+def test_r44_granularity_change_invalidates_cached_tdd_and_missing_evidence_cannot_reuse_it(
+    tmp_path,
+) -> None:
+    objective = granularity_objective()
+    decision = FakeDecision("recorded", "recorded-example", RESPONSE)
+
+    draft_local_scope(tmp_path, PRD, R44_ONTOLOGY, objective, decision)
+    objective["access_path"]["display_name"]["granularity_quote"] = (
+        "Rows identify individual catalog items and their keys"
+    )
+    draft_local_scope(tmp_path, PRD, R44_ONTOLOGY, objective, decision)
+    assert len(decision.calls) == 2
+
+    objective["access_path"]["display_name"]["record_granularity"] = "unknown"
+    with pytest.raises(ModelValidationExhausted, match="entity_records"):
+        draft_local_scope(tmp_path, PRD, R44_ONTOLOGY, objective, decision)
+    assert len(decision.calls) == 2

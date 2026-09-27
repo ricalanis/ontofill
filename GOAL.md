@@ -178,6 +178,8 @@ DONE (passed): `agent-progress run --task r40-parse-error --paths sandbox/parse-
 Constraints: own only the parse-pod runner, sandbox parse adapter, focused synthetic tests, and task notes. Do not touch P5/source review, R36 TLS, PA-owned files, real case/APPROVED, secrets, VM, or deployment. Commit locally; root integrates.
 # Current goal: R44 per-entity source granularity
 
+P4 independently refuses aggregate, unknown or missing primary-class DoD granularity before inference or TDD cache reuse. Its model prompt and validation rule specify one row/page per entity. A stale local TDD is invalidated when cited granularity evidence changes.
+
 P3 confirms a source for primary-class DoD properties only when captured evidence supports a route to records at one row or page per primary entity; aggregate statistics do not count. Search asks for entity-level lists, and P4 independently checks objectives before TDD.
 
 DONE: `agent-progress run --task r44-p3 --paths src/ontofill/phases/p3_fanout/discovery_loop.py,schemas/objectives.schema.json,schemas/source-candidate.schema.json,tests/test_r44_granularity.py,tests/test_discovery_loop.py,tests/test_r33_p3_reachability.py,tests/test_r39_p3_jurisdiction.py,GOAL.md,TODO.md,NOTES.md --check r44-p3-entity-fixtures --strategy captured-primary-identity-in-existing-fixtures --hypothesis 'The old synthetic redirect and prompt-screening cases remain valid when their captured pages actually name a primary entity; aggregate counts remain rejected.' -- sh -c 'uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox && git diff --check'`
