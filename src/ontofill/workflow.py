@@ -1043,6 +1043,15 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
     provenance = status["generated_by"]
     if run_id.startswith("mock-"):
         case_dir, _ = _scratch_case(case_dir, run_id)
+    if provenance["backend"] == "vultr":
+        marker = case_dir / "02-ontology/APPROVED"
+        if not marker.is_file():
+            raise RuntimeError("current ontology approval required before live refine")
+        approval = load_verified_approval(
+            marker, case_dir, ["02-ontology/ontology.json"], "ontology"
+        )
+        if approval.get("decision", "approve") != "approve":
+            raise RuntimeError("current ontology is not approved for live refine")
     store = silver_store_from_env()
     ontology = load_json(case_dir / "02-ontology/ontology.json")
     observations = store.list_for_run(run_id) or _read_silver_cache(case_id, run_id)

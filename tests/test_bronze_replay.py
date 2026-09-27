@@ -8,9 +8,11 @@ from copy import deepcopy
 import pytest
 
 from ontofill import workflow
+from ontofill.case.checkpoints import ApprovalArtifactMismatch
 from ontofill.lake import FileLake
 from ontofill.refiner import MemorySilverStore, export_run, refine_observations
 from ontofill.refiner.bronze_replay import replay_bronze_observations
+from tests.approval_support import bind_approval
 from tests.test_refiner import RECORDED, SOURCE_ID, URL, dod_queries, ontology, write_lineage
 
 RUN_ID = "mock-bronze-replay"
@@ -492,3 +494,50 @@ def test_refine_case_restores_live_trace_when_export_fails(tmp_path, monkeypatch
 
     assert export_calls == 1
     assert lake.read_key(trace_key) == original_trace
+
+
+@pytest.mark.parametrize("marker_state", ["missing", "stale", "denied"])
+def test_live_refine_refuses_unapproved_current_ontology_before_writes(
+    tmp_path, monkeypatch, marker_state: str
+) -> None:
+    case_dir = tmp_path / "case"
+    ontology_path = case_dir / "02-ontology/ontology.json"
+    ontology_path.parent.mkdir(parents=True)
+    ontology_path.write_text('{"version":"v2"}\n', encoding="utf-8")
+    marker = ontology_path.parent / "APPROVED"
+    if marker_state != "missing":
+        approval = bind_approval(
+            case_dir,
+            ["02-ontology/ontology.json"],
+            {"approver": "Test Reviewer", "date": "2026-09-27", "checkpoint": "ontology"},
+        )
+        if marker_state == "denied":
+            approval.update({"decision": "deny", "reason": "Add the missing property"})
+        marker.write_text(json.dumps(approval), encoding="utf-8")
+    if marker_state == "stale":
+        ontology_path.write_text('{"version":"v3"}\n', encoding="utf-8")
+    before = {
+        path.relative_to(case_dir): path.read_bytes()
+        for path in case_dir.rglob("*")
+        if path.is_file()
+    }
+    provenance = {"backend": "vultr", "model": "test-model", "at": "2026-09-27T00:00:00Z"}
+    monkeypatch.setattr(
+        workflow,
+        "_existing_run",
+        lambda *_args, **_kwargs: ("test-case", object(), "run-live", {"generated_by": provenance}),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "silver_store_from_env",
+        lambda: pytest.fail("refine must verify ontology approval before opening silver"),
+    )
+
+    error = ApprovalArtifactMismatch if marker_state == "stale" else RuntimeError
+    with pytest.raises(error):
+        workflow.refine_case(case_dir, run_id="run-live")
+    assert before == {
+        path.relative_to(case_dir): path.read_bytes()
+        for path in case_dir.rglob("*")
+        if path.is_file()
+    }
