@@ -55,3 +55,23 @@ def test_pages_survive_new_and_unknown_aggregates(client, cases_dir):
     future = next(r for r in rows if r["criterion_id"] == "future")
     assert future["actual"] is None and future["note"].startswith("not computed here")
     assert next(r for r in rows if r["criterion_id"] == "linked")["actual"] == 0
+
+
+def test_relation_criterion_reads_as_words():
+    d = Domain(
+        "supplier",
+        classes={"supplier": {"label": "Supplier", "label_plural": "Suppliers"}},
+        relations={"supplier_awarded_contract": {"label": "awarded a contract"}},
+    )
+    engine_q = 'count_entities_with_relation(class_id="supplier", relation_id="supplier_awarded_contract")'
+    assert dod.criterion_label(engine_q, "dod1", d) == "Suppliers linked by awarded a contract"
+    ours = dod.query_text(
+        {
+            "aggregate": "count_entities_with_relation",
+            "class_id": "supplier",
+            "relation_id": "supplier_awarded_contract",
+            "target": 50,
+            "operator": ">=",
+        }
+    )
+    assert dod.criterion_label(ours, "dod1", d) == "Suppliers linked by awarded a contract"

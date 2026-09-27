@@ -192,7 +192,9 @@ def query_text(query: dict) -> str:
     """Compact, readable rendering of a declarative query (what metrics.dod[].query shows)."""
     head = query.get("aggregate", "?")
     cls = query.get("class_id") or query.get("class")
-    parts = [cls] if cls else []
+    parts = [f'class_id="{cls}"'] if cls and query.get("relation_id") else ([cls] if cls else [])
+    if query.get("relation_id"):
+        parts.append(f'relation_id="{query["relation_id"]}"')
     props = query.get("properties")
     if props:
         parts.append(props if isinstance(props, str) else ", ".join(props))
@@ -215,6 +217,11 @@ def criterion_label(query: str, criterion_id: str, domain: Domain) -> str:
         return "Distinct public source classes"
     if "without_evidence" in q:
         return "Gold values without evidence"
+    rel = re.search(r'relation_id="?([\w-]+)', query)
+    if "count_entities_with_relation" in q and rel:
+        cls = re.search(r'class(?:_id)?="?([\w-]+)', query)
+        who = domain.class_label(cls.group(1) if cls else None, plural=True)
+        return f"{who} linked by {domain.relation_label(rel.group(1))}"
     return (criterion_id or query).replace("_", " ").capitalize()
 
 
