@@ -35,6 +35,8 @@ class Settings:
     jev_key: str | None = field(default=None, repr=False)
     admin_token: str | None = field(default=None, repr=False)
     log_path: str = ".cache/gateway-calls.jsonl"
+    # Long-lived service principals: "name:sha256hex:budget_usd[,…]" (hashes only; the tokens live with the services)
+    service_tokens: str | None = field(default=None, repr=False)
     jev_model: str = config.JEV_MODEL
     safety_model: str = config.SAFETY_MODEL
 
@@ -43,8 +45,26 @@ class Settings:
         return cls(vultr_base=config.env(config.VULTR_BASE_ENV), jev_base=config.env(config.JEV_BASE_ENV),
                    vultr_key=os.environ.get(config.VULTR_KEY_ENV), jev_key=os.environ.get(config.JEV_KEY_ENV),
                    admin_token=os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV),
-                   log_path=os.environ.get(config.GATEWAY_LOG_ENV) or ".cache/gateway-calls.jsonl")
+                   log_path=os.environ.get(config.GATEWAY_LOG_ENV) or ".cache/gateway-calls.jsonl",
+                   service_tokens=os.environ.get("BA_GATEWAY_SERVICE_TOKENS"))
 
+
+
+def spent_from_log(path: str, session_id: str) -> float:
+    """Sum of a principal's charged calls in the JSONL call log (restores a service budget across restarts)."""
+    total = 0.0
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("session_id") == session_id and row.get("status") == 200:
+                    total += float(row.get("est_usd") or 0)
+    except FileNotFoundError:
+        return 0.0
+    return total
 
 
 def screen_summary(gate: dict | None) -> dict | None:
@@ -93,6 +113,9 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
     up = Upstreams(settings.vultr_base, settings.vultr_key, settings.jev_base, settings.jev_key)
     screener = Screener(up, settings.jev_model, settings.safety_model)
     log = CallLog(settings.log_path)
+    for spec in [s.strip() for s in (settings.service_tokens or "").split(",") if s.strip()]:
+        name, token_hash, budget = spec.split(":")
+        store.register_service(name, token_hash.strip().lower(), float(budget), spent_from_log(settings.log_path, name))
     app = FastAPI(title="browser-agent inference gateway", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.log, app.state.screener = store, log, screener
 

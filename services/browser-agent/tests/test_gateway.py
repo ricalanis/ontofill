@@ -437,3 +437,44 @@ def test_bad_request_400(env):
     assert env.client.post("/v1/chat/completions", json={"messages": []}, headers=auth(tok)).status_code == 400
     assert env.client.post("/v1/chat/completions", content=b"not json",
                            headers={**auth(tok), "content-type": "application/json"}).status_code == 400
+
+
+@respx.mock
+def test_service_principal_is_long_lived_budgeted_and_restored_from_the_log(tmp_path, monkeypatch):
+    import hashlib
+
+    from fastapi.testclient import TestClient
+
+    from gateway.app import Settings, create_app
+
+    respx.post(f"{VULTR}/chat/completions").mock(return_value=chat_ok(prompt_tokens=1000, completion_tokens=100))
+    token = "engine-service-token-for-tests"
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    log = tmp_path / "calls.jsonl"
+    log.write_text(json.dumps({"session_id": "engine", "status": 200, "est_usd": 0.4}) + "\n"
+                   + json.dumps({"session_id": "engine", "status": 502, "est_usd": 9}) + "\n")
+
+    def app(budget):
+        s = Settings(vultr_base=VULTR, jev_base=JEV, vultr_key="test-vultr-key", jev_key="test-jev-key",
+                     admin_token=ADMIN, log_path=str(log), service_tokens=f"engine:{digest}:{budget}")
+        return TestClient(create_app(s))
+
+    admin = {"Authorization": f"Bearer {ADMIN}"}
+    c = app(1.0)  # restored spend 0.4 (only status-200 lines count) is under a $1 cap: calls work
+    view = c.get("/admin/sessions/engine", headers=admin).json()
+    assert view["service"] is True and view["expires_at"] is None and abs(view["spent_usd"] - 0.4) < 1e-9
+    assert c.post("/v1/chat/completions", json=body("hi"), headers=auth(token)).status_code == 200
+    assert token not in log.read_text() and json.loads(log.read_text().splitlines()[-1])["session_id"] == "engine"
+    c2 = app(0.4)  # a restart with a $0.40 cap: the restored spend already exhausts it
+    assert c2.post("/v1/chat/completions", json=body("hi"), headers=auth(token)).status_code == 402
+    assert c.post("/admin/sessions/engine/revoke", headers=admin).status_code == 200
+    assert c.post("/v1/chat/completions", json=body("hi"), headers=auth(token)).status_code == 401
+
+
+def test_service_token_spec_rejects_bad_hash():
+    import pytest as _pytest
+
+    from gateway.sessions import SessionStore
+
+    with _pytest.raises(ValueError):
+        SessionStore().register_service("engine", "not-a-hash", 1.0)

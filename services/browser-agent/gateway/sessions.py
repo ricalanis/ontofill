@@ -31,7 +31,8 @@ class Session:
         return {"session_id": self.session_id, "run_id": self.run_id, "spent_usd": round(self.spent_usd, 6),
                 "budget_usd": self.budget_usd, "calls": self.calls, "flagged": self.flagged,
                 "last_flag": self.last_flag,
-                "expires_at": self.expires_at, "revoked": self.revoked}
+                "expires_at": None if self.expires_at == float("inf") else self.expires_at,
+                "service": self.expires_at == float("inf"), "revoked": self.revoked}
 
 
 class SessionError(Exception):
@@ -58,6 +59,20 @@ class SessionStore:
             self._by_id[session_id] = s
             self._by_hash[s.token_hash] = session_id
         return token, s
+
+    def register_service(self, session_id: str, token_hash: str, budget_usd: float, spent_usd: float = 0.0) -> Session:
+        """A long-lived service principal (e.g. the engine): configured by token hash, never by the token itself; no
+        TTL, still budget-capped and revocable. `spent_usd` is restored from the call log so a restart keeps the cap."""
+        if len(token_hash) != 64 or any(c not in "0123456789abcdef" for c in token_hash):
+            raise ValueError(f"service {session_id!r}: token hash must be 64 lowercase hex chars (sha256)")
+        with self._lock:
+            old = self._by_id.get(session_id)
+            if old:
+                self._by_hash.pop(old.token_hash, None)
+            s = Session(session_id, token_hash, float("inf"), float(budget_usd), None, spent_usd=float(spent_usd))
+            self._by_id[session_id] = s
+            self._by_hash[token_hash] = session_id
+        return s
 
     def get(self, session_id: str) -> Session | None:
         return self._by_id.get(session_id)
