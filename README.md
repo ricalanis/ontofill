@@ -65,7 +65,7 @@ to gVisor cells that hold no secrets.
 flowchart TB
   people["People<br/>judges: password · approvers: SSO"] -->|HTTPS| nb["NetBird reverse proxy<br/>TLS + auth · zero inbound ports"]
   nb -->|WireGuard| cp
-  subgraph cp["VX1 #1 · control plane"]
+  subgraph cp["VM 1 · control plane (Vultr VX1)"]
     engine["Engine P1–P5 + runner"]
     gw["Inference gateway<br/>only Vultr key · per-session tokens · page-text screening"]
     ctl["Browser controller"]
@@ -78,7 +78,7 @@ flowchart TB
   end
   gw -->|every LLM call| vsi["Vultr Serverless Inference"]
   ctl -->|dispatch over NetBird · one way| sb
-  subgraph sb["VX1 #2 · sandbox host · zero secrets"]
+  subgraph sb["VM 2 · sandbox host (Vultr VX1) · zero secrets"]
     cell["gVisor runsc cell<br/>Chromium or parse job<br/>mem · CPU · pids · time caps<br/>destroyed after every job"]
     proxy["Egress allowlist proxy<br/>GET only"]
     cell --> proxy
