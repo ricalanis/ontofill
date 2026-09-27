@@ -1018,6 +1018,7 @@ def draft_ontology(
         decision,
         relation_count_assessments=schema_reviews.get("relation_counts"),
         on_validation_error=on_validation_error,
+        revisions=revisions,
         case_dir=case_dir,
         query_repairs=query_repairs,
         unresolved_criteria=unresolved_criteria,
@@ -1753,6 +1754,10 @@ def _counts_primary_to_zero(query: dict, criterion: dict, ontology: dict) -> boo
         return False
     if target != 0:
         return False
+    # A filtered query can count only the prohibited subset while other
+    # primary entities and evidence remain present.
+    if query.get("conditions"):
+        return False
     if query.get("aggregate") == "count_distinct_source_classes":
         return True  # zero distinct source classes means no value carries evidence at all
     if query.get("aggregate") not in _ENTITY_COUNTS:
@@ -1768,6 +1773,7 @@ def _draft_dod_queries(
     *,
     relation_count_assessments: dict[str, dict] | None = None,
     on_validation_error: ValidationErrorCallback | None = None,
+    revisions: list[dict] | None = None,
     case_dir: Path | None = None,
     query_repairs: list[dict] | None = None,
     unresolved_criteria: list[dict] | None = None,
@@ -1789,6 +1795,8 @@ def _draft_dod_queries(
         "class_id. The relation domain must be the class named by that criterion. Do not use the "
         "relation aggregate for a criterion the critic marked as an ordinary entity count. "
         "Copy each criterion's target and comparison operator exactly. Do not write SQL or code. "
+        "Human revisions override prior proposals, including objections to earlier DoD queries: "
+        f"{json.dumps(revisions or [], ensure_ascii=False)}. "
         f"Criteria: {prd['definition_of_done']}. Classes: {ontology['classes']}. "
         f"Properties: {ontology['properties']}. Relations: {ontology['relations']}. "
         f"Source classes: {ontology.get('source_classes', [])}. "

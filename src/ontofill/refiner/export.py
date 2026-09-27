@@ -611,7 +611,7 @@ def _completeness_relation_id(
     queries: Sequence[dict],
     relations: Mapping[str, dict],
     class_id: str,
-) -> str:
+) -> str | None:
     relation_id = query.get("relation_id")
     if relation_id is not None:
         relation = relations.get(relation_id)
@@ -620,6 +620,11 @@ def _completeness_relation_id(
         if relation["domain"] != class_id:
             raise ValueError("completeness share relation domain must equal its primary class")
         return relation_id
+
+    # An explicit share without a relation measures every primary entity.
+    # The legacy implicit-relation path below remains for old query artifacts.
+    if query.get("measure") == "share":
+        return None
 
     matching_relation_ids = []
     for candidate in queries:
