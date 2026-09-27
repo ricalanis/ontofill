@@ -900,6 +900,30 @@ def test_live_docker_file_fetch(docker_ready, synthetic_server, tmp_path) -> Non
     assert result["proof"]["teardown"]["verified"]
 
 
+def test_fetch_pod_gets_the_proxy_ip_on_its_internal_network(monkeypatch, tmp_path) -> None:
+    target = "https://approved.example.test/data.xls"
+    _mock_capture_runtime(monkeypatch, target=target, final_url=target)
+    module = importlib.import_module("ontofill.sandbox.capture")
+    pod_args: list[str] = []
+
+    def stop_at_pod(_name, _output, *args, limits):
+        pod_args.extend(args)
+        raise RuntimeError("pod argument probe")
+
+    monkeypatch.setattr(module, "_run_agent_pod", stop_at_pod)
+    with pytest.raises(RuntimeError, match="pod argument probe"):
+        fetch_url(
+            target,
+            allowed_domains=["approved.example.test"],
+            lake=FileLake(tmp_path),
+            run_id="mock-r47-proxy-ip",
+            source_id="synthetic-source",
+            objective_id="synthetic-objective",
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+    assert pod_args[pod_args.index("--add-host") + 1] == "egress:172.25.0.2"
+
+
 @pytest.mark.skipif(
     os.environ.get("ONTOFILL_RUN_CONTAINMENT") != "1",
     reason="set ONTOFILL_RUN_CONTAINMENT=1 for hostile-page containment proof",

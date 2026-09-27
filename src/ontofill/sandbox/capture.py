@@ -1718,6 +1718,7 @@ def fetch_url(
         )
         _docker("network", "connect", "bridge", proxy_name)
         _wait_proxy(proxy_name)
+        proxy_ip = _container_network_ip(proxy_name, network)
         with tempfile.TemporaryDirectory(prefix="ontofill-fetch-") as temp_dir:
             output = Path(temp_dir)
             output.chmod(0o777)
@@ -1727,6 +1728,8 @@ def fetch_url(
                 *runtime_args,
                 "--network",
                 network,
+                "--add-host",
+                f"egress:{proxy_ip}",
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,nosuid,size=512m",
