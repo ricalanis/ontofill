@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% import "viz/_health.html" as h %}
+{% block title %}Learning · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-health.css">{% endblock %}
+{% block main %}
+{{ v.head("Did it get better or cheaper over time", "Self-repair attempts per source, macros promoted from agentic traces, and the share of steps that ran as code (D0/D1) in each run of this case. More code-only steps means less inference per value.", "trace (event repair, crystallization, mode) of every run · metrics.mode_counts · case 05-macros/<source>/v*/") }}
+{{ h.question(case) }}
+
+<dl class="hv-stats">
+  <div><dt>Runs</dt><dd>{{ m.n_runs }}</dd></div>
+  <div><dt>Repair attempts</dt><dd>{{ m.n_repairs }}<small>{{ m.n_repairs_passed }} passed</small></dd></div>
+  <div><dt>Macro versions</dt><dd>{{ m.n_macro_versions }}<small>{{ m.macros|length }} sources</small></dd></div>
+  <div><dt>Crystallizations</dt><dd>{{ m.crystallizations|length }}</dd></div>
+</dl>
+{% if m.empty %}{{ v.empty(m.empty, "Nothing learned yet") }}{% endif %}
+
+<h2 class="section-h">Code-only share per run (D0 + D1 of all steps with a mode)</h2>
+{% set c = m.chart %}
+{% if c.n %}
+<svg class="hv-chart" viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="Share of D0/D1 steps per run: {% for p in c.points %}{{ p.run_id }} {{ p.pct }}%{{ ', ' if not loop.last }}{% endfor %}">
+  {% for t in c.yticks %}<line class="grid" x1="{{ c.left }}" x2="{{ c.right }}" y1="{{ t.y }}" y2="{{ t.y }}"/><text x="{{ c.left - 6 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.v }}%</text>{% endfor %}
+  <line class="axis" x1="{{ c.left }}" x2="{{ c.left }}" y1="{{ c.top }}" y2="{{ c.bottom }}"/>
+  <line class="axis" x1="{{ c.left }}" x2="{{ c.right }}" y1="{{ c.bottom }}" y2="{{ c.bottom }}"/>
+  {% if c.points|length > 1 %}<path class="line" d="{{ c.path }}"/>{% endif %}
+  {% for p in c.points %}<circle class="pt" cx="{{ p.x }}" cy="{{ p.y }}" r="{{ 5 if p.current else 4 }}"><title>{{ p.run_id }}: {{ p.pct }}% of {{ p.n_moded }} steps</title></circle>
+  <text class="val" x="{{ p.x }}" y="{{ p.label_y }}" text-anchor="middle">{{ p.pct }}%</text>
+  <text x="{{ p.x }}" y="{{ c.bottom + 16 }}" text-anchor="middle">run {{ loop.index }}</text>{% endfor %}
+  <text x="{{ c.right }}" y="{{ c.bottom + 30 }}" text-anchor="end">runs in start order · n = {{ c.n }}</text>
+</svg>
+{% if m.trend_note %}<p class="hv-note">{{ m.trend_note }}</p>{% endif %}
+{% endif %}
+{% if m.runs %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th scope="col">#</th><th scope="col">Run</th><th scope="col">Started</th><th scope="col" class="num">D0</th><th scope="col" class="num">D1</th><th scope="col" class="num">S1</th><th scope="col" class="num">S2</th><th scope="col" class="num">Code-only</th><th scope="col" class="num">Priced $</th></tr></thead>
+  <tbody>{% for r in m.runs %}<tr><td class="num">{{ loop.index }}</td><th scope="row" class="mono"><a href="{{ r.href }}">{{ r.run_id }}</a>{% if r.current %} ◂{% endif %}</th><td class="mono">{{ r.started or "—" }}</td>
+    {% for k in ["D0", "D1", "S1", "S2"] %}<td class="num">{{ r.modes[k] }}</td>{% endfor %}
+    <td class="num">{{ ((r.share * 100)|round(1) ~ "%") if r.share is not none else "—" }}</td><td class="num">{{ "%.4f"|format(r.usd) if r.usd is not none else "—" }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}{{ v.empty({"what": "Mode counts per run appear once the case has a run feed or a gold export.", "source": "runs/<case>/<run>/trace.live.jsonl", "row": "R4", "row_desc": "Pattern A inside runs: extractor repairs and promoted macros"}, "No runs yet") }}{% endif %}
+
+<h2 class="section-h">Repair attempts by source · {{ m.n_repairs }}</h2>
+{% if m.repair_groups %}
+{% for g in m.repair_groups %}
+<h3 class="hv-note">{{ g.source_id }} · {{ g.n_attempts }} attempts, {{ g.passed }} passed</h3>
+<ul class="strips">
+  {% for r in g.attempts %}<li>{{ v.strip(r.state, "Attempt " ~ (r.attempt or "?") ~ (" of " ~ r.max_attempts if r.max_attempts else "") ~ " · " ~ (r.result or "no result"), r.detail, r.run_id, r.href) }}</li>{% endfor %}
+</ul>
+{% endfor %}
+{% else %}{{ v.empty(m.repairs_empty, "No repair attempts") }}{% endif %}
+
+<h2 class="section-h">Promoted macros · {{ m.n_macro_versions }} versions</h2>
+{% if m.macros %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th scope="col">Source</th><th scope="col">Version</th><th scope="col">Promoted</th><th scope="col">Files</th><th scope="col">Replay test</th></tr></thead>
+  <tbody>{% for s in m.macros %}{% for ver in s.versions %}<tr><th scope="row" class="mono">{{ s.source_id }}</th><td class="mono">{% if ver.href %}<a href="{{ ver.href }}">{{ ver.version }}</a>{% else %}{{ ver.version }}{% endif %}</td>
+    <td class="mono">{{ ver.date or "—" }}{% if ver.date_from %} <small>({{ ver.date_from }})</small>{% endif %}</td><td class="mono">{{ ver.files|join(", ") }}</td><td class="mono">{{ ver.test or "—" }}</td></tr>{% endfor %}{% endfor %}</tbody>
+</table></div>
+{% else %}{{ v.empty(m.macros_empty, "No promoted macros") }}{% endif %}
+
+<h2 class="section-h">Crystallization events · {{ m.crystallizations|length }}</h2>
+{% if m.crystallizations %}
+<ul class="strips">{% for e in m.crystallizations %}<li>{{ v.strip("done", "Crystallized · " ~ (e.source_id or "no source"), e.what, e.run_id, e.href) }}</li>{% endfor %}</ul>
+{% else %}<p class="hv-note">No step in any run was marked crystallization (trace event crystallization or tool code.promote).</p>{% endif %}
+{% endblock %}

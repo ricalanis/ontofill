@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Discovery · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-definition.css">{% endblock %}
+{% block main %}
+{{ v.head("Discovery", "Where the engine looked for sources, and why it trusted or rejected each one: the funnel per lead provider, every captured candidate with its authority decision, and the plan each accepted source got.", "03-fanout/surface-map/leads.json · discovery.json · 03-fanout/sources/<id>/candidate.json · 03-fanout/objectives.yaml · 04-local/<source>__<objective>/ · trace") }}
+<p class="runline">{% if m.run_id %}Trace from run
+  {% for r in m.run_ids %}<a href="?run={{ r }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+  {% if m.live %}(latest){% else %}· <a href="/cases/{{ case.id }}/discovery">latest</a>{% endif %}
+{% else %}No run yet: the sections below read the case package only.{% endif %}</p>
+
+{% if m.pending %}
+<ul class="strips" aria-label="Sources waiting for a person">
+  {% for p in m.pending %}<li>{{ v.strip(p.state, p.title, p.detail, p.meta, p.href) }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<h2 class="section-h">Funnel per provider</h2>
+<p class="path__src">reads <a href="/cases/{{ case.id }}/files/03-fanout/surface-map/leads.json">03-fanout/surface-map/leads.json</a> · <a href="/cases/{{ case.id }}/files/03-fanout/surface-map/discovery.json">discovery.json</a>{% if m.funnel.round_n %} (latest of {{ m.funnel.round_n }} rounds){% endif %}</p>
+{% if m.funnel.providers %}
+<p class="nums">{% for s in m.funnel.stages %}<span>{{ s.label }} <b>{{ m.funnel.totals[s.key] }}</b></span>{% endfor %}</p>
+<div class="funnels">
+  {% for p in m.funnel.providers %}
+  <section class="panel funnel-card">
+    <h3>{{ p.provider }} <small>{% if p.calls is not none %}{{ p.calls }} calls{% endif %}{% if p.credits is not none %} · {{ p.credits }} credits{% endif %}{% if p.cache_hits is not none %} · {{ p.cache_hits }} cache hits{% endif %}{% if p.calls is none and p.credits is none %}usage not recorded{% endif %}</small></h3>
+    <div class="funnel" role="list" aria-label="{{ p.provider }} funnel">
+      {% for s in p.stages %}
+      <div role="listitem"><span>{{ s.label }}</span>
+        {% if s.n is none %}<span class="fill is-zero" style="--v: 100%"></span><span class="num">n/a</span>
+        {% else %}<span class="fill {% if not s.n %}is-zero{% endif %}" style="--v: {{ s.pct }}%"></span><span class="num">{{ s.n }}</span>{% endif %}</div>
+      {% endfor %}
+    </div>
+    <p class="path__src">counted from {{ p.basis }}</p>
+  </section>
+  {% endfor %}
+</div>
+{% else %}{{ v.empty(m.funnel.empty, "No discovery ledger yet") }}{% endif %}
+
+{% if m.rounds %}
+<h2 class="section-h">Rounds</h2>
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th>Round</th><th>Iterations</th><th>Stopped</th><th class="num">USD</th><th class="num">Leads</th><th class="num">Candidates</th><th>Coverage (hosts / required)</th><th>Objections</th></tr></thead>
+  <tbody>{% for r in m.rounds %}
+    <tr><td class="mono">{{ r.n }}{% if r.at %}<span class="why">{{ r.at[:16]|replace("T", " ") }}</span>{% endif %}</td><td class="num">{{ r.iterations if r.iterations is not none else "—" }}</td>
+      <td>{{ r.stop_label or "—" }}</td><td class="num">{{ r.usd|money }}</td><td class="num">{{ r.n_leads if r.n_leads is not none else "—" }}</td>
+      <td class="num">{{ r.n_candidates if r.n_candidates is not none else "—" }}</td>
+      <td class="wrap">{% for c in r.coverage %}<span class="chip st-{{ 'done' if c.met else 'need' }}">{{ c.property }} {{ c.hosts|length }}/{{ c.required }}</span> {% else %}<span class="why">not recorded</span>{% endfor %}</td>
+      <td class="wrap">{% for o in r.objections %}<span class="why">{{ o }}</span>{% else %}<span class="why">none</span>{% endfor %}</td></tr>
+  {% endfor %}</tbody>
+</table></div>
+{% endif %}
+{% for t in m.p3_loops %}
+<p class="nums"><span>Phase 3 loop in {{ m.run_id }}: <b>{{ t.iterations }}</b> iterations</span>{% if t.stop_label %}<span>stopped: {{ t.stop_label }}</span>{% endif %}<span><b>{{ t.n_objections }}</b> objections</span><a href="/cases/{{ case.id }}/runs/{{ m.run_id }}">open the trace</a></p>
+{% endfor %}
+
+<h2 class="section-h">Source review</h2>
+<p class="path__src">reads {{ m.candidates.source }}{% if m.objectives.path %} · <a href="/cases/{{ case.id }}/files/{{ m.objectives.path }}">{{ m.objectives.path }}</a> ({{ m.objectives.n }} objectives){% endif %} · 03-fanout/sources/&lt;id&gt;/APPROVED</p>
+{% if m.candidates.rows %}
+<p class="nums">{% for k, n in m.candidates.by_decision.items() %}{% if n %}<span><b>{{ n }}</b> {{ k }}</span>{% endif %}{% endfor %}</p>
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th>Host</th><th>Kind</th><th>Provider</th><th>Decision</th><th>Objectives</th><th>Pages</th></tr></thead>
+  <tbody>{% for c in m.candidates.rows %}
+    <tr>
+      <td class="wrap"><span class="host">{% if c.url %}<a href="{{ safe_url(c.url) }}" rel="noopener noreferrer">{{ c.host or c.url }}</a>{% else %}—{% endif %}</span>
+        {% if c.title %}<span class="why">{{ c.title }}</span>{% endif %}
+        {% if c.source_id %}<span class="why mono">{% if c.manifest_href %}<a href="{{ c.manifest_href }}">{{ c.source_id }}</a>{% else %}{{ c.source_id }}{% endif %}</span>{% endif %}</td>
+      <td>{{ c.source_type or "—" }}{% if c.tier %}<span class="why">tier {{ c.tier }}</span>{% endif %}</td>
+      <td class="mono">{{ c.provider or "—" }}{% if c.providers|length > 1 %}<span class="why">+ {{ c.providers|length - 1 }} more</span>{% endif %}</td>
+      <td class="wrap"><span class="chip st-{{ c.state }} dec">{{ c.decision }}</span><span class="why">{{ c.reason }}</span>
+        {% for k in c.critic %}<span class="why">critic · {{ k.property }}: {{ k.reason }}</span>{% endfor %}
+        {% if c.checkpoint and c.checkpoint.decision == "pending" %}<a class="why" href="{{ c.checkpoint.href }}">source checkpoint pending</a>{% endif %}</td>
+      <td class="wrap">{% for o in c.objectives %}<span class="why mono">{% if o.href %}<a href="{{ o.href }}">{{ o.id }}</a>{% else %}{{ o.id }}{% endif %} · #{{ o.priority }} · {{ o.target_fields|join(", ") }}</span>{% else %}<span class="why">{% if c.decision == "trusted" %}not in objectives yet{% else %}—{% endif %}</span>{% endfor %}</td>
+      <td>{% if c.site_href and c.decision == "trusted" %}<a href="{{ c.site_href }}">pages</a>{% if not c.has_site_graph %}<span class="why">no site graph (R15)</span>{% endif %}{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}</tbody>
+</table></div>
+{% if m.candidates.uncaptured %}
+<details class="leads-more"><summary>{{ m.funnel.n_uncaptured }} leads never captured (leads are never evidence)</summary>
+  <div class="table-wrap"><table class="grid-table">
+    <thead><tr><th>Host</th><th>Provider</th><th>For properties</th><th>Query</th></tr></thead>
+    <tbody>{% for l in m.candidates.uncaptured %}<tr><td class="host">{{ l.host or l.url }}</td><td class="mono">{{ l.providers|join(", ") }}</td><td>{{ l.properties|join(", ") }}</td><td class="wrap why">{{ l.query }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+</details>
+{% endif %}
+{% else %}
+{{ v.empty(m.candidates.empty, "No candidate ledger yet") }}
+{% if m.trace_sources %}
+<p class="path__lede">The run trace names these sources instead (phase 3 mapping, phase 4 scoping, phase 5 steps):</p>
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th>Source</th><th>First mapping step</th><th>Objectives</th><th class="num">Steps</th><th>Plan</th><th>Pages</th></tr></thead>
+  <tbody>{% for s in m.trace_sources %}
+    <tr><td class="mono">{{ s.source_id }}</td><td class="wrap">{{ s.first or "—" }}</td><td class="mono wrap">{{ s.objectives|join(", ") or "—" }}</td>
+      <td class="num">{{ s.n_steps }}<span class="why">{% for p in s.phases %}P{{ p.phase }} {{ p.n }}{% if not loop.last %} · {% endif %}{% endfor %}</span></td>
+      <td>{% if s.plan_href %}<a class="mono" href="{{ s.plan_href }}">{{ s.plan_path }}</a>{% else %}—{% endif %}</td>
+      <td><a href="{{ s.site_href }}">pages</a></td></tr>
+  {% endfor %}</tbody>
+</table></div>
+{% endif %}
+{% endif %}
+{% if m.site_graphs.empty and (m.candidates.rows or m.trace_sources) %}{{ v.empty(m.site_graphs.empty, "No site graphs yet") }}{% endif %}
+
+<h2 class="section-h">Plans per source and objective</h2>
+<p class="path__src">reads 04-local/&lt;source&gt;__&lt;objective&gt;/tdd.json · local-prd.json · tdd.md</p>
+{% if m.plans.rows %}
+<div class="panels">
+  {% for p in m.plans.rows %}
+  <section class="panel">
+    <h3 class="section-h"><span class="mono">{{ p.source_id }}</span>{% if p.objective_id %} · {{ p.objective_id }}{% endif %}</h3>
+    {% if p.parsed %}
+    <dl class="kv">
+      <dt>Targets</dt><dd>{{ p.target_fields|join(", ") or "—" }}</dd>
+      <dt>Path</dt><dd><span class="host">{{ p.source_url or "—" }}</span>{% if p.steps %}<span class="why">{% for s in p.steps %}{{ s.id }}{% if not loop.last %} → {% endif %}{% endfor %}</span>{% endif %}</dd>
+      <dt>Method</dt><dd>{{ p.method or "—" }}</dd>
+      <dt>Modes</dt><dd class="mono">{{ p.mode_range or "—" }}</dd>
+      <dt>Domains</dt><dd class="host">{{ p.allowed_domains|join(" · ") or "—" }}</dd>
+      <dt>Budget</dt><dd class="mono">{{ p.budget_usd|money }} USD{% if p.rate %} · {{ p.rate }}/min{% endif %}{% if p.volume %} · {{ p.volume }} records{% endif %}</dd>
+      {% if p.local_dod %}<dt>Done when</dt><dd class="mono">{% for c in p.local_dod %}{{ c.metric }} {{ c.operator }} {{ c.target }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>{% endif %}
+      {% if p.requirements %}<dt>Serves</dt><dd class="mono">{{ p.requirements|join(", ") }}</dd>{% endif %}
+    </dl>
+    {% if p.steps %}
+    <ul class="props">{% for s in p.steps %}<li><b>{{ s.id }}</b><span>{{ s.description }}</span><code>{{ s.start }} · {{ s.allowed|join("/") }} · {{ s.channel }} · {{ s.risk }}</code>{% if s.until %}<span class="why">until: {{ s.until }}</span>{% endif %}</li>{% endfor %}</ul>
+    {% endif %}
+    {% else %}
+    <p class="path__lede">{{ p.title or "No structured plan (tdd.json) in this folder." }} The engine wrote no tdd.json here, so only the raw file is shown.</p>
+    {% endif %}
+    <p class="path__src">{% for f in p.files %}<a href="{{ f.href }}">{{ f.path.split("/")[-1] }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  </section>
+  {% endfor %}
+</div>
+{% else %}{{ v.empty(m.plans.empty, "No plans yet") }}{% endif %}
+{% endblock %}

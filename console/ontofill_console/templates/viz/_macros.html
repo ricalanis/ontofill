@@ -1,0 +1,30 @@
+{# Shared pieces for every visualization view. #}
+{% macro head(title, lede, source) %}
+<section class="view-head">
+  <h1>{{ title }}</h1>
+  {% if lede %}<p>{{ lede }}</p>{% endif %}
+  {% if source %}<p class="source">{{ source }}</p>{% endif %}
+</section>
+{% endmacro %}
+
+{% macro empty(e, title="Nothing to show yet") %}
+<div class="empty" role="note">
+  <b>{{ title }}</b>
+  <span>{{ e.what }}</span>
+  {% if e.source %}<span class="source">{{ e.source }}</span>{% endif %}
+  {% if e.row %}<span class="gap">Produced by gap {{ e.row }}{% if e.row_desc %}: {{ e.row_desc }}{% endif %} (coord/GAPS.md)</span>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro strip(state, title, detail=None, meta=None, href=None) %}
+{% if href %}<a class="strip st-{{ state }}" href="{{ href }}">{% else %}<div class="strip st-{{ state }}">{% endif %}
+  <span class="strip__g" aria-hidden="true"></span>
+  <span class="strip__main"><b>{{ title }}</b>{% if detail %}<small>{{ detail }}</small>{% endif %}</span>
+  <span class="strip__meta">{{ meta or "" }}</span>
+{% if href %}</a>{% else %}</div>{% endif %}
+{% endmacro %}
+
+{% set STATE_WORDS = {"need": "needs you", "run": "running", "pause": "paused", "block": "blocked or failed", "quar": "quarantined", "done": "done"} %}
+{% macro legend() %}
+<p class="legend" aria-label="State legend">{% for k in ["need", "run", "pause", "block", "quar", "done"] %}<span class="chip st-{{ k }}">{{ STATE_WORDS[k] }}</span>{% endfor %}</p>
+{% endmacro %}

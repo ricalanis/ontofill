@@ -1,0 +1,19 @@
+{# Pieces shared by the failures, cost, learning and compare views. #}
+{% macro question(case) %}
+<p class="hv-question quote"><b>The case's question</b>{{ case.brief or "No brief.md yet." }}</p>
+{% endmacro %}
+
+{% macro runpick(m, path) %}
+{% if m.runs|length > 1 %}
+<p class="hv-runpick" aria-label="Run">run {% for r in m.runs|reverse %}<a href="{{ path }}?run={{ r }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% endfor %}</p>
+{% elif m.run_id %}
+<p class="hv-runpick">run <a href="{{ path }}?run={{ m.run_id }}" aria-current="true">{{ m.run_id }}</a></p>
+{% endif %}
+{% endmacro %}
+
+{% macro sharebar(rows, key, fmt, unit="") %}
+<div class="bar" role="img" aria-label="{% for r in rows %}{{ r.name }} {{ fmt.format(r[key]) }}{{ unit }} ({{ (r.share * 100)|round(1) }}%){{ ', ' if not loop.last }}{% endfor %}">
+  {% for r in rows %}<span style="--c: {{ r.c }}; flex: {{ r[key] }}" title="{{ r.name }}: {{ fmt.format(r[key]) }}{{ unit }}"></span>{% endfor %}
+</div>
+<p class="legend">{% for r in rows %}<span><i style="--c: {{ r.c }}"></i>{{ r.name }} <b>{{ fmt.format(r[key]) }}{{ unit }}</b> · {{ (r.share * 100)|round(1) }}%</span>{% endfor %}</p>
+{% endmacro %}

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Operation{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-operation.css">{% endblock %}
+{% macro usd(x) %}{% if x is not none %}${{ "%.3f"|format(x) }}{% else %}—{% endif %}{% endmacro %}
+{% macro sharebar(rows, total, name) %}
+<div class="bar" role="img" aria-label="{{ name }}: {% for r in rows %}{{ r.label }} {{ r.n }}{% if not loop.last %}, {% endif %}{% endfor %} of {{ total }} steps">
+  {% for r in rows %}<span style="--c:var({{ r.css }});flex:{{ r.n }}" title="{{ r.label }}: {{ r.n }} steps ({{ r.pct }}%)">{% if r.pct >= 12 %}{{ r.key if r.key|length <= 4 else r.label }}{% endif %}</span>{% endfor %}
+</div>
+<p class="legend">{% for r in rows %}<span><i style="--c:var({{ r.css }})"></i>{{ r.label }} <b>{{ r.n }}</b> · {{ r.pct }}%{% if r.usd is not none %} · {{ usd(r.usd) }}{% endif %}</span>{% endfor %}</p>
+{% endmacro %}
+{% block main %}
+{{ v.head("Operation", "Every run of this case, then for one run: where it is in the five phases, how long and how much each phase took, how its loops argued and stopped, and who decided each step.", m.sources) }}
+{% if m.question %}<p class="quote op-question">{{ m.question }}</p>{% endif %}
+
+<h2 class="section-h">Runs · {{ m.n_runs }}</h2>
+{% if m.runs %}
+{{ v.legend() }}
+<ul class="strips op-runs">
+  {% for r in m.runs %}<li{% if r.selected %} class="is-selected" aria-current="true"{% endif %}>{{ v.strip(r.state, "Run " ~ r.run_id ~ ": " ~ r.status ~ (" · live" if r.live else ("" if r.kind == "run" else " · " ~ r.kind)), r.detail, r.when, r.href) }}</li>{% endfor %}
+</ul>
+{% else %}{{ v.empty(m.empty, "No runs yet") }}{% endif %}
+
+{% if m.run_id and m.selected %}
+<section class="op-run" aria-labelledby="op-run-h">
+  <header class="op-runhead">
+    <h2 id="op-run-h">Run <span class="mono">{{ m.run_id }}</span></h2>
+    <span class="chip st-{{ m.selected.state }}">{{ m.state }}{% if m.checkpoint %} at {{ m.checkpoint }}{% endif %}</span>
+    {% if m.selected.live %}<span class="chip st-run">live</span>{% endif %}
+    {% if m.selected.replay %}<span class="chip st-pause">replayed feed</span>{% endif %}
+    {% if m.selected.recorded %}<span class="chip st-pause">recorded inference</span>{% endif %}
+    <span class="op-links">
+      <a href="{{ m.run_href }}">Step-by-step run page</a>
+      {% for l in m.live_view %}<a class="btn btn--quiet" href="{{ l.url }}" target="_blank" rel="noopener">Watch the browser{% if l.label != "run" %} · {{ l.label }}{% endif %}</a>{% endfor %}
+    </span>
+  </header>
+  <dl class="kv op-kv">
+    <dt>Steps</dt><dd class="mono">{{ m.n_steps }}</dd>
+    <dt>Updated</dt><dd class="mono">{{ m.updated_at or "—" }}</dd>
+    <dt>Estimated cost</dt><dd class="mono">{{ usd(m.usd_total) }}{% if m.usd_total is not none %} over {{ m.priced_steps }} priced step{{ "s" if m.priced_steps != 1 }}{% endif %}</dd>
+    <dt>Live view</dt><dd>{% if m.live_view %}{{ m.live_view|length }} link{{ "s" if m.live_view|length != 1 }}{% else %}none published for this run{% endif %}</dd>
+  </dl>
+
+  <h3 class="section-h">Pipeline</h3>
+  <ol class="pipe op-pipe" aria-label="Phases">
+    {% for p in m.pipe %}
+    <li class="st-{{ p.css }}{% if p.current %} is-current{% endif %}" data-k="phase-{{ p.n }}"{% if p.current %} aria-current="step"{% endif %}>
+      <b>P{{ p.n }} {{ p.name }}</b>
+      <span class="op-state"><span class="chip st-{{ p.css }}">{{ "paused at " ~ p.checkpoint if p.checkpoint and p.state == "paused" else p.state }}</span></span>
+      {% if p.checkpoint and p.state != "paused" %}<span>checkpoint {{ p.checkpoint }}</span>{% endif %}
+      <span>{{ p.steps }} step{{ "s" if p.steps != 1 }}</span>
+      <span>{{ p.elapsed or "—" }}</span>
+      <span>{{ usd(p.usd) }}</span>
+      {% if p.reopened %}<span class="reopen">reopened P{{ p.n }} ×{{ p.reopened }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="legend op-pipe-key"><span>per phase: state · steps · first→last step time · estimated cost</span></p>
+  {% if m.cost_empty %}{{ v.empty(m.cost_empty, "No cost in this trace") }}{% endif %}
+  {% if m.empty %}{{ v.empty(m.empty, "No steps yet") }}{% endif %}
+
+  {% if m.reopens %}
+  <h3 class="section-h">Gap loop decisions · {{ m.reopens|length }}</h3>
+  <ul class="strips">
+    {% for r in m.reopens %}<li>{{ v.strip("need" if r.reopen is not none else "done", "Iteration " ~ r.iteration ~ ": " ~ ("reopened P" ~ r.reopen ~ " " ~ r.phase_name if r.reopen is not none else "no reopen"), r.reason or r.stop, r.ts[11:19] if r.ts else "", m.run_href ~ "#" ~ r.step_id) }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="panels op-panels">
+    <section class="panel" aria-labelledby="op-loops-h">
+      <h3 class="section-h" id="op-loops-h">Loop threads · {{ m.threads|length }}</h3>
+      {% for t in m.threads %}
+      <div class="op-thread">
+        <p class="op-thread__head"><b>{{ t.label }}</b> · {{ t.n_iterations }} iteration{{ "s" if t.n_iterations != 1 }} · {{ t.n_objections }} objection{{ "s" if t.n_objections != 1 }} · stop: {{ t.stop_label }}{% if t.usd is not none %} · <span class="mono">{{ usd(t.usd) }}</span>{% endif %}</p>
+        <div class="it it--head" aria-hidden="true"><span>#</span><span>propose</span><span>critique</span><span>revise</span><span>check</span></div>
+        {% for it in t.iterations %}
+        <a class="it" href="{{ m.run_href }}#{{ it.step_id }}" aria-label="Iteration {{ it.n }}: {% for c in it.cells %}{{ c.role }} {{ c.text }}{% if not loop.last %}, {% endif %}{% endfor %}">
+          <span>#{{ it.n }}</span>{% for c in it.cells %}<span class="{{ c.cls }}" title="{{ c.text }}">{{ c.text }}</span>{% endfor %}
+        </a>
+        {% if it.objections or it.stop %}
+        <ul class="op-objections">
+          {% for o in it.objections %}<li><span class="chip st-need">objection</span> {{ o.text }} <span class="op-res">→ {{ o.resolution }}</span></li>{% endfor %}
+          {% if it.stop %}<li><span class="chip st-done">stop</span> {{ it.stop }}</li>{% endif %}
+        </ul>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% else %}{{ v.empty(m.threads_empty, "No loop threads in this run") }}{% endfor %}
+      {% if m.loop_rows %}
+      <div class="table-wrap"><table class="grid-table">
+        <thead><tr><th scope="col">Loop</th><th scope="col" class="num">Iterations</th><th scope="col">Stop</th><th scope="col" class="num">Cost</th></tr></thead>
+        <tbody>{% for r in m.loop_rows %}<tr><td>{{ "Gap loop" if r.phase == "outer" else "P" ~ r.phase }}</td><td class="num">{{ r.iterations if r.iterations is not none else "—" }}</td><td>{{ r.stop_label or "—" }}</td><td class="num">{{ usd(r.usd) }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      {% endif %}
+    </section>
+
+    <section class="panel" aria-labelledby="op-dec-h">
+      <h3 class="section-h" id="op-dec-h">Decided by · {{ m.n_steps }} steps</h3>
+      {% if m.deciders %}{{ sharebar(m.deciders, m.n_steps, "Decided by") }}
+      <p class="note op-note">A step with no model behind it counts as code. A person's revision counts as a person.</p>
+      {% else %}<p class="note">No steps yet.</p>{% endif %}
+      <h3 class="section-h">Mode · {{ m.n_steps }} steps</h3>
+      {% if m.modes %}{{ sharebar(m.modes, m.n_steps, "Execution mode") }}
+      <p class="note op-note">D0 deterministic · D1 inference-assisted script · S1 agentic loop · S2 computer use with vision.{% if m.usd_total is none %} Cost by mode appears when steps carry usage.est_usd.{% endif %}</p>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

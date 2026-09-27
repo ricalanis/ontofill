@@ -232,6 +232,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "in_approver_group": ap.groups_contain(groups_raw, settings.approver_group),
                 "direct_denied": direct_denied(request), "group_verified": group_verified(request)}
 
+    # read-only visualization views (CONTRACT v1.0.4b: Claude Product); they never write
+    from .viz import VizContext, register
+
+    register(VizContext(app=app, render=render, get_case=get_case, case_domain=case_domain, settings=settings, env=env))
+
     @app.get("/whoami", response_class=HTMLResponse)
     def whoami(request: Request):
         return render(request, "whoami.html", nav="whoami", w=whoami_model(request))

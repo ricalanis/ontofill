@@ -1,23 +1,18 @@
 {% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
 {% block title %}Cases{% endblock %}
+{% set RUN_STATE = {"running": "run", "paused": "pause", "failed": "block", "done": "done"} %}
 {% block main %}
-<section class="page-head">
-  <h1>Cases</h1>
-  <p class="lede">Every case package the engine works on: its brief, its latest run, and what is waiting for a person.</p>
-</section>
+{{ v.head("Cases", "Every case package the engine works on: the question it answers, its latest run, and what is waiting for a person.", "ONTOFILL_CONSOLE_CASES registry · brief.md · runs/<case>/latest.json") }}
 {% if rows %}
-<table class="ledger cases-table">
-  <thead><tr><th scope="col">Case · the question</th><th scope="col">Latest run</th><th scope="col">State</th><th scope="col" class="num">Waiting for you</th></tr></thead>
-  <tbody>{% for c in rows %}
-    <tr>
-      <th scope="row"><a href="/cases/{{ c.id }}">{{ c.title }}</a><span class="sub mono">{{ c.id }}</span>{% set q = cases[c.id].brief if cases.get(c.id) else None %}<span class="case-question">{{ q or "No brief.md yet" }}</span></th>
-      <td>{% if c.run_id %}<a class="mono" href="/cases/{{ c.id }}/runs/{{ c.run_id }}">{{ c.run_id }}</a>{% else %}<span class="muted">no run yet</span>{% endif %}{% if c.lake_error %}<span class="sub muted">{{ c.lake_error }}</span>{% endif %}</td>
-      <td>{% if c.state %}<span class="run-state run-state--{{ c.state }}">{{ c.state }}</span>{% if c.checkpoint_pending %}<span class="sub">paused at {{ c.checkpoint_pending }}</span>{% endif %}{% else %}—{% endif %}</td>
-      <td class="num">{% if c.pending %}<a href="/cases/{{ c.id }}/approvals">{{ c.pending }}</a>{% else %}0{% endif %}</td>
-    </tr>{% endfor %}
-  </tbody>
-</table>
+<ul class="strips">
+  {% for c in rows %}{% set q = cases[c.id].brief if cases.get(c.id) else None %}
+  <li>{{ v.strip("need" if c.pending else (RUN_STATE.get(c.state or "", "none")), c.title, (q or "No brief.md yet"), ((c.pending ~ " waiting · ") if c.pending else "") ~ (c.run_id or "no run yet") ~ ((" · " ~ c.state) if c.state else ""), "/cases/" ~ c.id) }}
+    {% if c.lake_error %}<p class="source">{{ c.lake_error }}</p>{% endif %}</li>
+  {% endfor %}
+</ul>
+<span class="case-question" hidden></span>
 {% else %}
-<p class="empty">No cases registered. Set <span class="mono">ONTOFILL_CONSOLE_CASES</span> to <span class="mono">id=/path/to/case,…</span>.</p>
+<div class="empty"><b>No cases registered</b><span>Set <span class="mono">ONTOFILL_CONSOLE_CASES</span> to <span class="mono">id=/path/to/case,…</span>.</span></div>
 {% endif %}
 {% endblock %}

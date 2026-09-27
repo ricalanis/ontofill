@@ -1,31 +1,62 @@
 {% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
 {% block title %}{{ case.title }}{% endblock %}
 {% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action"} %}
+{% set RUN_STATE = {"running": "run", "paused": "pause", "failed": "block", "done": "done"} %}
+{% set QUESTIONS = [
+  ("operation", "What is the engine doing right now?", "Runs, the P1–P5 pipeline, loop threads, who decided each step"),
+  ("definition", "How was the question turned into a contract?", "Brief → PRD drafts and reasons → DoD with basis → ontology"),
+  ("discovery", "Where did it look, and why trust each source?", "Discovery funnel, authority decisions, P4 plans"),
+  ("pages", "Which pages did it visit, and what did it do?", "Captures per source, verdicts, site graphs, live view"),
+  ("entities", "Why is this value here?", "Entity browser → evidence → step → plan → objective → PRD → brief"),
+  ("output", "How close is it to done?", "DoD progress, completeness heatmap, gap-loop decisions"),
+  ("failures", "What went wrong, and what was contained?", "Failures, stops, quarantines, limit kills, six checkpoints"),
+  ("cost", "What did it cost, and where did the money go?", "By phase, model, mode and source; per gold value"),
+  ("learning", "Did it get better or cheaper over time?", "Repairs, promoted macros, share of code-only steps"),
+  ("compare", "Same engine, another question: how do two cases compare?", "Case vs case side by side; runs of this case under Compare runs"),
+] %}
+{% set slugs = case_views|map(attribute="slug")|list %}
 {% block main %}
-<section class="page-head">
+<section class="view-head">
   <h1>{{ case.title }}</h1>
-  <p class="note muted">Case <span class="mono">{{ case.id }}</span>{% if domain and domain.usable() %} · about {{ domain.class_label(plural=True)|lower }}{% endif %}</p>
+  <p class="source">case {{ case.id }}{% if domain and domain.usable() %} · primary class: {{ domain.class_label(plural=True)|lower }}{% endif %}</p>
 </section>
 {% include "_question.html" %}
 
-<section class="block" aria-labelledby="latest-h">
-  <h2 id="latest-h">Latest run</h2>
-  {% if latest %}
-  <p><a class="mono" href="{{ base }}/runs/{{ latest.run_id }}">{{ latest.run_id }}</a> · <span class="run-state run-state--{{ latest.state }}">{{ latest.state or "unknown" }}</span>{% if latest.checkpoint_pending %} · paused at <strong>{{ latest.checkpoint_pending }}</strong>{% endif %}</p>
-  {% else %}<p class="empty">No run feed for this case yet{% if lake_error %} ({{ lake_error }}){% endif %}.</p>{% endif %}
-</section>
+<div class="panels">
+  <section class="panel" aria-labelledby="now-h">
+    <h2 class="section-h" id="now-h">Waiting for a decision · latest run</h2>
+    <ul class="strips">
+      {% if latest %}
+      <li>{{ v.strip(RUN_STATE.get(latest.state or "", "run"), "Latest run " ~ latest.run_id, (latest.state or "no status yet") ~ ((" · paused at " ~ latest.checkpoint_pending) if latest.checkpoint_pending else ""), None, base ~ "/runs/" ~ latest.run_id) }}</li>
+      {% else %}
+      <li>{{ v.strip("none", "No run feed for this case yet", lake_error or "The engine writes runs/<case>/<run>/status.json when a run starts.") }}</li>
+      {% endif %}
+      {% for a in waiting %}
+      <li>{{ v.strip("need", (("Action: " ~ (a.meta.intended_action or "unnamed action")) if a.checkpoint == "action" else CP_NAMES.get(a.checkpoint, "Checkpoint")) ~ " awaits your review", a.phase_dir ~ ((" · " ~ a.meta.reason) if a.meta.reason else ""), None, base ~ "/approvals/" ~ a.phase_dir) }}</li>
+      {% else %}
+      <li>{{ v.strip("done", "Nothing is waiting for a decision") }}</li>
+      {% endfor %}
+    </ul>
+  </section>
 
-<section class="block" aria-labelledby="pending-h">
-  <h2 id="pending-h">Waiting for a decision</h2>
-  {% if waiting %}
-  <ul class="plain">{% for a in waiting %}<li><a href="{{ base }}/approvals/{{ a.phase_dir }}">{% if a.checkpoint == "action" %}Action: {{ a.meta.intended_action or "unnamed action" }}{% else %}{{ CP_NAMES.get(a.checkpoint, "Checkpoint") }}{% endif %}</a> <span class="mono muted">{{ a.phase_dir }}</span></li>{% endfor %}</ul>
-  {% else %}<p class="empty">Nothing is waiting.</p>{% endif %}
-</section>
+  <section class="panel" aria-labelledby="ask-h">
+    <h2 class="section-h" id="ask-h">Ask the engine</h2>
+    <ol class="questions">
+      {% for slug, q, what in QUESTIONS %}
+      <li>{% set href = ("/compare?a=" ~ case.id) if slug == "compare" else base ~ "/" ~ slug %}
+        {% if slug in slugs or slug == "compare" %}<a href="{{ href }}"><b>{{ q }}</b><small>{{ what }}</small></a>
+        {% else %}<span class="questions__off"><b>{{ q }}</b><small>{{ what }} · view not installed</small></span>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+</div>
 
 {% if log %}
-<section class="block" aria-labelledby="log-h">
-  <h2 id="log-h">Decision history</h2>
-  {% include "_decisions.html" %}
+<section aria-labelledby="log-h">
+  <h2 class="section-h" id="log-h">Decision history</h2>
+  <div class="table-wrap">{% include "_decisions.html" %}</div>
 </section>
 {% endif %}
 {% endblock %}

@@ -1,26 +1,40 @@
-/* Hallmark · custom · tone: utilitarian case file · reference: public-records ledgers and court dockets
- * paper: cool white oklch(98.4% 0.004 240) · ink: oklch(22% 0.02 255) · marker: oklch(90% 0.15 95)
- * type: Public Sans (public-sector UI face) + IBM Plex Mono (IDs, RFCs, keys: dotted zero, no O/0 confusion)
- * axes: light / grotesk-sans + mono / warm marker accent, burnt-orange signals (not alarm red)
+/* Hallmark · custom · identity: Tira (Ontofill Console, the engine's B2B instrument)
+ * reference: air-traffic flight progress strips: one strip per thing in motion, its state on the left edge
+ * dark-first graphite for long sessions, light theme for daylight (prefers-color-scheme or [data-theme])
+ * type: Barlow Semi Condensed (DIN-like instrument labels) + Red Hat Mono (ids, digests, numbers)
+ * status reads without colour: each state has a glyph and an edge pattern too (see tira.css .st-*)
+ * Deliberately unlike the case products built on the engine (light paper, receipts, Public Sans).
  */
 :root {
-  --color-paper: oklch(98.4% 0.004 240);
-  --color-paper-2: oklch(95.6% 0.006 240);
-  --color-paper-3: oklch(92.5% 0.008 240);
-  --color-rule: oklch(86% 0.01 245);
-  --color-rule-strong: oklch(72% 0.012 250);
-  --color-ink: oklch(22% 0.02 255);
-  --color-ink-2: oklch(42% 0.02 255);
-  --color-ink-3: oklch(55% 0.015 255);
-  --color-marker: oklch(90% 0.15 95);
-  --color-marker-soft: oklch(95% 0.08 95);
-  --color-signal: oklch(52% 0.15 45);
-  --color-signal-soft: oklch(95% 0.035 55);
-  --color-focus: oklch(45% 0.19 260);
-  --color-ok: oklch(46% 0.09 160);
+  color-scheme: dark;
+  --bg: oklch(18.5% 0.008 250);
+  --panel: oklch(22% 0.01 250);
+  --strip: oklch(25.5% 0.012 250);
+  --strip-hover: oklch(28.5% 0.014 250);
+  --line: oklch(34% 0.012 250);
+  --line-strong: oklch(58% 0.014 250);
+  --fg: oklch(94% 0.006 250);
+  --fg-2: oklch(79% 0.01 250);
+  --fg-3: oklch(68% 0.012 250);
 
-  --font-ui: "Public Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* states: running · needs you · paused · blocked/failed · quarantined · done/passed */
+  --st-run: oklch(78% 0.12 215);
+  --st-need: oklch(83% 0.15 82);
+  --st-pause: oklch(72% 0.02 250);
+  --st-block: oklch(70% 0.18 27);
+  --st-quar: oklch(74% 0.16 330);
+  --st-done: oklch(78% 0.13 150);
+  --on-state: oklch(18% 0.01 250);   /* text on a filled state chip */
+
+  /* heat scale for completeness (sequential, one hue) */
+  --heat-0: oklch(30% 0.02 150);
+  --heat-1: oklch(48% 0.08 150);
+  --heat-2: oklch(64% 0.11 150);
+  --heat-3: oklch(78% 0.13 150);
+
+  --focus: oklch(83% 0.15 82);
+  --font-ui: "Barlow Semi Condensed", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Red Hat Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
@@ -38,32 +52,71 @@
   --space-xl: 32px;
   --space-2xl: 48px;
 
-  --radius-sm: 2px;
-  --rule-hair: 1px solid var(--color-rule);
-  --rule-strong: 2px solid var(--color-ink);
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --edge: 6px;                        /* strip state edge */
 
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --dur-fast: 120ms;
   --dur-base: 180ms;
+
+  /* aliases: the ported pages (runs, approvals, spend, evidence) read these names */
+  --color-paper: var(--bg);
+  --color-paper-2: var(--panel);
+  --color-paper-3: var(--strip);
+  --color-rule: var(--line);
+  --color-rule-strong: var(--line-strong);
+  --color-ink: var(--fg);
+  --color-ink-2: var(--fg-2);
+  --color-ink-3: var(--fg-3);
+  --color-marker: var(--st-need);
+  --color-marker-soft: oklch(34% 0.06 82);
+  --color-signal: var(--st-block);
+  --color-signal-soft: oklch(30% 0.06 27);
+  --color-focus: var(--focus);
+  --color-ok: var(--st-done);
+  --rule-hair: 1px solid var(--line);
+  --rule-strong: 2px solid var(--fg-2);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-paper: oklch(20% 0.012 255);
-    --color-paper-2: oklch(24% 0.014 255);
-    --color-paper-3: oklch(29% 0.016 255);
-    --color-rule: oklch(34% 0.015 255);
-    --color-rule-strong: oklch(48% 0.015 255);
-    --color-ink: oklch(94% 0.006 240);
-    --color-ink-2: oklch(80% 0.01 240);
-    --color-ink-3: oklch(68% 0.012 240);
-    --color-marker: oklch(52% 0.11 95);
-    --color-marker-soft: oklch(33% 0.06 95);
-    --color-signal: oklch(75% 0.13 55);
-    --color-signal-soft: oklch(30% 0.05 50);
-    --color-focus: oklch(75% 0.14 260);
-    --color-ok: oklch(76% 0.1 160);
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: oklch(96.5% 0.004 250);
+    --panel: oklch(99% 0.002 250);
+    --strip: oklch(98.5% 0.003 250);
+    --strip-hover: oklch(95% 0.006 250);
+    --line: oklch(86% 0.008 250);
+    --line-strong: oklch(62% 0.012 250);
+    --fg: oklch(20% 0.012 250);
+    --fg-2: oklch(38% 0.012 250);
+    --fg-3: oklch(46% 0.012 250);
+    --st-run: oklch(48% 0.13 228);
+    --st-need: oklch(52% 0.13 68);
+    --st-pause: oklch(48% 0.02 250);
+    --st-block: oklch(50% 0.19 27);
+    --st-quar: oklch(49% 0.18 330);
+    --st-done: oklch(46% 0.12 150);
+    --on-state: oklch(99% 0.002 250);
+    --heat-0: oklch(92% 0.02 150);
+    --heat-1: oklch(78% 0.08 150);
+    --heat-2: oklch(62% 0.11 150);
+    --heat-3: oklch(46% 0.12 150);
+    --focus: oklch(48% 0.13 228);
+    --color-marker-soft: oklch(94% 0.05 82);
+    --color-signal-soft: oklch(95% 0.03 27);
   }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: oklch(96.5% 0.004 250); --panel: oklch(99% 0.002 250); --strip: oklch(98.5% 0.003 250);
+  --strip-hover: oklch(95% 0.006 250); --line: oklch(86% 0.008 250); --line-strong: oklch(62% 0.012 250);
+  --fg: oklch(20% 0.012 250); --fg-2: oklch(38% 0.012 250); --fg-3: oklch(46% 0.012 250);
+  --st-run: oklch(48% 0.13 228); --st-need: oklch(52% 0.13 68); --st-pause: oklch(48% 0.02 250);
+  --st-block: oklch(50% 0.19 27); --st-quar: oklch(49% 0.18 330); --st-done: oklch(46% 0.12 150);
+  --on-state: oklch(99% 0.002 250); --heat-0: oklch(92% 0.02 150); --heat-1: oklch(78% 0.08 150);
+  --heat-2: oklch(62% 0.11 150); --heat-3: oklch(46% 0.12 150); --focus: oklch(48% 0.13 228);
+  --color-marker-soft: oklch(94% 0.05 82); --color-signal-soft: oklch(95% 0.03 27);
 }

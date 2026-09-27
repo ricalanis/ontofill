@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Output · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-output.css">{% endblock %}
+{% block main %}
+{{ v.head("Output", "How close the run is to its definition of done, where each entity is still missing values, and what the gap loop decided about it.", "gold/<case>/<run>/entities.jsonl · metrics.json · ontology.json · dod-queries.json · runs/<case>/<run>/trace.live.jsonl") }}
+{% if m.brief %}<p class="quote case-q">{{ m.brief }}</p>{% endif %}
+{% if m.gold_run_ids %}
+<p class="runpick">gold run {% for r in m.gold_run_ids[-12:] %}<a href="?run={{ r|urlencode }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% endfor %}{% if m.gold_run_ids|length > 12 %} <span>(latest 12 of {{ m.gold_run_ids|length }})</span>{% endif %}</p>
+{% endif %}
+
+{% if m.empty %}
+{{ v.empty(m.empty, "No gold export yet" if not m.run_id else "No gold export for " ~ m.run_id ~ " yet") }}
+{% else %}
+
+<h2 class="section-h" id="dod">Definition of done · {{ m.dod_met }} of {{ m.dod|length }} met</h2>
+{% if m.mock %}<p class="note"><span class="chip st-pause">does not count</span> This run used recorded (simulated) inference: its criteria are shown for rehearsal and never count as met.</p>{% endif %}
+<div class="dod-list" role="list">
+  {% for r in m.dod %}
+  <div class="meters dod-row" role="listitem">
+  <div class="crit">{{ r.label }}<small>{{ r.query }}</small></div>
+  <div class="meter st-{{ r.state }}" style="--v: {{ r.v }}%;{% if r.t is not none %} --t: {{ r.t }}%;{% endif %}" role="img" aria-label="{{ r.shown if r.shown is not none else 'unknown' }} of target {{ r.target }}">
+    <span></span>{% if r.t is not none %}<i title="target {{ r.target }}"></i>{% endif %}
+  </div>
+  <div class="num">{{ r.shown if r.shown is not none else "—" }} / {{ r.target }}
+    {% if r.mock %}<span class="chip st-pause">mock</span>{% elif r.met %}<span class="chip st-done">met</span>{% else %}<span class="chip st-run">not yet</span>{% endif %}
+    {% if r.agrees == false %}<span class="chip st-block" title="engine reported {{ r.engine_actual }}">engine {{ r.engine_actual }}</span>{% endif %}
+  </div>
+  </div>
+  {% endfor %}
+</div>
+<p class="note">Actual values recomputed from entities.jsonl{% if m.dod and m.dod[0].source == "engine" %}, criteria from metrics.json dod[]{% elif m.dod and m.dod[0].source == "queries" %}, criteria from dod-queries.json{% else %}; no criteria in metrics.json or dod-queries.json, so defaults are shown{% endif %}. The tick marks the target.</p>
+
+<h2 class="section-h" id="heat">Completeness · {{ m.heat.class_label }} × {% if m.heat.dod_columns %}DoD properties{% else %}properties (the ontology marks none as DoD){% endif %}</h2>
+{% if m.empty_heat %}{{ v.empty(m.empty_heat) }}{% else %}
+<p class="note">{{ m.heat.n_rows }} {{ m.heat.class_label|lower }}, sorted by completeness; {{ m.heat.meeting }} at ≥ {{ (m.heat.threshold * 100)|round|int }}% of these properties{% if not m.heat.threshold_stated %} (default threshold){% endif %}. Each cell opens that value and its evidence.</p>
+<p class="legend">{% for k in ["gold", "weak", "conflict", "missing"] %}<span><span class="sw cell--{{ k }}"></span>{{ STATE_LABELS[k] }}</span>{% endfor %}</p>
+<div class="heat-wrap">
+  <div class="heat" style="--cols: {{ m.heat.columns|length }}">
+    <span class="h"></span>
+    {% for c in m.heat.columns %}<span class="h h--col" title="{{ c.label }}">{{ c.label }}</span>{% endfor %}
+    {% for r in m.heat.rows %}
+    <span class="h h--row" title="{{ r.title }} · {{ (r.ratio * 100)|round|int }}%"><a href="{{ r.href }}">{{ r.title }}</a></span>
+    {% for c in r.cells %}<a class="cell--{{ c.state }}" href="{{ c.href }}" title="{{ r.title }} · {{ m.heat.columns[loop.index0].label }}: {{ STATE_LABELS[c.state] }}" aria-label="{{ r.title }}, {{ m.heat.columns[loop.index0].label }}: {{ STATE_LABELS[c.state] }}"></a>{% endfor %}
+    {% endfor %}
+    <span class="h h--sum">all {{ m.heat.n_rows }}</span>
+    {% for c in m.heat.columns %}<span class="pct" title="{{ c.label }}: {{ c.gold }} gold, {{ c.weak }} weak, {{ c.conflict }} conflict, {{ c.missing }} missing">{{ (c.ratio * 100)|round|int }}%</span>{% endfor %}
+  </div>
+</div>
+{% if m.heat.capped %}<p class="heat-more">Showing {{ m.heat.rows|length }} of {{ m.heat.n_rows }}. <a href="?run={{ m.run_id|urlencode }}&amp;all=1#heat">Show all</a></p>{% endif %}
+{% endif %}
+
+<div class="panels">
+  <section class="panel">
+    <h2 class="section-h">Gap loop decisions</h2>
+    {% if m.gap_decisions %}
+    <ul class="strips">
+      {% for d in m.gap_decisions %}<li>{{ v.strip(d.state, "Iteration " ~ d.iteration ~ " · " ~ d.reopen_label, d.reason or d.stop_label or d.verdict, d.step_id, d.href) }}</li>{% endfor %}
+    </ul>
+    {% if m.reopened %}<p class="note">Reopened: {% for ph, n in m.reopened %}phase {{ ph }} × {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+    {% else %}{{ v.empty(m.empty_gap, "No gap-loop decisions in this run") }}{% endif %}
+  </section>
+  <section class="panel">
+    <h2 class="section-h">Conflicts · {{ m.conflicts_kept }} kept</h2>
+    {% if m.conflicts %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Property</th><th class="num">Conflict kept</th><th class="num">Gold</th><th class="num">Gold, ≥ 2 sources</th><th class="num">Missing</th></tr></thead>
+      <tbody>{% for c in m.conflicts %}<tr><td>{{ c.label }}</td><td class="num">{{ c.conflict }}</td><td class="num">{{ c.gold }}</td><td class="num">{{ c.multi_source }}</td><td class="num">{{ c.missing }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    <p class="note">Resolved conflicts are not in the export yet: a gold value backed by two or more sources is the closest signal.</p>
+    {% else %}<p class="note">No values of the primary class.</p>{% endif %}
+  </section>
+</div>
+
+<h2 class="section-h" id="growth">Gold growth over runs</h2>
+{% set g = m.growth %}
+{% if g.chart %}
+<div class="table-wrap"><svg class="growth" viewBox="0 0 640 240" role="img" aria-label="{{ g.n_runs }} gold runs: entities found and entities meeting the DoD per run">
+  {% for t in g.chart.yticks %}<line class="grid" x1="{{ g.chart.x0 }}" x2="{{ g.chart.x1 }}" y1="{{ t.y }}" y2="{{ t.y }}"/><text x="{{ g.chart.x0 - 6 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.v }}</text>{% endfor %}
+  <line class="axis" x1="{{ g.chart.x0 }}" x2="{{ g.chart.x0 }}" y1="{{ g.chart.y1 }}" y2="{{ g.chart.y0 }}"/>
+  <line class="axis" x1="{{ g.chart.x0 }}" x2="{{ g.chart.x1 }}" y1="{{ g.chart.y0 }}" y2="{{ g.chart.y0 }}"/>
+  <text x="12" y="{{ (g.chart.y0 + g.chart.y1) / 2 }}" transform="rotate(-90 12 {{ (g.chart.y0 + g.chart.y1) / 2 }})" text-anchor="middle">{{ m.primary_label|lower }}</text>
+  {% for s in g.chart.series %}
+  {% if g.n_runs > 1 %}<path class="series {{ s.cls }}" d="{{ s.path }}"/>{% endif %}
+  {% for p in s.pts %}<circle class="{{ s.cls }}" cx="{{ p.x }}" cy="{{ p.y }}" r="4"><title>{{ p.run }} · {{ s.label }}: {{ p.v }}</title></circle>{% endfor %}
+  {% endfor %}
+  {% for xl in g.chart.xlabels %}{% if g.n_runs <= 12 or loop.first or loop.last %}<text x="{{ xl.x }}" y="{{ g.chart.y0 + 18 }}" text-anchor="middle">{{ xl.short }}</text>{% endif %}{% endfor %}
+  <text x="{{ (g.chart.x0 + g.chart.x1) / 2 }}" y="232" text-anchor="middle">gold run (oldest → newest)</text>
+</svg></div>
+<p class="legend"><span class="swatch-run"><i></i>{{ m.primary_label }} found</span><span class="swatch-done"><i></i>meeting the DoD</span><span>n = {{ g.n_runs }} run{{ "s" if g.n_runs != 1 }}{% if g.capped %} (latest {{ g.n_runs }}){% endif %}</span></p>
+{% if g.n_runs == 1 %}<p class="note">One gold run so far: a single point per series. The chart becomes a line once the case has more runs.</p>{% endif %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th>Gold run</th><th class="num">Found</th><th class="num">Meeting DoD</th><th>Inference</th></tr></thead>
+  <tbody>{% for p in g.runs|reverse %}<tr><td class="mono"><a href="?run={{ p.run_id|urlencode }}">{{ p.run_id }}</a></td><td class="num">{{ p.entities_total }}</td><td class="num">{{ p.meeting_dod }}</td><td>{{ p.backend or "—" }}{% if p.backend == "recorded" %} (does not count){% endif %}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+
+<h2 class="section-h" id="coverage">Sources × properties</h2>
+{% if m.empty_cov %}{{ v.empty(m.empty_cov) }}{% else %}
+<p class="note">Values whose evidence comes from each source, per property (all classes).</p>
+<div class="table-wrap"><table class="grid-table cov">
+  <thead><tr><th>Source</th>{% for c in m.coverage.columns %}<th class="num" title="{{ c.id }}">{{ c.label }}</th>{% endfor %}<th class="num">Total</th></tr></thead>
+  <tbody>{% for r in m.coverage.rows %}<tr><th scope="row" class="mono">{{ r.source_id }}{% if r.source_type %}<small>{{ r.source_label }}</small>{% endif %}</th>{% for c in r.cells %}<td class="num lvl-{{ c.lvl }}">{{ c.n }}</td>{% endfor %}<td class="num">{{ r.total }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+
+<h2 class="section-h" id="exports">Exports · {{ m.run_id }}</h2>
+{% if m.exports %}
+<ul class="strips">{% for x in m.exports %}<li>{{ v.strip("none", x.name, "raw gold file, read-only", (x.bytes // 1024) ~ " KB" if x.bytes >= 1024 else x.bytes ~ " B", x.href) }}</li>{% endfor %}</ul>
+{% else %}<p class="note">No gold files readable for this run.</p>{% endif %}
+{% endif %}
+
+{% if m.empty and m.gap_decisions %}
+<h2 class="section-h">Gap loop decisions (live run {{ m.live_run_id }})</h2>
+<ul class="strips">{% for d in m.gap_decisions %}<li>{{ v.strip(d.state, "Iteration " ~ d.iteration ~ " · " ~ d.reopen_label, d.reason or d.stop_label or d.verdict, d.step_id, d.href) }}</li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

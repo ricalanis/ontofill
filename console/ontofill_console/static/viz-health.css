@@ -1,0 +1,86 @@
+/* Worker `health` views (failures, cost, learning, compare). Colours only through tokens.css. */
+
+.hv-question { margin: 0 0 var(--space-md); }
+.hv-question b { display: block; font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.hv-runpick { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-sm); align-items: center; font: var(--text-xs) var(--font-mono);
+  color: var(--fg-3); margin: 0 0 var(--space-md); }
+.hv-runpick a[aria-current="true"] { color: var(--fg); font-weight: 600; text-decoration: none; border-bottom: 2px solid var(--fg); }
+
+/* counts row: one tile per kind, state glyph + number */
+.hv-tally { list-style: none; margin: 0 0 var(--space-md); padding: 0; display: grid; gap: var(--space-2xs);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); }
+.hv-tally li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-xs); align-items: baseline; background: var(--strip);
+  border: 1px solid var(--line); border-left: 3px solid var(--c, var(--line)); padding: var(--space-2xs) var(--space-xs); font-size: var(--text-sm); }
+.hv-tally li::before { content: var(--g); color: var(--c); font: 700 var(--text-sm) var(--font-mono); }
+.hv-tally li.is-zero { --c: var(--line); --g: "·"; color: var(--fg-3); }
+.hv-tally .num { font: 600 var(--text-sm) var(--font-mono); }
+
+/* checkpoint grid: jobs × six checkpoints, glyph + fill + border (never colour alone) */
+.hv-ck { display: grid; grid-template-columns: minmax(9rem, 16rem) repeat(6, 4.2rem) minmax(8rem, 1fr) minmax(10rem, 2fr) minmax(7rem, 1fr);
+  gap: 3px; font: var(--text-xs) var(--font-mono); align-items: center; min-width: 60rem; }
+.hv-ck .cellnote { padding-left: var(--space-xs); }
+.hv-ck .h { color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hv-ck .h--c { text-align: center; }
+.hv-ck .ck { display: grid; place-items: center; height: 22px; border-radius: 2px; font-weight: 700; }
+.hv-ck .ck--pass { background: var(--heat-2); color: var(--on-state); }
+.hv-ck .ck--fail { background: repeating-linear-gradient(135deg, var(--st-block) 0 3px, transparent 3px 6px); border: 1px solid var(--st-block); color: var(--fg); }
+.hv-ck .ck--pending { border: 1px dashed var(--line-strong); color: var(--fg-3); }
+.hv-ck .job { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hv-ck .tot { font-weight: 600; }
+.hv-ck .cellnote { color: var(--fg-2); overflow-wrap: anywhere; }
+.hv-key { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-sm); font: var(--text-xs) var(--font-mono); color: var(--fg-2); margin: var(--space-2xs) 0 0; }
+.hv-key .ck { display: inline-grid; place-items: center; width: 1.6em; height: 1.3em; margin-right: 4px; vertical-align: -2px; border-radius: 2px; font-weight: 700; }
+.hv-key .ck--pass { background: var(--heat-2); color: var(--on-state); }
+.hv-key .ck--fail { border: 1px solid var(--st-block); color: var(--fg); background: repeating-linear-gradient(135deg, var(--st-block) 0 3px, transparent 3px 6px); }
+.hv-key .ck--pending { border: 1px dashed var(--line-strong); color: var(--fg-3); }
+
+/* share bars with a label column */
+.hv-bars { display: grid; gap: var(--space-sm); }
+.hv-bars h3 { font-size: var(--text-sm); font-weight: 600; margin: 0 0 var(--space-2xs); }
+.hv-bars .legend b { color: var(--fg); font-weight: 600; }
+.hv-note { color: var(--fg-3); font-size: var(--text-sm); margin: var(--space-2xs) 0 0; }
+.hv-req { font: var(--text-xs) var(--font-mono); color: var(--st-need); overflow-wrap: anywhere; }
+
+/* big numbers */
+.hv-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 10rem), 1fr)); gap: var(--space-2xs); margin: 0 0 var(--space-md); }
+.hv-stats div { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--space-xs) var(--space-sm); min-width: 0; }
+.hv-stats dt { font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.hv-stats dd { margin: 0; font: 600 var(--text-lg) var(--font-mono); overflow-wrap: anywhere; }
+.hv-stats dd small { display: block; font: var(--text-xs) var(--font-mono); color: var(--fg-3); }
+
+/* small line chart */
+.hv-chart { width: 100%; max-width: 44rem; height: auto; }
+.hv-chart .axis { stroke: var(--line-strong); stroke-width: 1; }
+.hv-chart .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 3; }
+.hv-chart .line { stroke: var(--st-done); stroke-width: 2; fill: none; }
+.hv-chart .pt { fill: var(--st-done); stroke: var(--bg); stroke-width: 1.5; }
+.hv-chart text { fill: var(--fg-2); font: 11px var(--font-mono); }
+.hv-chart .val { fill: var(--fg); font-weight: 600; }
+
+/* compare: two columns that stack on phones */
+.hv-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); }
+.hv-cols > section { min-width: 0; }
+.hv-row-h { grid-column: 1 / -1; margin-bottom: calc(-1 * var(--space-xs)); }
+.hv-pick { display: flex; flex-wrap: wrap; gap: var(--space-xs); align-items: end; margin: 0 0 var(--space-md); font-size: var(--text-sm); }
+.hv-pick label { display: grid; gap: 2px; color: var(--fg-3); font: var(--text-xs) var(--font-mono); }
+.hv-pick select { font: var(--text-sm) var(--font-ui); background: var(--panel); color: var(--fg); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); padding: 3px 6px; max-width: 100%; }
+.hv-delta--up { color: var(--st-done); } .hv-delta--down { color: var(--st-block); } .hv-delta--same { color: var(--fg-3); }
+.hv-delta--up::before { content: "▲ "; } .hv-delta--down::before { content: "▼ "; } .hv-delta--same::before { content: "= "; }
+.hv-list { margin: 0; padding-left: 1.2em; font-size: var(--text-sm); }
+.hv-list li { overflow-wrap: anywhere; }
+
+.hv-cols > section > .panel + .panel { margin-top: var(--space-xs); }
+
+/* meter rows: label, meter, number kept together per row (the meter drops under its label on phones) */
+.hv-mrows { display: grid; gap: var(--space-2xs); font-size: var(--text-sm); margin-top: var(--space-xs); }
+.hv-mrow { display: grid; grid-template-columns: minmax(8rem, 16rem) minmax(0, 1fr) auto; gap: 2px var(--space-sm); align-items: center; }
+.hv-mrow .num { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
+.hv-mrows--narrow .hv-mrow, .hv-cols .hv-mrow { grid-template-columns: minmax(0, 1fr) auto; }
+.hv-mrows--narrow .hv-mrow .meter, .hv-cols .hv-mrow .meter { grid-column: 1 / -1; order: 3; }
+
+@media (max-width: 640px) {
+  .hv-cols { grid-template-columns: minmax(0, 1fr); }
+  .hv-mrow { grid-template-columns: minmax(0, 1fr) auto; }
+  .hv-mrow .meter { grid-column: 1 / -1; order: 3; }
+}

@@ -1,0 +1,67 @@
+/* Definition (Q2) and Discovery (Q3) views. Tira components first; only what they lack lives here. Colours via tokens. */
+
+/* the vertical path: numbered steps joined by a rule */
+.path { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.path__step { position: relative; padding: 0 0 var(--space-lg) var(--space-lg); border-left: 2px solid var(--line); margin-left: 10px; min-width: 0; }
+.path__step:last-child { border-left-color: transparent; padding-bottom: 0; }
+.path__step::before { content: attr(data-n); position: absolute; left: -12px; top: 0; width: 22px; height: 22px; display: grid; place-items: center;
+  font: 600 var(--text-xs) var(--font-mono); background: var(--bg); border: 2px solid var(--line-strong); border-radius: 50%; color: var(--fg-2); }
+.path__step.is-need::before { border-color: var(--st-need); color: var(--st-need); }
+.path__step > h2 { margin: 2px 0 var(--space-2xs); font-size: var(--text-lg); font-weight: 600; }
+.path__src { margin: 0 0 var(--space-xs); font: var(--text-xs) var(--font-mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.path__src a { color: var(--fg-2); }
+.path__lede { margin: 0 0 var(--space-xs); color: var(--fg-2); font-size: var(--text-sm); max-width: 90ch; }
+
+.runline { margin: 0 0 var(--space-md); font: var(--text-xs) var(--font-mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.runline a { white-space: normal; word-break: break-all; }
+.runline a[aria-current="true"] { color: var(--fg); font-weight: 600; }
+
+/* PRD revision timeline: draft → human reason → draft */
+.revs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2xs); }
+.rev { background: var(--strip); border: 1px solid var(--line); border-left: var(--edge) solid var(--c, var(--line-strong)); border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm); min-width: 0; }
+.rev.st-pause { border-left-style: double; }
+.rev__h { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-sm); align-items: baseline; }
+.rev__h b { font-weight: 600; }
+.rev small, .rev__meta { font: var(--text-xs) var(--font-mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.rev__why { margin: var(--space-2xs) 0 0; font-size: var(--text-sm); }
+.rev__why q { color: var(--fg); }
+.revgap { margin: 0 0 0 var(--space-md); padding: var(--space-2xs) 0 var(--space-2xs) var(--space-sm); border-left: 2px dashed var(--line-strong);
+  font-size: var(--text-sm); color: var(--fg-2); min-width: 0; }
+.revgap summary { cursor: pointer; font: var(--text-xs) var(--font-mono); color: var(--fg-2); }
+.diff .hunk { color: var(--fg-3); }
+
+/* compact tables and lists inside the path */
+.basis-quote { display: block; margin-top: 2px; }
+.pubs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2xs); }
+.pubs li { font-size: var(--text-sm); }
+.doms { font: var(--text-xs) var(--font-mono); color: var(--fg-2); overflow-wrap: anywhere; }
+.tax-nodes { list-style: none; margin: var(--space-2xs) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
+.tax-nodes .chip { white-space: normal; }
+.nums { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-md); margin: 0 0 var(--space-xs); font: var(--text-xs) var(--font-mono); color: var(--fg-2); }
+.nums b { color: var(--fg); font-size: var(--text-sm); }
+.props { list-style: none; margin: 0; padding: 0; font-size: var(--text-sm); display: grid; gap: 1px; }
+.props li { display: flex; flex-wrap: wrap; gap: 0 var(--space-xs); align-items: baseline; }
+.props code { font-size: var(--text-xs); color: var(--fg-3); }
+.dodmark { font: 600 var(--text-xs) var(--font-mono); color: var(--st-need); }
+
+/* ontology graph: the SVG keeps a legible minimum width and scrolls sideways on phones */
+.graph-wrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+.graph-wrap .graph { display: block; width: 100%; max-width: 880px; min-width: 560px; max-height: none; margin: 0 auto; }
+.graph .edge--sym { stroke-dasharray: 5 3; }
+.graph .elabel { fill: var(--fg-2); font: 11px var(--font-mono); paint-order: stroke; stroke: var(--panel); stroke-width: 4px; }
+.graph .arrow { fill: var(--st-run); }
+.graph .node--primary text:first-of-type { font-weight: 700; }
+
+/* discovery: funnels per provider, the source review */
+.funnels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: var(--space-md); }
+.funnel-card { min-width: 0; }
+.funnel-card h3 { margin: 0 0 var(--space-2xs); font-size: var(--text-base); display: flex; flex-wrap: wrap; gap: var(--space-xs); align-items: baseline; }
+.funnel-card h3 small { font: var(--text-xs) var(--font-mono); color: var(--fg-3); }
+.funnel .fill.is-zero { background: transparent; border: 1px dashed var(--line-strong); }
+.dec { white-space: nowrap; }
+.why { display: block; font-size: var(--text-xs); color: var(--fg-3); overflow-wrap: anywhere; }
+.host { font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.grid-table td.wrap { min-width: 14rem; }
+.leads-more summary { cursor: pointer; font: var(--text-xs) var(--font-mono); color: var(--fg-2); margin: var(--space-xs) 0; }
+.graph .node text { stroke: none; }

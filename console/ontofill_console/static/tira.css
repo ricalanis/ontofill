@@ -1,0 +1,184 @@
+/* Hallmark · identity: Tira · macrostructure: instrument (inbox of strips + drill-down panels) · tone: dense, calm, precise
+ * nav: masthead with cross-case tabs + a case sub-nav (scrolls sideways on phones) · footer: one-line colophon
+ * Components shared by every console view. Colours only through tokens.css. */
+
+html, body { overflow-x: clip; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: var(--text-base);
+  line-height: 1.42; font-variant-numeric: tabular-nums; }
+h1, h2, h3 { font-style: normal; letter-spacing: 0.005em; }
+h1 { font-size: var(--text-xl); font-weight: 600; }
+.mono, code { font-family: var(--font-mono); }
+a { color: inherit; text-decoration-color: var(--line-strong); text-underline-offset: 0.18em; }
+a:hover { background: none; text-decoration-color: var(--fg); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* shell ------------------------------------------------------------------------------------------------------ */
+.masthead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-xs) var(--space-md);
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { display: inline-flex; align-items: center; gap: var(--space-xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  text-decoration: none; white-space: nowrap; }
+.brand svg { flex: none; }
+.brand small { font: 500 var(--text-xs) var(--font-mono); letter-spacing: 0; text-transform: none; color: var(--fg-3); }
+.masthead .tabs, .subnav { display: flex; gap: var(--space-2xs) var(--space-md); min-width: 0; }
+.masthead .tabs a, .subnav a { text-decoration: none; color: var(--fg-2); font-weight: 500; white-space: nowrap; padding: var(--space-2xs) 0;
+  border-bottom: 2px solid transparent; }
+.masthead .tabs a:hover, .subnav a:hover { color: var(--fg); }
+.masthead .tabs a[aria-current="page"], .subnav a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--fg); }
+.whoami { margin-left: auto; font: var(--text-xs) var(--font-mono); color: var(--fg-3); white-space: nowrap; }
+.whoami--none { color: var(--st-need); }
+.subnav { align-items: center; padding: var(--space-2xs) var(--space-md); border-bottom: 1px solid var(--line); background: var(--bg);
+  overflow-x: auto; scrollbar-width: thin; }
+.subnav__case { font-weight: 700; color: var(--fg); white-space: nowrap; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; margin-right: var(--space-xs); }
+.count { display: inline-block; min-width: 1.4em; text-align: center; font: 600 var(--text-xs) var(--font-mono); background: var(--st-need);
+  color: var(--on-state); border-radius: 999px; padding: 0 5px; }
+main { padding: var(--space-md); max-width: 1480px; }
+.banner { margin: 0; padding: var(--space-2xs) var(--space-md); font-size: var(--text-sm); background: var(--strip); border-bottom: 1px solid var(--line); }
+.banner--sim { border-bottom: 2px solid var(--st-need); }
+.colophon { padding: var(--space-md); color: var(--fg-3); font-size: var(--text-sm); border-top: 1px solid var(--line); }
+
+/* view head: every view names the artifacts it reads ----------------------------------------------------------- */
+.view-head { display: grid; gap: var(--space-2xs); margin-bottom: var(--space-md); }
+.view-head p { color: var(--fg-2); max-width: 90ch; margin: 0; }
+.source { font: var(--text-xs) var(--font-mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.source::before { content: "reads "; }
+.section-h { font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-2);
+  margin: var(--space-lg) 0 var(--space-xs); }
+.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--space-md); align-items: start; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md);
+  min-width: 0; }
+.panel > .section-h:first-child { margin-top: 0; }
+
+/* states: colour + glyph + edge pattern ------------------------------------------------------------------------ */
+.st-run { --c: var(--st-run); --g: "▶"; }
+.st-need { --c: var(--st-need); --g: "◆"; }
+.st-pause { --c: var(--st-pause); --g: "‖"; }
+.st-block { --c: var(--st-block); --g: "■"; }
+.st-quar { --c: var(--st-quar); --g: "⊘"; }
+.st-done { --c: var(--st-done); --g: "✓"; }
+.st-none { --c: var(--line-strong); --g: "·"; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font: 600 var(--text-xs) var(--font-mono); color: var(--c); border: 1px solid var(--c);
+  border-radius: var(--radius-sm); padding: 0 6px; white-space: nowrap; }
+.chip::before { content: var(--g); }
+.chip.st-quar { border-style: dashed; }
+
+/* strips: the signature component ------------------------------------------------------------------------------ */
+.strips { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2xs); }
+.strip { display: grid; grid-template-columns: 1.6rem minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-sm); align-items: center;
+  background: var(--strip); border: 1px solid var(--line); border-left: var(--edge) solid var(--c, var(--line-strong)); border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm); text-decoration: none; color: inherit; }
+a.strip:hover { background: var(--strip-hover); }
+.strip.st-quar { border-left-style: dashed; }
+.strip.st-pause { border-left-style: double; }
+.strip__g { color: var(--c); font: 700 var(--text-base) var(--font-mono); text-align: center; }
+.strip__g::before { content: var(--g); }
+.strip__main { min-width: 0; }
+.strip__main b { font-weight: 600; }
+.strip__main small { display: block; color: var(--fg-3); font: var(--text-xs) var(--font-mono); overflow-wrap: anywhere; }
+.strip__meta { font: var(--text-xs) var(--font-mono); color: var(--fg-2); text-align: right; white-space: nowrap; }
+
+/* pipeline: five phases ----------------------------------------------------------------------------------------- */
+.pipe { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; }
+.pipe li { background: var(--strip); border: 1px solid var(--line); border-top: 4px solid var(--c, var(--line)); padding: var(--space-2xs) var(--space-xs);
+  min-width: 0; }
+.pipe b { display: block; font-size: var(--text-sm); }
+.pipe span { display: block; font: var(--text-xs) var(--font-mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.pipe li.is-current { outline: 2px solid var(--c); outline-offset: -2px; }
+.pipe .reopen { color: var(--st-need); }
+
+/* stacked share bar (modes, backends, cost) --------------------------------------------------------------------- */
+.bar { display: flex; height: 20px; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.bar > span { display: grid; place-items: center; min-width: 2px; font: 600 11px var(--font-mono); color: var(--on-state); overflow: hidden;
+  white-space: nowrap; background: var(--c); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-sm); font: var(--text-xs) var(--font-mono); color: var(--fg-2);
+  margin-top: var(--space-2xs); }
+.legend i { display: inline-block; width: 10px; height: 10px; background: var(--c); margin-right: 4px; vertical-align: -1px; }
+
+/* meter: progress toward a target, with the target tick ------------------------------------------------------- */
+.meter { position: relative; height: 12px; background: var(--strip); border: 1px solid var(--line); border-radius: 2px; }
+.meter > span { position: absolute; inset: 0 auto 0 0; width: var(--v); background: var(--c, var(--st-run)); }
+.meter > i { position: absolute; top: -3px; bottom: -3px; left: var(--t); width: 2px; background: var(--fg); }
+.meters { display: grid; grid-template-columns: minmax(8rem, 16rem) minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-sm); align-items: center;
+  font-size: var(--text-sm); }
+.meters .num { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
+
+/* heatmap: rows × columns, each cell a link -------------------------------------------------------------------- */
+.heat-wrap { overflow-x: auto; max-width: 100%; }
+.heat { display: grid; grid-template-columns: minmax(8rem, 14rem) repeat(var(--cols), minmax(1.6rem, 1fr)); gap: 2px; font: var(--text-xs) var(--font-mono); }
+.heat .h { color: var(--fg-3); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; align-self: end; }
+.heat .h--col { writing-mode: vertical-rl; transform: rotate(180deg); max-height: 9rem; justify-self: center; }
+.heat a, .heat .cell { display: block; height: 18px; border-radius: 2px; }
+.cell--gold { background: var(--heat-3); }
+.cell--conflict { background: repeating-linear-gradient(135deg, var(--st-need) 0 3px, transparent 3px 6px); border: 1px solid var(--st-need); }
+.cell--missing { border: 1px dashed var(--line-strong); }
+.cell--weak { background: var(--heat-1); }
+
+/* captures grid (bronze thumbnails) --------------------------------------------------------------------------- */
+.caps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-xs); }
+.cap { background: var(--strip); border: 1px solid var(--line); border-bottom: 3px solid var(--c, var(--line)); font: var(--text-xs) var(--font-mono);
+  min-width: 0; }
+.cap img, .cap .noimg { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; background: var(--panel); }
+.cap .noimg { display: grid; place-items: center; color: var(--fg-3); }
+.cap p { margin: 0; padding: 3px 6px; color: var(--fg-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* node-link graphs (plain SVG) --------------------------------------------------------------------------------- */
+.graph { width: 100%; height: auto; max-height: 70vh; }
+.graph .edge { stroke: var(--line-strong); stroke-width: 1.5; fill: none; }
+.graph .edge--rel { stroke: var(--st-run); }
+.graph .node rect, .graph .node circle { fill: var(--strip); stroke: var(--fg-2); stroke-width: 1.5; }
+.graph .node--primary rect, .graph .node--primary circle { stroke: var(--st-need); stroke-width: 2.5; }
+.graph text { fill: var(--fg); font: 12px var(--font-ui); }
+.graph .sub { fill: var(--fg-3); font: 10px var(--font-mono); }
+
+/* funnel ------------------------------------------------------------------------------------------------------ */
+.funnel { display: grid; gap: 3px; }
+.funnel > div { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr) 4rem; gap: var(--space-sm); align-items: center; font-size: var(--text-sm); }
+.funnel .fill { height: 16px; width: var(--v); min-width: 2px; background: var(--c, var(--st-run)); border-radius: 2px; }
+.funnel .num { font-family: var(--font-mono); text-align: right; }
+
+/* key-value, tables, empty states ----------------------------------------------------------------------------- */
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--space-sm); margin: 0; font-size: var(--text-sm); }
+.kv dt { color: var(--fg-3); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.table-wrap { overflow-x: auto; max-width: 100%; }
+.grid-table { border-collapse: collapse; width: 100%; font-size: var(--text-sm); }
+.grid-table th, .grid-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.grid-table thead th { font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.grid-table .num { text-align: right; font-family: var(--font-mono); }
+.empty { border: 1px dashed var(--line-strong); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); color: var(--fg-2);
+  display: grid; gap: var(--space-2xs); }
+.empty b { color: var(--fg); }
+.empty .gap { font: var(--text-xs) var(--font-mono); color: var(--st-need); }
+.quote { border-left: 3px solid var(--line-strong); padding-left: var(--space-xs); color: var(--fg-2); font-size: var(--text-sm); }
+.diff { font: var(--text-xs)/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line);
+  padding: var(--space-xs); max-height: 24rem; overflow: auto; }
+.diff .add { color: var(--st-done); } .diff .del { color: var(--st-block); }
+.btn, button { font: 600 var(--text-sm) var(--font-ui); letter-spacing: 0.02em; background: var(--fg); color: var(--bg); border: 1px solid var(--fg);
+  border-radius: var(--radius-sm); padding: 4px 12px; cursor: pointer; text-decoration: none; display: inline-block; }
+.btn--quiet { background: transparent; color: var(--fg); border-color: var(--line-strong); }
+.btn:hover { filter: brightness(1.1); }
+
+@media (max-width: 900px) {
+  .pipe { grid-template-columns: minmax(0, 1fr); }
+  .meters { grid-template-columns: minmax(0, 1fr) auto; grid-auto-flow: row dense; }
+  .meters .meter { grid-column: 1 / -1; }
+  .meters .num { grid-column: 2; }
+}
+@media (max-width: 640px) {
+  main { padding: var(--space-sm); }
+  .masthead .tabs { order: 3; flex-basis: 100%; overflow-x: auto; }
+  .strip { grid-template-columns: 1.2rem minmax(0, 1fr); }
+  .strip__meta { grid-column: 2; text-align: left; }
+  .funnel > div { grid-template-columns: minmax(0, 1fr) 3.5rem; }
+  .funnel .fill { grid-column: 1 / -1; order: 3; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* case hub: the ten questions, each one click from the case */
+.questions { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; counter-reset: q; }
+.questions li { counter-increment: q; }
+.questions a, .questions__off { display: grid; grid-template-columns: 2rem minmax(0, 1fr); column-gap: var(--space-xs); padding: 6px var(--space-sm);
+  background: var(--strip); border: 1px solid var(--line); border-radius: var(--radius-sm); text-decoration: none; }
+.questions a:hover { background: var(--strip-hover); border-color: var(--line-strong); }
+.questions a::before, .questions__off::before { content: "Q" counter(q); grid-row: span 2; font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); padding-top: 2px; }
+.questions b { font-weight: 600; }
+.questions small { color: var(--fg-3); font-size: var(--text-xs); }
+.questions__off { opacity: 0.6; }
