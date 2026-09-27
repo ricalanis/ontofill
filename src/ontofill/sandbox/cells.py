@@ -33,7 +33,7 @@ from ontofill.sandbox.capture import (
     _trace,
     _wait_proxy,
 )
-from ontofill.sandbox.jobs import append_job_record, validate_job_record
+from ontofill.sandbox.jobs import append_job_record, outcome_for_http_status, validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
 
@@ -1244,6 +1244,13 @@ class CellManager:
                 for name, result in cell.brain_proof.items()
                 if name in {"egress", "metadata", "mesh"}
             )
+        http_status = None
+        if cell.task_result:
+            http_status = cell.task_result.get("http_status", cell.task_result.get("status"))
+        outcome = outcome_for_http_status(http_status)
+        task_ok = bool(
+            not mark_failed and not cell.failure_reason and (cell.task_ok or outcome is not None)
+        )
         wall_s = round(max(0.0, time.monotonic() - cell.started_monotonic), 3)
         record = {
             "job_id": "job:" + cell.cell_id.partition(":")[2],
@@ -1258,7 +1265,7 @@ class CellManager:
             "checkpoints": {
                 "host": host,
                 "task": {
-                    "ok": bool(cell.task_ok and not mark_failed),
+                    "ok": task_ok,
                     "requested": {"backend": cell.backend, "allowed_domains": cell.domains},
                     "result": cell.task_result
                     or {"reason": cell.failure_reason or "no_task_result"},
@@ -1270,6 +1277,16 @@ class CellManager:
                 "teardown": {"ok": teardown["verified"], "detail": teardown},
             },
         }
+        if outcome is None and cell.task_result is not None:
+            outcome = {"status": "completed" if cell.task_ok else "failed"}
+            result_reason = cell.task_result.get("reason")
+            reason = cell.failure_reason or result_reason
+            if isinstance(reason, str) and reason:
+                outcome["reason"] = reason
+        elif outcome is None and cell.failure_reason:
+            outcome = {"status": "failed", "reason": cell.failure_reason}
+        if outcome is not None:
+            record["outcome"] = outcome
         if cell.failure_reason:
             record["failure_reason"] = cell.failure_reason
         validate_job_record(record)

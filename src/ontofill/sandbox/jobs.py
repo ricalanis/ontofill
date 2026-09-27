@@ -51,6 +51,24 @@ def validate_job_record(record: Mapping[str, Any]) -> None:
         raise ValueError("job steps exceed the recorded maximum")
 
 
+def outcome_for_http_status(http_status: object) -> dict[str, Any] | None:
+    """Describe an observed HTTP result separately from sandbox proof checkpoints."""
+    if type(http_status) is not int or not 100 <= http_status <= 599:
+        return None
+    if http_status in {401, 403}:
+        status = "refused"
+    elif http_status == 429:
+        status = "rate_limited"
+    elif http_status >= 400:
+        status = "http_error"
+    else:
+        status = "completed"
+    outcome: dict[str, Any] = {"status": status, "http_status": http_status}
+    if http_status >= 400:
+        outcome["reason"] = f"http_{http_status}"
+    return outcome
+
+
 def _probe(name: str, blocked: bool, detail: dict) -> dict:
     return {"probe": name, "result": "BLOCKED" if blocked else "ALLOWED", "detail": detail}
 
@@ -125,6 +143,10 @@ def _failed_job_record(
         "limits": capture_result["limits"],
         "usage": capture_result["usage"],
         "failure_reason": capture_result["failure_reason"],
+        "outcome": {
+            "status": "failed",
+            "reason": capture_result["failure_reason"],
+        },
         "checkpoints": {
             "host": host_check,
             "task": {
@@ -173,6 +195,7 @@ def build_job_record(
     isolation = proof["isolation_probe"]
     secrets = proof["secrets"]
     teardown = proof["teardown"]
+    http_outcome = outcome_for_http_status(capture_result.get("status"))
     record = {
         "job_id": job_id or capture_result.get("job_id") or f"job:{uuid.uuid4().hex}",
         "run_id": first["run_id"],
@@ -194,9 +217,7 @@ def build_job_record(
                 },
             },
             "task": {
-                "ok": first["evaluated"]["status"] == "captured"
-                and isinstance(capture_result["status"], int)
-                and 200 <= capture_result["status"] < 300,
+                "ok": first["evaluated"]["status"] == "captured" and http_outcome is not None,
                 "requested": first["requested"],
                 "result": proof["dispatch_result"],
                 "value_ids": values,
@@ -214,6 +235,8 @@ def build_job_record(
             },
         },
     }
+    if http_outcome is not None:
+        record["outcome"] = http_outcome
     validate_job_record(record)
     return record
 

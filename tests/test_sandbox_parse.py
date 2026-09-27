@@ -188,6 +188,7 @@ def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_p
     }
     assert result.job_record["checkpoints"]["host"]["runtime"] == "runsc"
     assert result.job_record["checkpoints"]["task"]["ok"] is True
+    assert result.job_record["outcome"] == {"status": "completed"}
     assert all(
         item["result"] == "BLOCKED"
         for item in result.job_record["checkpoints"]["isolation"]["probes"]

@@ -882,6 +882,10 @@ def _job_and_trace(
             "wall_s": max(0.0, float(execution.wall_s)),
             "steps": max(0, int(execution.steps)),
         },
+        "outcome": {
+            "status": "completed" if task_ok else "failed",
+            **({"reason": reason} if isinstance(reason, str) and reason else {}),
+        },
         "checkpoints": {
             "host": host_checkpoint,
             "task": {

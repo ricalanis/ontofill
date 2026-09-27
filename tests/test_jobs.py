@@ -106,6 +106,7 @@ def test_jobs_record_and_last_line_wins(tmp_path: Path) -> None:
     assert first["checkpoints"]["host"]["runtime"] == "runc"
     assert {probe["result"] for probe in first["checkpoints"]["isolation"]["probes"]} == {"BLOCKED"}
     assert first["checkpoints"]["secrets"]["ok"]
+    assert first["outcome"] == {"status": "completed", "http_status": 200}
     assert first["limits"]["memory_mb"] == 1024
     assert first["usage"]["steps"] == 2
     key = append_job_record(lake, "synthetic-case", first)
@@ -116,6 +117,31 @@ def test_jobs_record_and_last_line_wins(tmp_path: Path) -> None:
     latest = {row["job_id"]: row for row in lines}
     assert len(lines) == 2
     assert latest["job:synthetic"]["checkpoints"]["task"]["value_ids"] == ["val:one"]
+
+
+def test_site_refusal_is_an_outcome_not_a_failed_sandbox_checkpoint() -> None:
+    result = _capture_result()
+    result["status"] = 403
+    result["proof"]["dispatch_result"]["status"] = 403
+    record = build_job_record(result)
+
+    assert record["outcome"] == {
+        "status": "refused",
+        "reason": "http_403",
+        "http_status": 403,
+    }
+    assert record["checkpoints"]["task"]["ok"] is True
+    assert all(
+        probe["result"] == "BLOCKED" for probe in record["checkpoints"]["isolation"]["probes"]
+    )
+    assert record["checkpoints"]["teardown"]["ok"] is True
+    validate_job_record(record)
+
+
+def test_jobs_outcome_is_optional_for_existing_rows() -> None:
+    record = build_job_record(_capture_result())
+    record.pop("outcome")
+    validate_job_record(record)
 
 
 def test_jobs_record_rejects_incomplete_proof_and_bad_time() -> None:

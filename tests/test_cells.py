@@ -114,10 +114,15 @@ def test_native_cell_lifecycle_enforces_network_caps_and_six_proofs(
     assert opened["cdp_url"] == "ws://127.0.0.1:49152/devtools/browser/synthetic"
     assert opened["brain_url"] is None and opened["live_view_port"] is None
     assert manager.record_step(opened["cell_id"]) == 1
-    manager.report_task_result(opened["cell_id"], {"page_status": 200}, ok=True)
+    manager.report_task_result(opened["cell_id"], {"status": 403}, ok=False)
     closed = manager.destroy(opened["cell_id"])
     record = closed["job_record"]
     assert closed["state"] == "destroyed"
+    assert record["outcome"] == {
+        "status": "refused",
+        "reason": "http_403",
+        "http_status": 403,
+    }
     assert record["checkpoints"]["task"]["ok"]
     assert record["checkpoints"]["secrets"]["ok"]
     assert record["checkpoints"]["teardown"]["ok"]
