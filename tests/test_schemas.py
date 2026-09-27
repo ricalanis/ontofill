@@ -654,6 +654,19 @@ def test_factor_decisions_are_optional_for_factors_approval() -> None:
         validate("approved", marker)
 
 
+def test_sso_group_approval_marker_is_valid() -> None:
+    marker = {
+        "approver": "group:approvers",
+        "date": "2026-09-26",
+        "checkpoint": "prd",
+        "identity_source": "sso-group",
+        "unverified_name": "Example Reviewer",
+        "verified": {"group": "approvers", "via": "netbird-reverse-proxy"},
+        "artifact_sha256": {"01-scope/prd.json": "0" * 64},
+    }
+    validate("approved", marker)
+
+
 def test_factor_decisions_rejected_for_other_checkpoint() -> None:
     marker = {
         "approver": "Example Reviewer",

@@ -9,7 +9,17 @@
     "approver": {"type": "string", "minLength": 1},
     "date": {"type": "string", "format": "date"},
     "run_id": {"type": "string", "minLength": 1},
-    "identity_source": {"enum": ["sso", "local"]},
+    "identity_source": {"enum": ["sso", "local", "sso-group"]},
+    "unverified_name": {"type": "string", "minLength": 1},
+    "verified": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group", "via"],
+      "properties": {
+        "group": {"type": "string", "minLength": 1},
+        "via": {"type": "string", "minLength": 1}
+      }
+    },
     "artifact_sha256": {
       "type": "object",
       "minProperties": 1,
