@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Summary · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-live.css"><link rel="stylesheet" href="/static/viz-summary.css"><script src="/static/viz-live.js" defer></script>{% endblock %}
+{% block main %}
+{% set sofar = " so far" if m.so_far else "" %}
+{{ v.head("Summary", "The run in one page: when it ran and why it stopped, what it produced, how close it is to done, what failed and was contained, what it cost, a few values with their receipts, and what comes next.", m.sources) }}
+{{ v.live_indicator(m.live, ("not in motion" if m.run_id else "")) }}
+{% if m.question %}<p class="quote sum-q">{{ m.question }}</p>{% endif %}
+{% if m.runs|length > 1 %}
+<p class="sum-runs">run {% for r in m.runs[-10:] %}<a href="?run={{ r|urlencode }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% endfor %}</p>
+{% endif %}
+{% if m.mock %}<p class="sum-mock"><span class="chip st-pause">does not count</span> Recorded (simulated) inference: every number below is a rehearsal and none of it counts toward the definition of done.</p>{% endif %}
+
+{% if m.empty %}
+{{ v.empty(m.empty, "No run yet") }}
+{% else %}
+<div data-live-region="run">
+{% set r = m.run %}
+<section class="sum-sec" id="run" aria-labelledby="h-run">
+  <h2 class="section-h" id="h-run">1 · The run</h2>
+  <div class="sum-run">
+    <dl class="kv">
+      <dt>Run</dt><dd class="mono">{% if r.href %}<a href="{{ r.href }}">{{ r.run_id }}</a>{% else %}{{ r.run_id }}{% endif %}</dd>
+      <dt>State</dt><dd><span class="chip st-{{ {'running': 'run', 'paused': 'pause', 'failed': 'block', 'done': 'done'}.get(r.state, 'none') }}">{{ r.state }}</span>{% if r.phase %} phase {{ r.phase }} · {{ r.phase_name }}{% endif %}</dd>
+      <dt>Started</dt><dd class="mono">{% if r.started_at %}<time datetime="{{ r.started_at }}">{{ r.started }}</time>{% else %}—{% endif %}</dd>
+      <dt>Last step</dt><dd class="mono">{% if r.ended_at %}<time datetime="{{ r.ended_at }}">{{ r.ended }}</time>{% else %}—{% endif %}</dd>
+      <dt>Duration</dt><dd class="mono">{{ r.duration or "—" }}{{ sofar }} · {{ r.n_steps }} steps</dd>
+      <dt>Waited for a person</dt><dd><span class="mono">{{ r.pauses }}×</span>, resumed <span class="mono">{{ r.resumes }}×</span> <small class="sum-basis">from {{ r.pause_basis }}</small></dd>
+    </dl>
+    <div class="sum-stop">
+      <b>Why it stopped</b>
+      {% if r.stop %}<ul>{% for s in r.stop %}<li>{{ s }}</li>{% endfor %}</ul>{% else %}<p class="sum-dim">No reason recorded in status.json or the runner's events.</p>{% endif %}
+      {% if r.runner_events %}
+      <details class="sum-events"><summary>Runner events · {{ r.n_runner_events }}</summary>
+        <ul>{% for e in r.runner_events %}<li class="mono">{{ (e.ts or "")[:16]|replace("T", " ") }} · {{ e.kind|replace("_", " ") }}{% if e.detail %} · {{ e.detail }}{% endif %}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </div>
+  </div>
+</section>
+</div>
+
+<div data-live-region="produced">
+{% set p = m.produced %}
+<section class="sum-sec" id="produced" aria-labelledby="h-produced">
+  <h2 class="section-h" id="h-produced">2 · What it produced{{ sofar }}</h2>
+  <dl class="sum-figs">
+    <div><dt>entities</dt><dd>{{ p.n_entities }}</dd><small>{% for c in p.entities_by_class %}{{ c.n }} {{ c.label|lower }}{% if not loop.last %} · {% endif %}{% else %}none{% endfor %}</small></div>
+    <div><dt>gold values</dt><dd>{{ p.n_values }}</dd><small>{{ p.basis or "—" }}</small></div>
+    <div><dt>sources used</dt><dd>{{ p.n_sources }}</dd><small>{{ p.n_source_classes }} source classes · {{ p.n_sources_touched }} touched</small></div>
+    <div><dt>pages captured</dt><dd><a href="{{ p.pages_href }}">{{ p.n_pages }}</a></dd><small>{{ p.n_screenshots }} with a screenshot</small></div>
+    <div><dt>cells run</dt><dd>{{ p.n_cells }}</dd><small>sandbox jobs · {{ p.n_steps }} steps</small></div>
+  </dl>
+  {% if p.source_classes %}<p class="sum-note">Source classes: {% for c in p.source_classes %}<span class="mono">{{ c.label }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+</section>
+</div>
+
+<div data-live-region="completeness">
+{% set c = m.completeness %}
+<section class="sum-sec" id="completeness" aria-labelledby="h-comp">
+  <h2 class="section-h" id="h-comp">3 · Completeness vs targets{{ sofar }}{% if c.criteria %} · {{ c.n_met }} of {{ c.criteria|length }} met{% endif %}</h2>
+  {% if c.empty %}{{ v.empty(c.empty, "No completeness data yet") }}{% else %}
+  {% if c.mock %}<p class="sum-note"><span class="chip st-pause">mock</span> Recorded run: criteria are shown for rehearsal and never count as met.</p>{% endif %}
+  <div class="sum-meters">
+    {% for x in c.criteria %}
+    <div class="meters sum-crit">
+      <div class="crit">{{ x.label }}<small>{{ x.query }}</small></div>
+      <div class="meter st-{{ x.state }}" style="--v: {{ x.v }}%;{% if x.t is not none %} --t: {{ x.t }}%;{% endif %}" role="img" aria-label="{{ x.actual if x.actual is not none else 'unknown' }} of target {{ x.target }}"><span></span>{% if x.t is not none %}<i></i>{% endif %}</div>
+      <div class="num">{{ x.actual if x.actual is not none else "—" }} / {{ x.target }} {% if x.mock %}<span class="chip st-pause">mock</span>{% elif x.met %}<span class="chip st-done">met</span>{% else %}<span class="chip st-run">not yet</span>{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if c.props %}
+  <h3 class="sum-h3">{{ c.primary_label or "Primary class" }} · per-property completeness{% if c.n_primary %} over {{ c.n_primary }}{% endif %}</h3>
+  <div class="sum-props">
+    {% for x in c.props %}
+    <div class="meters sum-prop">
+      <div class="crit">{{ x.label }}</div>
+      <div class="meter {{ 'st-done' if x.ratio >= 1 else 'st-run' }}" style="--v: {{ x.v }}%;" role="img" aria-label="{{ x.label }} {{ x.pct }}"><span></span></div>
+      <div class="num">{{ x.pct }}{% if x.missing %} <small>· {{ x.missing }} open</small>{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <p class="sum-note">From {{ c.basis }}.{% if c.n_primary %} {{ c.meeting }} of {{ c.n_primary }} {{ (c.primary_label or "")|lower }} meet ≥ {{ (c.threshold * 100)|round|int }}% of their DoD properties.{% endif %} <a href="{{ c.href }}">Output</a></p>
+  {% endif %}
+</section>
+</div>
+
+<div data-live-region="failures">
+{% set f = m.failures %}
+<section class="sum-sec" id="failures" aria-labelledby="h-fail">
+  <h2 class="section-h" id="h-fail">4 · What failed, and what was contained{{ sofar }}</h2>
+  <p class="sum-contained"><span class="chip st-quar">contained {{ f.n_contained }}</span>
+    quarantined <b class="mono">{{ f.contained.quarantines }}</b> · limit kills <b class="mono">{{ f.contained.limit_kills }}</b> · blocked domains <b class="mono">{{ f.contained.blocked_domains }}</b> · gates held <b class="mono">{{ f.contained.gates }}</b>
+    <small>· kept as evidence, not hidden · {{ f.jobs_all_pass }} of {{ f.jobs }} cells passed all six checkpoints</small></p>
+  {% if f.reasons %}
+  <ul class="strips">
+    {% for x in f.reasons %}<li>{{ v.strip(x.state, x.label ~ " · " ~ x.n, (x.example.title ~ (" · " ~ x.example.detail if x.example.detail else "")) if x.example else None, "example step" if x.example and x.example.step_id else "", x.example.href if x.example else None) }}</li>{% endfor %}
+  </ul>
+  {% if f.n_reasons > f.reasons|length %}<p class="sum-note">{{ f.n_reasons - f.reasons|length }} more kinds on <a href="{{ f.href }}">Failures</a>.</p>{% endif %}
+  {% if f.dropped %}<p class="sum-note">Sources dropped: {% for s in f.dropped %}<span class="mono">{{ s }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+  {% elif f.empty %}{{ v.empty(f.empty, "Nothing failed or was contained") }}{% endif %}
+  <p class="sum-note"><a href="{{ f.href }}">All {{ f.n }} on Failures</a></p>
+</section>
+</div>
+
+<div data-live-region="cost">
+{% set k = m.cost %}
+<section class="sum-sec" id="cost" aria-labelledby="h-cost">
+  <h2 class="section-h" id="h-cost">5 · Cost{{ sofar }}</h2>
+  <dl class="sum-figs">
+    <div><dt>total</dt><dd>{{ k.usd_text }}</dd><small>{{ k.basis or "no priced steps" }}{% if k.n_unpriced %} · {{ k.n_unpriced }} unpriced calls{% endif %}</small></div>
+    <div><dt>per gold value</dt><dd>{{ k.per_value_text }}</dd><small>{{ k.n_values }} values · {{ k.values_from }}</small></div>
+    <div><dt>per entity meeting the DoD</dt><dd>{{ k.per_entity_text }}</dd><small>{{ k.entities_meeting_dod if k.entities_meeting_dod is not none else "—" }} entities (engine metrics)</small></div>
+    {% if k.budget_usd %}<div><dt>budget burn</dt><dd>{{ k.burn_text or "—" }}</dd><small>of {{ "$%.2f"|format(k.budget_usd) }}</small></div>{% endif %}
+  </dl>
+  {% if k.empty %}{{ v.empty(k.empty, "No cost recorded") }}{% endif %}
+  <div class="panels sum-cost">
+    {% for key, label, rows in [("phase", "By phase", k.by_phase), ("model", "By model", k.by_model)] %}
+    <div class="table-wrap"><table class="grid-table">
+      <caption class="section-h">{{ label }}</caption>
+      <thead><tr><th>{{ key }}</th><th class="num">{{ "USD" if k.has_cost else "" }}</th><th class="num">steps</th></tr></thead>
+      <tbody>{% for x in rows %}<tr><td>{{ x.name }}</td><td class="num">{{ x.usd_text if k.has_cost else "" }}</td><td class="num">{{ x.steps }}</td></tr>{% else %}<tr><td colspan="3">—</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% endfor %}
+  </div>
+  {% set inf = k.inference %}
+  <p class="sum-inf">{% if inf.mounted %}<span class="chip {{ 'st-block' if inf.unattributed else 'st-done' }}">{{ inf.unattributed }} unattributed</span>{% else %}<span class="chip st-none">gateway log not mounted</span>{% endif %}
+    {{ inf.text }} · <a href="{{ inf.href }}">Inference</a> · <a href="{{ k.href }}">Cost</a></p>
+</section>
+</div>
+
+<div data-live-region="receipts">
+<section class="sum-sec" id="receipts" aria-labelledby="h-rec">
+  <h2 class="section-h" id="h-rec">6 · Key receipts</h2>
+  {% if m.receipts %}
+  <ul class="sum-receipts">
+    {% for x in m.receipts %}
+    <li class="sum-receipt st-{{ 'done' if x.state == 'gold' else ('need' if x.state == 'conflict' else 'pause') }}">
+      {% set ev = x.evidence %}
+      {% if ev and ev.screenshot_href %}<a class="sum-shot" href="{{ ev.screenshot_href }}"><img src="{{ ev.screenshot_href }}" alt="Capture of {{ ev.host }} for {{ x.prop_label }}" loading="lazy"></a>{% else %}<span class="sum-shot sum-noshot">no screenshot</span>{% endif %}
+      <div class="sum-rec-body">
+        <small class="sum-rec-prop">{{ x.prop_label }} · <span class="chip st-{{ 'done' if x.state == 'gold' else ('need' if x.state == 'conflict' else 'pause') }}">{{ x.why }}</span></small>
+        <b class="sum-rec-val">{{ x.value or "—" }}</b>
+        <a class="sum-rec-ent" href="{{ x.entity_href }}">{{ x.entity_title }}</a>
+        {% if ev %}<small class="mono">{% if ev.url %}<a href="{{ ev.url }}" rel="noopener noreferrer">{{ ev.host }}</a>{% else %}{{ ev.host }}{% endif %}{% if ev.captured %} · {{ ev.captured }}{% endif %}{% if x.n_sources > 1 %} · {{ x.n_sources }} sources{% endif %}</small>{% else %}<small>no evidence</small>{% endif %}
+        <a class="sum-rec-lin mono" href="{{ x.lineage_href }}">lineage · {{ x.value_id }}</a>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="sum-note">Chosen deterministically: definition-of-done properties first (one per property, most sources and a screenshot first), then one conflict kept and one membership value when the run has them.</p>
+  {% else %}{{ v.empty(m.receipts_empty, "No values with evidence yet") }}{% endif %}
+</section>
+</div>
+
+<div data-live-region="next">
+<section class="sum-sec" id="next" aria-labelledby="h-next">
+  <h2 class="section-h" id="h-next">7 · Next</h2>
+  {% if m.next %}
+  <ul class="strips">{% for x in m.next %}<li>{{ v.strip(x.state, x.title, x.detail, "", x.href) }}</li>{% endfor %}</ul>
+  {% else %}{{ v.empty(m.next_empty, "No open gaps") }}{% endif %}
+</section>
+</div>
+{% endif %}
+
+{% if m.empty %}
+<section class="sum-sec" id="next" aria-labelledby="h-next">
+  <h2 class="section-h" id="h-next">Next</h2>
+  {% if m.next %}<ul class="strips">{% for x in m.next %}<li>{{ v.strip(x.state, x.title, x.detail, "", x.href) }}</li>{% endfor %}</ul>
+  {% else %}{{ v.empty(m.next_empty, "No open gaps") }}{% endif %}
+</section>
+{% endif %}
+
+<details class="sum-copy" id="copy">
+  <summary>Copy as text</summary>
+  <p class="sum-note">Plain text for a demo script or a message; the same numbers as this page and its <a href="{{ m.json_href }}">JSON twin</a>.</p>
+  <pre data-live-region="plain" tabindex="0">{{ m.plain }}</pre>
+</details>
+{% endblock %}

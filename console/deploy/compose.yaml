@@ -24,6 +24,7 @@ services:
       ONTOFILL_CONSOLE_IDENTITY_HEADER: ${ONTOFILL_CONSOLE_IDENTITY_HEADER:-X-NetBird-User}
       ONTOFILL_CONSOLE_SPEND_HISTORY: /evidence/spend-history.jsonl
       ONTOFILL_CONSOLE_EVIDENCE_DIR: /evidence
+      ONTOFILL_RUNNER_GLOBAL_USD: ${ONTOFILL_RUNNER_GLOBAL_USD:-}   # same value as the runner's, for /watch spend vs caps
       ONTOFILL_RUNNER_STATE: /runner   # shared with the ontofill-runner service (R18): control.json, KILL, status
       ONTOFILL_CONSOLE_GATEWAY_LOG: /gateway-log   # R19: the inference gateway's JSONL call log (metadata only), read-only
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
