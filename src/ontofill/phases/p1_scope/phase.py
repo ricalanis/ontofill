@@ -18,6 +18,7 @@ from jsonschema import ValidationError
 from ontofill.case.checkpoints import (
     checkpoint_revisions,
     load_json,
+    load_verified_approval,
     write_json,
     write_markdown,
     write_prd_budget_pending,
@@ -46,8 +47,6 @@ SECONDARY_STOPWORDS = {
     "human",
     "keep",
     "kept",
-    "list",
-    "lists",
     "only",
     "requested",
     "remain",
@@ -159,13 +158,49 @@ def _secondary_subjects(clause: str) -> list[tuple[str, set[str]]]:
     marker = SECONDARY_REQUEST.search(clause)
     assert marker is not None
     named_part = clause[: marker.start()] or clause[marker.end() :]
-    parts = re.split(r"\s*(?:/|,|\band\b|\by\b)\s*", named_part, flags=re.IGNORECASE)
+    parts = re.split(r"\s*(?:,|\band\b|\by\b)\s*", named_part, flags=re.IGNORECASE)
     return [(part, subject) for part in parts if (subject := _subject_tokens(part))]
+
+
+def _jurisdiction_aliases(jurisdiction: str) -> set[str]:
+    plain = unicodedata.normalize("NFKD", jurisdiction.casefold())
+    plain = "".join(char for char in plain if not unicodedata.combining(char))
+    words = [
+        token for token in re.findall(r"[a-z0-9]+", plain) if token not in JURISDICTION_SCOPE_WORDS
+    ]
+    aliases = set(words)
+    if len(words) > 1:
+        aliases.update("".join(word[0] for word in words[:end]) for end in range(2, len(words) + 1))
+    return aliases
 
 
 def _named_secondary_matches(
     subject_text: str, subject: set[str], publishers: list[dict]
 ) -> list[dict]:
+    jurisdiction_aliases = {
+        id(item): _jurisdiction_aliases(item.get("jurisdiction", "")) for item in publishers
+    }
+    publisher_tokens = {
+        id(item): _tokens(
+            f"{item['kind']} {item['rationale']} {' '.join(item['domains'])} "
+            f"{item.get('jurisdiction', '')}"
+        )
+        for item in publishers
+    }
+    all_jurisdiction_aliases = (
+        set().union(*jurisdiction_aliases.values()) if jurisdiction_aliases else set()
+    )
+    referenced_jurisdictions = _tokens(subject_text) & all_jurisdiction_aliases
+    named_codes = {token.casefold() for token in re.findall(r"\b[A-Z]{2,}\b", subject_text)}
+    known_publisher_tokens = set().union(*publisher_tokens.values()) if publisher_tokens else set()
+    unexplained_codes = named_codes - all_jurisdiction_aliases - known_publisher_tokens
+    if unexplained_codes:
+        return []
+    jurisdiction_scoped = bool(referenced_jurisdictions)
+    if jurisdiction_scoped:
+        publishers = [
+            item for item in publishers if referenced_jurisdictions & jurisdiction_aliases[id(item)]
+        ]
     direct_domains = [
         item
         for item in publishers
@@ -200,17 +235,23 @@ def _named_secondary_matches(
         longest = max(len(item["kind"]) for item in direct_kinds)
         exact = [item for item in direct_kinds if len(item["kind"]) == longest]
         return exact if len(exact) == 1 else []
-    distinctive: list[dict] = []
+    matches: list[dict] = []
     for token in subject:
         owners = [
             item
             for item in publishers
             if token
-            in _subject_tokens(f"{item['kind']} {item['rationale']} {' '.join(item['domains'])}")
+            in _subject_tokens(
+                f"{item['kind']} {item['rationale']} {' '.join(item['domains'])} "
+                f"{item.get('jurisdiction', '')}"
+            )
         ]
-        if len(owners) == 1 and owners[0] not in distinctive:
-            distinctive.append(owners[0])
-    return distinctive if len(distinctive) == 1 else []
+        if not owners or (len(owners) > 1 and not jurisdiction_scoped):
+            return []
+        for item in owners:
+            if item not in matches:
+                matches.append(item)
+    return matches
 
 
 def _claims_primary(rationale: str) -> bool:
@@ -521,14 +562,14 @@ def draft_prd(
         cache_matches = cached_digest == digest or (
             legacy_digest is not None and cached_digest == legacy_digest
         )
-        if document.get("generated_by", {}).get("backend") == decision.backend and cache_matches:
-            approval = output.parent / "APPROVED"
-            approved = (
-                not mock_preview
-                and decision.backend == "vultr"
-                and approval.exists()
-                and load_json(approval).get("decision", "approve") != "deny"
-            )
+        approval_path = output.parent / "APPROVED"
+        approved = False
+        if not mock_preview and decision.backend == "vultr" and approval_path.exists():
+            approval = load_verified_approval(approval_path, case_dir, ["01-scope/prd.json"], "prd")
+            approved = approval.get("decision", "approve") != "deny"
+        if document.get("generated_by", {}).get("backend") == decision.backend and (
+            cache_matches or approved
+        ):
             try:
                 validate_document("global-prd", document)
             except ValidationError as exc:
@@ -539,7 +580,7 @@ def draft_prd(
             else:
                 authority = _authority_policy_check(document, revisions)
                 if authority.passed:
-                    if legacy_digest is not None and cached_digest == legacy_digest:
+                    if cached_digest != digest:
                         fingerprint_path.write_text(digest + "\n", encoding="utf-8")
                     return document
                 if approved:

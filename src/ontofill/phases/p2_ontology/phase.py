@@ -178,6 +178,15 @@ def _digest(value: object) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def _approved_artifact_is_current(case_dir: Path, artifact_path: Path, checkpoint: str) -> bool:
+    marker = artifact_path.parent / "APPROVED"
+    if not marker.exists():
+        return False
+    relative_path = artifact_path.relative_to(case_dir).as_posix()
+    approval = load_verified_approval(marker, case_dir, [relative_path], checkpoint)
+    return approval.get("decision", "approve") != "deny"
+
+
 def label_taxonomy_nodes(
     decision: DecisionClient,
     taxonomies: list[dict],
@@ -264,16 +273,23 @@ def draft_factors(
     fingerprint = path.with_suffix(".input.sha256")
     if path.exists():
         factors = load_json(path)
-        if (
-            factors.get("generated_by", {}).get("backend") == decision.backend
-            and fingerprint.exists()
-            and fingerprint.read_text(encoding="utf-8").strip() == digest
+        cached_digest = (
+            fingerprint.read_text(encoding="utf-8").strip() if fingerprint.exists() else None
+        )
+        cache_matches = cached_digest == digest
+        approved = decision.backend == "vultr" and _approved_artifact_is_current(
+            case_dir, path, "factors"
+        )
+        if factors.get("generated_by", {}).get("backend") == decision.backend and (
+            cache_matches or approved
         ):
             try:
                 validate_document("factors", factors)
             except ValidationError:
                 pass
             else:
+                if cached_digest != digest:
+                    fingerprint.write_text(digest + "\n", encoding="utf-8")
                 return factors
     prompt = (
         "Propose the prime factors of variation for the subject of this case. "
@@ -371,10 +387,16 @@ def draft_ontology(
     fingerprint = path.with_suffix(".input.sha256")
     if path.exists():
         ontology = load_json(path)
+        cached_digest = (
+            fingerprint.read_text(encoding="utf-8").strip() if fingerprint.exists() else None
+        )
+        cache_matches = cached_digest == digest
+        approved = decision.backend == "vultr" and _approved_artifact_is_current(
+            case_dir, path, "ontology"
+        )
         if (
             ontology.get("generated_by", {}).get("backend") == decision.backend
-            and fingerprint.exists()
-            and fingerprint.read_text(encoding="utf-8").strip() == digest
+            and (cache_matches or approved)
             and queries_path.exists()
         ):
             try:
@@ -385,6 +407,8 @@ def draft_ontology(
             except (ValidationError, ValueError):
                 pass
             else:
+                if cached_digest != digest:
+                    fingerprint.write_text(digest + "\n", encoding="utf-8")
                 return ontology
     prompt = (
         "Expand each approved factor to exactly one taxonomy level. Use stable snake_case IDs. "
