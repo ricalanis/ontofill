@@ -454,3 +454,30 @@ def test_lifting_the_kill_switch_never_relaunches_a_superseded_run(setup, monkey
     r.state.set_status("c1", state="killed", run_id="run-abc")
     r.poll_once()
     assert not r.children and not calls(setup)
+
+
+def test_a_multi_request_checkpoint_waits_for_every_answer_then_resumes(setup, monkeypatch):
+    """Found live (run-9c120dd56edd): one old answered source made `source` look decided, the runner resumed at
+    once, the engine paused again for three new source reviews, and answering them could never resume the run
+    (the decision digest was the old marker's). Now the checkpoint is decided only when every request is
+    answered, and the digest covers all answers."""
+    monkeypatch.setenv("FAKE_MODE", "pause:factors")
+    runs = setup["lake"] / "runs" / "c1"
+    (runs / "run-abc" / "status.json").write_text(json.dumps({"state": "paused", "checkpoint_pending": "source"}))
+    src = setup["case"] / "03-fanout" / "sources"
+    for sid in ("s-old", "s-new1", "s-new2"):
+        (src / sid).mkdir(parents=True)
+        (src / sid / "APPROVAL_PENDING.md").write_text(PENDING.format(cp="source"))
+    (src / "s-old" / "APPROVED").write_text(json.dumps({"approver": "a", "checkpoint": "source", "run_id": "run-abc"}))
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    r.poll_once()
+    assert not r.children and not calls(setup)
+    assert r.state.status("c1")["state"] == "waiting_approval" and r.state.status("c1")["checkpoint"] == "source"
+    (src / "s-new1" / "APPROVED").write_text(json.dumps({"approver": "a", "checkpoint": "source", "run_id": "run-abc"}))
+    r.poll_once()
+    assert not calls(setup)  # one of two new answers is not enough
+    (src / "s-new2" / "APPROVED").write_text(
+        json.dumps({"approver": "a", "checkpoint": "source", "decision": "deny", "reason": "r", "run_id": "run-abc"})
+    )
+    run_until_idle(r)
+    assert [c["run_id"] for c in calls(setup)] == ["run-abc"]  # every answer in: resumed once

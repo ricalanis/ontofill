@@ -129,23 +129,38 @@ def checkpoint_dirs(case_dir: Path, checkpoint: str) -> list[Path]:
     return out
 
 
+def _markers(case_dir: Path, checkpoint: str) -> list[Path] | None:
+    """The APPROVED markers answering `checkpoint`, or None while any request for it is unanswered.
+
+    A checkpoint can have several requests (one per source under 03-fanout/sources/, one per action): the engine
+    waits until every one of them is answered, so the runner must too."""
+    dirs = checkpoint_dirs(case_dir, checkpoint)
+    markers = [d / "APPROVED" for d in dirs]
+    if not markers or not all(m.is_file() for m in markers):
+        return None
+    return markers
+
+
 def decision_run_id(case_dir: Path, checkpoint: str) -> str | None:
-    """The run the APPROVED marker answering `checkpoint` was recorded for (its run_id), or None."""
-    for d in checkpoint_dirs(case_dir, checkpoint):
-        marker = d / "APPROVED"
-        if marker.is_file():
-            try:
-                rid = json.loads(marker.read_text()).get("run_id")
-            except (ValueError, OSError, AttributeError):
-                return None
-            return rid if isinstance(rid, str) and rid else None
-    return None
+    """The run the latest APPROVED marker answering `checkpoint` was recorded for (its run_id), or None."""
+    markers = _markers(case_dir, checkpoint)
+    if not markers:
+        return None
+    newest = max(markers, key=lambda m: m.stat().st_mtime)
+    try:
+        rid = json.loads(newest.read_text()).get("run_id")
+    except (ValueError, OSError, AttributeError):
+        return None
+    return rid if isinstance(rid, str) and rid else None
 
 
 def decision_for(case_dir: Path, checkpoint: str) -> str | None:
-    """sha256 of the APPROVED marker answering `checkpoint`, or None if the checkpoint is not decided yet."""
-    for d in checkpoint_dirs(case_dir, checkpoint):
-        marker = d / "APPROVED"
-        if marker.is_file():
-            return hashlib.sha256(marker.read_bytes()).hexdigest()
-    return None
+    """A digest of every APPROVED marker answering `checkpoint` (path + bytes), or None while any request for it
+    is unanswered. A new decision on any of the checkpoint's requests changes it, so the runner resumes again."""
+    markers = _markers(case_dir, checkpoint)
+    if not markers:
+        return None
+    h = hashlib.sha256()
+    for m in sorted(markers):
+        h.update(str(m.relative_to(case_dir)).encode() + b"\0" + m.read_bytes() + b"\0")
+    return h.hexdigest()
