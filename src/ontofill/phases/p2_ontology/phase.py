@@ -700,18 +700,23 @@ def draft_ontology(
         ):
             try:
                 validate_document("ontology", ontology)
-                validate_document("dod-queries", load_json(queries_path))
+                cached_queries = load_json(queries_path)
+                validate_document("dod-queries", cached_queries)
                 _validate_ontology(ontology)
                 _validate_primary_dod_presence(prd, ontology)
-                relation_counts = _review_ontology_semantics(prd, ontology, decision)
-                _validate_queries(
-                    prd,
-                    ontology,
-                    load_json(queries_path),
-                    relation_count_assessments=relation_counts,
-                )
+                if approved:
+                    _validate_queries(prd, ontology, cached_queries)
+                else:
+                    relation_counts = _review_ontology_semantics(prd, ontology, decision)
+                    _validate_queries(
+                        prd,
+                        ontology,
+                        cached_queries,
+                        relation_count_assessments=relation_counts,
+                    )
             except (ValidationError, ValueError):
-                pass
+                if approved:
+                    raise
             else:
                 if cached_digest != digest:
                     fingerprint.write_text(digest + "\n", encoding="utf-8")

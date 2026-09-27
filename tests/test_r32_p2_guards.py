@@ -6,12 +6,14 @@ import json
 
 import pytest
 
-from ontofill.inference import RecordedDecisionClient
+from ontofill.case.checkpoints import write_json
+from ontofill.inference import ModelValidationExhausted, RecordedDecisionClient
 from ontofill.phases.p2_ontology.phase import (
     OntologyDraftUnavailable,
     _validate_queries,
     draft_ontology,
 )
+from tests.approval_support import bind_approval
 
 _RECORDED = {"backend": "recorded", "model": "synthetic", "at": "2026-09-27T00:00:00Z"}
 
@@ -433,6 +435,62 @@ def test_invalid_cached_core_field_semantics_are_reviewed_before_cache_reuse(tmp
         "critic.phase2.rule_semantics",
         "phase2.taxonomies",
     ]
+
+
+def test_digest_verified_approved_ontology_reuses_without_semantic_critics(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Describe generic public records.", encoding="utf-8")
+    prd = _prd()
+    generation_decision = _decision([_schema()])
+    generation_decision.backend = "vultr"
+    ontology = draft_ontology(tmp_path, prd, _factors(), generation_decision)
+
+    approval_path = tmp_path / "02-ontology/APPROVED"
+    write_json(
+        approval_path,
+        bind_approval(
+            tmp_path,
+            ["02-ontology/ontology.json"],
+            {
+                "approver": "Synthetic reviewer",
+                "date": "2026-09-27",
+                "checkpoint": "ontology",
+                "decision": "approve",
+            },
+        ),
+    )
+    artifact_paths = (
+        "02-ontology/ontology.json",
+        "02-ontology/dod-queries.json",
+        "02-ontology/ontology.input.sha256",
+        "02-ontology/APPROVED",
+    )
+    before = {
+        relative: (tmp_path / relative).read_bytes()
+        for relative in artifact_paths
+        if (tmp_path / relative).is_file()
+    }
+
+    class TransientCriticFailureDecision:
+        backend = "vultr"
+        model = "synthetic-vultr"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def complete_json(self, purpose, *_args, **_kwargs):
+            self.calls.append(purpose)
+            if purpose.startswith("critic.phase2."):
+                raise ModelValidationExhausted(purpose, "synthetic transient critic failure", 3)
+            raise AssertionError(f"approved ontology should not redraft through `{purpose}`")
+
+    decision = TransientCriticFailureDecision()
+    reused = draft_ontology(tmp_path, prd, _factors(), decision)
+
+    assert reused == ontology
+    assert decision.calls == []
+    assert {
+        relative: (tmp_path / relative).read_bytes() for relative in before
+    } == before
 
 
 def test_query_validator_rejects_secondary_class_dod_placement() -> None:
