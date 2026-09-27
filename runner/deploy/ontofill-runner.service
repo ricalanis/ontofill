@@ -15,7 +15,11 @@ RestartSec=10
 KillSignal=SIGTERM
 TimeoutStopSec=60
 StateDirectory=ontofill-runner
-StateDirectoryMode=0755
+# The console (container uid 10001, ACL on this dir) writes control files and the KILL switch here. systemd chmods
+# the dir to StateDirectoryMode on every start, and a chmod sets the ACL mask from the group bits: 0755 would cut
+# uid 10001 to r-x and silently break the kill switch. 0775 keeps the mask rwx; ExecStartPost reasserts it.
+StateDirectoryMode=0775
+ExecStartPost=-/usr/bin/setfacl -m m::rwx /var/lib/ontofill-runner
 
 [Install]
 WantedBy=multi-user.target
