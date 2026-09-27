@@ -7,7 +7,7 @@ import json
 import math
 import os
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
@@ -51,6 +51,7 @@ class Observation:
     value_id: str = field(default="")
     authority_tier: str = "unknown"
     publisher_id: str | None = None
+    corroboration_count: int = 1
 
     def __post_init__(self) -> None:
         if not self.value_id:
@@ -81,9 +82,11 @@ class MemorySilverStore:
         self._items[_observation_id(observation)] = observation
 
     def list_for_run(self, run_id: str) -> list[Observation]:
-        return sorted(
-            (item for item in self._items.values() if item.run_id == run_id),
-            key=_observation_id,
+        return _with_corroboration(
+            sorted(
+                (item for item in self._items.values() if item.run_id == run_id),
+                key=_observation_id,
+            )
         )
 
 
@@ -127,7 +130,7 @@ class PostgresSilverStore:
                 "SELECT payload FROM silver_observations WHERE run_id = %s ORDER BY observation_id",
                 (run_id,),
             ).fetchall()
-        return [Observation(**row[0]) for row in rows]
+        return _with_corroboration([Observation(**row[0]) for row in rows])
 
 
 def silver_store_from_env() -> SilverStore:
@@ -135,7 +138,38 @@ def silver_store_from_env() -> SilverStore:
 
 
 def _observation_id(observation: Observation) -> str:
-    return hashlib.sha256(_canonical(asdict(observation)).encode()).hexdigest()
+    payload = asdict(observation)
+    payload.pop("corroboration_count", None)
+    return hashlib.sha256(_canonical(payload).encode()).hexdigest()
+
+
+def _with_corroboration(observations: list[Observation]) -> list[Observation]:
+    """Count distinct publishers for each literal value without discarding receipts."""
+    publishers: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+    for item in observations:
+        key = (item.run_id, item.entity_id, item.property_id, _canonical(item.value))
+        publisher = item.publisher_id or str(item.evidence.get("source_id", ""))
+        if publisher:
+            publishers[key].add(publisher)
+    return [
+        replace(
+            item,
+            corroboration_count=max(
+                1,
+                len(
+                    publishers[
+                        (
+                            item.run_id,
+                            item.entity_id,
+                            item.property_id,
+                            _canonical(item.value),
+                        )
+                    ]
+                ),
+            ),
+        )
+        for item in observations
+    ]
 
 
 def _evidence_validator() -> Draft202012Validator:
