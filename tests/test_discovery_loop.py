@@ -6,6 +6,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -221,8 +222,15 @@ def _all_urls(props: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
 
 
 def test_default_lead_providers_do_not_enable_bing_or_duckduckgo() -> None:
-    providers = default_lead_providers(RecordedDecisionClient({}), cache_root=None)
+    def fetch_json(url: str, allowed_domain: str) -> dict:
+        return {}
+
+    providers = default_lead_providers(
+        RecordedDecisionClient({}), cache_root=None, fetch_json=fetch_json
+    )
     assert {provider.name for provider in providers} == {"wikidata", "ckan"}
+    ckan = next(provider for provider in providers if provider.name == "ckan")
+    assert isinstance(ckan, CkanLeadProvider) and ckan.fetch_json is fetch_json
 
 
 def test_registrable_domain_uses_multilabel_and_private_suffixes() -> None:
@@ -337,25 +345,79 @@ def test_wikidata_official_website_and_generic_country_mapping(tmp_path) -> None
 
 
 def test_ckan_searches_only_catalog_publishers_and_parses_packages(tmp_path) -> None:
-    hosts: list[str] = []
+    calls: list[tuple[str, str]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        hosts.append(request.url.host)
-        assert request.url.path == "/api/3/action/package_search"
-        return httpx.Response(200, json=_fixture("ckan_package_search.json"))
+    def fetch_json(url: str, allowed_domain: str) -> dict:
+        calls.append((url, allowed_domain))
+        return _fixture("ckan_package_search.json")
 
     provider = CkanLeadProvider(
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
+        fetch_json=fetch_json,
         cache=JsonCache(tmp_path / "cache"),
     )
-    query = LeadQuery("opening_hours", "opening hours")
+    query = LeadQuery("opening_hours", "horarios de bibliotecas")
     leads = provider.leads(LeadContext("brief", {"properties": []}, POLICY, (query,), 1))
-    assert hosts == ["data.example.test"]
+    assert len(calls) == 1
+    request_url, allowed_domain = calls[0]
+    parsed_url = urlsplit(request_url)
+    assert parsed_url.scheme == "https" and parsed_url.netloc == "data.example.test"
+    assert parsed_url.path == "/api/3/action/package_search"
+    assert parse_qs(parsed_url.query) == {"q": [query.text], "rows": ["5"]}
+    assert allowed_domain == "data.example.test"
     assert [lead.url for lead in leads] == [
         "https://data.example.test/dataset/library-branches-hours"
     ]
-    assert leads[0].discovered_by == "ckan" and "csv" in leads[0].snippet
+    assert (
+        leads[0].discovered_by == "ckan"
+        and "csv" in leads[0].snippet
+        and leads[0].as_dict()["lead_only"] is True
+    )
+    # Repeated requests use the cache and never call the sandbox twice.
+    assert len(provider.leads(LeadContext("brief", {"properties": []}, POLICY, (query,), 1))) == 1
+    assert len(calls) == 1 and provider.cache_hits == 1
     assert CkanLeadProvider.catalog_domains({"trusted_publishers": []}) == []
+
+
+def test_ckan_without_sandbox_fetch_callback_fails_closed(tmp_path) -> None:
+    query = LeadQuery("opening_hours", "horarios de bibliotecas")
+    cache = JsonCache(tmp_path / "cache")
+    cache.put(
+        "ckan",
+        JsonCache.fingerprint("ckan", {"domain": "data.example.test", "q": query.text, "rows": 5}),
+        _fixture("ckan_package_search.json"),
+    )
+    provider = CkanLeadProvider(cache=cache)
+    context = LeadContext("brief", {"properties": []}, POLICY, (query,), 1)
+
+    assert provider.leads(context) == []
+    assert provider.calls == 0
+    assert provider.cache_hits == 0
+    assert provider.attempts == [
+        {
+            "provider": "ckan",
+            "query": query.text,
+            "outcome": "unavailable: sandbox fetch_json callback is not configured",
+            "result_count": 0,
+        }
+    ]
+
+
+def test_ckan_policy_catalog_domains_cannot_add_url_components() -> None:
+    policy = {
+        "trusted_publishers": [
+            {
+                "kind": "open data catalog",
+                "domains": [
+                    "data.example.test/path",
+                    "user@data.example.test",
+                    "data.example.test:8443",
+                    "data.example.test",
+                ],
+            }
+        ]
+    }
+
+    assert CkanLeadProvider.catalog_domains(policy) == ["data.example.test"]
 
 
 def test_model_provider_is_lead_only_and_names_feed_wikidata() -> None:
