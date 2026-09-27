@@ -140,8 +140,29 @@ class RunFeed:
                 "generated_by": self.generated_by.copy(),
                 "preview": self.preview,
             }
-            if reason is not None:
+            if isinstance(reason, str) and reason.strip():
                 self._status["reason"] = reason
+            elif state != "running":
+                same_stop = bool(
+                    previous
+                    and previous.get("state") == state
+                    and previous.get("phase") == phase
+                    and previous.get("checkpoint_pending") == checkpoint_pending
+                    and isinstance(previous.get("reason"), str)
+                    and previous["reason"].strip()
+                )
+                if same_stop:
+                    self._status["reason"] = previous["reason"]
+                elif state == "paused":
+                    self._status["reason"] = (
+                        f"waiting for approval: {checkpoint_pending}"
+                        if checkpoint_pending
+                        else "run paused"
+                    )
+                elif state == "failed":
+                    self._status["reason"] = "run failed"
+                else:
+                    self._status["reason"] = "run completed"
             if live_view_url is not _UNSET:
                 if live_view_url is not None:
                     self._status["live_view_url"] = live_view_url
@@ -151,8 +172,9 @@ class RunFeed:
                 previous is None
                 or any(
                     previous[key] != self._status[key]
-                    for key in ("state", "phase", "checkpoint_pending")
+                    for key in ("state", "phase", "checkpoint_pending", "sources")
                 )
+                or (previous is not None and previous.get("reason") != self._status.get("reason"))
                 or (
                     previous is not None
                     and previous.get("live_view_url") != self._status.get("live_view_url")

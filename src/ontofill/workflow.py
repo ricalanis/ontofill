@@ -37,7 +37,11 @@ from ontofill.phases.p2_ontology.phase import (
     draft_factors,
     draft_ontology,
 )
-from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
+from ontofill.phases.p3_fanout.authority import (
+    authority_result,
+    source_display_identity,
+    source_fingerprint,
+)
 from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, NoConfirmedSources
 from ontofill.phases.p3_fanout.leads import default_lead_providers
 from ontofill.phases.p3_fanout.phase import discover_objectives
@@ -640,6 +644,70 @@ def _source_review(
     return approved, directory
 
 
+def _source_display_by_id(
+    case_dir: Path, objectives: list[dict] | None = None
+) -> dict[str, dict[str, str]]:
+    """Read public source labels and hosts from P3's captured candidate artifacts."""
+    objective_urls = {
+        item.get("source_id"): item.get("source_url")
+        for item in (objectives or [])
+        if isinstance(item.get("source_id"), str)
+    }
+    identities: dict[str, dict[str, str]] = {}
+    source_root = case_dir / "03-fanout/sources"
+    if source_root.exists():
+        for candidate_path in source_root.glob("*/candidate.json"):
+            try:
+                manifest = load_json(candidate_path)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(manifest, Mapping):
+                continue
+            source_id = manifest.get("source_id") or candidate_path.parent.name
+            if not isinstance(source_id, str) or not source_id:
+                continue
+            url = (
+                manifest.get("landing_url")
+                or manifest.get("url")
+                or objective_urls.get(source_id)
+                or ""
+            )
+            label = manifest.get("title") if isinstance(manifest.get("title"), str) else None
+            identities[source_id] = source_display_identity(str(url), label, source_id)
+    for source_id, url in objective_urls.items():
+        if source_id not in identities:
+            identities[source_id] = source_display_identity(str(url or ""), None, source_id)
+    return identities
+
+
+def _status_source_record(
+    case_dir: Path,
+    objective: dict,
+    health: dict,
+    *,
+    source_format: str | None = None,
+    identities: dict[str, dict[str, str]] | None = None,
+) -> dict:
+    source_id = objective["source_id"]
+    identity = (identities or {}).get(source_id)
+    if identity is None:
+        identity = _source_display_by_id(case_dir, [objective]).get(source_id, {})
+    source = {
+        "source_id": source_id,
+        "source_type": objective["source_type"],
+        **identity,
+        **(
+            {"discovered_by": objective["discovered_by"]}
+            if objective.get("discovered_by") is not None
+            else {}
+        ),
+        "health": health,
+    }
+    if source_format is not None:
+        source["format"] = source_format
+    return source
+
+
 def _report_pause(checkpoint: str, directory: Path, recorded: bool) -> None:
     if recorded and (directory / "APPROVED").exists():
         reason = "APPROVED exists but the artifact was produced by the recorded backend"
@@ -648,6 +716,13 @@ def _report_pause(checkpoint: str, directory: Path, recorded: bool) -> None:
     else:
         reason = "waiting for human approval"
     print(f"state=paused checkpoint_pending={checkpoint} reason={reason}")
+
+
+def _failure_status_reason(error: Exception) -> str:
+    reason = getattr(error, "reason", None)
+    if not isinstance(reason, str) or not reason.strip():
+        reason = " ".join(str(error).split())
+    return (reason or type(error).__name__)[:1200]
 
 
 def run_case(
@@ -940,6 +1015,16 @@ def run_case(
             finally:
                 _publish_decision_calls(feed, trace, decision, decision_start, run_id, 3)
                 fresh_trace = getattr(search_client, "trace", [])[trace_before:]
+                source_identities = _source_display_by_id(case_dir)
+                loop_identities = getattr(search_client, "source_display_by_id", {})
+                if isinstance(loop_identities, Mapping):
+                    source_identities.update(loop_identities)
+                for source_step in fresh_trace:
+                    if source_step.get("phase") != 3:
+                        continue
+                    identity = source_identities.get(source_step.get("source_id"))
+                    if identity is not None:
+                        source_step.update(identity)
                 _publish_steps(feed, fresh_trace)
                 trace.extend(fresh_trace)
                 for job in getattr(search_client, "jobs", [])[jobs_before:]:
@@ -947,6 +1032,17 @@ def run_case(
                         append_job_record(lake, case_id, job)
                     elif "proof" in job:
                         append_job_record(lake, case_id, build_job_record(job))
+            source_identities = _source_display_by_id(case_dir, objectives["objectives"])
+            discovered_sources = [
+                _status_source_record(
+                    case_dir,
+                    objective,
+                    {"ok": 0, "failed": 0, "yield": 0},
+                    identities=source_identities,
+                )
+                for objective in objectives["objectives"]
+            ]
+            feed.update_status(state="running", phase=3, sources=discovered_sources)
             step = _trace_step(
                 run_id, 3, provenance, "source.discover", "03-fanout/objectives.json"
             )
@@ -1046,16 +1142,12 @@ def run_case(
                 state="running",
                 phase=5,
                 sources=[
-                    {
-                        "source_id": objective["source_id"],
-                        "source_type": objective["source_type"],
-                        **(
-                            {"discovered_by": objective["discovered_by"]}
-                            if objective.get("discovered_by") is not None
-                            else {}
-                        ),
-                        "health": {"ok": 0, "failed": 0, "yield": 0},
-                    }
+                    _status_source_record(
+                        case_dir,
+                        objective,
+                        {"ok": 0, "failed": 0, "yield": 0},
+                        identities=source_identities,
+                    )
                     for objective in selected_objectives
                 ],
             )
@@ -1182,22 +1274,17 @@ def run_case(
                 failed = objective["id"] in local_failures or bool(
                     execution and getattr(execution, "failed", False)
                 )
-                source = {
-                    "source_id": objective["source_id"],
-                    "source_type": objective["source_type"],
-                    **(
-                        {"discovered_by": objective["discovered_by"]}
-                        if objective.get("discovered_by") is not None
-                        else {}
-                    ),
-                    "health": {
+                source = _status_source_record(
+                    case_dir,
+                    objective,
+                    {
                         "ok": 0 if failed else 1,
                         "failed": int(failed),
                         "yield": len(execution.observations) if execution else 0,
                     },
-                }
-                if execution is not None:
-                    source["format"] = execution.format
+                    source_format=execution.format if execution is not None else None,
+                    identities=source_identities,
+                )
                 sources.append(source)
             if outer.reopen == 2:
                 _request_ontology_gap_review(
@@ -1234,6 +1321,11 @@ def run_case(
                     state="paused" if pending or outer_paused else "done",
                     phase=5,
                     checkpoint_pending=pending,
+                    reason=(
+                        f"outer gap loop stopped: {outer.stop_reason}"
+                        if outer_paused and not pending
+                        else None
+                    ),
                     metrics=metrics,
                     sources=sources,
                 )
@@ -1259,7 +1351,12 @@ def run_case(
                 append_job_record(lake, case_id, build_job_record(exc.result))
             phase = feed.current_status["phase"] if feed.current_status else 1
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
-            feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
+            feed.update_status(
+                state="failed",
+                phase=phase,
+                checkpoint_pending=pending,
+                reason=_failure_status_reason(exc),
+            )
             raise
         except SandboxParseError as exc:
             fresh = [
@@ -1275,7 +1372,12 @@ def run_case(
                     append_job_record(lake, case_id, build_job_record(job))
             phase = feed.current_status["phase"] if feed.current_status else 5
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
-            feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
+            feed.update_status(
+                state="failed",
+                phase=phase,
+                checkpoint_pending=pending,
+                reason=_failure_status_reason(exc),
+            )
             raise
         except CaptureBlocked as exc:
             if exc.trace:
@@ -1295,7 +1397,12 @@ def run_case(
             _publish_steps(feed, exc.trace)
             phase = feed.current_status["phase"] if feed.current_status else 1
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
-            feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
+            feed.update_status(
+                state="failed",
+                phase=phase,
+                checkpoint_pending=pending,
+                reason=_failure_status_reason(exc),
+            )
             raise
         except ApprovalArtifactMismatch as exc:
             phase = feed.current_status["phase"] if feed.current_status else 1
@@ -1325,10 +1432,15 @@ def run_case(
             feed.update_status(state="paused", phase=3, reason=exc.status_reason)
             print(f"state=paused phase=3 reason={exc.status_reason} needs_human=true")
             return NEEDS_HUMAN_EXIT
-        except Exception:
+        except Exception as exc:
             phase = feed.current_status["phase"] if feed.current_status else 1
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
-            feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
+            feed.update_status(
+                state="failed",
+                phase=phase,
+                checkpoint_pending=pending,
+                reason=_failure_status_reason(exc),
+            )
             raise
     if reopen_phase is not None:
         return run_case(

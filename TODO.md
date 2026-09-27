@@ -13,6 +13,17 @@
 - [x] Pass focused and full managed checks: 445 passed, 5 skipped; Ruff clean.
 - [ ] Pre-push scan, push main, fast-forward control VM, and hand the next console run to the orchestrator.
 
+## R29(c,d): P3 source identity and status stop reasons
+- [x] Add optional `source_label` and `source_host` to trace/status schemas, preserving older artifact validity.
+- [x] Derive source label/host from captured P3 candidate artifacts; include them on source-linked P3 trace steps and `status.sources[]`.
+- [x] Ensure paused, done, and failed status snapshots always have a non-empty reason, preserving explicit causes and using a state/checkpoint fallback only when absent.
+- [x] Add recorded synthetic assertions for the named source in discovery trace/status and for non-null failure reason.
+- [ ] Run the managed focused tests plus Ruff on the final workflow fixture; the two-strategy progress guard escalated this seam to root for an independent integration gate after merge.
+FILES: `src/ontofill/phases/p3_fanout/`, `src/ontofill/runfeed.py`, limited source/status/reason wiring in `src/ontofill/workflow.py`, `schemas/`, focused tests and task notes.
+TASK: Make P3 source records legible in the live run feed and keep terminal status explanations available.
+DONE: recorded synthetic discovery proves a named source label/host appears in its trace and `status.json`, and failed status has a non-empty reason; the managed focused tests and Ruff check/format gate pass.
+FORMAT: Ruff check and format on edited engine and test paths.
+
 ## R26b live PRD authority clauses
 - [x] Integrate the separately owned exact-text recorded regression.
 - [x] Preserve abbreviations in secondary clauses and merge marker-only fragments with their subject.

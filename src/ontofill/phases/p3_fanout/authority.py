@@ -24,6 +24,19 @@ def source_class(title: str, snippet: str, classes: list[dict]) -> str:
     return max(classes, key=lambda item: len(observed & _tokens(item["label"])))["id"]
 
 
+def source_display_identity(url: str, label: str | None, source_id: str) -> dict[str, str]:
+    """Build the optional public label/host shown for a discovered source."""
+    try:
+        host = (urlsplit(url).hostname or "").casefold().rstrip(".")
+    except ValueError:
+        host = ""
+    clean_label = " ".join(label.split())[:200] if isinstance(label, str) else ""
+    return {
+        "source_label": clean_label or host or source_id,
+        **({"source_host": host} if host else {}),
+    }
+
+
 def authority_result(url: str, *, policy: dict | None = None) -> tuple[bool, str]:
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")

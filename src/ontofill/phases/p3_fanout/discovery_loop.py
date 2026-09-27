@@ -32,7 +32,12 @@ from ontofill.contracts import validate_document
 from ontofill.inference import DecisionClient, complete_validated, generated_by
 from ontofill.inference.page_content import screened_page_content
 from ontofill.phase_loop import CheckResult, LoopBudget, LoopResult, PhaseLoop
-from ontofill.phases.p3_fanout.authority import authority_result, source_class, source_fingerprint
+from ontofill.phases.p3_fanout.authority import (
+    authority_result,
+    source_class,
+    source_display_identity,
+    source_fingerprint,
+)
 from ontofill.phases.p3_fanout.leads import (
     PROVIDER_ERRORS,
     Lead,
@@ -265,6 +270,7 @@ class DiscoveryLoop:
         self._page_texts: dict[str, str] = {}
         self._page_evidence: dict[str, dict[str, dict]] = {}
         self._pending_spider_gap_properties: set[str] = set()
+        self.source_display_by_id: dict[str, dict[str, str]] = {}
 
     def request_site_graph_refresh(self, property_ids: Iterable[str]) -> None:
         """Request bounded recrawls for confirmed sources that may cover these gaps."""
@@ -275,6 +281,12 @@ class DiscoveryLoop:
         )
 
     # ------------------------------------------------------------------ trace
+    def _annotate_source_steps(self, steps: Sequence[dict]) -> None:
+        for step in steps:
+            identity = self.source_display_by_id.get(step.get("source_id"))
+            if identity is not None:
+                step.update(identity)
+
     def _step(self, requested: dict, executed: dict, evaluated: dict, **extra: object) -> dict:
         step = {
             "step_id": f"step:{uuid.uuid4().hex}",
@@ -293,6 +305,7 @@ class DiscoveryLoop:
             "ts": datetime.now(UTC).isoformat(),
             "generated_by": {**self.provenance, "at": datetime.now(UTC).isoformat()},
         }
+        self._annotate_source_steps([step])
         self.trace.append(step)
         return step
 
@@ -413,6 +426,9 @@ class DiscoveryLoop:
         host = (urlsplit(url).hostname or "").lower()
         redirect_domain = registrable_domain(host)
         source_id = _source_id(url)
+        self.source_display_by_id[source_id] = source_display_identity(
+            url, candidate.get("title"), source_id
+        )
         try:
             captured = self.capture(
                 url,
@@ -427,13 +443,17 @@ class DiscoveryLoop:
                 redirect_domain=redirect_domain,
             )
         except (*PROVIDER_ERRORS, subprocess.SubprocessError) as exc:  # the lead stays a lead
+            trace_start = len(self.trace)
             self.trace.extend(getattr(exc, "trace", None) or [])
+            self._annotate_source_steps(self.trace[trace_start:])
             result = getattr(exc, "result", None)
             if isinstance(result, dict) and "proof" in result:
                 self.jobs.append(result)
             candidate.update(status="capture_failed", capture_reason=type(exc).__name__)
             return
+        trace_start = len(self.trace)
         self.trace.extend(captured.get("trace", []))
+        self._annotate_source_steps(self.trace[trace_start:])
         if "proof" in captured:
             self.jobs.append(captured)
         status = int(captured.get("status", 200))
@@ -460,7 +480,9 @@ class DiscoveryLoop:
                 executor=self.parse_executor,
             )
         except SandboxParseError as exc:
+            trace_start = len(self.trace)
             self.trace.extend(exc.trace)
+            self._annotate_source_steps(self.trace[trace_start:])
             self.jobs.append(exc.job_record)
             candidate.update(
                 status="capture_failed",
@@ -468,7 +490,9 @@ class DiscoveryLoop:
                 capture_key=key,
             )
             return
+        trace_start = len(self.trace)
         self.trace.extend(parsed_page.trace)
+        self._annotate_source_steps(self.trace[trace_start:])
         self.jobs.append(parsed_page.job_record)
         text = parsed_page.page_text
         if not text:
@@ -1054,6 +1078,24 @@ class DiscoveryLoop:
             else []
         )
 
+        for objective in objectives.get("objectives", []):
+            source_id = objective.get("source_id")
+            if not isinstance(source_id, str) or not source_id:
+                continue
+            candidate_path = case_dir / "03-fanout/sources" / source_id / "candidate.json"
+            try:
+                manifest = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = {}
+            if not isinstance(manifest, Mapping):
+                manifest = {}
+            url = manifest.get("landing_url") or manifest.get("url") or objective.get("source_url")
+            self.source_display_by_id[source_id] = source_display_identity(
+                str(url or ""),
+                manifest.get("title") if isinstance(manifest.get("title"), str) else None,
+                source_id,
+            )
+
         result = run_confirmed_source_spiders(
             case_dir=case_dir,
             objectives=objectives,
@@ -1067,6 +1109,7 @@ class DiscoveryLoop:
             parse_executor=self.parse_executor,
         )
         self._pending_spider_gap_properties.clear()
+        self._annotate_source_steps(result["trace"])
         self.trace.extend(result["trace"])
         self.jobs.extend(result["jobs"])
         return result["objectives"]

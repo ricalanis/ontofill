@@ -519,6 +519,10 @@ def test_loop_stops_when_checks_pass_and_emits_loop_trace(tmp_path) -> None:
     manifest = json.loads(
         (tmp_path / "03-fanout/sources" / first["source_id"] / "candidate.json").read_text()
     )
+    source_steps = [step for step in loop.trace if step.get("source_id") == first["source_id"]]
+    assert source_steps
+    assert all(step["source_label"] == manifest["title"] for step in source_steps)
+    assert all(step["source_host"] == "libraries.example.test" for step in source_steps)
     assert manifest["redirect_chain"] == [url]
     assert set(first["target_fields"]) & set(manifest["property_evidence"])
     assert all(

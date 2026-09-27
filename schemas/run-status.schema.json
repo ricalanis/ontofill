@@ -25,6 +25,8 @@
       "properties": {
         "source_id": {"type": "string", "minLength": 1},
         "source_type": {"type": "string", "minLength": 1},
+        "source_label": {"type": "string", "minLength": 1},
+        "source_host": {"type": "string", "minLength": 1},
         "format": {"enum": ["html", "xlsx", "csv", "pdf", "json", "api"]},
         "discovered_by": {"$ref": "objectives.schema.json#/$defs/discovered_by"},
         "health": {
