@@ -56,7 +56,7 @@ from ontofill.phases.p3_fanout.leads import (
     LeadQuery,
     public_url,
 )
-from ontofill.sandbox import CaptureBlocked
+from ontofill.sandbox import CaptureBlocked, SandboxLimits
 from ontofill.sandbox.domains import registrable_domain
 from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
@@ -89,6 +89,7 @@ _SENSITIVE_HEADER = re.compile(
 _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
+_REDIRECT_PREVIEW_LIMITS = SandboxLimits(memory_mb=512, cpus=1, pids=64, timeout_s=30, max_steps=8)
 
 
 def _summary_text(value: object, limit: int = 180) -> str:
@@ -359,6 +360,34 @@ def _matching_publishers(url: str, policy: Mapping) -> list[dict]:
                     }
                 )
     return sorted(matches, key=lambda item: len(item["domain"]), reverse=True)
+
+
+def _publisher_kind_tier_suggestion(
+    origin_url: str, page_text: str, policy: Mapping
+) -> tuple[str | None, str | None]:
+    """Suggest a tier only when bounded page text contains its full trusted policy kind."""
+    trusted, _reason = authority_result(origin_url, policy=dict(policy))
+    publishers = _matching_publishers(origin_url, policy)
+    if not trusted or len(publishers) != 1:
+        return None, None
+    publisher = publishers[0]
+    kind = str(publisher.get("kind") or "").strip()
+
+    def words(value: str) -> list[str]:
+        normalized = unicodedata.normalize("NFKD", value.casefold())
+        plain = "".join(char for char in normalized if not unicodedata.combining(char))
+        return [word for word in re.findall(r"[a-z0-9]+", plain) if word not in _STOP]
+
+    phrase = words(kind)
+    observed = words(page_text[:6000])
+    if len(phrase) < 2 or not any(len(word) >= 5 for word in phrase):
+        return None, None
+    if not any(observed[index : index + len(phrase)] == phrase for index in range(len(observed))):
+        return None, None
+    tier = str(publisher.get("tier") or "primary")
+    if tier not in {"primary", "secondary", "review"}:
+        return None, None
+    return tier, kind
 
 
 def _publisher_kind_policy_error(candidate: Mapping) -> str | None:
@@ -694,11 +723,243 @@ class DiscoveryLoop:
             scheme=parsed.scheme.lower(), netloc=netloc, path=path, fragment=""
         ).geturl()
 
+    def _preview_redirect_target(
+        self,
+        destination: str,
+        candidate: Mapping,
+        source_id: str,
+        policy: Mapping,
+        ontology: Mapping,
+        decision: DecisionClient,
+    ) -> dict:
+        """Capture one review preview on an exact host; never retry or widen it."""
+        host = (urlsplit(destination).hostname or "").casefold().rstrip(".")
+        kwargs = {
+            "allowed_domains": [host],
+            "exact_hosts": [host],
+            "limits": _REDIRECT_PREVIEW_LIMITS,
+            "lake": self.lake,
+            "run_id": self.run_id,
+            "source_id": source_id,
+            "objective_id": None,
+            "tdd_path": TDD_PATH,
+            "phase": 3,
+            "generated_by": self.provenance,
+        }
+        try:
+            captured = self.capture(destination, **kwargs)
+        except (*PROVIDER_ERRORS, subprocess.SubprocessError) as exc:
+            trace_start = len(self.trace)
+            self.trace.extend(getattr(exc, "trace", None) or [])
+            self._annotate_source_steps(self.trace[trace_start:])
+            result = getattr(exc, "result", None)
+            if isinstance(result, dict) and "proof" in result:
+                self.jobs.append(result)
+            return {}
+
+        trace_start = len(self.trace)
+        self.trace.extend(captured.get("trace", []))
+        self._annotate_source_steps(self.trace[trace_start:])
+        if "proof" in captured:
+            self.jobs.append(captured)
+
+        landing_raw = captured.get("url") or destination
+        landing_url = self._canonical_redirect_url(str(landing_raw), policy)
+        try:
+            target_host = (urlsplit(destination).hostname or "").casefold().rstrip(".")
+        except ValueError:
+            return {}
+        raw_chain = captured.get("redirect_chain")
+        if not isinstance(raw_chain, list) or not raw_chain:
+            raw_chain = [destination, landing_raw]
+        if any(not isinstance(item, str) for item in raw_chain):
+            return {}
+        canonical_chain = [self._canonical_redirect_url(item, policy) for item in raw_chain]
+        if (
+            landing_url is None
+            or (urlsplit(landing_url).hostname or "").casefold().rstrip(".") != target_host
+            or any(item is None for item in canonical_chain)
+            or any(
+                (urlsplit(str(item)).hostname or "").casefold().rstrip(".") != target_host
+                for item in canonical_chain
+            )
+        ):
+            # A further host is still unapproved. Keep its blocked job/trace only.
+            return {}
+        status = captured.get("status")
+        if type(status) is not int or not 200 <= status < 300:
+            return {}
+        html_key = captured.get("html_key")
+        document_key = captured.get("document_key")
+        is_document = not isinstance(html_key, str) and isinstance(document_key, str)
+        capture_key = document_key if is_document else html_key
+        if not isinstance(capture_key, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", capture_key
+        ):
+            return {}
+        screenshot_key = captured.get("screenshot_key")
+        if not isinstance(screenshot_key, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", screenshot_key
+        ):
+            screenshot_key = None
+
+        content_type = captured.get("document_content_type") if is_document else None
+        content_type = (content_type.strip()[:200] if isinstance(content_type, str) else "") or (
+            "application/octet-stream" if is_document else None
+        )
+        parse_format = (
+            _DOCUMENT_MIME_FORMAT.get(content_type.split(";", 1)[0].strip().lower(), "auto")
+            if is_document
+            else "html"
+        )
+        try:
+            parsed_page = parse_bronze(
+                self.lake,
+                capture_key,
+                format=parse_format,
+                max_rows=300,
+                base_url=landing_url,
+                run_id=self.run_id,
+                source_id=source_id,
+                tdd_path=TDD_PATH,
+                phase=3,
+                generated_by=self.provenance,
+                executor=self.parse_executor,
+            )
+        except SandboxParseError as exc:
+            trace_start = len(self.trace)
+            self.trace.extend(exc.trace)
+            self._annotate_source_steps(self.trace[trace_start:])
+            self.jobs.append(exc.job_record)
+            page_text = ""
+            parsed_page = None
+        else:
+            trace_start = len(self.trace)
+            self.trace.extend(parsed_page.trace)
+            self._annotate_source_steps(self.trace[trace_start:])
+            self.jobs.append(parsed_page.job_record)
+            page_text = parsed_page.page_text if parsed_page.format == "html" else parsed_page.text
+
+        if parsed_page is not None and parsed_page.challenge_detected:
+            page_text = ""
+        # Capture currently returns no title metadata. Use only the bounded text emitted by
+        # the networkless parse pod as a preview label; never parse bronze HTML in-process.
+        observed_title = _summary_text(captured.get("title", ""), 200)
+        observed_title = observed_title or _summary_text(page_text, 200)
+        observed_title = observed_title or f"Redirect destination at {target_host}"
+        snippet = _summary_text(page_text, 300) or str(candidate.get("snippet") or "")
+        source_type = (
+            source_class(observed_title, page_text, list(ontology["source_classes"]))
+            if parsed_page is not None and not parsed_page.challenge_detected
+            else None
+        )
+        preview = {
+            "capture_key": capture_key,
+            "screenshot_key": screenshot_key,
+            "landing_url": landing_url,
+            "title": observed_title,
+            "snippet": snippet,
+            "source_type": source_type,
+            "covers": [],
+            "access_path": {},
+        }
+        if parsed_page is None or parsed_page.challenge_detected:
+            return preview
+
+        suggested_tier, publisher_kind = _publisher_kind_tier_suggestion(
+            str(candidate.get("url") or ""), page_text, policy
+        )
+        if suggested_tier is not None:
+            preview["_authority_tier_suggestion"] = suggested_tier
+            preview["_matched_publisher_kind"] = publisher_kind
+
+        document_headers = _parsed_document_headers(parsed_page)
+        listing_row_count = sum(
+            str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows
+        )
+        document_size = captured.get("document_size_bytes") if is_document else None
+        if type(document_size) is not int or document_size < 0:
+            document_size = None
+        context = {
+            "page_text": parsed_page.page_text,
+            "forms": [dict(form) for form in parsed_page.forms],
+            "links": [dict(link) for link in parsed_page.links],
+            "table_headers": [list(headers) for headers in parsed_page.table_headers],
+            "listing_row_count": listing_row_count,
+            "document": {
+                "capture_key": capture_key,
+                "content_type": content_type,
+                "size_bytes": document_size,
+                "format": parsed_page.format if is_document else None,
+                "headers": document_headers,
+                "row_count": len(parsed_page.rows),
+                "text": parsed_page.text[:6000]
+                if is_document and parsed_page.format == "pdf"
+                else "",
+            }
+            if is_document
+            else None,
+        }
+        property_ids = [
+            property_id
+            for property_id in candidate.get("property_ids", [])
+            if isinstance(property_id, str)
+            and any(item.get("id") == property_id for item in ontology["properties"])
+        ]
+        if not property_ids:
+            return preview
+        preview_candidate = {
+            "url": destination,
+            "landing_url": landing_url,
+            "title": observed_title,
+            "snippet": snippet,
+            "capture_key": capture_key,
+            "property_ids": property_ids,
+            "status": "captured",
+            "authority": "review",
+            "source_id": source_id,
+            "matched_publishers": _matching_publishers(landing_url, policy),
+        }
+        self._page_texts[destination] = page_text
+        self._page_access_contexts[destination] = context
+        self._page_access_paths.pop(destination, None)
+        preview_draft = {"candidates": {destination: preview_candidate}}
+        try:
+            verdicts = (
+                self._model_verdicts(decision, preview_draft, ontology, policy)
+                if decision.backend == "vultr"
+                else self._code_verdicts(preview_draft, ontology)
+            )
+        except PROVIDER_ERRORS as exc:
+            self._step(
+                {"tool": "critic.phase3.capability", "properties": property_ids},
+                {"status": "failed"},
+                {"outcome": f"error: {type(exc).__name__}", "fallback": "empty_preview_covers"},
+                mode="D1",
+                source_id=source_id,
+                generated_by=generated_by(decision),
+            )
+            return preview
+        access_paths = self._page_access_paths.get(destination, {})
+        supported = [
+            property_id
+            for property_id in property_ids
+            if verdicts.get(destination, {}).get(property_id) is None
+            and property_id in access_paths
+        ]
+        preview["covers"] = supported
+        preview["access_path"] = {
+            property_id: access_paths[property_id] for property_id in supported
+        }
+        return preview
+
     def _redirect_lead_from_error(
         self,
         error: Exception,
         candidate: Mapping,
         policy: Mapping,
+        ontology: Mapping,
+        decision: DecisionClient,
         case_dir: Path,
     ) -> dict | None:
         chain = self._redirect_chain_from_error(error, str(candidate["url"]))
@@ -736,47 +997,99 @@ class DiscoveryLoop:
         title = f"Redirect destination at {destination_host}"
         snippet = "Public URL observed in a browser redirect chain."
         provider = "sandbox_redirect"
-        fingerprint = source_fingerprint(
-            url=destination,
-            title=title,
-            snippet=snippet,
-            provider=provider,
-            capture_key=None,
-            authority_policy=dict(policy),
-        )
         trusted, reason = authority_result(destination, policy=dict(policy))
         tier = authority_tier(destination, policy)
         needs_review = not trusted
         source_id = _source_id(destination)
         directory = case_dir / "03-fanout/sources" / source_id
         candidate_path = directory / "candidate.json"
-        if needs_review and candidate_path.exists():
+        approval_path = directory / "APPROVED"
+        pending_path = directory / "APPROVAL_PENDING.md"
+        packet = None
+        reuse_packet = False
+        if needs_review and (approval_path.exists() or pending_path.exists()):
+            if not candidate_path.is_file():
+                raise ApprovalArtifactMismatch("source")
             try:
                 prior_packet = load_json(candidate_path)
             except (OSError, ValueError):
                 return None
-            if prior_packet.get("url") != destination:
+            if not isinstance(prior_packet, Mapping) or prior_packet.get("url") != destination:
                 return None
-            if prior_packet.get("fingerprint") != fingerprint:
-                # A changed authority context gets a distinct review packet. An existing
-                # approval is immutable and cannot be bypassed by making a new packet.
-                if (directory / "APPROVED").exists():
-                    return None
-                source_id = _source_id(destination + "\0" + fingerprint)
-                directory = case_dir / "03-fanout/sources" / source_id
-                candidate_path = directory / "candidate.json"
-                if candidate_path.exists():
-                    try:
-                        prior_packet = load_json(candidate_path)
-                    except (OSError, ValueError):
-                        return None
-                    if (
-                        prior_packet.get("url") != destination
-                        or prior_packet.get("fingerprint") != fingerprint
-                    ):
-                        return None
-            if (directory / "APPROVED").exists():
-                _verified_source_approval(case_dir, directory, fingerprint)
+            try:
+                validate_document("source-candidate", prior_packet)
+            except ValidationError:
+                return None
+            prior_fingerprint = prior_packet.get("fingerprint")
+            if not isinstance(prior_fingerprint, str):
+                return None
+            if approval_path.exists():
+                _verified_source_approval(case_dir, directory, prior_fingerprint)
+            packet = prior_packet
+            reuse_packet = True
+            title = str(packet.get("title") or title)
+            snippet = str(packet.get("snippet") or snippet)
+            tier = str(packet.get("authority_tier") or tier)
+        if needs_review and not reuse_packet:
+            preview = self._preview_redirect_target(
+                destination,
+                candidate,
+                source_id,
+                policy,
+                ontology,
+                decision,
+            )
+            title = str(preview.get("title") or title)
+            snippet = str(preview.get("snippet") or snippet)
+            suggested_tier = preview.pop("_authority_tier_suggestion", None)
+            publisher_kind = preview.pop("_matched_publisher_kind", None)
+            if tier == "unknown" and suggested_tier in {"primary", "secondary", "review"}:
+                tier = suggested_tier
+                reason = _summary_text(
+                    f"{reason}; captured page text matches the full trusted policy publisher "
+                    f"kind {publisher_kind!r}; suggested tier {tier}",
+                    300,
+                )
+            capture_key = preview.get("capture_key")
+            access_path = preview.get("access_path")
+            fingerprint = source_fingerprint(
+                url=destination,
+                title=title,
+                snippet=snippet,
+                provider=provider,
+                capture_key=capture_key,
+                authority_policy=dict(policy),
+                access_path=access_path if access_path else None,
+            )
+            packet = {
+                "source_id": source_id,
+                "url": destination,
+                "title": title,
+                "snippet": snippet,
+                "provider": provider,
+                "providers": [provider],
+                "capture_key": capture_key,
+                "authority": "review",
+                "authority_tier": tier,
+                "authority_reason": reason,
+                "fingerprint": fingerprint,
+                "redirect_chain": canonical_chain,
+                "generated_by": self.provenance,
+                **{
+                    key: value
+                    for key, value in preview.items()
+                    if key
+                    in {
+                        "screenshot_key",
+                        "source_type",
+                        "covers",
+                        "landing_url",
+                        "access_path",
+                    }
+                },
+            }
+
+        fingerprint = str(packet["fingerprint"]) if packet is not None else ""
         lead = {
             "url": destination,
             "title": title,
@@ -789,7 +1102,9 @@ class DiscoveryLoop:
             "lead_only": True,
             "providers": [provider],
             "iteration": int(candidate.get("iteration", 1)),
-            "redirect_chain": canonical_chain,
+            "redirect_chain": packet.get("redirect_chain", canonical_chain)
+            if packet is not None
+            else canonical_chain,
             "redirect_review_required": needs_review,
             "review_source_id": source_id if needs_review else None,
             "review_fingerprint": fingerprint if needs_review else None,
@@ -799,31 +1114,11 @@ class DiscoveryLoop:
             destination, title, source_id
         )
         if needs_review:
-            if candidate_path.exists():
-                packet = load_json(candidate_path)
-            else:
-                packet = {
-                    "source_id": source_id,
-                    "url": destination,
-                    "title": title,
-                    "snippet": snippet,
-                    "provider": provider,
-                    "providers": [provider],
-                    "capture_key": None,
-                    "authority": "review",
-                    "authority_tier": tier,
-                    "authority_reason": reason,
-                    "fingerprint": fingerprint,
-                    "redirect_chain": canonical_chain,
-                    "generated_by": self.provenance,
-                }
+            assert packet is not None
             validate_document("source-candidate", packet)
-            if not candidate_path.exists():
+            if not reuse_packet:
                 write_json(candidate_path, packet)
-            if (
-                not (directory / "APPROVED").exists()
-                and not (directory / "APPROVAL_PENDING.md").exists()
-            ):
+            if not approval_path.exists() and not pending_path.exists():
                 require_approval(
                     directory,
                     phase=3,
@@ -837,7 +1132,12 @@ class DiscoveryLoop:
         return lead
 
     def _capture_lead(
-        self, candidate: dict, policy: Mapping, ontology: Mapping, case_dir: Path
+        self,
+        candidate: dict,
+        policy: Mapping,
+        ontology: Mapping,
+        decision: DecisionClient,
+        case_dir: Path,
     ) -> dict | None:
         url = candidate["url"]
         host = (urlsplit(url).hostname or "").lower()
@@ -881,7 +1181,9 @@ class DiscoveryLoop:
                     capture_outcome="blocked" if isinstance(exc, CaptureBlocked) else "failed",
                     capture_attempts=1,
                 )
-                return self._redirect_lead_from_error(exc, candidate, policy, case_dir)
+                return self._redirect_lead_from_error(
+                    exc, candidate, policy, ontology, decision, case_dir
+                )
             attempts = 2
             try:
                 captured = self.capture(url, **capture_kwargs)
@@ -910,8 +1212,10 @@ class DiscoveryLoop:
                     capture_attempts=2,
                 )
                 return self._redirect_lead_from_error(
-                    retry_exc, candidate, policy, case_dir
-                ) or self._redirect_lead_from_error(exc, candidate, policy, case_dir)
+                    retry_exc, candidate, policy, ontology, decision, case_dir
+                ) or self._redirect_lead_from_error(
+                    exc, candidate, policy, ontology, decision, case_dir
+                )
         trace_start = len(self.trace)
         self.trace.extend(captured.get("trace", []))
         self._annotate_source_steps(self.trace[trace_start:])
@@ -938,7 +1242,9 @@ class DiscoveryLoop:
                     capture_outcome="blocked",
                     capture_attempts=2,
                 )
-                return self._redirect_lead_from_error(exc, candidate, policy, case_dir)
+                return self._redirect_lead_from_error(
+                    exc, candidate, policy, ontology, decision, case_dir
+                )
             trace_start = len(self.trace)
             self.trace.extend(retry.get("trace", []))
             self._annotate_source_steps(self.trace[trace_start:])
@@ -1972,7 +2278,7 @@ class DiscoveryLoop:
                         else {}
                     ),
                 }
-                redirect_lead = self._capture_lead(candidate, policy, ontology, case_dir)
+                redirect_lead = self._capture_lead(candidate, policy, ontology, decision, case_dir)
                 draft["candidates"][lead["url"]] = candidate
                 if redirect_lead is not None:
                     existing = draft["leads"].get(redirect_lead["url"])

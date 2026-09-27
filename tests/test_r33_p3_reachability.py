@@ -23,6 +23,7 @@ from ontofill.phases.p3_fanout.leads import (
 from ontofill.sandbox import CaptureBlocked
 from ontofill.workflow import NEEDS_HUMAN_EXIT, run_case
 from tests.genericity.fixtures.libraries import library_decisions
+from tests.r17_helpers import SyntheticParseExecutor
 from tests.test_discovery_loop import BRIEF, PAGE, POLICY, StaticProvider, _library_case
 
 
@@ -204,6 +205,7 @@ def test_cross_domain_redirect_is_a_separate_review_lead(tmp_path: Path) -> None
     decision = library_decisions()
     source = "https://libraries.example.test/branches"
     destination = "https://records.other.example/registry"
+    generic = "<html><body><p>General information about this public website.</p></body></html>"
     chain = [source, destination]
     lake = FileLake(tmp_path / "lake")
     calls: list[str] = []
@@ -211,9 +213,17 @@ def test_cross_domain_redirect_is_a_separate_review_lead(tmp_path: Path) -> None
     def capture(url: str, **kwargs) -> dict:
         calls.append(url)
         if url == destination:
-            pytest.fail("an unapproved redirect target must not be captured in this run")
-        if url != source:
             key = lake.put_bytes(PAGE.format(title="Public records").encode())
+            return {
+                "url": url,
+                "redirect_chain": [url],
+                "status": 200,
+                "html_key": key,
+                "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
+                "trace": [],
+            }
+        if url != source:
+            key = lake.put_bytes(generic.encode())
             return {
                 "url": url,
                 "redirect_chain": [url],
@@ -248,12 +258,13 @@ def test_cross_domain_redirect_is_a_separate_review_lead(tmp_path: Path) -> None
         run_id="run-r33-redirect",
         provenance=generated_by(decision),
         budget=LoopBudget(max_iterations=2, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
     )
     with pytest.raises(NoConfirmedSources) as stopped:
         loop.discover_sources(tmp_path, ontology, decision)
 
     assert source in calls
-    assert destination not in calls
+    assert calls.count(destination) == 1
     redirect_lead = next(
         lead for lead in loop.result.artifact["leads"].values() if lead["url"] == destination
     )
@@ -263,6 +274,8 @@ def test_cross_domain_redirect_is_a_separate_review_lead(tmp_path: Path) -> None
     packet = tmp_path / "03-fanout/sources" / source_id
     assert (packet / "candidate.json").exists()
     assert (packet / "APPROVAL_PENDING.md").exists()
+    candidate = load_json(packet / "candidate.json")
+    assert candidate["authority_tier"] == "unknown"
     assert stopped.value.checkpoint_pending == "source"
     assert stopped.value.review_source_ids == [source_id]
 
@@ -411,6 +424,7 @@ def test_redirect_review_requires_current_digest_and_preserves_packet_bytes(
     }
     source = "https://records.example.test/start"
     destination = "https://registry.unknown.test/records"
+    generic = "<html><body><p>General information about this public website.</p></body></html>"
     chain = [source, destination]
     lake = FileLake(tmp_path / "lake")
     calls: list[str] = []
@@ -438,7 +452,7 @@ def test_redirect_review_requires_current_digest_and_preserves_packet_bytes(
                 "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
                 "trace": [],
             }
-        key = lake.put_bytes(PAGE.format(title="Public records").encode())
+        key = lake.put_bytes(generic.encode())
         return {
             "url": url,
             "redirect_chain": [url],
@@ -455,6 +469,7 @@ def test_redirect_review_requires_current_digest_and_preserves_packet_bytes(
         run_id="run-r33-review-pending",
         provenance=provenance,
         budget=LoopBudget(max_iterations=1, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
     )
     with pytest.raises(NoConfirmedSources):
         first.discover_sources(tmp_path, ontology, decision)
@@ -494,7 +509,7 @@ def test_redirect_review_requires_current_digest_and_preserves_packet_bytes(
 
     with pytest.raises(ApprovalArtifactMismatch):
         rejected_resume.discover_sources(tmp_path, ontology, decision)
-    assert destination not in calls
+    assert calls.count(destination) == 1
     assert candidate_path.read_bytes() == candidate_bytes
     assert pending_path.read_bytes() == pending_bytes
     approval["artifact_sha256"] = {relative: hashlib.sha256(candidate_bytes).hexdigest()}
@@ -507,6 +522,7 @@ def test_redirect_review_requires_current_digest_and_preserves_packet_bytes(
         run_id="run-r33-review-approved",
         provenance=provenance,
         budget=LoopBudget(max_iterations=1, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
     )
     try:
         resumed.discover_sources(tmp_path, ontology, decision)
@@ -527,6 +543,7 @@ def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -
     source = "https://records.example.test/start"
     destination = "https://registry.unknown.test/records"
     viable = "https://records.example.test/catalog"
+    generic = "<html><body><p>General information about this public website.</p></body></html>"
     chain = [source, destination]
     lake = FileLake(tmp_path / "lake")
     calls: list[str] = []
@@ -534,9 +551,17 @@ def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -
     def capture(url: str, **kwargs) -> dict:
         calls.append(url)
         if url == destination:
-            pytest.fail("a denied source must never be captured")
-        if url != source:
             key = lake.put_bytes(PAGE.format(title="Public records").encode())
+            return {
+                "url": url,
+                "redirect_chain": [url],
+                "status": 200,
+                "html_key": key,
+                "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
+                "trace": [],
+            }
+        if url != source:
+            key = lake.put_bytes(generic.encode())
             return {
                 "url": url,
                 "redirect_chain": [url],
@@ -563,6 +588,7 @@ def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -
         run_id="run-r33-denied-pending",
         provenance=provenance,
         budget=LoopBudget(max_iterations=1, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
     )
     with pytest.raises(NoConfirmedSources):
         first.discover_sources(tmp_path, ontology, decision)
@@ -604,6 +630,7 @@ def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -
         run_id="run-r33-denied-resume",
         provenance=provenance,
         budget=LoopBudget(max_iterations=1, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
     )
     try:
         document = resumed.discover_sources(tmp_path, ontology, decision)
@@ -614,7 +641,7 @@ def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -
     assert provider.calls > 0
     assert viable in calls
     assert resumed.result.artifact["candidates"][viable]["capture_attempts"] == 1
-    assert destination not in calls
+    assert calls.count(destination) == 1
     assert candidate_path.read_bytes() == candidate_bytes
     assert pending_path.read_bytes() == pending_bytes
     assert pending_path.stat().st_mtime_ns == pending_mtime
@@ -838,6 +865,7 @@ def test_workflow_stops_at_source_review_for_an_unapproved_redirect(
     monkeypatch.setattr("ontofill.workflow._scratch_case", scratch_case)
     decision = library_decisions()
     destination = "https://registry.unknown.test/records"
+    generic = "<html><body><p>General information about this public website.</p></body></html>"
 
     class RedirectProvider(LeadProvider):
         name = "synthetic-redirect"
@@ -856,26 +884,26 @@ def test_workflow_stops_at_source_review_for_an_unapproved_redirect(
             ]
 
     def capture(url: str, **kwargs) -> dict:
-        if url != "https://libraries.example.test/branches":
-            key = lake.put_bytes(PAGE.format(title="Public records").encode())
-            return {
-                "url": url,
-                "redirect_chain": [url],
-                "status": 200,
-                "html_key": key,
-                "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
-                "trace": [],
-            }
-        raise CaptureBlocked(
-            "redirect left the job allowlist",
-            [],
-            {
-                "url": destination,
-                "redirect_chain": [url, destination],
-                "allowed_domains": kwargs["allowed_domains"],
-                "trace": [],
-            },
-        )
+        if url == "https://libraries.example.test/branches":
+            raise CaptureBlocked(
+                "redirect left the job allowlist",
+                [],
+                {
+                    "url": destination,
+                    "redirect_chain": [url, destination],
+                    "allowed_domains": kwargs["allowed_domains"],
+                    "trace": [],
+                },
+            )
+        key = lake.put_bytes(generic.encode())
+        return {
+            "url": url,
+            "redirect_chain": [url],
+            "status": 200,
+            "html_key": key,
+            "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
+            "trace": [],
+        }
 
     discovery = DiscoveryLoop(
         [RedirectProvider()],
@@ -884,6 +912,7 @@ def test_workflow_stops_at_source_review_for_an_unapproved_redirect(
         run_id="mock-r33-source-pause",
         provenance=generated_by(decision),
         budget=LoopBudget(max_iterations=1, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
     )
     outcome = run_case(
         original,

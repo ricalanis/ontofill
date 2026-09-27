@@ -355,3 +355,18 @@ The full R26b engine suite passed 440 tests with 5 skipped; Ruff lint passed. Ru
 The baseline recorded check failed in the intended five places: PRD/P2 output budgets and retries, plus missing multi-error pause diagnostics. After the implementation, the first focused check exposed an existing extraction contract: a truncated extraction call must escalate from Qwen to GLM. A one-line follow-up accidentally altered the HTTP schema-mode branch instead of the length branch, so the second focused check failed for the same cause. The next strategy targets the length branch explicitly and retains extraction fallback while retrying PRD/P2 on their selected model.
 
 The first full integration run passed 418 tests and failed three existing R22 assertions because my attempted status normalization changed recorded schema failures from `invalid_response` to `validation_failed`. Those are distinct trace statuses: the latter is reserved for semantic validation after a syntactically valid answer. The normalization was reverted, and the new R26 test now asserts the existing `invalid_response` status plus its visible validator reason.
+
+# R33b worktree notes
+
+## Managed gate attempts
+
+- Attempt 1 used task `r33b-source-preview`, check `redirect-preview-focused`, strategy `exact-host-single-preview-and-critic-evidence`. It failed before the final fixture design; the module-wide synthetic parser fixture changed unrelated R33 reachability expectations. That global fixture was removed and synthetic parsing was scoped to the redirect cases.
+- Attempt 2 used the same managed task/check/strategy and ended with 5 failures and 44 passes. One assertion expected an absent `screenshot_key` to be explicit null after a blocked preview. Four legacy redirect cases parsed retrieval tables from unrelated fallback pages, allowing unrelated candidates to satisfy the discovery gate. A workflow test also stopped at the recorded PRD checkpoint.
+
+Dead hypothesis: adding the synthetic parse executor to redirect regressions would keep their prior no-confirmed-source outcomes. It did not; the synthetic fallback pages also needed to avoid retrieval affordances. The fixtures now use a generic page for unrelated leads, while the preview target keeps its specific synthetic page. No third run of the same managed path/check/strategy will be made in this worktree.
+
+## Handoff dependencies
+
+- The P3 preview sends `exact_hosts=[target_host]`; include parent-owned sandbox/proxy enforcement commit `f960ca0` when composing.
+- A tier suggestion now requires the full normalized trusted policy-kind phrase in bounded parse-pod page text. It leaves authority at `review`. The positive synthetic case is present, but these tier changes were made after the final managed attempt and still need the parent’s composed gate.
+- The parent should resolve the recorded workflow test’s PRD checkpoint outcome as part of the composed gate before treating the R33b DONE check as passing.

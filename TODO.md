@@ -1,10 +1,19 @@
-# R33b exact-host sandbox boundary
+# R33b redirect review preview
 
-- [ ] Add a failing recorded proxy test: exact preview host allowed; its subdomain and sibling refused despite the legacy domain allowlist.
-- [ ] Add an opt-in validated `exact_hosts` capture argument and proxy environment, preserving existing default behavior; assert the proxy launch receives it.
-- [ ] Run managed focused check and commit, then integrate with the R33b P3 worker for a full gate.
+- [ ] Add a recorded synthetic redirect fixture proving one bounded preview uses only the target host, and that preview-derived source fields and critic-supported access paths appear before the review checkpoint.
+- [ ] Keep follow-on redirects unapproved; prove preview denial skips the target and digest-approved bytes remain unchanged.
+- [ ] Add only any additive candidate fields required by R33b/R35, preserving thin legacy packets.
+- [ ] Run the managed focused test/Ruff/schema/diff DONE gate and record each attempt.
+- [ ] Commit the isolated worktree and report the SHA to root; do not push or deploy.
 
-# Prior R35/R36 integration
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, optional `schemas/source-candidate.schema.json`, focused synthetic tests, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Capture each new untrusted redirect target once in a bounded sandbox job with an exact-host allowlist before its source-review request; bind observed landing URL, title, screenshot, type, and validated capability to the review packet without granting source authority.
+DONE: the managed gate in `GOAL.md` proves preview capture/evidence, no further-host follow, denial skip, approved-byte preservation, schema compatibility, Ruff and diff checks.
+FORMAT: Ruff format for edited Python files; JSON-tool parse for edited schemas.
+
+Implementation notes: the preview supplies `exact_hosts=[target_host]`; the sandbox/proxy enforcement is in the parent-owned companion commit `f960ca0` and must be included when composing. A tier suggestion requires the full normalized trusted publisher-kind phrase in bounded parse-pod page text; authority remains `review`, and an absent or ambiguous phrase leaves the tier `unknown`.
+
+# R35/R36 integration
 
 - [ ] Review R35 capability evidence: exact captured access path, authority verdict, bounded form metadata, persistence in source/objective; registry accepted, blog refused.
 - [ ] Review R36 navigation/document/DNS core: no egress bypass, no unbounded payload/error, bronze lineage and six-checkpoint job, additive schemas. TLS/AIA is a later slice.
