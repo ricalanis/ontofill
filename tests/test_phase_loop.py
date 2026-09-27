@@ -204,6 +204,131 @@ def test_live_spend_budget_stops_before_next_model_stage() -> None:
     assert steps[1]["usage"]["est_usd"] == 0.02
 
 
+def test_failed_http_attempt_does_not_preempt_first_critique() -> None:
+    call_log: list[dict] = []
+    steps: list[dict] = []
+    criticized: list[dict] = []
+
+    def propose(_context: object, _iteration: int) -> dict:
+        call_log.extend(
+            [
+                {"status": "http_502", "usage": {"est_usd": None}},
+                {
+                    "status": "ok",
+                    "usage": {
+                        "model": "glm-5.3",
+                        "backend": "vultr",
+                        "input_tokens": 10,
+                        "output_tokens": 10,
+                        "est_usd": 0.001,
+                    },
+                },
+            ]
+        )
+        return {"draft": True}
+
+    result = PhaseLoop[dict](
+        phase=3,
+        run_id="live-retry",
+        generated_by=VULTR,
+        budget=LoopBudget(max_iterations=1, max_usd=1),
+        emit=steps.append,
+        call_log=call_log,
+        stop_details=lambda *_args: {
+            "candidate_count": 1,
+            "judged_candidate_count": 1,
+        },
+    ).run(
+        gather=lambda *_args: {},
+        propose=propose,
+        critique=lambda draft, *_args: (
+            criticized.append(draft) or {"accepted": True, "reason": "retry succeeded"}
+        ),
+        revise=lambda draft, *_args: draft,
+        check=lambda *_args: True,
+    )
+
+    assert criticized == [{"draft": True}]
+    assert result.stop_reason == "checks_passed"
+    assert result.usd == pytest.approx(0.001)
+    basis = steps[-1]["executed"]["budget_basis"]
+    assert basis["unknown_cost"] is False
+    assert basis["usd_spent"] == pytest.approx(0.001)
+    assert basis["usd_limit"] == 1
+    assert basis["iterations_used"] == 1
+    assert basis["iterations_limit"] == 1
+    assert basis["model_calls"] == 2
+    assert steps[-1]["executed"]["stop_details"] == {
+        "candidate_count": 1,
+        "judged_candidate_count": 1,
+    }
+
+
+def test_phase_three_defers_wall_stop_until_first_critique() -> None:
+    time_values = iter([0, 0, 10, 10, 10])
+    clock = lambda: next(time_values)
+    stages: list[str] = []
+    steps: list[dict] = []
+
+    result = PhaseLoop[dict](
+        phase=3,
+        run_id="phase-three-wall-floor",
+        generated_by=RECORDED,
+        budget=LoopBudget(max_iterations=3, wall_seconds=5),
+        emit=steps.append,
+        monotonic=clock,
+    ).run(
+        gather=lambda *_args: stages.append("gather") or {},
+        propose=lambda *_args: stages.append("propose") or {"candidate": True},
+        critique=lambda *_args: stages.append("critique") or True,
+        revise=lambda *_args: stages.append("revise") or {},
+        check=lambda *_args: stages.append("check") or True,
+    )
+
+    assert result.stop_reason == "wall_clock"
+    assert stages == ["gather", "propose", "critique"]
+    assert steps[-1]["executed"]["budget_basis"]["wall_seconds_used"] == 10
+
+
+def test_phase_three_usd_limit_is_not_deferred_until_critique() -> None:
+    call_log: list[dict] = []
+    steps: list[dict] = []
+
+    def propose(*_args: object) -> dict:
+        call_log.append(
+            {
+                "status": "ok",
+                "usage": {
+                    "model": "glm-5.3",
+                    "backend": "vultr",
+                    "input_tokens": 10,
+                    "output_tokens": 10,
+                    "est_usd": 0.02,
+                },
+            }
+        )
+        return {"candidate": True}
+
+    result = PhaseLoop[dict](
+        phase=3,
+        run_id="phase-three-usd-limit",
+        generated_by=VULTR,
+        budget=LoopBudget(max_iterations=1, max_usd=0.01),
+        call_log=call_log,
+        emit=steps.append,
+    ).run(
+        gather=lambda *_args: {},
+        propose=propose,
+        critique=lambda *_args: pytest.fail("USD cap was deferred until critique"),
+        revise=lambda *_args: {},
+        check=lambda *_args: True,
+    )
+
+    assert result.stop_reason == "budget"
+    assert steps[-1]["executed"]["budget_basis"]["unknown_cost"] is False
+    assert steps[-1]["executed"]["budget_basis"]["usd_spent"] == pytest.approx(0.02)
+
+
 def test_stage_usage_sums_multiple_typed_calls() -> None:
     call_log: list[dict] = []
     steps: list[dict] = []
@@ -291,24 +416,27 @@ def test_wall_budget_and_unpriced_live_call_fail_closed() -> None:
     assert wall.stop_reason == "wall_clock"
 
     call_log: list[dict] = []
+    unpriced_steps: list[dict] = []
     unpriced = PhaseLoop[dict](
-        phase=1,
+        phase=3,
         run_id="live-unpriced",
         generated_by=VULTR,
         budget=LoopBudget(max_usd=1),
         call_log=call_log,
+        emit=unpriced_steps.append,
     ).run(
         gather=lambda *_args: {},
         propose=lambda *_args: (
             call_log.append(
                 {
+                    "status": "ok",
                     "usage": {
                         "model": "glm-5.3",
                         "backend": "vultr",
                         "input_tokens": 1,
                         "output_tokens": 1,
                         "est_usd": None,
-                    }
+                    },
                 }
             )
             or {"draft": True}
@@ -318,6 +446,7 @@ def test_wall_budget_and_unpriced_live_call_fail_closed() -> None:
         check=lambda *_args: True,
     )
     assert unpriced.stop_reason == "budget"
+    assert unpriced_steps[-1]["executed"]["budget_basis"]["unknown_cost"] is True
     with pytest.raises(ValueError, match="call log"):
         PhaseLoop(phase=1, run_id="live-no-log", generated_by=VULTR, budget=LoopBudget(max_usd=1))
 

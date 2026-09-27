@@ -506,6 +506,7 @@ class NoConfirmedSources(ValueError):
         iterations: int,
         stop_reason: str,
         unreachable_count: int = 0,
+        judged_candidate_count: int = 0,
         review_source_ids: Sequence[str] = (),
         review_source_hosts: Sequence[str] = (),
         jurisdiction_rejections: Sequence[Mapping] = (),
@@ -524,6 +525,7 @@ class NoConfirmedSources(ValueError):
         self.review_source_hosts = host_values
         self.checkpoint_pending = "source" if self.review_source_ids else None
         unreachable_count = max(0, int(unreachable_count))
+        judged_candidate_count = max(0, int(judged_candidate_count))
         prefix = (
             f"sources unreachable ({unreachable_count} blocked/redirected/403); "
             if unreachable_count
@@ -541,11 +543,16 @@ class NoConfirmedSources(ValueError):
                 f"source authority review required for {len(self.review_source_ids)} redirected "
                 f"publisher(s){host_detail}; "
             )
-        self.reason = _summary_text(
-            dispatch_diagnostic
-            or f"{prefix}{review_prefix}no authoritative source found for {reason_gaps}",
-            300,
-        )
+        if dispatch_diagnostic:
+            reason = dispatch_diagnostic
+        elif stop_reason in {"budget", "wall_clock"} and judged_candidate_count == 0:
+            reason = (
+                f"{prefix}P3 stopped for {stop_reason} after {max(0, int(iterations))} iteration(s); "
+                f"0 candidates judged for {reason_gaps}, so source authority is unknown"
+            )
+        else:
+            reason = f"{prefix}{review_prefix}no authoritative source found for {reason_gaps}"
+        self.reason = _summary_text(reason, 300)
         self.summary = {
             "gaps": gap_ids[:12],
             "gaps_omitted": max(0, len(gap_ids) - 12),
@@ -555,6 +562,7 @@ class NoConfirmedSources(ValueError):
             "objections_omitted": max(0, len(objections) - 8),
             "iterations": max(0, int(iterations)),
             "stop_reason": _summary_text(stop_reason, 40),
+            "judged_candidate_count": judged_candidate_count,
             "unreachable_count": unreachable_count,
             "source_review_required": bool(self.review_source_ids),
             "review_source_ids": self.review_source_ids[:8],
@@ -573,8 +581,14 @@ class NoConfirmedSources(ValueError):
         self.status_reason = (
             f"{self.reason} | queries: {query_summary} | objections: {objection_summary} "
             f"| iterations: {self.summary['iterations']}"
+            f" | judged candidates: {self.summary['judged_candidate_count']}"
         )
-        super().__init__(f"{self.reason}; discovery confirmed no source candidates")
+        conclusion = (
+            "discovery stopped before judging candidates"
+            if stop_reason in {"budget", "wall_clock"} and judged_candidate_count == 0
+            else "discovery confirmed no source candidates"
+        )
+        super().__init__(f"{self.reason}; {conclusion}")
 
 
 def _tokens(text: str) -> set[str]:
@@ -4476,6 +4490,7 @@ class DiscoveryLoop:
         tried_queries: set[str] = set()
         tried_publishers: set[str] = set()
         verdicts: dict[str, dict[str, str | None]] = {}
+        judged_candidate_urls: set[str] = set()
         verified_pairs: set[tuple[str, str]] = set()
         verified_metadata: dict[tuple[str, str], tuple[dict[str, str], bytes]] = {}
         for record in checkpoint_state.captures:
@@ -5484,6 +5499,7 @@ class DiscoveryLoop:
                     if per_property and all(reason is None for reason in per_property.values())
                 )
 
+            judged_candidate_urls.update(verdicts)
             for url in cached_candidates:
                 candidate = captured_candidates[url]
                 per_property = verdicts.get(url, {})
@@ -5557,6 +5573,15 @@ class DiscoveryLoop:
             persist_checkpoint(_iteration, open_gaps(draft), draft)
             return CheckResult(not objections, objections)
 
+        def stop_details(
+            artifact: dict | None, _stop_reason: str, _iteration: int
+        ) -> dict[str, int]:
+            candidates = artifact.get("candidates", {}) if isinstance(artifact, Mapping) else {}
+            return {
+                "candidate_count": len(candidates) if isinstance(candidates, Mapping) else 0,
+                "judged_candidate_count": len(judged_candidate_urls),
+            }
+
         loop = PhaseLoop[dict](
             phase=3,
             run_id=self.run_id,
@@ -5564,6 +5589,7 @@ class DiscoveryLoop:
             budget=self.budget,
             emit=self.trace.append,
             call_log=getattr(decision, "call_log", None),
+            stop_details=stop_details,
         )
         result = loop.run(
             gather=gather, propose=propose, critique=critique, revise=revise, check=check
@@ -5585,6 +5611,7 @@ class DiscoveryLoop:
             coverage_target=coverage_target,
             coverage=coverage(draft),
             max_sources=max_sources,
+            judged_candidate_count=len(judged_candidate_urls),
         )
         return self._site_graphs(case_dir, ontology, decision, document)
 
@@ -5662,6 +5689,7 @@ class DiscoveryLoop:
         coverage: dict[str, set[str]],
         max_sources: int,
         coverage_target: dict[str, int] | None = None,
+        judged_candidate_count: int = 0,
     ) -> dict:
         coverage_target = coverage_target or required
         provenance = generated_by(decision)
@@ -5959,6 +5987,7 @@ class DiscoveryLoop:
                 "attempts": self.attempts,
                 "selected_source_ids": [c["source_id"] for c in confirmed],
                 "candidate_count": len(draft["candidates"]),
+                "judged_candidate_count": judged_candidate_count,
                 "lead_count": len(draft["leads"]),
                 "jurisdiction_rejections": [
                     dict(item) for item in self._jurisdiction_rejections[:8]
@@ -6009,6 +6038,7 @@ class DiscoveryLoop:
                     candidate.get("capture_outcome") == "blocked"
                     for candidate in draft["candidates"].values()
                 ),
+                judged_candidate_count=judged_candidate_count,
                 review_source_ids=review_source_ids,
                 review_source_hosts=review_source_hosts,
                 jurisdiction_rejections=self._jurisdiction_rejections,

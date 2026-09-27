@@ -115,6 +115,7 @@ class PhaseLoop(Generic[T]):
         budget: LoopBudget,
         emit: Callable[[dict], None] | None = None,
         call_log: Sequence[Mapping] | None = None,
+        stop_details: Callable[[T | None, StopReason, int], Mapping[str, object]] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if phase != "outer" and (not isinstance(phase, int) or phase not in range(1, 6)):
@@ -131,20 +132,27 @@ class PhaseLoop(Generic[T]):
         self.budget = budget
         self.emit = emit
         self.call_log = call_log
+        self.stop_details = stop_details
         self.monotonic = monotonic
         self.usd = 0.0
         self._unknown_cost = False
         self._started: float | None = None
+        self._elapsed_seconds = 0.0
+        self._model_calls = 0
+        self._critique_completed = False
         self._used = False
 
     def _stop_reason(self) -> StopReason | None:
         assert self._started is not None
-        if self.monotonic() - self._started >= self.budget.wall_seconds:
-            return "wall_clock"
+        self._elapsed_seconds = max(0.0, self.monotonic() - self._started)
         if self._unknown_cost or (
             self.budget.max_usd is not None and self.usd >= self.budget.max_usd
         ):
             return "budget"
+        if self._elapsed_seconds >= self.budget.wall_seconds and not (
+            self.phase == 3 and not self._critique_completed
+        ):
+            return "wall_clock"
         return None
 
     def _stage(
@@ -160,6 +168,7 @@ class PhaseLoop(Generic[T]):
         before = len(self.call_log) if self.call_log is not None else 0
         result = call()
         calls = list(self.call_log[before:]) if self.call_log is not None else []
+        self._model_calls += len(calls)
         usage = self._usage(calls)
         self._emit(
             iteration,
@@ -179,6 +188,14 @@ class PhaseLoop(Generic[T]):
         stage_usd = 0.0
         for call in calls:
             usage = call.get("usage")
+            status = call.get("status")
+            failed_http_call = isinstance(status, str) and status.startswith("http_")
+            if failed_http_call and (
+                not isinstance(usage, Mapping) or usage.get("est_usd") is None
+            ):
+                # An HTTP error has no completed inference to price. Do not
+                # turn its empty usage placeholder into an unknown-cost stop.
+                continue
             if not isinstance(usage, Mapping):
                 self._unknown_cost = True
                 continue
@@ -270,13 +287,30 @@ class PhaseLoop(Generic[T]):
         reason: StopReason,
         objections: tuple[str, ...],
     ) -> LoopResult[T]:
+        budget_basis = {
+            "usd_spent": self.usd,
+            "usd_limit": self.budget.max_usd,
+            "unknown_cost": self._unknown_cost,
+            "model_calls": self._model_calls,
+            "iterations_used": iteration,
+            "iterations_limit": self.budget.max_iterations,
+            "wall_seconds_used": round(self._elapsed_seconds, 3),
+            "wall_seconds_limit": self.budget.wall_seconds,
+        }
+        stop_details = (
+            dict(self.stop_details(artifact, reason, iteration)) if self.stop_details else {}
+        )
         self._emit(
             max(1, iteration),
             "decide",
             verdict="stop" if reason != "max_iterations" else "open_issues",
             objections=objections,
             stop_reason=reason,
-            executed={"stop_reason": reason},
+            executed={
+                "stop_reason": reason,
+                "budget_basis": budget_basis,
+                "stop_details": stop_details,
+            },
             draft_sha256=_draft_sha256(artifact),
         )
         return LoopResult(artifact, iteration, reason, self.usd, objections)
@@ -337,6 +371,7 @@ class PhaseLoop(Generic[T]):
                 objections=lambda result: result.objections,
                 draft=artifact,
             )
+            self._critique_completed = True
             if stop_reason := self._stop_reason():
                 return self._finish(artifact, iteration, stop_reason, critic.objections)
             if not critic.passed:

@@ -143,6 +143,15 @@ def test_restart_reuses_checkpoint_without_provider_capture_or_critic_calls(
     assert first_provider.calls == 1
     assert len(first_capture_calls) == 1
     assert critic_calls == ["critic.phase3.capability"]
+    first_stop = next(
+        step
+        for step in reversed(first_loop.trace)
+        if step.get("event") == "loop" and step.get("loop", {}).get("role") == "decide"
+    )
+    assert first_stop["executed"]["stop_details"] == {
+        "candidate_count": 1,
+        "judged_candidate_count": 1,
+    }
     checkpoint_path = tmp_path / "03-fanout/cache/p3-checkpoint.json"
     assert checkpoint_path.is_file()
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))

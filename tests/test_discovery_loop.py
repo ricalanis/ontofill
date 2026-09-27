@@ -658,12 +658,15 @@ def test_loop_stops_on_budget_before_any_provider_call(tmp_path) -> None:
         budget=LoopBudget(max_iterations=3, max_usd=0, wall_seconds=60),
         backend="vultr",
     )
-    with pytest.raises(ValueError, match="confirmed no source candidates"):
+    with pytest.raises(ValueError, match="0 candidates judged") as stopped:
         loop.discover_sources(tmp_path, ontology, FakeVultr())
     assert loop.result.stop_reason == "budget" and loop.result.iterations == 0
+    assert stopped.value.summary["judged_candidate_count"] == 0
+    assert "source authority is unknown" in stopped.value.reason
     assert provider.calls == 0 and capture.calls == []
     ledger = json.loads((tmp_path / "03-fanout/surface-map/discovery.json").read_text())
     assert ledger["rounds"][-1]["stop_reason"] == "budget"
+    assert ledger["rounds"][-1]["judged_candidate_count"] == 0
 
 
 def test_lead_without_capture_never_becomes_a_source(tmp_path) -> None:
