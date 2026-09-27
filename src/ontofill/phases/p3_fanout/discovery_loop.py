@@ -80,7 +80,7 @@ _DOCUMENT_MIME_FORMAT = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
 }
-_DATASET_FILE_SUFFIXES = frozenset({".csv", ".xls", ".xlsx", ".zip"})
+_DATASET_FILE_SUFFIXES = frozenset({".csv", ".xls", ".xlsx", ".zip", ".json"})
 _STATIC_ASSET_SUFFIXES = frozenset(
     {
         ".css",
@@ -122,7 +122,12 @@ _STATIC_ASSET_MIME_TYPES = frozenset(
 )
 _DATASET_LINK_CUE = re.compile(
     r"\b(?:dataset|download|records?|registry|register|spreadsheet|export|roster|archive|list|"
+    r"resources?|packages?|"
     r"datos?|descarga|listado|relaci[oó]n|padr[oó]n|archivo|registro|cat[aá]logo)\b",
+    re.IGNORECASE,
+)
+_API_ENDPOINT_CUE = re.compile(
+    r"(?:^|[/_.?&=-])(?:api|resource|package|datastore|endpoint|export)(?:[/_.?&=-]|$)",
     re.IGNORECASE,
 )
 _NON_DATA_LINK_CUE = re.compile(
@@ -134,6 +139,10 @@ _AUTH_QUERY_KEY = re.compile(
     r"session|csrf|sig(?:nature)?|access[_-]?key|auth|jwt|sas)"
 )
 _MAX_DATASET_LINKS_PER_INDEX = 5
+_MAX_CAPTURED_PAGE_LINKS = 260
+_MAX_CAPTURED_NETWORK_REQUESTS = 40
+_MAX_CAPTURED_ACCESS_LINKS = _MAX_CAPTURED_PAGE_LINKS + _MAX_CAPTURED_NETWORK_REQUESTS
+_MAX_PORTAL_FOLLOW_CHILDREN = _MAX_DATASET_LINKS_PER_INDEX
 _NON_AUTHORITATIVE_PUBLISHER_KIND = re.compile(
     r"\b(?:social(?: media| network| account| profile| page| channel)|facebook|instagram|"
     r"tiktok|twitter|youtube|linkedin|reddit|forum|message board|discussion board|blog|"
@@ -787,7 +796,9 @@ def _record_granularity(
     # link only when it cites identity-bearing text from that exact captured link.
     if kind in {"dataset", "download", "api"}:
         index = proposed.get("link_index")
-        links = context.get("links", [])
+        links = context.get("access_links")
+        if not isinstance(links, list):
+            links = _captured_access_links(context)
         quote = proposed.get("granularity_quote")
         if (
             type(index) is int
@@ -797,7 +808,8 @@ def _record_granularity(
             and isinstance(quote, str)
             and _granularity_tokens(quote) & identity_tokens
             and any(
-                quote in str(links[index].get(key) or "") for key in ("text", "title", "context")
+                quote in str(links[index].get(key) or "")
+                for key in ("text", "title", "context", "url")
             )
         ):
             return "entity_records", quote[:500], "captured link names primary-entity records"
@@ -1014,9 +1026,13 @@ def _publisher_of_record(url: str, page_text: str, policy: Mapping) -> dict | No
 
 
 def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping) -> list[dict]:
-    """Take at most four public links one level below a captured portal/root."""
+    """Take bounded, relevant public links one level below a captured portal/root."""
     parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
-    parent = urlsplit(parent_url)
+    try:
+        parent = urlsplit(parent_url)
+        parent_identity = _canonical_dataset_link_url(parent_url)
+    except ValueError:
+        return []
     parent_host = (parent.hostname or "").casefold().rstrip(".")
     nested_path = len(parent.path.strip("/").split("/")) > 1
     if not parent_host or (nested_path and not is_open_data_portal(candidate, ontology)):
@@ -1033,28 +1049,40 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
     )
     ranked: list[tuple[int, int, dict]] = []
     seen: set[str] = set()
-    for index, link in enumerate(context.get("links", [])[:80]):
+    page_links = context.get("links", [])
+    if not isinstance(page_links, list):
+        page_links = []
+    for index, link in enumerate(page_links[:80]):
         if not isinstance(link, Mapping):
             continue
         raw_url = str(link.get("url") or "").strip()
         child_url = urljoin(parent_url, raw_url)
         parsed = urlsplit(child_url)
-        child_url = parsed._replace(fragment="").geturl()
+        try:
+            query_pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+        except ValueError:
+            continue
+        if any(_AUTH_QUERY_KEY.search(name) for name, _value in query_pairs):
+            continue
+        try:
+            child_url = _canonical_dataset_link_url(parsed._replace(fragment="").geturl())
+        except ValueError:
+            continue
         host = (parsed.hostname or "").casefold().rstrip(".")
         if (
-            child_url == parent_url
+            child_url == parent_identity
             or child_url in seen
             or not public_url(child_url)
             or not _public_dns_host(host)
             or _dataset_file_suffix(child_url) is not None
         ):
             continue
-        seen.add(child_url)
         label = " ".join(str(link.get(key) or "") for key in ("text", "title", "context")).strip()
         relevance = len(_tokens(label + " " + parsed.path) & words)
-        # An unrelated external link must not become a source lead from a portal card.
-        if host != parent_host and relevance == 0:
+        # A portal's general navigation is not enough reason to capture a child.
+        if relevance == 0:
             continue
+        seen.add(child_url)
         ranked.append(
             (
                 10 * int(host == parent_host) + relevance,
@@ -1064,12 +1092,16 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
                     "title": str(link.get("text") or link.get("title") or host)[:200],
                     "snippet": label[:400] or "Public link on a captured publisher page.",
                     "parent_url": parent_url,
+                    "parent_source_id": candidate.get("source_id"),
                     "parent_capture_key": candidate.get("capture_key"),
+                    "link_index": index,
+                    "link_text": label,
+                    "follow_kind": "page",
                 },
             )
         )
     ranked.sort(reverse=True)
-    return [item for _, _, item in ranked[:4]]
+    return [item for _, _, item in ranked[:_MAX_PORTAL_FOLLOW_CHILDREN]]
 
 
 def _dataset_file_suffix(url: str) -> str | None:
@@ -1110,6 +1142,80 @@ def _canonical_dataset_link_url(url: str) -> str:
     return parsed._replace(scheme=scheme, netloc=netloc, fragment="").geturl()
 
 
+def _captured_network_requests(value: object) -> list[dict]:
+    """Keep only bounded, public GET endpoints from a captured page's SPA trace."""
+    if not isinstance(value, list):
+        return []
+    records: list[dict] = []
+    seen: set[str] = set()
+    secret_value = re.compile(r"(?i)\bbearer\s+\S+|^eyJ[A-Za-z0-9_-]{12,}\.|^[A-Za-z0-9_=-]{40,}$")
+    mime_type = re.compile(r"[A-Za-z0-9.+_-]+/[A-Za-z0-9.+_-]+\Z")
+    for item in value[:120]:
+        if not isinstance(item, Mapping) or str(item.get("method") or "").upper() != "GET":
+            continue
+        resource_type = item.get("resource_type")
+        raw_url = item.get("url")
+        if resource_type not in {"xhr", "fetch", "download"} or not isinstance(raw_url, str):
+            continue
+        if len(raw_url) > 2048 or any(ord(char) < 32 for char in raw_url):
+            continue
+        try:
+            parsed = urlsplit(raw_url)
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            port = parsed.port
+            query = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+        except (TypeError, ValueError):
+            continue
+        if (
+            not public_url(raw_url)
+            or not _public_dns_host(host)
+            or parsed.username
+            or parsed.password
+            or port not in {None, 80, 443}
+            or any(
+                _AUTH_QUERY_KEY.search(name) or secret_value.search(parameter)
+                for name, parameter in query
+            )
+        ):
+            continue
+        url = parsed._replace(fragment="").geturl()
+        if url in seen:
+            continue
+        status = item.get("status")
+        if status is not None and (type(status) is not int or not 100 <= status < 400):
+            continue
+        record = {"url": url, "method": "GET", "resource_type": resource_type}
+        if status is not None:
+            record["status"] = status
+        content_type = item.get("content_type")
+        if isinstance(content_type, str):
+            normalized_type = content_type.split(";", 1)[0].strip().casefold()
+            if mime_type.fullmatch(normalized_type):
+                record["content_type"] = normalized_type
+        seen.add(url)
+        records.append(record)
+        if len(records) >= _MAX_CAPTURED_NETWORK_REQUESTS:
+            break
+    return records
+
+
+def _captured_access_links(context: Mapping) -> list[dict]:
+    """Return the bounded anchor/API evidence addressed by the critic's link index."""
+    raw_page_links = context.get("links", [])
+    page_links = (
+        [
+            dict(item)
+            for item in raw_page_links[:_MAX_CAPTURED_PAGE_LINKS]
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(raw_page_links, list)
+        else []
+    )
+    room = max(0, _MAX_CAPTURED_ACCESS_LINKS - len(page_links))
+    requests = _captured_network_requests(context.get("network_requests"))[:room]
+    return [*page_links, *({**item, "network_observed": True} for item in requests)]
+
+
 def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping) -> list[dict]:
     """Select a few ontology-relevant data-file links from one captured index page."""
     parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
@@ -1143,22 +1249,17 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
             ]
         )
     )
-    ranked: list[tuple[int, int, int, dict]] = []
+    ranked: list[tuple[int, int, int, int, dict]] = []
     seen: set[str] = set()
-    page_links = context.get("links", [])
-    observed_requests = context.get("network_requests", [])
-    if not isinstance(page_links, list):
-        page_links = []
-    if not isinstance(observed_requests, list):
-        observed_requests = []
-    for index, link in enumerate([*page_links[:300], *observed_requests[:40]]):
+    access_links = _captured_access_links(context)
+    for index, link in enumerate(access_links):
         if not isinstance(link, Mapping):
             continue
-        observed = index >= min(len(page_links), 300)
+        observed = bool(link.get("network_observed"))
         if observed:
             status = link.get("status")
             if (
-                str(link.get("method") or "").upper() != "GET"
+                link.get("method") != "GET"
                 or link.get("resource_type") not in {"xhr", "fetch", "download"}
                 or (status is not None and (not isinstance(status, int) or status >= 400))
             ):
@@ -1172,26 +1273,36 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
         except ValueError:
             continue
         suffix = _dataset_file_suffix(child_url)
+        try:
+            query_pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+        except ValueError:
+            continue
+        if any(_AUTH_QUERY_KEY.search(name) for name, _value in query_pairs):
+            continue
+        query_names = " ".join(name for name, _value in query_pairs)
+        content_type = str(link.get("content_type") or "").split(";", 1)[0].casefold()
+        if observed and suffix is None:
+            content_suffix = {
+                "text/csv": ".csv",
+                "application/csv": ".csv",
+                "application/json": ".json",
+                "application/ld+json": ".json",
+                "application/zip": ".zip",
+                "application/vnd.ms-excel": ".xls",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            }.get(content_type)
+            if content_suffix:
+                suffix = content_suffix
         if observed and suffix is None:
             try:
-                query_pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
-            except ValueError:
-                continue
-            known_json_path = Path(parsed.path).suffix.casefold() == ".json"
-            known_json_type = str(link.get("content_type") or "").split(";", 1)[0].casefold() in {
-                "application/json",
-                "application/ld+json",
-            }
-            if (known_json_path or known_json_type) and not any(
+                known_json_path = Path(parsed.path).suffix.casefold() == ".json"
+            except (OSError, ValueError):
+                known_json_path = False
+            if known_json_path and not any(
                 _AUTH_QUERY_KEY.search(name) for name, _value in query_pairs
             ):
                 suffix = ".json"
-        if (
-            not suffix
-            or child_url in seen
-            or not public_url(child_url)
-            or not _public_dns_host(host)
-        ):
+        if child_url in seen or not public_url(child_url) or not _public_dns_host(host):
             continue
         try:
             child_url = _canonical_dataset_link_url(child_url)
@@ -1199,19 +1310,25 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
             continue
         if child_url in seen:
             continue
-        seen.add(child_url)
         label = " ".join(str(link.get(key) or "") for key in ("text", "title", "context")).strip()
-        search_text = f"{label} {parsed.path}"
+        search_text = f"{label} {parsed.path} {query_names}"
         term_matches = len(_tokens(search_text) & relevant_terms)
         generic_cue = bool(_DATASET_LINK_CUE.search(search_text))
+        api_endpoint = bool(_API_ENDPOINT_CUE.search(f"{parsed.path} {query_names}"))
         if _NON_DATA_LINK_CUE.search(search_text):
+            continue
+        if suffix in {None, ".json"} and api_endpoint and (generic_cue or term_matches):
+            suffix = ".api"
+        if not suffix:
             continue
         if term_matches == 0 and not generic_cue:
             continue
+        seen.add(child_url)
         ranked.append(
             (
                 int(term_matches > 0),
                 term_matches,
+                int(observed),
                 int(host == parent_host),
                 {
                     "url": child_url,
@@ -1225,11 +1342,47 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
                     "parent_capture_key": candidate.get("capture_key"),
                     "parent_source_id": candidate.get("source_id"),
                     "suffix": suffix,
+                    "network_observed": observed,
+                    "follow_kind": "api" if suffix == ".api" else "dataset",
                 },
             )
         )
-    ranked.sort(key=lambda item: (item[0], item[1], item[2], -item[3]["link_index"]), reverse=True)
-    return [item[3] for item in ranked[:_MAX_DATASET_LINKS_PER_INDEX]]
+    ranked.sort(
+        key=lambda item: (item[0], item[1], item[2], item[3], -item[4]["link_index"]),
+        reverse=True,
+    )
+    return [item[4] for item in ranked[:_MAX_DATASET_LINKS_PER_INDEX]]
+
+
+def _follow_portal_children(
+    candidate: Mapping,
+    context: Mapping,
+    ontology: Mapping,
+    *,
+    include_dataset_resources: bool = True,
+) -> list[dict]:
+    """Prefer concrete data/API resources, then bounded record pages, with one URL set."""
+    ranked = [
+        *(_dataset_index_links(candidate, context, ontology) if include_dataset_resources else []),
+        *_portal_child_leads(candidate, context, ontology),
+    ]
+    seen: set[str] = set()
+    children = []
+    for child in ranked:
+        try:
+            url = _canonical_dataset_link_url(str(child.get("url") or ""))
+        except ValueError:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        normalized = dict(child)
+        normalized["url"] = url
+        normalized.setdefault("follow_kind", "page")
+        children.append(normalized)
+        if len(children) >= _MAX_PORTAL_FOLLOW_CHILDREN:
+            break
+    return children
 
 
 def _publisher_kind_tier_suggestion(
@@ -1729,6 +1882,11 @@ class DiscoveryLoop:
                                     "minLength": 5,
                                     "maxLength": 240,
                                 },
+                                "standard_terms": {
+                                    "type": "array",
+                                    "maxItems": 3,
+                                    "items": {"type": "string", "minLength": 2, "maxLength": 80},
+                                },
                             },
                         },
                     }
@@ -1764,6 +1922,10 @@ class DiscoveryLoop:
                 "registries, open data, APIs, and downloadable datasets; avoid aggregate totals and "
                 "dashboards. Keep each query concise and do not include URLs. Ask for fresh query angles "
                 "when earlier plans have been tried. "
+                "Also identify subject-specific open-data vocabulary, published schemas, and data "
+                "standards that fit the brief and ontology. When useful, return their short names "
+                "or acronyms in `standard_terms` and include those terms in the generated query "
+                "phrases; derive them from the current subject rather than using a fixed list. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Jurisdiction hierarchy and recall scope: "
                 f"{json.dumps(hierarchy_context, ensure_ascii=False)}. "
@@ -1791,9 +1953,25 @@ class DiscoveryLoop:
                     property_id = item["property_id"]
                     local_query = " ".join(item["query"].split())
                     english_query = " ".join(item.get("english_query", "").split())
+                    standard_terms = [
+                        " ".join(term.split())[:80]
+                        for term in item.get("standard_terms", [])
+                        if isinstance(term, str) and term.strip()
+                    ][:3]
+                    standard_phrase = " ".join(standard_terms)[:80]
+
+                    def query_with_standards(query: str, phrase: str = standard_phrase) -> str:
+                        if not phrase:
+                            return query[:220]
+                        query_limit = max(1, 219 - len(phrase))
+                        return f"{query[:query_limit].rstrip()} {phrase}"
+
                     planned_by_gap.setdefault(property_id, []).extend(
                         query
-                        for query in (local_query, english_query)
+                        for query in (
+                            query_with_standards(local_query),
+                            query_with_standards(english_query),
+                        )
                         if query and query not in planned_by_gap.get(property_id, [])
                     )
             except PROVIDER_ERRORS as exc:  # fall back to the deterministic template
@@ -1830,7 +2008,7 @@ class DiscoveryLoop:
                 text = (
                     " ".join(planned.split())
                     if reuse_theme_pass
-                    else " ".join(f"{planned} {terms}".split())
+                    else " ".join(f"{planned} {terms}".split())[:240]
                 )
                 if text and text not in candidates:
                     candidates.append(text)
@@ -2210,7 +2388,8 @@ class DiscoveryLoop:
         context = {
             "page_text": parsed_page.page_text,
             "forms": [dict(form) for form in parsed_page.forms],
-            "links": [dict(link) for link in parsed_page.links],
+            "links": [dict(link) for link in parsed_page.links[:_MAX_CAPTURED_PAGE_LINKS]],
+            "network_requests": _captured_network_requests(captured.get("network_requests")),
             "table_headers": [list(headers) for headers in parsed_page.table_headers],
             "listing_row_count": listing_row_count,
             "listing_sampled_only": True,
@@ -2231,6 +2410,7 @@ class DiscoveryLoop:
             if is_document
             else None,
         }
+        context["access_links"] = _captured_access_links(context)
         property_ids = [
             property_id
             for property_id in candidate.get("property_ids", [])
@@ -3079,7 +3259,9 @@ class DiscoveryLoop:
             return None, "critic omitted a concrete access-path kind or quote"
         page_text = str(context.get("page_text") or "")
         forms = context.get("forms", [])
-        links = context.get("links", [])
+        links = context.get("access_links")
+        if not isinstance(links, list):
+            links = _captured_access_links(context)
         table_headers = context.get("table_headers", [])
         document = context.get("document")
         path_url = str(candidate.get("landing_url") or candidate["url"])
@@ -3126,7 +3308,12 @@ class DiscoveryLoop:
                 link = links[link_index]
                 if not isinstance(link, Mapping):
                     return None, "cited dataset link is malformed"
-                link_values = (link.get("text"), link.get("title"), link.get("context"))
+                link_values = (
+                    link.get("text"),
+                    link.get("title"),
+                    link.get("context"),
+                    link.get("url"),
+                )
                 if not any(contains(value) for value in link_values):
                     return None, "access-path quote is not present in the cited captured link"
                 link_url = link.get("url")
@@ -3436,7 +3623,9 @@ class DiscoveryLoop:
             "affordance. Reject a generic page or blog with no concrete retrieval route. Do not "
             "judge individual property values; Phase 5 checks those. Return `provides=true` only "
             "with an exact `access_path_quote` from captured parse-pod evidence and the access "
-            "path kind. Include `form_index` for search forms and `link_index` for linked routes. "
+            "path kind. Include `form_index` for search forms and `link_index` for linked routes; "
+            "link indexes address `captured_access_evidence.access_links`, which contains bounded "
+            "parsed anchors followed by validated GET requests observed by the page. "
             "`property_quote` is optional and should be included only when captured text explicitly "
             "names the property. A digest-approved document linked from a policy-matched "
             "publisher inherits that publisher's tier; its separate document host does not "
@@ -4015,12 +4204,23 @@ class DiscoveryLoop:
             # Keep trusted publisher roots in the frontier even when search found
             # other leads; an official landing page may link to the actual records.
             for domain in _policy_domains(policy) if queries else ():
+                publisher_kind = next(
+                    (
+                        str(publisher.get("kind") or "")
+                        for publisher in policy.get("trusted_publishers", [])
+                        if isinstance(publisher, Mapping) and domain in publisher.get("domains", [])
+                    ),
+                    "publisher",
+                )
                 url = f"https://{domain}/"
                 for gap in context["gaps"]:
                     lead = Lead(
                         url=url,
                         title=f"Publisher root at {domain}",
-                        snippet="Domain root listed in the approved authority policy.",
+                        snippet=(
+                            "Domain root listed in the approved authority policy for "
+                            f"{publisher_kind}."
+                        ),
                         discovered_by="authority_policy",
                         query="approved publisher domain root",
                         property_ids=(gap,),
@@ -4110,9 +4310,23 @@ class DiscoveryLoop:
                     dispatch_diagnostic=None if pending_review else diagnostic,
                 )
             pool.sort(key=lambda lead: self._rank_lead(lead, policy, ontology), reverse=True)
+            followable_portals = [
+                item
+                for item in pool
+                if authority_result(str(item.get("url") or ""), policy=dict(policy))[0]
+                and is_open_data_portal(item, ontology)
+            ]
+            # Keep the full ordinary queue; actual children displace its tail only
+            # after a chosen, captured portal proves that it has a child route.
+            capture_queue_limit = max(1, self.max_captures)
             chosen: list[dict] = []
             per_host: dict[str, int] = {}
-            while len(chosen) < self.max_captures:
+            if followable_portals:
+                portal = followable_portals[0]
+                chosen.append(portal)
+                host = urlsplit(portal["url"]).hostname or ""
+                per_host[host] = per_host.get(host, 0) + 1
+            while len(chosen) < capture_queue_limit:
                 progressed = False
                 for gap in context["gaps"]:
                     lead = next(
@@ -4125,7 +4339,7 @@ class DiscoveryLoop:
                         ),
                         None,
                     )
-                    if lead is None or len(chosen) >= self.max_captures:
+                    if lead is None or len(chosen) >= capture_queue_limit:
                         continue
                     chosen.append(lead)
                     host = urlsplit(lead["url"]).hostname or ""
@@ -4142,7 +4356,7 @@ class DiscoveryLoop:
                     if "authority_policy" in item["providers"] and item not in chosen
                 ][:2]
                 for root in roots:
-                    if len(chosen) < self.max_captures:
+                    if len(chosen) < capture_queue_limit:
                         chosen.append(root)
                     else:
                         replace = next(
@@ -4156,10 +4370,58 @@ class DiscoveryLoop:
                         if replace is not None:
                             chosen[replace] = root
             capture_queue = list(chosen)
+
+            def url_identity(value: object) -> str:
+                if not isinstance(value, str):
+                    return ""
+                try:
+                    return _canonical_dataset_link_url(value)
+                except ValueError:
+                    return value
+
+            queued_urls = {url_identity(item.get("url")) for item in capture_queue}
+            candidate_urls = {url_identity(url) for url in draft["candidates"]}
             captures_this_iteration = 0
+
+            def enqueue_follow(child_lead: dict) -> tuple[str, str | None]:
+                child_key = url_identity(child_lead.get("url"))
+                if child_key in candidate_urls:
+                    return "deduplicated", None
+                for index in reversed(
+                    [
+                        index
+                        for index, queued in enumerate(capture_queue)
+                        if url_identity(queued.get("url")) == child_key
+                    ]
+                ):
+                    capture_queue.pop(index)
+                queued_urls.discard(child_key)
+                displaced_url = None
+                if captures_this_iteration + len(capture_queue) >= self.max_captures:
+                    replace = next(
+                        (
+                            index
+                            for index in range(len(capture_queue) - 1, -1, -1)
+                            if "authority_policy" not in capture_queue[index].get("providers", [])
+                            and capture_queue[index].get("exploration_depth", 0) == 0
+                        ),
+                        None,
+                    )
+                    if replace is None:
+                        return "deferred_budget", None
+                    displaced = capture_queue.pop(replace)
+                    displaced_url = str(displaced.get("url") or "")
+                    queued_urls.discard(url_identity(displaced_url))
+                capture_queue.insert(0, child_lead)
+                queued_urls.add(child_key)
+                return ("queued_displacing_lower_ranked_lead" if displaced_url else "queued"), (
+                    displaced_url or None
+                )
+
             while capture_queue and captures_this_iteration < self.max_captures:
                 lead = capture_queue.pop(0)
-                if lead["url"] in draft["candidates"]:
+                queued_urls.discard(url_identity(lead.get("url")))
+                if url_identity(lead["url"]) in candidate_urls:
                     continue
                 asset_reason = _static_asset_reason(
                     str(lead["url"]),
@@ -4220,8 +4482,8 @@ class DiscoveryLoop:
                 }
                 redirect_lead = self._capture_lead(candidate, policy, ontology, decision, case_dir)
                 draft["candidates"][lead["url"]] = candidate
+                candidate_urls.add(url_identity(lead["url"]))
                 parent_url = str(candidate.get("landing_url") or lead["url"])
-                parent_host = (urlsplit(parent_url).hostname or "").casefold().rstrip(".")
                 parent_policy_trusted, _parent_reason = authority_result(
                     parent_url, policy=dict(policy)
                 )
@@ -4231,29 +4493,79 @@ class DiscoveryLoop:
                     and candidate.get("authority") == "auto"
                     and parent_policy_trusted
                     and _publisher_kind_policy_error(candidate) is None
-                    and is_open_data_portal(candidate, ontology)
+                    and lead.get("exploration_depth", 0) == 0
                 ):
                     page_context = self._page_access_contexts.get(lead["url"], {})
-                    for link in _dataset_index_links(candidate, page_context, ontology):
-                        link_url = str(link["url"])
-                        if link_url in draft["leads"] or link_url in draft["candidates"]:
+                    for child in reversed(
+                        _follow_portal_children(
+                            candidate,
+                            page_context,
+                            ontology,
+                            include_dataset_resources=is_open_data_portal(candidate, ontology),
+                        )
+                    ):
+                        child_url = str(child["url"])
+                        child_key = url_identity(child_url)
+                        if child_key in candidate_urls:
+                            self._step(
+                                {
+                                    "tool": "p3.discovery.follow",
+                                    "parent_url": parent_url,
+                                    "child_url": child_url,
+                                    "child_kind": child.get("follow_kind", "page"),
+                                },
+                                {
+                                    "status": "deduplicated",
+                                    "parent_capture_key": candidate["capture_key"],
+                                },
+                                {"outcome": "child URL already captured in this round"},
+                                source_id=candidate.get("source_id"),
+                            )
                             continue
-                        child_host = (urlsplit(link_url).hostname or "").casefold().rstrip(".")
-                        if child_host != parent_host:
+                        child_policy_trusted, _child_policy_reason = authority_result(
+                            child_url, policy=dict(policy)
+                        )
+                        follow_kind = str(child.get("follow_kind") or "page")
+                        provider_name = "portal_link" if follow_kind == "page" else "dataset_link"
+                        link_text = str(child.get("link_text") or child.get("title") or child_url)[
+                            :500
+                        ]
+                        if not child_policy_trusted:
                             linked_lead = self._dataset_link_review_lead(
                                 case_dir,
                                 candidate,
-                                link,
+                                child,
                                 policy,
                                 lead["property_ids"],
                                 iteration,
                             )
-                            draft["leads"][link_url] = linked_lead
-                            if (
-                                linked_lead.get("source_state") == "approved"
-                                and captures_this_iteration + len(capture_queue) < self.max_captures
-                            ):
-                                capture_queue.append(linked_lead)
+                            draft["leads"][child_url] = linked_lead
+                            if linked_lead.get("source_state") == "approved":
+                                follow_status, displaced_url = enqueue_follow(linked_lead)
+                            else:
+                                follow_status = "review_required"
+                                displaced_url = None
+                            self._step(
+                                {
+                                    "tool": "p3.discovery.follow",
+                                    "parent_url": parent_url,
+                                    "parent_capture_key": candidate["capture_key"],
+                                    "child_url": child_url,
+                                    "child_kind": follow_kind,
+                                    "link_index": child.get("link_index"),
+                                },
+                                {
+                                    "status": follow_status,
+                                    "network_request": False,
+                                    **({"displaced_url": displaced_url} if displaced_url else {}),
+                                },
+                                {
+                                    "outcome": "off-host child requires source review",
+                                    "follow_depth": 1,
+                                    "parent_capture_key": candidate["capture_key"],
+                                },
+                                source_id=candidate.get("source_id"),
+                            )
                             continue
                         parent_step_id = next(
                             (
@@ -4269,54 +4581,83 @@ class DiscoveryLoop:
                             "parent_source_id": str(candidate.get("source_id") or ""),
                             "parent_page_url": parent_url,
                             "parent_capture_key": str(candidate.get("capture_key") or ""),
-                            "link_url": link_url,
-                            "link_text": str(link.get("link_text") or link.get("title") or "")[
-                                :500
-                            ],
-                            "link_index": int(link.get("link_index") or 0),
+                            "link_url": child_url,
+                            "link_text": link_text,
                         }
+                        link_index = child.get("link_index")
+                        if type(link_index) is int and 0 <= link_index < _MAX_CAPTURED_ACCESS_LINKS:
+                            link_provenance["link_index"] = link_index
                         if isinstance(parent_step_id, str):
                             link_provenance["step_id"] = parent_step_id
-                        dataset_lead = {
-                            "url": link_url,
-                            "title": str(link.get("title") or link_url.rsplit("/", 1)[-1])[:200],
-                            "snippet": str(
-                                link.get("link_text")
-                                or "Dataset file linked from an official open-data index"
-                            )[:400],
-                            "discovered_by": "dataset_link",
-                            "query": f"dataset link from {parent_url}",
+                        child_lead = {
+                            "url": child_url,
+                            "title": str(child.get("title") or child_url.rsplit("/", 1)[-1])[:200],
+                            "snippet": str(child.get("snippet") or link_text)[:400],
+                            "discovered_by": provider_name,
+                            "query": f"captured {follow_kind} from {parent_url}",
                             "property_ids": list(lead["property_ids"]),
-                            "providers": ["dataset_link"],
-                            "iteration": iteration,
-                            "dataset_link": True,
-                            "link_provenance": link_provenance,
-                        }
-                        draft["leads"][link_url] = dataset_lead
-                        if captures_this_iteration + len(capture_queue) < self.max_captures:
-                            capture_queue.append(dataset_lead)
-                if candidate.get("status") == "captured" and lead.get("exploration_depth", 0) == 0:
-                    for child in _portal_child_leads(
-                        candidate, self._page_access_contexts.get(lead["url"], {}), ontology
-                    ):
-                        if child["url"] in draft["leads"] or child["url"] in draft["candidates"]:
-                            continue
-                        portal_lead = Lead(
-                            url=child["url"],
-                            title=child["title"],
-                            snippet=child["snippet"],
-                            discovered_by="portal_link",
-                            query=f"captured portal link from {lead['url']}",
-                            property_ids=tuple(lead["property_ids"]),
-                        )
-                        draft["leads"][child["url"]] = {
-                            **portal_lead.as_dict(),
-                            "providers": ["portal_link"],
+                            "providers": [provider_name],
                             "iteration": iteration,
                             "exploration_depth": 1,
-                            "parent_url": child["parent_url"],
-                            "parent_capture_key": child["parent_capture_key"],
+                            "follow_kind": follow_kind,
+                            "parent_url": parent_url,
+                            "parent_capture_key": candidate["capture_key"],
+                            "link_provenance": link_provenance,
+                            **({"dataset_link": True} if provider_name == "dataset_link" else {}),
                         }
+                        existing_url = next(
+                            (
+                                stored_url
+                                for stored_url in draft["leads"]
+                                if url_identity(stored_url) == child_key
+                            ),
+                            None,
+                        )
+                        if existing_url is not None:
+                            existing = draft["leads"][existing_url]
+                            providers = existing.get("providers", [])
+                            if not isinstance(providers, list):
+                                providers = []
+                            if provider_name not in providers:
+                                providers.append(provider_name)
+                            existing.update(
+                                providers=providers,
+                                property_ids=sorted(
+                                    set(existing.get("property_ids", []))
+                                    | set(lead["property_ids"])
+                                ),
+                                exploration_depth=1,
+                                follow_kind=follow_kind,
+                                parent_url=parent_url,
+                                parent_capture_key=candidate["capture_key"],
+                                link_provenance=link_provenance,
+                            )
+                            child_lead = existing
+                        else:
+                            draft["leads"][child_url] = child_lead
+                        follow_status, displaced_url = enqueue_follow(child_lead)
+                        self._step(
+                            {
+                                "tool": "p3.discovery.follow",
+                                "parent_url": parent_url,
+                                "parent_capture_key": candidate["capture_key"],
+                                "child_url": child_url,
+                                "child_kind": follow_kind,
+                                "link_index": child.get("link_index"),
+                            },
+                            {
+                                "status": follow_status,
+                                "network_request": False,
+                                **({"displaced_url": displaced_url} if displaced_url else {}),
+                            },
+                            {
+                                "outcome": "child queued before capability critique",
+                                "follow_depth": 1,
+                                "parent_capture_key": candidate["capture_key"],
+                                "child_budget": _MAX_PORTAL_FOLLOW_CHILDREN,
+                            },
+                            source_id=candidate.get("source_id"),
+                        )
                 if redirect_lead is not None:
                     existing = draft["leads"].get(redirect_lead["url"])
                     if existing is None:
@@ -4775,6 +5116,8 @@ class DiscoveryLoop:
         write_json(
             surface / "leads.json",
             {
+                "run_id": self.run_id,
+                "written_at": now,
                 "note": "Leads are never evidence; only captured, authority-checked candidates "
                 "become objectives.",
                 "leads": list(draft["leads"].values()),
@@ -4824,7 +5167,13 @@ class DiscoveryLoop:
         )
         write_json(
             surface / "discovery.json",
-            {"request_fingerprint": request_key, "rounds": rounds, "generated_by": provenance},
+            {
+                "run_id": self.run_id,
+                "written_at": now,
+                "request_fingerprint": request_key,
+                "rounds": rounds,
+                "generated_by": provenance,
+            },
         )
         if not document["objectives"]:
             queries = sorted(
