@@ -36,22 +36,23 @@ which also states where each case stands.
   with a reason makes the engine redraft. The runner service resumes the run with no operator in the loop.
 - **Generic by construction.** The same code runs the Mexican procurement case and an unrelated San Francisco
   library case, each from a one-paragraph brief.
-- **Honest gap.** The reference case has **no engine gold yet**: its primary procurement portal needs a data API
-  that the sandbox egress allowlist refused, and the source critic accepted none of the other candidates. The
-  allowlist now admits that portal's own API and CDN hosts (`378a8c0`), and the run resumed on it. The portal now
-  renders inside the sandbox. Only a trusted publisher's sibling hosts were added, GET only; third-party hosts stay
-  blocked and POSTs are refused, so the blast radius stayed zero while egress widened. The engine run
-  continues after submission; its status is live on the judges console, with every run, review and failure.
-- **Building in the open.** A simpler second case (San Francisco library branches) surfaced six engine defects
-  that the hard case had hidden. Five are fixed with tests:
+- **Honest gap.** The reference case has **no engine gold yet**. The sandbox allowlist first refused the primary
+  procurement portal's data API. It now admits that portal's own API and CDN hosts (`378a8c0`), GET only, with
+  third-party hosts blocked and POSTs refused, so the blast radius stayed zero while egress widened, and the portal
+  renders inside the sandbox. Its contract files, though, are served only through a POST carrying an anti-bot
+  token, so the read-only engine stops and flags it, by design. The engine is now being taught to find official
+  open-contracting (OCDS) publications instead. Work continues after submission, live on the judges console.
+- **Building in the open.** A simpler second case (San Francisco library branches) surfaced seven engine defects
+  that the hard case had hidden. Six are fixed with tests:
   - city-level jurisdictions in P1
   - invalid ontology rules, now set aside with salvage in P2
   - a rule critic that read red-flag rules as passing checks (`829559e`)
   - a core PRD field never bound to a property (`3c1a2b0`, verified live)
+  - compiled DoD thresholds re-authored instead of copied from the approved PRD
   - exhausted phases reported as a crash instead of needs-human
 
-  One is in progress: compiled DoD thresholds re-authored instead of copied from the approved PRD. On `93816dc` the
-  case passed the ontology schema for the first time.
+  The case is now approved through the ontology and discovering sources. One defect is in progress: criteria
+  written as "≤ 0" compile to counts that can never be met.
 
 ## How it works
 
