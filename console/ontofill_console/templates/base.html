@@ -4,37 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Cases{% endblock %} · Ontofill Console</title>
+  <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/console.css">
+  <link rel="stylesheet" href="/static/tira.css">
+  {% block head %}{% endblock %}
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
   <header class="masthead">
-    <div class="masthead__id">
-      <a class="wordmark" href="/">Ontofill Console</a>
-      <span class="runline mono" title="What this page reads">
-        {% if case %}{{ case.id }}{% if live_run_id %} · {{ live_run_id }}{% endif %}{% else %}{{ cases|length }} case{{ "" if cases|length == 1 else "s" }}{% endif %}
-      </span>
-    </div>
-    <nav class="tabs" aria-label="Sections">
+    <a class="brand" href="/inbox" aria-label="Ontofill Console, needs you">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="20" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="5" y="5" width="4" height="4" fill="currentColor"/><rect x="13" y="5" width="4" height="4" fill="currentColor"/><rect x="5" y="13" width="4" height="4" fill="currentColor"/><rect x="13.75" y="13.75" width="2.5" height="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+      Ontofill<small>console</small>
+    </a>
+    <nav class="tabs" aria-label="Across cases">
+      <a href="/inbox" {% if nav == "inbox" %}aria-current="page"{% endif %}>Needs you{% set n_inbox = inbox_count() if inbox_count is defined else 0 %}{% if n_inbox %} <span class="count">{{ n_inbox }}</span>{% endif %}</a>
       <a href="/" {% if nav == "cases" %}aria-current="page"{% endif %}>Cases</a>
+      {% for v in global_views %}<a href="{{ v.href }}" {% if nav == v.key %}aria-current="page"{% endif %}>{{ v.label }}</a>{% endfor %}
       <a href="/spend" {% if nav == "spend" %}aria-current="page"{% endif %}>Spend</a>
       <a href="/evidence" {% if nav == "evidence" %}aria-current="page"{% endif %}>Evidence</a>
       <a href="/whoami" {% if nav == "whoami" %}aria-current="page"{% endif %}>Identity</a>
     </nav>
-    <span class="role role--{{ 'approver' if identity else 'investigator' }}" title="Whether decisions can be recorded">{% if identity %}Signed in{% elif identity_mode == "local" %}Local mode{% else %}No signed-in identity{% endif %}</span>
+    <span class="whoami {% if not identity and identity_mode != 'local' %}whoami--none{% endif %}" title="Whether decisions can be recorded">{% if identity %}signed in{% elif identity_mode == "local" %}local mode{% else %}no signed-in identity{% endif %}</span>
   </header>
   {% if case %}
   <nav class="subnav" aria-label="{{ case.title }}">
-    <span class="subnav__case">{{ case.title }}</span>
+    <span class="subnav__case" title="{{ case.title }}">{{ case.title }}</span>
     <a href="{{ base }}" {% if nav == "overview" %}aria-current="page"{% endif %}>Overview</a>
     <a href="{{ base }}/runs" {% if nav == "run" %}aria-current="page"{% endif %}>Runs</a>
-    <a href="{{ base }}/approvals" {% if nav == "approvals" %}aria-current="page"{% endif %}>Approvals{% if case.pending %} <span class="count mono">{{ case.pending }}</span>{% endif %}</a>
+    {% for v in case_views %}<a href="{{ base }}/{{ v.slug }}" {% if nav == v.key %}aria-current="page"{% endif %}>{{ v.label }}</a>{% endfor %}
+    <a href="{{ base }}/approvals" {% if nav == "approvals" %}aria-current="page"{% endif %}>Approvals{% if case.pending %} <span class="count">{{ case.pending }}</span>{% endif %}</a>
   </nav>
   {% endif %}
   {% if backend == "recorded" %}
@@ -50,7 +54,7 @@
     {% block main %}{% endblock %}
   </main>
   <footer class="colophon">
-    Ontofill Console: runs, approvals and proof for every case the engine works on. Decisions are recorded with the signed-in identity and the exact artifact they approve.
+    Ontofill Console: what the engine is doing, why, what it cost, what it produced and what it contained, for every case. Decisions are recorded with the signed-in identity and the exact artifact they approve.
   </footer>
 </body>
 </html>
