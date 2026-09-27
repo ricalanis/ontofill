@@ -587,6 +587,15 @@ def _source_review(
 ) -> tuple[bool, Path]:
     directory = case_dir / "03-fanout/sources" / objective["source_id"]
     manifest_path = directory / "candidate.json"
+    marker_path = directory / "APPROVED"
+    if marker_path.exists():
+        if not manifest_path.is_file():
+            raise ApprovalArtifactMismatch("source")
+        relative = manifest_path.relative_to(case_dir).as_posix()
+        marker = load_verified_approval(marker_path, case_dir, [relative], "source")
+        old_manifest = load_json(manifest_path)
+        if marker.get("source_fingerprint") != old_manifest.get("fingerprint"):
+            raise ApprovalArtifactMismatch("source")
     if manifest_path.exists():
         manifest = load_json(manifest_path)
     else:
@@ -621,10 +630,22 @@ def _source_review(
     trusted, reason = authority_result(objective["source_url"], policy=authority_policy)
     current_authority = "auto" if trusted else "review"
     if manifest.get("fingerprint") != fingerprint or manifest.get("authority") != current_authority:
+        if marker_path.exists():
+            archive = (
+                directory
+                / "revisions"
+                / f"policy-{manifest['fingerprint'][:12]}-{uuid.uuid4().hex[:8]}"
+            )
+            archive.mkdir(parents=True, exist_ok=False)
+            for name in ("candidate.json", "APPROVAL_PENDING.md", "APPROVED"):
+                old_path = directory / name
+                if old_path.exists():
+                    old_path.rename(archive / name)
         manifest.update(
             fingerprint=fingerprint,
             authority=current_authority,
             authority_reason=reason,
+            generated_by=provenance,
         )
         write_json(manifest_path, manifest)
     if objective.get("source_fingerprint") != fingerprint:
