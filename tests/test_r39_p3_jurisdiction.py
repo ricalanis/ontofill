@@ -12,11 +12,11 @@ from ontofill.inference import generated_by
 from ontofill.lake import FileLake
 from ontofill.phase_loop import LoopBudget
 from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, NoConfirmedSources
-from ontofill.sandbox import CaptureBlocked, parse as parse_module
+from ontofill.sandbox import CaptureBlocked
+from ontofill.sandbox import parse as parse_module
 from tests.r17_helpers import SyntheticParseExecutor
 from tests.test_discovery_loop import StaticProvider, _library_case
 from tests.test_r35_p3_capability import CapabilityCritic
-
 
 POLICY_MEXICO = {
     "jurisdiction": "Mexico",
