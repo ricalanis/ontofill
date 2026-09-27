@@ -307,6 +307,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wanted = (item.checkpoint, item.phase_dir)
         if rid and status.get("checkpoint_pending") in wanted:
             return rid
+        if item.checkpoint == "source" and rid and status.get("state") == "running":
+            return rid  # R33 asks about a source without pausing: the decision belongs to the run that is running
         paused = []
         try:
             for other in case.store.live_run_ids():

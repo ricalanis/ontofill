@@ -147,3 +147,23 @@ def test_unknown_tier_and_kind_read_as_not_suggested(cases_dir):
     html = client(cases_dir).get(PAGE, headers=GROUPS).text
     assert "none suggested: the engine could not classify this publisher" in html and "not classified" in html
     assert "<b>unknown</b>" not in html
+
+
+def test_a_source_decision_records_the_running_run(cases_dir):
+    """R33 does not pause for a source review; the run that is running is the one the decision belongs to."""
+    d = write_source_request(cases_dir)
+    cand = json.loads((d / "candidate.json").read_text())
+    cand["generated_by"].pop("run_id")
+    (d / "candidate.json").write_text(json.dumps(cand))
+    meta = yaml.safe_load((d / "APPROVAL_PENDING.md").read_text().split("---")[1])
+    meta["generated_by"].pop("run_id")
+    (d / "APPROVAL_PENDING.md").write_text(
+        "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n# Approval pending: source\n"
+    )
+    runs = cases_dir / "libraries" / "lake" / "runs" / "fixture-libraries"
+    (runs / "run-live").mkdir()
+    (runs / "run-live" / "status.json").write_text(json.dumps({"run_id": "run-live", "state": "running", "phase": 3}))
+    (runs / "latest.json").write_text(json.dumps({"run_id": "run-live"}))
+    assert decide(client(cases_dir)).status_code == 303
+    assert json.loads((d / "APPROVED").read_text())["run_id"] == "run-live"
+    assert log_lines(cases_dir)[-1]["run_id"] == "run-live"
