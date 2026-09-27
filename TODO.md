@@ -1,5 +1,13 @@
 # Work list
 
+## R8b attribution merge
+- [ ] Merge the reviewed containment gateway attribution fix without changing other demo behavior.
+- [ ] Verify the emitted quarantine step ID matches the gateway request and no existing investigation run can be targeted.
+FILES: `tools/containment/src/ontofill_containment/main.py`, `tools/containment/tests/test_containment.py`.
+TASK: Attribute the containment gateway call to its persisted quarantine step.
+DONE: `uv run pytest -q tools/containment/tests/test_containment.py` plus the exact gateway-step assertion.
+FORMAT: `uv run ruff check tools/containment/src/ontofill_containment/main.py tools/containment/tests/test_containment.py && uv run ruff format --check tools/containment/src/ontofill_containment/main.py tools/containment/tests/test_containment.py`.
+
 ## R16: cell browser liveness and idle CDP
 - [x] Reproduce the relay idle close with a failing local test and seek the demo cell's memory/timeout evidence; no demo job feed was available.
 - [x] Keep the in-pod CDP bridge and sidecar relay open across idle polls; detect browser/target death in status and action counting, with an honest failed job record and measured memory (synthetic gate).
