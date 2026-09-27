@@ -129,6 +129,19 @@ def checkpoint_dirs(case_dir: Path, checkpoint: str) -> list[Path]:
     return out
 
 
+def decision_run_id(case_dir: Path, checkpoint: str) -> str | None:
+    """The run the APPROVED marker answering `checkpoint` was recorded for (its run_id), or None."""
+    for d in checkpoint_dirs(case_dir, checkpoint):
+        marker = d / "APPROVED"
+        if marker.is_file():
+            try:
+                rid = json.loads(marker.read_text()).get("run_id")
+            except (ValueError, OSError, AttributeError):
+                return None
+            return rid if isinstance(rid, str) and rid else None
+    return None
+
+
 def decision_for(case_dir: Path, checkpoint: str) -> str | None:
     """sha256 of the APPROVED marker answering `checkpoint`, or None if the checkpoint is not decided yet."""
     for d in checkpoint_dirs(case_dir, checkpoint):

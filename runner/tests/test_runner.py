@@ -255,7 +255,11 @@ def test_a_finished_proof_run_does_not_hide_the_paused_run(setup, monkeypatch):
     (proof / "status.json").write_text(json.dumps({"state": "done", "phase": 5}))
     (lake / "runs" / "c1" / "latest.json").write_text(json.dumps({"run_id": "proof-run"}))
     monkeypatch.setenv("FAKE_MODE", "pause:factors")
-    approve(setup)
+    # the console records the paused run in the decision (872a1c0); since R43 that binding is what lets a
+    # decision resume a run that is no longer the latest
+    (setup["case"] / "01-scope" / "APPROVED").write_text(
+        json.dumps({"approver": "group:approvers", "checkpoint": "prd", "run_id": "run-abc"})
+    )
     r = Runner(setup["cfg"], env=dict(os.environ))
     run_until_idle(r)
     c = calls(setup)
@@ -396,3 +400,57 @@ def test_unreachable_sources_exit_is_needs_human_not_failed(setup, monkeypatch):
     assert ev["kind"] == "needs-human" and "fix access or revise the PRD authority policy" in ev["detail"]
     r.poll_once()
     assert r.state.status("c1")["state"] == "needs_human" and len(calls(setup)) == 1  # not relaunched
+
+
+def _stale_setup(setup, marker_run_id):
+    """R43 as found live: an old run is still paused at a checkpoint in the lake, a later run has finished and is
+    the latest, and the case's APPROVED marker answers that checkpoint for a later run (or names no run)."""
+    runs = setup["lake"] / "runs" / "c1"
+    (runs / "run-abc" / "status.json").write_text(
+        json.dumps({"state": "paused", "checkpoint_pending": "prd", "updated_at": "2026-09-27T07:39:00+00:00"})
+    )
+    (runs / "run-new").mkdir()
+    (runs / "run-new" / "status.json").write_text(
+        json.dumps({"state": "done", "updated_at": "2026-09-27T10:25:20+00:00"})
+    )
+    (runs / "latest.json").write_text(json.dumps({"run_id": "run-new"}))
+    marker = {
+        "approver": "group:approvers",
+        "checkpoint": "prd",
+        **({"run_id": marker_run_id} if marker_run_id else {}),
+    }
+    (setup["case"] / "01-scope" / "APPROVED").write_text(json.dumps(marker))
+
+
+@pytest.mark.parametrize("marker_run_id", ["run-mid", None])
+def test_a_superseded_paused_run_is_never_resumed_by_a_later_decision(setup, monkeypatch, marker_run_id):
+    monkeypatch.setenv("FAKE_MODE", "sleep")
+    _stale_setup(setup, marker_run_id)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    r.poll_once()
+    assert not r.children and not calls(setup)  # nothing launched
+    st = r.state.status("c1")
+    assert st["state"] == "idle" and "start a new run" in (st.get("reason") or "")
+
+
+def test_a_decision_made_for_the_paused_run_still_resumes_it(setup, monkeypatch):
+    """The legitimate case (a finished proof run became latest after the case paused) keeps working when the
+    marker names the paused run."""
+    monkeypatch.setenv("FAKE_MODE", "pause:factors")
+    _stale_setup(setup, "run-abc")
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    assert [c["run_id"] for c in calls(setup)] == ["run-abc"]
+
+
+def test_lifting_the_kill_switch_never_relaunches_a_superseded_run(setup, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "sleep")
+    runs = setup["lake"] / "runs" / "c1"
+    (runs / "run-abc" / "status.json").write_text(json.dumps({"state": "running", "phase": 2}))
+    (runs / "run-new").mkdir()
+    (runs / "run-new" / "status.json").write_text(json.dumps({"state": "paused", "checkpoint_pending": "factors"}))
+    (runs / "latest.json").write_text(json.dumps({"run_id": "run-new"}))
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    r.state.set_status("c1", state="killed", run_id="run-abc")
+    r.poll_once()
+    assert not r.children and not calls(setup)

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .config import Config, load_registry
 from .lake import CaseLake, lake_for
-from .state import State, decision_for, now
+from .state import State, decision_for, decision_run_id, now
 
 log = logging.getLogger("ontofill-runner")
 
@@ -224,6 +224,7 @@ class Runner:
             and not killed
             and status.get("run_id") == run_id
             and run_id
+            and run_id == lake.latest_run_id()  # R43: never relaunch a superseded run
             and lstatus.get("state") not in ("paused", "done", "completed", "finished")
         ):
             # this runner stopped the run mid-phase with the kill switch; with the switch lifted, relaunch the SAME run
@@ -239,6 +240,19 @@ class Runner:
             sha = decision_for(spec.case_dir, cp)
             if sha is None:
                 self._transition(cid, "waiting_approval", run_id=run_id, checkpoint=cp, reason=None)
+                return
+            # R43: a decision resumes only the run it was made for. A marker names its run (run_id); an older
+            # marker without one may only resume the case's latest run, never a superseded paused run.
+            decided_for = decision_run_id(spec.case_dir, cp)
+            if (decided_for and decided_for != run_id) or (not decided_for and run_id != lake.latest_run_id()):
+                if status.get("state") not in ("failed", "killed", "budget_stop", "needs_human", "done"):
+                    self._transition(
+                        cid,
+                        "idle",
+                        run_id=run_id,
+                        reason=f"the {cp} decision was made for {decided_for or 'another run'}, "
+                        f"not {run_id}; start a new run",
+                    )
                 return
             key = f"{run_id}:{cp}:{sha}"
             if status.get("last_trigger") == key:  # already resumed for this exact decision
