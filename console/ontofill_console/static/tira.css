@@ -170,3 +170,14 @@ a.strip:hover { background: var(--strip-hover); }
   .funnel .fill { grid-column: 1 / -1; order: 3; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* case hub: the ten questions, each one click from the case */
+.questions { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; counter-reset: q; }
+.questions li { counter-increment: q; }
+.questions a, .questions__off { display: grid; grid-template-columns: 2rem minmax(0, 1fr); column-gap: var(--space-xs); padding: 6px var(--space-sm);
+  background: var(--strip); border: 1px solid var(--line); border-radius: var(--radius-sm); text-decoration: none; }
+.questions a:hover { background: var(--strip-hover); border-color: var(--line-strong); }
+.questions a::before, .questions__off::before { content: "Q" counter(q); grid-row: span 2; font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); padding-top: 2px; }
+.questions b { font-weight: 600; }
+.questions small { color: var(--fg-3); font-size: var(--text-xs); }
+.questions__off { opacity: 0.6; }
