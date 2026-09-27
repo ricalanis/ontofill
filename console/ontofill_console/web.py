@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import approvals as ap
-from . import dod, evidence, live
+from . import dod, evidence, live, runner_state
 from .domain import Domain
 from .gold import GoldStore, UnavailableStore, backend_of, sniff_media_type, store_for_case
 
@@ -75,6 +75,7 @@ class Settings:
     groups_header: str = "X-NetBird-Groups"  # sso-group: the proxy's verified group membership
     approver_group: str = "approvers"
     direct_deny: tuple = ()  # ip networks (our own mesh peers) whose direct requests may not decide
+    runner_state: Path = runner_state.DEFAULT_STATE  # shared with the ontofill-runner service (R18)
 
     def __post_init__(self) -> None:
         if self.identity_mode not in ("sso", "sso-group", "local"):
@@ -113,7 +114,8 @@ def settings_from_env(env: dict[str, str] | None = None) -> Settings:
                     identity_headers=headers or DEFAULT_IDENTITY_HEADERS,
                     groups_header=env.get("ONTOFILL_CONSOLE_GROUPS_HEADER", "").strip() or "X-NetBird-Groups",
                     approver_group=env.get("ONTOFILL_CONSOLE_APPROVER_GROUP", "").strip() or "approvers",
-                    direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")))
+                    direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")),
+                    runner_state=runner_state.state_dir(env))
 
 
 def brief(value, limit: int = 240) -> str:
@@ -211,7 +213,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ctx.setdefault("approver_group", settings.approver_group)
         ctx.setdefault("group_verified", group_verified(request))
         ctx.setdefault("live_run_id", None)
+        ctx.setdefault("runner", runner_state.line(settings.runner_state, case.id) if case else None)
+        ctx.setdefault("runner_kill", runner_state.killed(settings.runner_state))
         return templates.TemplateResponse(request, name, ctx)
+
+    def check_origin(request: Request) -> None:
+        host = request.headers.get("host")
+        for header in (request.headers.get("origin"), request.headers.get("referer")):
+            if header and urlsplit(header).netloc != host:
+                raise HTTPException(403, "cross-origin decision refused")
+
+    def authorize(request: Request, form: dict) -> tuple[str, str, dict | None]:
+        """Who is deciding, under the console's identity mode: (approver, identity_source, extra) or HTTP 403/400."""
+        if settings.identity_mode == "sso":
+            who = identity(request)
+            if not who:
+                raise HTTPException(403, "no signed-in identity: open the console through its sign-in URL")
+            return who, "sso", None
+        if settings.identity_mode == "sso-group":
+            if direct_denied(request):
+                raise HTTPException(403, "decisions must come through the NetBird proxy")
+            if not ap.groups_contain(request.headers.get(settings.groups_header), settings.approver_group):
+                raise HTTPException(403, f"not signed in as a member of {settings.approver_group}")
+            name = ap.clean_display_name(form.get("display_name"))
+            if not name:
+                raise HTTPException(400, "enter your name (self-declared, at most 100 characters)")
+            return (f"group:{settings.approver_group}", "sso-group",
+                    {"unverified_name": name,
+                     "verified": {"group": settings.approver_group, "via": "NetBird SSO (x-netbird-groups)"}})
+        who = ap.clean_display_name(form.get("approver"))
+        if not who:
+            raise HTTPException(400, "enter your name (local mode)")
+        return who, "local", None
+
+    async def read_form(request: Request) -> dict:
+        return {k: v[0] for k, v in parse_qs((await request.body()).decode(errors="replace")).items()}
 
     def whoami_model(request: Request) -> dict:
         """Header NAMES only (never values), and which candidate identity header the console would use."""
@@ -393,32 +429,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/cases/{case_id}/approvals")
     async def decide(request: Request, case_id: str):
         case = get_case(case_id)
-        origin = request.headers.get("origin")
-        referer = request.headers.get("referer")
-        host = request.headers.get("host")
-        for header in (origin, referer):
-            if header and urlsplit(header).netloc != host:
-                raise HTTPException(403, "cross-origin decision refused")
-        form = {k: v[0] for k, v in parse_qs((await request.body()).decode(errors="replace")).items()}
+        check_origin(request)
+        form = await read_form(request)
         phase_dir = form.get("phase_dir", "")
-        extra = None
-        if settings.identity_mode == "sso":
-            who, source = identity(request), "sso"
-            if not who:
-                raise HTTPException(403, "no signed-in identity: open the console through its sign-in URL")
-        elif settings.identity_mode == "sso-group":
-            if direct_denied(request):
-                raise HTTPException(403, "decisions must come through the NetBird proxy")
-            if not ap.groups_contain(request.headers.get(settings.groups_header), settings.approver_group):
-                raise HTTPException(403, f"not signed in as a member of {settings.approver_group}")
-            name = ap.clean_display_name(form.get("display_name"))
-            if not name:
-                raise HTTPException(400, "enter your name (self-declared, at most 100 characters)")
-            who, source = f"group:{settings.approver_group}", "sso-group"
-            extra = {"unverified_name": name,
-                     "verified": {"group": settings.approver_group, "via": "NetBird SSO (x-netbird-groups)"}}
+        if settings.identity_mode == "local":  # local mode: the approvals module validates the typed name itself
+            who, source, extra = form.get("approver", ""), "local", None
         else:
-            who, source = form.get("approver", ""), "local"
+            who, source, extra = authorize(request, form)
         seen = {k.removeprefix("artifact_sha256."): v for k, v in form.items() if k.startswith("artifact_sha256.")}
         decisions = {k.removeprefix("decision."): v for k, v in form.items() if k.startswith("decision.")}
         rid = live_run_id(case)
@@ -434,6 +451,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return review_page(request, case, item, str(exc), reason=form.get("reason", "")[:5000],
                                status_code=exc.status)
         return RedirectResponse(f"/cases/{case.id}/approvals?done={quote(phase_dir)}", status_code=303)
+
+    # runner control (R18): operator actions, same identity rules as approvals, logged in decisions.jsonl ----------
+    @app.post("/cases/{case_id}/runner")
+    async def runner_action(request: Request, case_id: str):
+        case = get_case(case_id)
+        check_origin(request)
+        form = await read_form(request)
+        action = form.get("action", "")
+        if action not in runner_state.ACTIONS:
+            raise HTTPException(400, "action must be start, pause or resume")
+        who, source, extra = authorize(request, form)
+        to_phase = None
+        if action == "start" and form.get("to_phase"):
+            if not form["to_phase"].isdigit() or not 1 <= int(form["to_phase"]) <= 5:
+                raise HTTPException(400, "to_phase must be 1-5")
+            to_phase = int(form["to_phase"])
+        runner_state.apply_action(settings.runner_state, case.id, action, who, to_phase)
+        runner_state.append_line(case.dir.root / "decisions.jsonl",
+                                 {"ts": runner_state.now_iso(), "case_id": case.id, "checkpoint": "runner",
+                                  "decision": action, "approver": who, "identity_source": source, **(extra or {}),
+                                  **({"to_phase": to_phase} if to_phase else {})})
+        return RedirectResponse(f"/cases/{case.id}?runner={quote(action)}", status_code=303)
+
+    @app.post("/runner/kill")
+    async def runner_kill(request: Request):
+        check_origin(request)
+        form = await read_form(request)
+        state = form.get("state", "")
+        if state not in ("on", "off"):
+            raise HTTPException(400, "state must be on or off")
+        who, source, extra = authorize(request, form)
+        runner_state.set_kill(settings.runner_state, state == "on",
+                              {"ts": runner_state.now_iso(), "checkpoint": "runner_kill", "decision": state,
+                               "approver": who, "identity_source": source, **(extra or {})})
+        return RedirectResponse("/?kill=" + state, status_code=303)
 
     # console-wide pages ----------------------------------------------------------------------------------------
     @app.get("/spend", response_class=HTMLResponse)

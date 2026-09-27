@@ -68,3 +68,17 @@ capabilities, non-root uid 10001; case directories mounted read-write because ap
 evidence read-only; bind it to loopback or the host's NetBird IP and publish it through NetBird with SSO). Create the
 default empty mount sources first (`mkdir -p ../.cache/empty-case ../.cache/empty-lake ../.cache/empty-evidence;
 touch ../.cache/empty-lake.yaml`) or set the `CONSOLE_*` paths in `deploy/.env`.
+
+## Runner controls (R18)
+
+The console shares a state directory with the `ontofill-runner` service (`ONTOFILL_RUNNER_STATE`, default
+`/var/lib/ontofill-runner`; see `runner/README.md`). A decided checkpoint resumes by itself; the case overview and the
+approvals page show the runner's state ("Waiting for the prd decision", "Resumed automatically at HH:MM", "Stopped:
+budget", "Runner off (kill switch)"). Approvers (same identity rules as approvals) can:
+
+- `POST /cases/<id>/runner` `action=start|pause|resume` (`to_phase` 1–5 for start): writes `control.json`; every action
+  is appended to the case's `decisions.jsonl` as `{checkpoint: "runner", decision: <action>, approver, identity_source,
+  unverified_name?, verified?}`. Resume also re-arms one relaunch after a failed run.
+- `POST /runner/kill` `state=on|off`: the global kill switch (`KILL`), logged in `console-decisions.jsonl`.
+
+Runner failures, budget stops and kills appear in the inbox.
