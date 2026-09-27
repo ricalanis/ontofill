@@ -35,7 +35,7 @@ from ontofill.phases.p3_fanout.search import (
     SandboxSearchClient,
 )
 from ontofill.phases.p4_local_scoping.phase import draft_local_scope
-from ontofill.phases.p5_execute import execute_objective
+from ontofill.phases.p5_execute import execute_objectives
 from ontofill.refiner import Observation, export_run, refine_observations, silver_store_from_env
 from ontofill.runfeed import RunFeed
 from ontofill.sandbox import (
@@ -315,27 +315,12 @@ def _publish_unreported_decisions(
     _publish_decision_calls(feed, trace, decision, published, run_id, phase)
 
 
-def _objective_for_pass(objectives: dict, trace: list[dict]) -> dict:
-    """Give newly discovered objectives a turn before revisiting old sources."""
-    executed = {
-        step["objective_id"]
-        for step in trace
-        if step.get("phase") == 5 and step.get("objective_id")
-    }
-    return next(
-        (item for item in objectives["objectives"] if item["id"] not in executed),
-        objectives["objectives"][0],
-    )
-
-
-def _latest_outer_reopen(trace: list[dict], phase: int) -> dict | None:
+def _latest_outer_decision(trace: list[dict]) -> dict | None:
     return next(
         (
             step
             for step in reversed(trace)
-            if step.get("event") == "loop"
-            and step.get("loop", {}).get("phase") == "outer"
-            and step.get("executed", {}).get("reopen") == phase
+            if step.get("event") == "loop" and step.get("loop", {}).get("phase") == "outer"
         ),
         None,
     )
@@ -351,6 +336,15 @@ def _gap_fields(step: dict | None) -> tuple[str, ...]:
             for field in gap.get("properties", [])
         )
     )
+
+
+def _gaps_for_objective(gaps: list[dict], objective: dict) -> list[dict]:
+    fields = set(objective.get("target_fields", []))
+    return [
+        {**gap, "properties": [item for item in gap.get("properties", []) if item in fields]}
+        for gap in gaps
+        if fields.intersection(gap.get("properties", []))
+    ]
 
 
 def _reopen_discovery(case_dir: Path, iteration: int) -> None:
@@ -533,8 +527,17 @@ def run_case(
     outer_paused = False
     historical_trace = _persisted_run_trace(lake, case_id, run_id, [])
     earlier_reopens = prior_reopens(historical_trace)
-    discovery_gaps = _gap_fields(_latest_outer_reopen(historical_trace, 3))
-    local_reopen = _latest_outer_reopen(historical_trace, 4)
+    latest_outer = _latest_outer_decision(historical_trace)
+    discovery_gaps = (
+        _gap_fields(latest_outer)
+        if latest_outer is not None and latest_outer.get("executed", {}).get("reopen") == 3
+        else ()
+    )
+    local_reopen = (
+        latest_outer
+        if latest_outer is not None and latest_outer.get("executed", {}).get("reopen") == 4
+        else None
+    )
     with RunFeed(lake, case_id, run_id, provenance, preview=preview_past_checkpoints) as feed:
         feed.update_status(state="running", phase=from_phase)
         try:
@@ -698,29 +701,38 @@ def run_case(
 
             if from_phase <= 4:
                 feed.update_status(state="running", phase=4)
-            objective = _objective_for_pass(
-                objectives, _persisted_run_trace(lake, case_id, run_id, trace)
-            )
-            local_objective = (
-                {**objective, "gap_report": local_reopen["observed"]["gaps"]}
-                if local_reopen is not None
-                else objective
-            )
-            decision_start = len(getattr(decision, "call_log", []))
-            _, tdd = draft_local_scope(
-                case_dir, prd, ontology, local_objective, decision, budget_usd=budget_usd
-            )
-            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 4)
-            step = _trace_step(
-                run_id,
-                4,
-                provenance,
-                "phase4.local_scope",
-                f"04-local/{objective['source_id']}__{objective['id']}/tdd.json",
-            )
-            if from_phase <= 4:
-                _publish_steps(feed, [step])
-                trace.append(step)
+            selected_objectives = objectives["objectives"]
+            tdds: dict[str, dict] = {}
+            local_gaps = local_reopen.get("observed", {}).get("gaps", []) if local_reopen else []
+            for objective in selected_objectives:
+                relevant_gaps = _gaps_for_objective(local_gaps, objective)
+                local_objective = (
+                    {**objective, "gap_report": relevant_gaps} if relevant_gaps else objective
+                )
+                decision_start = len(getattr(decision, "call_log", []))
+                _, tdd = draft_local_scope(
+                    case_dir,
+                    prd,
+                    ontology,
+                    local_objective,
+                    decision,
+                    budget_usd=budget_usd,
+                )
+                _publish_decision_calls(feed, trace, decision, decision_start, run_id, 4)
+                tdds[objective["id"]] = tdd
+                step = _trace_step(
+                    run_id,
+                    4,
+                    provenance,
+                    "phase4.local_scope",
+                    f"04-local/{objective['source_id']}__{objective['id']}/tdd.json",
+                )
+                step["source_id"] = objective["source_id"]
+                step["objective_id"] = objective["id"]
+                step["tdd_path"] = f"04-local/{objective['source_id']}__{objective['id']}/tdd.json"
+                if from_phase <= 4:
+                    _publish_steps(feed, [step])
+                    trace.append(step)
             if to_phase == 4:
                 feed.update_status(
                     state="paused" if pending else "done", phase=4, checkpoint_pending=pending
@@ -736,9 +748,14 @@ def run_case(
                     {
                         "source_id": objective["source_id"],
                         "source_type": objective["source_type"],
-                        "discovered_by": objective.get("discovered_by"),
+                        **(
+                            {"discovered_by": objective["discovered_by"]}
+                            if objective.get("discovered_by") is not None
+                            else {}
+                        ),
                         "health": {"ok": 0, "failed": 0, "yield": 0},
                     }
+                    for objective in selected_objectives
                 ],
             )
             kwargs = {}
@@ -747,11 +764,15 @@ def run_case(
             if fetch is not None:
                 kwargs["fetch"] = fetch
             decision_start = len(getattr(decision, "call_log", []))
-            execution = execute_objective(
+            execution_order = [
+                *[item for item in selected_objectives if not tdds[item["id"]].get("membership")],
+                *[item for item in selected_objectives if tdds[item["id"]].get("membership")],
+            ]
+            executions = execute_objectives(
                 case_dir=case_dir,
-                objective=objective,
+                objectives=selected_objectives,
                 ontology=ontology,
-                tdd=tdd,
+                tdds=tdds,
                 lake=lake,
                 run_id=run_id,
                 decision=decision,
@@ -764,18 +785,24 @@ def run_case(
                 **kwargs,
             )
             _publish_decision_calls(feed, trace, decision, decision_start, run_id, 5)
-            _publish_steps(feed, execution.trace)
-            trace.extend(execution.trace)
+            execution_by_id = {
+                objective["id"]: execution
+                for objective, execution in zip(execution_order, executions, strict=True)
+            }
+            for execution in executions:
+                _publish_steps(feed, execution.trace)
+                trace.extend(execution.trace)
             observations = store.list_for_run(run_id)
             _write_silver_cache(case_id, run_id, observations)
-            for index, job in enumerate(execution.sandbox_jobs):
-                if "proof" in job:
-                    ids = (
-                        [item.value_id for item in execution.observations]
-                        if index == len(execution.sandbox_jobs) - 1
-                        else []
-                    )
-                    append_job_record(lake, case_id, build_job_record(job, value_ids=ids))
+            for execution in executions:
+                for index, job in enumerate(execution.sandbox_jobs):
+                    if "proof" in job:
+                        ids = (
+                            [item.value_id for item in execution.observations]
+                            if index == len(execution.sandbox_jobs) - 1
+                            else []
+                        )
+                        append_job_record(lake, case_id, build_job_record(job, value_ids=ids))
             shapes = case_dir / ontology["shacl_path"]
             refined = refine_observations(
                 observations, ontology=ontology, generated_by=provenance, shapes_ttl=shapes
@@ -825,10 +852,20 @@ def run_case(
                 {
                     "source_id": objective["source_id"],
                     "source_type": objective["source_type"],
-                    "discovered_by": objective.get("discovered_by"),
+                    **(
+                        {"discovered_by": objective["discovered_by"]}
+                        if objective.get("discovered_by") is not None
+                        else {}
+                    ),
                     "format": execution.format,
-                    "health": {"ok": 1, "failed": 0, "yield": len(refined.entities)},
+                    "health": {
+                        "ok": 1,
+                        "failed": 0,
+                        "yield": len(execution.observations),
+                    },
                 }
+                for objective in selected_objectives
+                for execution in [execution_by_id[objective["id"]]]
             ]
             if outer.reopen == 2:
                 _request_ontology_gap_review(
@@ -842,7 +879,9 @@ def run_case(
                 _reopen_discovery(case_dir, outer.iteration)
                 reopen_phase = 3
             elif outer.reopen == 4:
-                _reopen_local_scope(case_dir, objective, outer.iteration)
+                for objective in selected_objectives:
+                    if _gaps_for_objective([gap.public_summary() for gap in outer.gaps], objective):
+                        _reopen_local_scope(case_dir, objective, outer.iteration)
                 reopen_phase = 4
             outer_paused = outer.stop_reason in {"budget", "human"}
             if reopen_phase is not None:

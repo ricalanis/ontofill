@@ -103,3 +103,16 @@ the existing loop fixtures already covered every P5 pass. The fixtures now
 provide the fake fetch and one choice per expected pass. The next full gate
 must verify this correction and the R3 code together; if it fails, stop under
 the two-attempt rule.
+
+## R2 P5 strategy (2026-09-27)
+- Execute all P3-selected objectives within one P5 pass, draft/cache one TDD per objective, then refine/export once from aggregated observations.
+- Count iterations by stable DoD criterion ID, carrying the associated ontology property IDs in gap reports, while retaining the current global pass ceiling. Route a gap report only to objectives whose target fields overlap it.
+- The announced optional TDD membership shape is `{property_id, identifier_property_id, complete: true}`. The target must be a boolean ontology property in `target_fields`; the identifier must equal the selected class's `identifier_property`. `complete: true` is only a source assertion: runtime must prove a full, untruncated capture before deriving either result.
+- Normalize identifiers deterministically and conservatively before matching; detect normalization collisions rather than turning ambiguous matches into false results. Keep raw captured values and bronze keys as evidence.
+- Flatten arrays of JSON objects generically, including OCDS-shaped nested objects, without baking case vocabulary into `src/`. Prompt data derived from captures must pass through `screened_page_content`.
+- Gate: a recorded synthetic fixture has at least four distinct source classes and proves all objectives execute in one pass, per-gap counts (one gap reopens twice while another first appears at iteration 1), identifier-equivalent membership, an evidence-backed false, and JSON-array/OCDS row extraction.
+- Managed focused attempt 1 failed on the fixture's expected membership map: JSON and OCDS objectives intentionally shared the same ontology class as the index objective, so the complete list correctly emitted false for those absent records too. Correct the expected map to include every entity of that class; do not change the engine behavior.
+- Managed Ruff check attempt 1 found an unused `extension` destructuring in the synthetic fetch callback; mark the unused tuple member explicitly and rerun the same source gate.
+- Dead hypothesis 1: the workflow scheduling check's expected false-membership map omitted JSON/OCDS entities because its expectation treated each source objective as a separate class. They share the same ontology class; the engine correctly emitted false for those absent identifiers, and the expected map was corrected.
+- Dead hypothesis 2: the newly added workflow scheduling seam fixture could omit `discovered_by` because its stub objectives bypassed discovery validation. The run-status schema requires that metadata, so the fixture now supplies valid synthetic provider and timestamp fields.
+- Remaining check: the corrected workflow scheduling seam has not been rerun because progress-guard escalation barred another `r2-p5-focused` attempt. Root will run the materially broader main integration gate after merge; do not claim this new seam has passed.

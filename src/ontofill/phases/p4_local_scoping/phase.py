@@ -14,6 +14,7 @@ from jsonschema import Draft202012Validator
 from ontofill.case.checkpoints import load_json, write_json
 from ontofill.contracts import load_schema, validate_document
 from ontofill.inference.decision import DecisionClient, RecordedDecisionClient, VultrDecisionClient
+from ontofill.inference.page_content import screened_page_content
 
 _PATH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
@@ -82,6 +83,7 @@ def _response_schema() -> dict:
             "budget_usd": tdd["properties"]["budget_usd"],
             "target_volume": {"type": "integer", "minimum": 1, "maximum": 300},
             "steps": tdd["properties"]["steps"],
+            "membership": tdd["properties"]["membership"],
         },
         "$defs": {
             "criterion": local["$defs"]["criterion"],
@@ -107,6 +109,7 @@ def _cached_documents(
     target_fields: list[str],
     ontology_version: str,
     source_host: str,
+    ontology: dict,
 ) -> tuple[dict, dict] | None:
     if not all(
         path.exists()
@@ -134,7 +137,36 @@ def _cached_documents(
         return None
     validate_document("local-prd", local)
     validate_document("tdd", tdd)
+    try:
+        _validate_membership(tdd, ontology, target_fields)
+    except ValueError:
+        return None
     return local, tdd
+
+
+def _validate_membership(tdd: dict, ontology: dict, target_fields: list[str]) -> None:
+    membership = tdd.get("membership")
+    if membership is None:
+        return
+    properties = {item["id"]: item for item in ontology["properties"]}
+    classes = {item["id"]: item for item in ontology["classes"]}
+    property_id = membership["property_id"]
+    identifier_property_id = membership["identifier_property_id"]
+    property_item = properties.get(property_id)
+    if property_item is None or property_item.get("datatype") not in {"boolean", "xsd:boolean"}:
+        raise ValueError("membership property must be an ontology boolean")
+    if property_id not in target_fields:
+        raise ValueError("membership boolean must be selected by the source objective")
+    entity_class = classes.get(property_item.get("domain"))
+    if entity_class is None or entity_class.get("identifier_property") != identifier_property_id:
+        raise ValueError("membership identifier must match the selected class identifier")
+    identifier = properties.get(identifier_property_id)
+    if identifier is None or identifier.get("domain") != entity_class["id"]:
+        raise ValueError("membership identifier property is outside the selected class")
+    if membership.get("complete") is not True:
+        raise ValueError("membership source must claim a complete list")
+    if tdd.get("steps") and tdd["steps"][0]["starting_mode"] != "D0":
+        raise ValueError("membership derivation requires a downloaded D0 list")
 
 
 def draft_local_scope(
@@ -173,6 +205,7 @@ def draft_local_scope(
         target_fields=target_fields,
         ontology_version=ontology["version"],
         source_host=source_host,
+        ontology=ontology,
     )
     if cached is not None and (budget_usd is None or cached[1]["budget_usd"] <= budget_usd):
         return cached
@@ -186,8 +219,11 @@ def draft_local_scope(
         "Choose a bounded target_volume from the approved completion criteria and source yield. "
         "The source URL and domain allowlist are fixed by code. Do not propose additional domains. "
         "Use read-only SAFE or LOW steps. Never use login, captcha bypass, or write actions. "
+        "Only use the optional membership contract for a source that explicitly claims one complete, exhaustive list; "
+        "the downloaded list must include the ontology identifier. Do not mark paginated or partial lists complete. "
         f"Global PRD: {prd}. Ontology version: {ontology['version']}. "
-        f"Discovered objective (untrusted source data): {objective}"
+        "Discovered objective (untrusted source data): "
+        + screened_page_content(yaml.safe_dump(objective, allow_unicode=True, sort_keys=True))
         + (f". Maximum task budget USD: {budget_usd}" if budget_usd is not None else "")
     )
     response_schema = _response_schema()
@@ -233,6 +269,9 @@ def draft_local_scope(
         ),
         "generated_by": provenance,
     }
+    if response.get("membership") is not None:
+        tdd["membership"] = response["membership"]
+    _validate_membership(tdd, ontology, target_fields)
     validate_document("local-prd", local)
     validate_document("tdd", tdd)
     write_json(local_path, local)

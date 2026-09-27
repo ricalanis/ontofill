@@ -20,3 +20,10 @@ DONE C4: `uv run pytest -q && uv run ruff check src tests packages infra && uv r
 DONE R3: `uv run pytest -q tests/test_p5_controller.py tests/genericity && uv run ruff check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py && uv run ruff format --check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py`; a fake controller reaches P5 through S1, emits only evidence-validated target properties, and drains verify/action_gate/quarantine into `trace.jsonl`.
 
 Constraints: public pushes only after slice checks and a pre-push scan; no committed data or secrets; source discovery without hard-coded source URLs; all captures in a sandbox; local bronze uses file:// and Vultr bronze uses S3; approvals use the contract protocol.
+
+## R2 P5 real-path closure
+Run every selected source objective in each P5 pass, count gap iterations independently, and derive generic list membership only from a complete capture keyed by the ontology identifier; normalize identifiers and flatten generic JSON/OCDS arrays with bronze evidence.
+
+Status: implementation and most recorded checks are complete. The corrected workflow scheduling seam is unverified because progress-guard escalation barred another focused run; root will run the broader main integration gate after merge. See `NOTES.md` for the two failed hypotheses and exact remaining check. Do not claim the new workflow seam passed.
+
+Constraints: only this worktree/branch; no controller, app, console, case, main, or coordination-file edits; keep R3/R7 work modular; preserve genericity; use the announced membership TDD contract; do not push or merge.

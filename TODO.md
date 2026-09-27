@@ -103,6 +103,28 @@ TASK: Make the engine installable with contract-valid documents, file:// local l
 DONE: `uv run pytest -q && docker compose --env-file .env -f infra/compose/compose.yaml up -d --wait`.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
 
+## R2 P5 real-path closure (worker)
+- [x] Add falsifying recorded tests for multi-objective passes, per-gap iteration accounting, full-list membership evidence, identifier normalization, and JSON/OCDS flattening.
+  - FILES: `tests/test_r2_p5.py`, `tests/genericity/fixtures/`.
+  - TASK: Build a synthetic multi-source fixture with at least four distinct source classes; include one gap reopened twice while a different gap first appears and starts at iteration 1; require a false membership value with the complete list's bronze key.
+  - DONE: recorded multi-source fixture and focused tests cover the missing R2 behaviors; the newly added workflow scheduling seam remains unverified as recorded in `NOTES.md`.
+  - FORMAT: Ruff format on the new test/fixture files.
+- [x] Implement objective scheduling and per-gap iteration accounting in the P5 run loop.
+  - FILES: `src/ontofill/workflow.py`, `src/ontofill/outer_gap.py`.
+  - TASK: Draft/execute every selected objective in a pass, aggregate observations and source status, and associate reopen iterations with each criterion ID and its ontology properties.
+  - DONE: workflow implementation drafts and schedules all selected objectives in one pass and maintains criterion-keyed iteration counts; the final gate remains pending.
+  - FORMAT: Ruff check/format on the changed modules.
+- [x] Implement membership, safe identifier normalization, and generic JSON/OCDS flattening.
+  - FILES: `schemas/tdd.schema.json`, `src/ontofill/phases/p4_local_scoping/`, `src/ontofill/phases/p5_execute/`, `packages/ontofill-scrape/src/ontofill_scrape/`, relevant schema/toolkit tests.
+  - TASK: Accept the announced optional membership declaration; require the target to be boolean and the identifier id to match the selected class. Emit true/false only for a complete untruncated list and cite its actual bronze key in both cases. Screen page-derived prompt content.
+  - DONE: implementation and corresponding recorded tests are present; positive/negative membership, truncation refusal, JSON arrays/OCDS flattening, and identifier-equivalence passed before the workflow seam was added.
+  - FORMAT: Ruff check/format on owned Python paths.
+- [ ] Run the focused, genericity, Ruff and format gates; commit `r2-p5` without pushing or merging.
+  - FILES: R2-owned engine modules, schema, test/fixture files, and task notes.
+  - TASK: Preserve R3/R7 files and confirm no protected paths changed.
+  - DONE: the R2 gate in `GOAL.md` passes, `git diff --check` is clean, and the branch commit SHA is reported to root.
+  - FORMAT: same gate as `GOAL.md`.
+
 ## C4a: provider-pluggable discovery and authority review
 - [ ] Add catalog plus agent-driven general web-search providers through sandbox egress; query from ontology gaps; stop on captcha/block and try next provider.
 - [ ] Gate unrecognized sources behind an explicit human source approval; derive recorded selections only from captured candidates.

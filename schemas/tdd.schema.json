@@ -16,6 +16,16 @@
     "target_fields": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "target_entities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "target_volume": {"type": "integer", "minimum": 1},
+    "membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["property_id", "identifier_property_id", "complete"],
+      "properties": {
+        "property_id": {"type": "string", "minLength": 1},
+        "identifier_property_id": {"type": "string", "minLength": 1},
+        "complete": {"const": true}
+      }
+    },
     "extraction_method": {"enum": ["dom", "vision", "pdf", "download", "api"]},
     "validation_rules": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "rate_limit_per_minute": {"type": "integer", "minimum": 1},
