@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -12,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +27,21 @@ from ontofill.sandbox.limits import SandboxLimits
 _DOMAIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _IMAGE_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_REMOTE_OUTPUT_LIMIT = 32 * 1024 * 1024
+_REMOTE_OUTPUT_NAME = re.compile(
+    r"(?:result\.json|page\.html|a11y\.txt|screenshot\.png|page-\d{4}\.(?:html|bin)|robots-\d{4}\.txt)\Z"
+)
+_REMOTE_OUTPUT_SCRIPT = """\
+import base64, io, pathlib, re, sys, zipfile
+root = pathlib.Path('/out')
+allowed = re.compile(r'(?:result\\.json|page\\.html|a11y\\.txt|screenshot\\.png|page-\\d{4}\\.(?:html|bin)|robots-\\d{4}\\.txt)\\Z')
+buffer = io.BytesIO()
+with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(root.iterdir()):
+        if path.is_file() and not path.is_symlink() and allowed.fullmatch(path.name):
+            archive.write(path, path.name)
+sys.stdout.write(base64.b64encode(buffer.getvalue()).decode('ascii'))
+"""
 
 
 class CaptureError(RuntimeError):
@@ -427,6 +445,29 @@ def _pod_output_args(output: Path) -> tuple[str, ...]:
     return ("-v", f"{output}:/out:rw")
 
 
+def _copy_remote_output(name: str, output: Path, timeout: int) -> None:
+    """Read runsc tmpfs through docker exec; the daemon cannot docker-cp it."""
+    encoded = _docker(
+        "exec", name, "python", "-c", _REMOTE_OUTPUT_SCRIPT, timeout=timeout
+    ).stdout.strip()
+    try:
+        archive_bytes = base64.b64decode(encoded, validate=True)
+        if len(archive_bytes) > _REMOTE_OUTPUT_LIMIT:
+            raise CaptureError("remote sandbox output archive exceeded its size limit")
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            files = archive.infolist()
+            if not files or not any(item.filename == "result.json" for item in files):
+                raise CaptureError("remote sandbox returned no result marker")
+            if len(files) > 110 or sum(item.file_size for item in files) > _REMOTE_OUTPUT_LIMIT:
+                raise CaptureError("remote sandbox output exceeded its size limit")
+            for item in files:
+                if not _REMOTE_OUTPUT_NAME.fullmatch(item.filename) or item.is_dir():
+                    raise CaptureError("remote sandbox returned an invalid output filename")
+                (output / item.filename).write_bytes(archive.read(item))
+    except (ValueError, zipfile.BadZipFile, OSError) as exc:
+        raise CaptureError("remote sandbox output archive was invalid") from exc
+
+
 def _pod_exit_reason(name: str, result: subprocess.CompletedProcess[str]) -> str | None:
     if result.returncode == 0:
         return None
@@ -789,7 +830,7 @@ def _run_agent_pod(
             break
         time.sleep(0.25)
     if ready:
-        _docker("cp", f"{name}:/out/.", str(output), timeout=budget.timeout_s)
+        _copy_remote_output(name, output, budget.timeout_s)
         _docker("exec", name, "touch", "/out/.copied")
     elif time.monotonic() >= deadline:
         raise SandboxLimitExceeded("timeout")

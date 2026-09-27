@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import subprocess
+import zipfile
+
+import pytest
 
 from ontofill.sandbox import capture
 
@@ -15,8 +20,13 @@ def test_remote_pod_copies_outputs_before_teardown(monkeypatch, tmp_path) -> Non
         calls.append(args)
         if args[0] == "wait":
             return subprocess.CompletedProcess(args, 0, "0\n", "")
-        if args[0] == "cp":
-            (tmp_path / "result.json").write_text('{"status": 200}')
+        if args[0] == "exec" and args[2] == "python":
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr("result.json", '{"status": 200}')
+                archive.writestr("page-0001.html", "<html>public</html>")
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return subprocess.CompletedProcess(args, 0, encoded, "")
         return subprocess.CompletedProcess(args, 0, "container-id\n", "")
 
     monkeypatch.setattr(capture, "_docker", fake_docker)
@@ -24,13 +34,31 @@ def test_remote_pod_copies_outputs_before_teardown(monkeypatch, tmp_path) -> Non
     result = capture._run_agent_pod("synthetic-pod", tmp_path, *mount_args, "synthetic-image")
     assert result.returncode == 0
     assert (tmp_path / "result.json").exists()
-    assert [row[0] for row in calls] == ["run", "exec", "cp", "exec", "wait", "logs"]
+    assert (tmp_path / "page-0001.html").read_text() == "<html>public</html>"
+    assert [row[0] for row in calls] == ["run", "exec", "exec", "exec", "wait", "logs"]
     assert "-v" not in calls[0]
     assert "--tmpfs" in calls[0]
     assert "--rm" not in calls[0]
     assert "CAPTURE_WAIT_FOR_COPY=1" in calls[0]
-    assert calls[2][:2] == ("cp", "synthetic-pod:/out/.")
+    assert calls[2][:4] == ("exec", "synthetic-pod", "python", "-c")
     assert calls[3][-2:] == ("touch", "/out/.copied")
+
+
+def test_remote_output_rejects_archive_path_traversal(monkeypatch, tmp_path) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("result.json", "{}")
+        archive.writestr("../escape", "untrusted")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    monkeypatch.setattr(
+        capture,
+        "_docker",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, encoded, ""),
+    )
+
+    with pytest.raises(capture.CaptureError, match="invalid output filename"):
+        capture._copy_remote_output("synthetic-pod", tmp_path, 30)
+    assert not (tmp_path.parent / "escape").exists()
 
 
 def test_local_pod_keeps_bind_mount(monkeypatch, tmp_path) -> None:
