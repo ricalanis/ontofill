@@ -16,7 +16,8 @@
 .inf-hero .is-bad dd::before { content: "■ "; }
 
 .inf-calls td, .inf-calls th { white-space: nowrap; }
-.inf-step { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; white-space: normal; }
+.inf-calls .inf-step { min-width: 12rem; max-width: 20rem; overflow-wrap: anywhere; white-space: normal; }
+.inf-calls .inf-step .chip { white-space: normal; margin-top: 2px; }
 .inf-row--un { background: var(--strip); }
 .inf-line { font: 600 var(--text-sm) var(--font-mono); margin: var(--space-xs) 0; }
 .inf-line.is-good { color: var(--st-done); } .inf-line.is-good::before { content: "✓ "; }

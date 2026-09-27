@@ -381,7 +381,10 @@ def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
             continue
         if rid and d.get("run_id") and d.get("run_id") != rid:
             continue
-        decisions.append({"who": d.get("approver") or d.get("unverified_name") or "unknown", "when": d.get("ts"),
+        # v1.0.4a: the verified part is the group; a typed name is only self-declared
+        who = (f"{d['unverified_name']} (self-declared) · {d.get('approver') or 'group'}" if d.get("unverified_name")
+               else d.get("approver") or "unknown")
+        decisions.append({"who": who, "when": d.get("ts"),
                           "checkpoint": d.get("checkpoint"), "decision": d.get("decision") or "approve",
                           "identity_source": d.get("identity_source"), "run_id": d.get("run_id"),
                           "phase_dir": d.get("phase_dir")})
