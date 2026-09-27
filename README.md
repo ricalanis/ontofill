@@ -8,6 +8,20 @@ The engine accepts a **case** from an application repo and runs the same five ph
 different subjects. [Proveedor Abierto](https://github.com/ricalanis/proveedor-abierto/tree/main/case)
 is the reference case used to exercise the engine.
 
+## How it works
+
+The engine turns a question into a reviewed PRD, an inferred ontology, confirmed sources,
+bounded collection, and linked data with evidence for each value. See
+[From an open question to linked data](docs/planning/04-question-to-linked-data.md)
+for the steps and the artifacts they produce.
+
+## Runs on Vultr and NetBird
+
+Vultr provides inference, the control and sandbox VMs, and the evidence lake. NetBird
+connects the VMs and provides access without public inbound ports. See
+[How Ontofill uses Vultr and NetBird](docs/reference/vultr-netbird-usage.md)
+for the deployed layout and network boundaries.
+
 Tracked files contain code and documentation only. Recorded previews use the ignored `.cache/`
 directory for a scratch case, local bronze objects, and silver observations.
 
