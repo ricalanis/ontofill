@@ -185,6 +185,17 @@ def text_of(value, limit: int = 160) -> str:
 
 
 STOPPED_STATES = ("failed", "stopped", "budget_stop", "needs_human")
+
+
+def stopped_state(status: dict) -> str | None:
+    """The run's state, reading a pause with no checkpoint pending and a reason as needs_human: the engine exits that
+    way when a phase gives up (e.g. no authoritative source), and only the runner says needs_human."""
+    state = status.get("state")
+    if state == "paused" and not status.get("checkpoint_pending") and status.get("reason"):
+        return "needs_human"
+    return state
+
+
 PHASE_VIEWS = {1: "definition", 2: "definition", 3: "discovery", 4: "discovery", 5: "operation"}
 
 

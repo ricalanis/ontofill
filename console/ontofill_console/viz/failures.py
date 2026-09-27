@@ -61,6 +61,35 @@ def _text(s: dict) -> str:
     ).lower()
 
 
+def _is_probe(e) -> bool:
+    """The sandbox's isolation probe: a request to *.invalid that the proxy blocks on purpose on every capture."""
+    return isinstance(e, dict) and str(e.get("host") or "").endswith(".invalid")
+
+
+def _drop_probes(obj, depth: int = 0):
+    """A copy of a trace field without isolation-probe egress events, so their `domain_not_allowed` never reads as
+    the capture's own domain being blocked."""
+    obj = hc.jsonish(obj)
+    if depth > 6:
+        return obj
+    if isinstance(obj, dict):
+        return {k: _drop_probes(v, depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_drop_probes(v, depth + 1) for v in obj if not _is_probe(v)]
+    return obj
+
+
+def _without_probes(s: dict) -> dict:
+    return {**s, **{k: _drop_probes(s.get(k)) for k in ("requested", "executed", "evaluated", "observed")}}
+
+
+def blocked_hosts(s: dict) -> list[str]:
+    """Hosts the sandbox proxy refused during this step, isolation probes excluded."""
+    events = _find(s.get("evaluated"), "egress_events") or _find(s.get("executed"), "egress_events") or []
+    hosts = {e.get("host") for e in events if isinstance(e, dict) and e.get("decision") == "block" and not _is_probe(e)}
+    return sorted(hosts - {None, ""})
+
+
 def _attempt(s: dict) -> int | None:
     for k in ("requested", "observed", "executed"):
         v = s.get(k)
@@ -125,6 +154,7 @@ def redirects(obj) -> str:
 def classify(s: dict) -> tuple[str, str, str] | None:
     """(kind, title, detail) for a step that went wrong or was contained, else None."""
     kind, ev, d = s.get("kind"), s.get("event"), s.get("detail") or {}
+    s = _without_probes(s)
     text = _text(s)
     src = source_label(s)
     evald = _ev(s)
@@ -188,18 +218,25 @@ def classify(s: dict) -> tuple[str, str, str] | None:
     if any(w in text for w in BLOCK_WORDS):
         why = _find(s.get("evaluated"), "reason") or _find(s.get("executed"), "reason")
         allowed = _find(s.get("requested"), "allowed_domains")
+        hosts = blocked_hosts(s)
+        stored = _find(s.get("evaluated"), "bronze_objects")
         detail = " · ".join(
             str(x)
             for x in (
                 str(why).replace("_", " ") if why else None,
                 redirects([s.get("evaluated"), s.get("executed"), s.get("observed")]),
                 f"allowed: {', '.join(allowed)}" if isinstance(allowed, list) and allowed else None,
+                f"the page itself was captured ({stored} bronze objects)"
+                if isinstance(stored, int) and stored
+                else None,
             )
             if x
         )
         return (
             "blocked_domain",
-            f"Domain blocked · {src}",
+            f"Domain blocked · {', '.join(hosts[:3])}{' …' if len(hosts) > 3 else ''} (from {src})"
+            if hosts
+            else f"Domain blocked · {src}",
             detail or hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested")),
         )
     if ev == "escalation":
@@ -295,6 +332,9 @@ def job_row(job: dict, base: str, rid: str) -> dict:
     }
 
 
+RUN_WORDS = {"needs_human": "Run needs a person", "budget_stop": "Run stopped at its budget"}
+
+
 def model(case, run: str | None = None) -> dict:
     a = Artifacts(case)
     rid = hc.resolve_run(a, run)
@@ -304,13 +344,15 @@ def model(case, run: str | None = None) -> dict:
     jobs = a.jobs(rid)
     strips: list[dict] = []
     step_phase = {s.get("step_id"): s.get("phase") for s in steps if s.get("step_id")}
-    cause = hc.stop_cause(steps, status.get("state"), case.id, rid)
+    stopped = hc.stopped_state(status)
+    cause = hc.stop_cause(steps, stopped, case.id, rid)
     if cause:
         strips.append(
             {
                 "kind": "run_stop",
                 "state": "block",
-                "title": f"Run {status.get('state')}: phase {cause['phase']} loop stopped at the {cause['stop_label']}",
+                "title": f"{RUN_WORDS.get(stopped, f'Run {stopped}')}: phase {cause['phase']} loop stopped at the "
+                f"{cause['stop_label']}",
                 "detail": cause["objection"] or cause["text"],
                 "step_id": cause["step_id"],
                 "when": status.get("updated_at"),

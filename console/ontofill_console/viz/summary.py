@@ -111,7 +111,7 @@ def run_section(
         resumes = sum(1 for d in decisions if (d.get("decision") or "approve") == "approve")
         basis = "decisions.jsonl · status.json"
     stop: list[str] = []
-    cause = hc.stop_cause(steps, state, case.id, rid)
+    cause = hc.stop_cause(steps, hc.stopped_state(status) if state == status.get("state") else state, case.id, rid)
     if cause:
         stop.append(cause["text"] + (f" · last objection: {cause['objection']}" if cause["objection"] else ""))
     if status.get("reason"):

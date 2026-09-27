@@ -833,7 +833,10 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
         "checkpoint_pending": status.get("checkpoint_pending"),
         "run_reason": status.get("reason"),
         "stop_cause": hc.stop_cause(
-            steps, status.get("state") if status.get("state") in hc.STOPPED_STATES else runner["state"], case.id, rid
+            steps,
+            hc.stopped_state(status) if hc.stopped_state(status) in hc.STOPPED_STATES else runner["state"],
+            case.id,
+            rid,
         ),
         "moving": moving,
         "pending_approvals": case.pending,

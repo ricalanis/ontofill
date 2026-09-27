@@ -233,3 +233,67 @@ def test_wall_clock_stop_reads_as_a_time_limit():
     c = hc.stop_cause(steps, "failed", "c", "r")
     assert c["stop_label"] == "time limit"
     assert "its loop stopped at the time limit after 4 iterations" in c["text"]
+
+
+def test_a_phase_that_gives_up_pauses_and_still_explains_why(client, p3_gave_up):
+    """Live (run-a3f49f634dce): P3 found no authoritative source and the engine exited leaving status "paused" with no
+    checkpoint pending and a reason; only the runner said needs_human. /failures showed "Run stopped: 0" and /summary
+    had no loop cause. A reasoned pause with nothing to approve now reads as a stop."""
+    why = "sources unreachable (7 blocked/redirected/403); no authoritative source found for library_name"
+    set_status(p3_gave_up, state="paused", phase=3, reason=why, checkpoint_pending=None)
+    first = client.get(f"/cases/libraries/api/viz/failures?run={RUN}").json()["strips"][0]
+    assert first["kind"] == "run_stop" and first["title"].startswith("Run needs a person: phase 3 loop stopped")
+    stop = client.get(f"/cases/libraries/api/viz/summary?run={RUN}").json()["run"]["stop"]
+    assert any("iteration cap" in x for x in stop) and why in stop
+    c = next(x for x in client.get("/api/watch").json()["cases"] if x["case_id"] == "libraries")
+    assert c["stop_cause"]["phase"] == 3
+
+
+def test_a_checkpoint_pause_is_not_a_stop(client, p3_gave_up):
+    set_status(p3_gave_up, state="paused", phase=3, reason="waiting for approval: source", checkpoint_pending="source")
+    strips = client.get(f"/cases/libraries/api/viz/failures?run={RUN}").json()["strips"]
+    assert not any(s["kind"] == "run_stop" for s in strips)
+    assert hc.stopped_state({"state": "paused", "checkpoint_pending": "prd", "reason": "x"}) == "paused"
+    assert hc.stopped_state({"state": "paused"}) == "paused"
+
+
+def capture_step(n: int, egress: list[dict]) -> dict:
+    return {
+        "step_id": f"step:{RUN}:capture{n}",
+        "run_id": RUN,
+        "phase": 3,
+        "mode": "S1",
+        "source_id": f"source-cap{n}",
+        "requested": {"url": "https://portal.example/", "allowed_domains": ["portal.example"]},
+        "executed": {"network_request": True, "html_key": "sha256:" + "a" * 64},
+        "evaluated": {"bronze_objects": 3, "egress_events": egress},
+        "value_ids": [],
+        "ts": (T0 + timedelta(seconds=40 + n)).isoformat(),
+    }
+
+
+PROBE = {
+    "decision": "block",
+    "host": "ontofill-proof-denied-1a2b.invalid",
+    "method": "GET",
+    "reason": "domain_not_allowed",
+}
+OWN = {"decision": "allow", "host": "portal.example", "method": "CONNECT", "reason": "domain_allowed"}
+
+
+def test_the_isolation_probe_is_not_a_blocked_domain(client, cases_dir):
+    """Live (run-a3f49f634dce): 48 "Domain blocked · <the source's own host> · domain not allowed" strips, each naming
+    a host that was on its own allowlist. They were successful captures (3 bronze objects each): the only block was
+    the sandbox's isolation probe to *.invalid, which every capture makes on purpose. A real off-list request (a CDN)
+    now names that host and says the page itself was captured."""
+    cdn = {"decision": "block", "host": "cdn.thirdparty.example", "method": "CONNECT", "reason": "domain_not_allowed"}
+    with (run_dir(cases_dir) / "trace.live.jsonl").open("a") as f:
+        f.write(json.dumps(capture_step(1, [PROBE, OWN])) + "\n")
+        f.write(json.dumps(capture_step(2, [PROBE, OWN, cdn])) + "\n")
+    strips = client.get(f"/cases/libraries/api/viz/failures?run={RUN}").json()["strips"]
+    mine = [s for s in strips if "source-cap" in (s.get("title") or "")]
+    assert len(mine) == 1  # the probe-only capture is not a failure at all
+    s = mine[0]
+    assert s["kind"] == "blocked_domain"
+    assert s["title"].startswith("Domain blocked · cdn.thirdparty.example (from ")
+    assert "the page itself was captured (3 bronze objects)" in s["detail"] and ".invalid" not in s["detail"]
