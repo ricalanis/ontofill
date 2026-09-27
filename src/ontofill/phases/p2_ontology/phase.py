@@ -2035,7 +2035,7 @@ def _validate_queries(
         if query["aggregate"] == "entities_meeting_completeness":
             if criterion.get("min_ratio") is None:
                 raise ValueError(
-                    f"DoD criterion `{criterion['id']}` uses completeness without an approved "
+                    f"DoD criterion `{criterion['id']}`: completeness query requires an approved "
                     "PRD min_ratio"
                 )
             if query.get("min_ratio") != criterion["min_ratio"]:
