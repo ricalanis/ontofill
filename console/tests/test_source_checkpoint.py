@@ -167,3 +167,12 @@ def test_a_source_decision_records_the_running_run(cases_dir):
     assert decide(client(cases_dir)).status_code == 303
     assert json.loads((d / "APPROVED").read_text())["run_id"] == "run-live"
     assert log_lines(cases_dir)[-1]["run_id"] == "run-live"
+
+
+def test_same_host_redirects_are_not_repeated(cases_dir):
+    d = write_source_request(cases_dir)
+    c = json.loads((d / "candidate.json").read_text())
+    c["redirect_chain"] = ["http://www.regulator.example", "https://www.regulator.example/"]
+    (d / "candidate.json").write_text(json.dumps(c))
+    html = client(cases_dir).get(PAGE, headers=GROUPS).text
+    assert 'class="src-chain"' not in html and "same host only" in html
