@@ -81,6 +81,9 @@ def _recorded_case(tmp_path, *, duplicate_property_label: bool = False):
         )
     queries = dod_queries()
     write_lineage(case_dir, model, queries, RECORDED)
+    shape_path = case_dir / model["shacl_path"]
+    shape_path.parent.mkdir(parents=True, exist_ok=True)
+    shape_path.write_text("", encoding="utf-8")
     objectives_path = case_dir / "03-fanout/objectives.json"
     objectives = json.loads(objectives_path.read_text(encoding="utf-8"))
     objectives["objectives"][0]["source_type"] = "catalog"

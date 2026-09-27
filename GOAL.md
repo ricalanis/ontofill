@@ -28,7 +28,7 @@ Have `refine_case` rebuild current-ontology observations from successful trace-r
 
 DONE: `uv run pytest -q tests/test_bronze_replay.py tests/test_cli.py` proves a newly added property reaches gold through `refine_case`, replay lineage is persisted once without browsing, export runs once, and a failed export restores the original live trace.
 
-Status: workflow wiring is implemented, but its managed focused gate failed twice before reaching export. The integration fixtures omit the required `book-shape.ttl`; the live integration behavior and rollback remain unverified under the two-attempt guard.
+Status: the authorized successor managed gate passed 13 tests. The fixture now supplies the SHACL path, and the tests exercise bronze-only gold export, repeat-call trace idempotence, and trace restoration when export fails. No live case or browser run was involved.
 
 Constraints: replay only keys referenced by completed file-fetch trace steps; no network access or URL fetch; keep refiner/core.py, refiner/export.py, P5, console, browser-agent, case, and coordination files unchanged.
 
