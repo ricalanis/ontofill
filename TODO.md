@@ -608,6 +608,12 @@ FORMAT: `uv run ruff check` and `uv run ruff format --check` for the provider an
 3. [x] Run the managed focused DONE gate, record outcome, and commit locally for root integration; do not push or deploy.
    - `agent-progress run --task r48-ckan-anchor`: pass, 39 tests passed; Ruff check and format pass; `git diff --check` pass. Red baseline was recorded under `r48-ckan-anchor-red` with the three new assertions failing on current behavior.
 
+## R54 parse pod review fixes
+
+- [x] Reproduce wrong merged-PDF page and ZIP pod-runner refusal with three focused synthetic tests.
+- [x] Preserve each PDF row's page through merge and profiling; auto-detect ZIP into the bounded profiler and refuse ZIPs without supported tables.
+- [x] Run managed focused test/Ruff/diff gate and commit the owned paths locally for root integration: 40 passed, 2 skipped; Ruff lint/format and diff check passed.
+
 # R48 bounded query dispatch
 
 - [x] Add recorded tests for at-most-five dispatch, hierarchy-aware ontology themes, local/English variants, official namespace first pass, and new queries after tried plans.

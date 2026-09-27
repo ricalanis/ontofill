@@ -66,10 +66,7 @@ def test_xlsx_title_row_two_sheets_and_aggregate_verdict() -> None:
                 [
                     ["Directorio de proveedores 2026"],
                     ["RFC", "Razon Social", "Monto"],
-                    *[
-                        [f"XAXX01010{i}000", f"Proveedor {i} SA DE CV", 1000 + i]
-                        for i in range(6)
-                    ],
+                    *[[f"XAXX01010{i}000", f"Proveedor {i} SA DE CV", 1000 + i] for i in range(6)],
                 ],
             ),
             ("Resumen", [["Concepto", "Total"], ["Proveedores", 6], ["Monto", 6015]]),
@@ -208,6 +205,7 @@ def test_pdf_table_yields_refiner_rows_with_page_receipts() -> None:
 
     assert [row["RFC"] for row in entity] == ["XAXX010101000", "AAAA010101AAA"]
     assert entity[0]["receipt"]["page"] == 1
+    assert entity[1]["receipt"]["page"] == 2
     assert entity[1]["receipt"]["row_number"] == 3
     assert "table spans pages [1, 2]" in profile["tables"][0]["notes"]
     assert profile["row_receipts"] == 2
@@ -215,9 +213,7 @@ def test_pdf_table_yields_refiner_rows_with_page_receipts() -> None:
 
 def test_pod_runner_emits_the_profile_beside_rows(tmp_path: Path) -> None:
     runner = _load_pod_runner()
-    xlsx = make_xlsx(
-        [("S1", [["Title"], ["RFC", "Nombre"], ["XAXX010101000", "ACME SA DE CV"]])]
-    )
+    xlsx = make_xlsx([("S1", [["Title"], ["RFC", "Nombre"], ["XAXX010101000", "ACME SA DE CV"]])])
     envelope = {
         "kind": "xlsx",
         "max_rows": 100,
@@ -238,6 +234,56 @@ def test_pod_runner_emits_the_profile_beside_rows(tmp_path: Path) -> None:
     assert document["profile"]["format"] == "xlsx"
     assert document["profile"]["table_count"] == 1
     assert document["profile"]["tables"][0]["headers"] == ["RFC", "Nombre"]
+
+
+def test_pod_runner_profiles_auto_detected_zip_of_csv(tmp_path: Path) -> None:
+    runner = _load_pod_runner()
+    archive = make_zip(
+        {"records.csv": b"RFC,Name\nXAXX010101000,Example One\nAAAA010101AAA,Example Two\n"}
+    )
+    envelope = {
+        "kind": "auto",
+        "max_rows": 100,
+        "base_url": "",
+        "jurisdictions": ["MX"],
+        "payload": base64.b64encode(archive).decode("ascii"),
+    }
+    source = tmp_path / "input.json"
+    output = tmp_path / "output.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+
+    runner.run(source, output)
+
+    document = json.loads(output.read_text())
+    assert document["ok"] is True
+    assert document["kind"] == "zip"
+    assert document["rows"] == []
+    assert document["profile"]["format"] == "zip"
+    table = document["profile"]["tables"][0]
+    assert table["headers"] == ["RFC", "Name"]
+    assert table["columns"][0]["dominant_pattern"] == "tax_id_rfc"
+    assert document["profile"]["row_receipts"] == 2
+
+
+def test_pod_runner_rejects_zip_without_supported_tables(tmp_path: Path) -> None:
+    runner = _load_pod_runner()
+    archive = make_zip({"image.bin": b"\x00\x01\x02"})
+    envelope = {
+        "kind": "auto",
+        "max_rows": 100,
+        "base_url": "",
+        "payload": base64.b64encode(archive).decode("ascii"),
+    }
+    source = tmp_path / "input.json"
+    output = tmp_path / "output.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+
+    runner.run(source, output)
+
+    document = json.loads(output.read_text())
+    assert document["ok"] is False
+    assert document["error"]["code"] == "zip_no_supported_tables"
+    assert document["profile"] == {}
 
 
 def test_pod_runner_profile_failure_keeps_the_parse_contract(tmp_path: Path) -> None:

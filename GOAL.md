@@ -306,3 +306,10 @@ guarded VM pull plus parse-pod rebuild only while no engine process runs.
 FILES: `src/ontofill/sandbox/parse.py`, `tests/test_r54_profiler.py`,
 `sandbox/parse-pod/profiler/extract.py` (only if a proven receipt defect),
 `GOAL.md`, `TODO.md`.
+
+## R54 parse pod review fixes
+
+FILES: `sandbox/parse-pod/profiler/extract.py`, `sandbox/parse-pod/profiler/profiler.py`, `sandbox/parse-pod/runner.py`, `tests/test_r54_profiler.py`, `GOAL.md`, `TODO.md`.
+TASK: Keep actual PDF page receipts for merged tables and let the real pod runner profile bounded ZIP-of-CSV input while rejecting ZIPs without supported tables.
+DONE: The focused profiler test suite proves page 2 receipts, auto-detected ZIP profiles with jurisdiction patterns, and malformed/unsupported ZIP refusal; Ruff check/format and diff check pass.
+FORMAT: Ruff format on the owned Python files.

@@ -494,7 +494,7 @@ def _detect_document_format(data: bytes) -> str:
             raise ParseFailure("unknown_document_format") from None
         if "xl/workbook.xml" in names:
             return "xlsm" if "xl/vbaProject.bin" in names else "xlsx"
-        raise ParseFailure("unknown_document_format")
+        return "zip"
     try:
         text = prefix.decode("utf-8-sig").strip()
     except UnicodeDecodeError:
@@ -539,6 +539,9 @@ def _parse(
     if kind == "pdf":
         rows = _parse_pdf(data, max_rows)
         return rows, "\n".join(row["text"] for row in rows), "", [], None, False
+    if kind == "zip":
+        # Archive members are inspected by the bounded profiler in this pod.
+        return [], "", "", [], None, False
     if kind == "json_document":
         return [{"document": _parse_document(data)}], "", "", [], None, False
     raise ParseFailure("unsupported_format")
@@ -735,6 +738,8 @@ def run(input_path: Path, output_path: Path) -> None:
             forms = _parse_forms(payload)
             table_headers = _parse_table_headers(payload)
         profile = _safe_profile(payload, kind, envelope)
+        if kind == "zip" and not profile.get("table_count"):
+            raise ParseFailure("zip_no_supported_tables")
     except ParseFailure as exc:
         error = {"code": exc.code}
         if exc.message is not None:

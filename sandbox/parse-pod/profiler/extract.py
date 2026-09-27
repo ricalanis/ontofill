@@ -1,7 +1,8 @@
 """Format detection and table extraction feeding the document profiler.
 
-Every function returns ``(tables, structure)`` where each table is
-``(sheet_or_name, page_or_none, rows)``. All parsing is code-only and bounded.
+Every function returns ``(tables, structure)`` where each table starts with
+``(sheet_or_name, page_or_none, rows)``. PDF tables also carry row pages.
+All parsing is code-only and bounded.
 """
 
 from __future__ import annotations
@@ -106,9 +107,18 @@ def _pdf_tables(data: bytes) -> tuple[list[tuple], dict]:
         if number >= MAX_TABLES:
             break
     tables: list[tuple] = []
+    page_spans: dict[str, list[int]] = {}
     header: list[str] | None = None
     merged_pages: list[int] = []
     merged_rows: list[list[str]] = []
+    merged_row_pages: list[int] = []
+
+    def flush() -> None:
+        if merged_rows:
+            name = f"pages_{merged_pages[0]}"
+            tables.append((name, merged_pages[0], merged_rows, merged_row_pages))
+            page_spans[name] = merged_pages.copy()
+
     for number, rows in per_page:
         rows = [row for row in rows if any(cell.strip() for cell in row)]
         if not rows:
@@ -118,18 +128,19 @@ def _pdf_tables(data: bytes) -> tuple[list[tuple], dict]:
             # A repeated banner row: the table continues onto this page.
             merged_pages.append(number)
             merged_rows.extend(rows[1:])
+            merged_row_pages.extend([number] * (len(rows) - 1))
             continue
         if merged_rows or (header is not None):
-            tables.append((f"pages_{merged_pages[0]}", merged_pages[0], merged_rows))
+            flush()
         header = first
         merged_pages = [number]
         merged_rows = rows
-    if merged_rows:
-        tables.append((f"pages_{merged_pages[0]}", merged_pages[0], merged_rows))
+        merged_row_pages = [number] * len(rows)
+    flush()
     return tables, {
         "pages": len(reader.pages),
         "pages_with_text": pages_with_text,
-        "page_span": {name: merged_pages for name, _page, _rows in tables},
+        "page_span": page_spans,
     }
 
 
@@ -148,17 +159,26 @@ def _text_rows(text: str) -> list[list[str]]:
 def _zip_tables(data: bytes) -> tuple[list[tuple], dict]:
     tables = []
     members = []
+    bytes_read = 0
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         for index, name in enumerate(archive.namelist()):
-            if index >= MAX_ZIP_ENTRIES or name.endswith("/"):
+            if (
+                index >= MAX_ZIP_ENTRIES
+                or len(tables) >= MAX_TABLES
+                or bytes_read >= MAX_INPUT_BYTES
+            ):
+                break
+            if name.endswith("/"):
                 continue
             members.append(name)
             try:
-                inner = archive.read(name)
+                with archive.open(name) as member:
+                    inner = member.read(MAX_INPUT_BYTES - bytes_read + 1)
             except (OSError, RuntimeError, zipfile.BadZipFile):
                 continue
-            if len(inner) > MAX_INPUT_BYTES:
+            if len(inner) > MAX_INPUT_BYTES - bytes_read:
                 continue
+            bytes_read += len(inner)
             try:
                 fmt = detect_format(inner)
             except ProfileFailure:
@@ -223,7 +243,10 @@ def _xml_tables(data: bytes) -> tuple[list[tuple], dict]:
         parent = element.parent
         if parent is None:
             continue
-        values = {child.name: child.get_text(strip=True) for child in parent.find_all(True, recursive=False)}
+        values = {
+            child.name: child.get_text(strip=True)
+            for child in parent.find_all(True, recursive=False)
+        }
         if values:
             records.append(values)
         if len(records) >= MAX_ROWS:

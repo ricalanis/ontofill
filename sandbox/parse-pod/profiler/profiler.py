@@ -96,10 +96,7 @@ def _columns_from_rows(
     columns = []
     total = len(data_rows)
     for position, header in enumerate(headers):
-        values = [
-            _norm(row[position]) if position < len(row) else ""
-            for row in data_rows
-        ]
+        values = [_norm(row[position]) if position < len(row) else "" for row in data_rows]
         non_empty = [value for value in values if value]
         counter = Counter(non_empty)
         pattern_hits: Counter[str] = Counter()
@@ -175,6 +172,7 @@ def profile_table(
     *,
     sheet: str | None = None,
     page: int | None = None,
+    row_pages: list[int] | None = None,
     jurisdictions: tuple[str, ...] = (),
 ) -> TableProfile | None:
     """Profile one table: header row, per-column stats and a bounded sample."""
@@ -188,20 +186,24 @@ def profile_table(
         return None
     data_rows = rows[header_row + 1 :]
     notes = []
-    title_rows = [_norm(" ".join(_norm(cell) for cell in row if _norm(cell))) for row in rows[:header_row]]
+    title_rows = [
+        _norm(" ".join(_norm(cell) for cell in row if _norm(cell))) for row in rows[:header_row]
+    ]
     title_rows = [row for row in title_rows if row]
     if title_rows:
         notes.append(f"title rows above header: {title_rows[:2]}")
     # Drop repeated banner rows (multi-page PDF continuation).
     cleaned: list[list[Any]] = []
+    cleaned_pages: list[int | None] = []
     previous = headers
-    for row in data_rows:
+    for index, row in enumerate(data_rows, start=header_row + 1):
         cells = [_norm(value) for value in row]
         non_empty = [cell for cell in cells if cell]
         if non_empty and _is_multi_page_continuation(non_empty, previous):
             notes.append("repeated header row on a new page was removed")
             continue
         cleaned.append(row)
+        cleaned_pages.append(row_pages[index] if row_pages and index < len(row_pages) else page)
     columns = _columns_from_rows(headers, cleaned, jurisdictions)
     if any(_EMPTY.fullmatch(_norm(value)) for value in rows[0][header_row + 1 : header_row + 2]):
         notes.append("the first data row has an empty leading cell; merged headers are likely")
@@ -209,7 +211,11 @@ def profile_table(
     receipts = [
         {
             "row_number": header_row + 1 + index + 1,
-            "values": {header_names[position]: _norm(value) for position, value in enumerate(row[: len(headers)])},
+            "page": cleaned_pages[index],
+            "values": {
+                header_names[position]: _norm(value)
+                for position, value in enumerate(row[: len(headers)])
+            },
         }
         for index, row in enumerate(cleaned[:MAX_PROFILE_ROWS])
         if any(_norm(value) for value in row)
@@ -232,7 +238,7 @@ def profile_table(
 
 
 def profile_document(
-    tables: list[tuple[str | None, int | None, list[list[Any]]]],
+    tables: list[tuple],
     *,
     jurisdictions: tuple[str, ...] = (),
     page_spans: dict[str, list[int]] | None = None,
@@ -241,8 +247,12 @@ def profile_document(
     profiles = []
     total_rows = 0
     truncated = False
-    for sheet, page, rows in tables[:MAX_TABLES]:
-        profile = profile_table(rows, sheet=sheet, page=page, jurisdictions=jurisdictions)
+    for table in tables[:MAX_TABLES]:
+        sheet, page, rows = table[:3]
+        row_pages = table[3] if len(table) > 3 else None
+        profile = profile_table(
+            rows, sheet=sheet, page=page, row_pages=row_pages, jurisdictions=jurisdictions
+        )
         if profile is None:
             continue
         if page_spans and sheet in page_spans:
@@ -278,7 +288,7 @@ def entity_rows(profile: dict) -> list[dict]:
                     **receipt["values"],
                     "receipt": {
                         "sheet": table.get("sheet"),
-                        "page": table.get("page"),
+                        "page": receipt.get("page", table.get("page")),
                         "row_number": receipt["row_number"],
                         "headers": table.get("headers"),
                         "fingerprint": table.get("fingerprint"),
