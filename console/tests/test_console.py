@@ -78,3 +78,22 @@ def test_whoami_never_shows_header_values(make_client):
     assert "Signing as: (identity detected, value hidden)" in page and 'href="/whoami"' in page
     none = c.get("/api/whoami").json()
     assert none["identity_detected"] is False and none["used_header"] is None
+
+
+def test_case_without_gold_uses_its_run_feed_and_renders(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from ontofill_console import web
+
+    case = tmp_path / "c" / "case"
+    (case / "01-scope").mkdir(parents=True)
+    (case / "brief.md").write_text("# A paused case\n")
+    lake = tmp_path / "c" / "lake"
+    (lake / "runs" / "paused-case" / "run-1").mkdir(parents=True)
+    (lake / "runs" / "paused-case" / "latest.json").write_text('{"run_id": "run-1"}')
+    (lake / "runs" / "paused-case" / "run-1" / "status.json").write_text('{"run_id": "run-1", "state": "paused"}')
+    monkeypatch.setenv("ONTOFILL_CONSOLE_CASES", f"paused={case}:{lake}")
+    monkeypatch.setenv("ONTOFILL_CONSOLE_IDENTITY", "local")
+    client = TestClient(web.create_app())
+    assert client.get("/cases/paused").status_code == 200
+    assert client.get("/cases/paused/approvals").status_code == 200

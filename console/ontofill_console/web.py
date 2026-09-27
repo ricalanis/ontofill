@@ -61,7 +61,10 @@ class Case:
 
     @property
     def synthetic(self) -> bool:
-        return str(getattr(self.store, "case_id", "") or "").startswith("fixture")
+        try:
+            return str(getattr(self.store, "case_id", "") or "").startswith("fixture")
+        except LookupError:  # an unresolvable lake is not synthetic; the pages say what is missing instead
+            return False
 
 
 @dataclass

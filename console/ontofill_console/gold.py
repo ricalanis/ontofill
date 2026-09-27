@@ -220,8 +220,10 @@ class GoldStore:
 
     def _detect_case_id(self) -> str:
         cases = self.source.list_dirs("gold")
+        if not cases:  # no gold published yet: a case paused at a checkpoint still has its run feed under runs/
+            cases = self.source.list_dirs("runs")
         if len(cases) != 1:
-            raise LookupError(f"set case_id in lake.yaml: found {len(cases)} cases under gold/ in {self.source!r}")
+            raise LookupError(f"set case_id in lake.yaml: found {len(cases)} cases under gold/ or runs/ in {self.source!r}")
         return cases[0]
 
     @property
