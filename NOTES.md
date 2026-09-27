@@ -91,3 +91,15 @@ Changed paths:
  M tests/test_inference.py
  M tests/test_scope_thresholds.py
 <!-- agent-session-state:end -->
+
+# R3 integration gate, 2026-09-26
+
+The first full gate after merging the controller seam failed in three recorded
+outer-loop fixtures. Their synthetic page now reaches the P5 file path, but one
+fixture omitted its fake fetch, and reopened passes exhausted the single
+recorded download-choice response. The page URL was therefore sent to the
+contained fetch pod or lacked a recorded choice. The dead hypothesis was that
+the existing loop fixtures already covered every P5 pass. The fixtures now
+provide the fake fetch and one choice per expected pass. The next full gate
+must verify this correction and the R3 code together; if it fails, stop under
+the two-attempt rule.

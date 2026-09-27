@@ -23,6 +23,9 @@ def _run_library_case(tmp_path, *, target: int, reopen: list[dict] | None = None
     decision.responses["phase2.dod_queries"][0]["queries"][0]["target"] = target
     if reopen:
         decision.responses["outer.gap_decision"] = deque(reopen)
+        decision.responses["phase5.select_download"].extend(
+            deepcopy(decision.responses["phase5.select_download"][0]) for _ in reopen
+        )
         if any(item["reopen"] == 4 for item in reopen):
             decision.responses["phase4.local_scope"].append(
                 deepcopy(decision.responses["phase4.local_scope"][0])

@@ -742,7 +742,7 @@ def test_workflow_publishes_loop_and_outer_reopen_skips_known_sources(tmp_path) 
     from collections import deque
 
     from ontofill.workflow import _scratch_case, run_case
-    from tests.genericity.test_library_workflow import _capture
+    from tests.genericity.test_library_workflow import _capture, _fetch
 
     case = tmp_path / "case"
     case.mkdir()
@@ -757,6 +757,7 @@ def test_workflow_publishes_loop_and_outer_reopen_skips_known_sources(tmp_path) 
             {"reopen": None, "reason": "Stop after one extra discovery round"},
         ]
     )
+    decision.responses["phase5.select_download"].append({"index": 0})
     url = "https://libraries.example.test/branches"
     provider = StaticProvider("synthetic", _all_urls(("name", "free_internet", "opening_hours")))
     loop, capture = _loop(tmp_path, [provider], {url: PAGE.format(title="Branches")})
@@ -768,6 +769,7 @@ def test_workflow_publishes_loop_and_outer_reopen_skips_known_sources(tmp_path) 
         preview_past_checkpoints=True,
         search_client=loop,
         capture=_capture,
+        fetch=_fetch,
     )
     assert code == 3
     assert capture.calls == [url]  # the reopened round never re-captures a known source
