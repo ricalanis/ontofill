@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ontofill import workflow
 from ontofill.phases.p3_fanout.leads import CkanLeadProvider, JsonCache
 from ontofill.workflow import _SandboxCkanJsonFetcher
 
@@ -70,3 +71,38 @@ def test_ckan_fetcher_rejects_host_escape_before_dispatch() -> None:
     with pytest.raises(ValueError, match="approved catalog endpoint"):
         fetcher("https://other.example.test/api/3/action/package_search", "catalog.example.test")
     assert calls == []
+
+
+def test_live_ckan_uses_byte_fetch_and_publishes_trace_once(monkeypatch) -> None:
+    fetched_calls = []
+    published = []
+    trace = {"step_id": "step:ckan-fetch", "evaluated": {"status": "captured"}}
+
+    def fetch(url, **kwargs):
+        fetched_calls.append((url, kwargs))
+        kwargs["on_trace"](trace)
+        return {"bronze_key": "sha256:" + "a" * 64, "trace": [trace]}
+
+    monkeypatch.setattr(workflow, "fetch_url", fetch)
+    fetcher, published_ids = workflow._ckan_fetcher_with_live_trace(
+        lake=object(),
+        run_id="mock-ckan-run",
+        provenance={"backend": "recorded", "model": "fixture", "at": "2026-09-26T12:00:00Z"},
+        publish=published.append,
+    )
+    fetcher.parse = lambda *args, **kwargs: SimpleNamespace(
+        document={"success": True, "result": {"results": []}},
+        trace=(),
+        job_record={"job_id": "job:ckan-parse"},
+    )
+
+    payload = fetcher(
+        "https://catalog.example.test/api/3/action/package_search?q=parks", "catalog.example.test"
+    )
+
+    assert payload["success"] is True
+    assert fetched_calls[0][1]["include_bytes"] is False
+    assert fetched_calls[0][1]["allowed_domains"] == ["catalog.example.test"]
+    assert published == [trace]
+    assert published_ids == {"step:ckan-fetch"}
+    assert fetcher.trace == [trace]

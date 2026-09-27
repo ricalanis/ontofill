@@ -501,6 +501,26 @@ def _capture_with_live_trace(
     return traced_capture, published_ids
 
 
+def _ckan_fetcher_with_live_trace(
+    *,
+    lake: FileLake,
+    run_id: str,
+    provenance: Mapping[str, str],
+    publish: Callable[[dict], None],
+) -> tuple[_SandboxCkanJsonFetcher, set[str]]:
+    """CKAN JSON uses the contained D0 byte fetch, never browser capture."""
+    traced_fetch, published_ids = _capture_with_live_trace(fetch_url, publish)
+    return (
+        _SandboxCkanJsonFetcher(
+            lake=lake,
+            run_id=run_id,
+            provenance=provenance,
+            fetch=traced_fetch,
+        ),
+        published_ids,
+    )
+
+
 def _publish_decision_calls(
     feed: RunFeed,
     trace: list[dict],
@@ -1196,10 +1216,19 @@ def run_case(
             if from_phase <= 3:
                 feed.update_status(state="running", phase=3)
             streamed_capture_step_ids: set[str] = set()
+            streamed_fetch_step_ids: set[str] = set()
             if search_client is None:
                 trace_capture, streamed_capture_step_ids = _capture_with_live_trace(
                     capture or capture_url,
                     lambda step: feed.append_step(step, screenshot_key=step.get("screenshot_key")),
+                )
+                ckan_fetcher, streamed_fetch_step_ids = _ckan_fetcher_with_live_trace(
+                    lake=lake,
+                    run_id=run_id,
+                    provenance=provenance,
+                    publish=lambda step: feed.append_step(
+                        step, screenshot_key=step.get("screenshot_key")
+                    ),
                 )
                 remaining_budget_usd = _remaining_budget_usd(decision, budget_usd)
                 providers = []
@@ -1214,12 +1243,7 @@ def run_case(
                         decision,
                         remaining_budget_usd=remaining_budget_usd,
                         search_client=lead_search,
-                        fetch_json=_SandboxCkanJsonFetcher(
-                            lake=lake,
-                            run_id=run_id,
-                            provenance=provenance,
-                            fetch=trace_capture,
-                        ),
+                        fetch_json=ckan_fetcher,
                     ),
                     capture=trace_capture,
                     lake=lake,
@@ -1257,7 +1281,8 @@ def run_case(
                     [
                         step
                         for step in fresh_trace
-                        if step.get("step_id") not in streamed_capture_step_ids
+                        if step.get("step_id")
+                        not in streamed_capture_step_ids | streamed_fetch_step_ids
                     ],
                 )
                 trace.extend(fresh_trace)
