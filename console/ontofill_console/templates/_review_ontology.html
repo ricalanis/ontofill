@@ -16,8 +16,10 @@
   <div class="taxonomy">
     <h3>{{ tax.root_label }} <span class="mono muted">factor {{ tax.factor_id }}</span></h3>
     <dl class="tax-stats">
-      <div><dt>Soundness</dt><dd class="mono">{{ "%.2f"|format(tax.soundness) }}</dd></div>
-      <div><dt>Coverage</dt><dd class="mono">{{ "%.2f"|format(tax.coverage) }}</dd></div>
+      {# R10: coverage (and possibly soundness) may be null until entities are classified; never format a null #}
+      {% set basis = tax.coverage_basis or tax.basis %}
+      <div><dt>Soundness</dt><dd class="mono">{% if tax.soundness is number %}{{ "%.2f"|format(tax.soundness) }}{% else %}— <span class="muted">not yet assessed</span>{% endif %}</dd></div>
+      <div><dt>Coverage</dt><dd class="mono">{% if tax.coverage is number %}{{ "%.2f"|format(tax.coverage) }}{% else %}— <span class="muted">not yet classified</span>{% endif %}{% if basis %} <span class="muted">· basis: {{ basis }}</span>{% endif %}</dd></div>
       <div><dt>Nodes by level</dt><dd class="mono">{% for lv, n in st.levels.items() %}L{{ lv }}: {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</dd></div>
       <div><dt>Critic</dt><dd>{% for label, n in st.critic.items() %}<span class="critic critic--{{ label }}">{{ CRITIC.get(label, label) }} {{ n }}</span> {% endfor %}</dd></div>
     </dl>
