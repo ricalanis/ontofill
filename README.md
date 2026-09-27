@@ -22,8 +22,12 @@ which also states where each case stands.
   per-session tokens, attributes every call to a run and step, and screens captured page text before it reaches a
   model. The console's Inference view shows each call and its provider.
 - **Containment.** A hostile page (prompt injection plus attempts to reach the metadata IP) is quarantined and
-  flagged, and a destructive extractor loop is killed by its cell's limits with the host untouched
+  flagged, and an extractor that runs `rm -rf /` and then loops forever
+  (`sandbox/fixtures/destructive_loop.py`) is killed by its cell's limits with a host sentinel intact
   (`tools/containment`, recorded run in the console).
+- **Pattern B vision verification.** A Vultr vision model (`qwen3.8-27b`) judges a sandboxed browser cell's
+  screenshot against the step goal: proven live in a controller session. The case runs so far used document and
+  page capture, so their traces show no vision steps yet.
 - **Pattern A, self-healing extractors.** The engine writes an extractor and runs it in a networkless cell against
   stored captures. Live runs show both halves: a passing extractor promoted to a versioned macro, and a failing one
   whose output diff is fed back for a patch and retry, then escalated to the browser after the attempt cap.
