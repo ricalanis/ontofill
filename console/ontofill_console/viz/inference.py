@@ -358,6 +358,28 @@ def _actor_names(s: dict) -> list[str]:
     return out
 
 
+RUNNER_LABEL = "ontofill-runner (control plane)"
+RUNNER_KINDS = ("start_requested", "started", "resumed", "paused_at_checkpoint", "paused", "unpaused", "killed",
+                "budget_stop", "failed", "done")
+
+
+def _runner_events(case_id: str, rid: str | None) -> list[dict]:
+    """What the runner (R18) did for this case and run, from its own append-only events.jsonl (read-only)."""
+    from .. import runner_state
+
+    root = runner_state.state_dir()
+    if not root.is_dir():
+        return []
+    out = []
+    for e in runner_state.events(root, limit=5000):
+        if not isinstance(e, dict) or e.get("case_id") != case_id or e.get("kind") not in RUNNER_KINDS:
+            continue
+        if rid and e.get("run_id") and e.get("run_id") != rid:
+            continue
+        out.append({"ts": e.get("ts"), "kind": e.get("kind"), "detail": e.get("detail"), "run_id": e.get("run_id")})
+    return out
+
+
 def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
     status = a.status(rid) if rid else {}
     runner = status.get("runner") or status.get("resumed_by") or status.get("orchestrated_by")
@@ -365,6 +387,9 @@ def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
         runner_label = " · ".join(str(runner[k]) for k in ("id", "host", "resumed_at") if runner.get(k)) or "engine runner"
     else:
         runner_label = str(runner) if runner else None
+    runner_events = _runner_events(a.case.id, rid)
+    if runner_events and not runner_label:
+        runner_label = RUNNER_LABEL  # R18: the control-plane service that starts and resumes runs (no model calls)
     harness, humans_in_run = [], []
     for s in steps:
         names = _actor_names(s)
@@ -393,7 +418,7 @@ def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
             if steps and not harness else
             f"{len(harness)} harness action{'s' if len(harness) != 1 else ''} inside this run" if harness else
             "No steps to check yet")
-    return {"runner": runner_label, "runner_known": bool(runner_label),
+    return {"runner": runner_label, "runner_known": bool(runner_label), "runner_events": runner_events,
             "engine_label": runner_label or "engine runner (the run does not name its runner yet)",
             "n_engine_steps": n_engine, "harness": harness, "n_harness": len(harness), "harness_line": line,
             "humans_in_run": humans_in_run, "decisions": decisions}

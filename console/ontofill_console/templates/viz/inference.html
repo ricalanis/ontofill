@@ -120,6 +120,11 @@
   <section class="panel">
     <h3>The engine</h3>
     <dl class="kv"><dt>Runner</dt><dd>{{ m.actors.engine_label }}</dd><dt>Steps</dt><dd class="mono">{{ m.actors.n_engine_steps }} of {{ m.n_steps }}</dd></dl>
+    {% if m.actors.runner_events %}
+    <div class="table-wrap"><table class="grid-table"><caption class="source">what the runner did for this run · /runner/events.jsonl · the runner makes no model calls</caption>
+      <thead><tr><th scope="col">When (UTC)</th><th scope="col">Runner</th><th scope="col">Why</th></tr></thead>
+      <tbody>{% for e in m.actors.runner_events %}<tr><td class="mono">{{ (e.ts or "")[:19]|replace("T", " ") }}</td><td>{{ e.kind|replace("_", " ") }}</td><td>{{ e.detail or "—" }}</td></tr>{% endfor %}</tbody></table></div>
+    {% endif %}
     <p class="inf-line {{ 'is-bad' if m.actors.n_harness else 'is-good' }}">{{ m.actors.harness_line }}</p>
     {% if m.actors.harness %}
     <div class="table-wrap"><table class="grid-table"><thead><tr><th scope="col">Step</th><th scope="col">Actor</th><th scope="col">Requested</th></tr></thead>
