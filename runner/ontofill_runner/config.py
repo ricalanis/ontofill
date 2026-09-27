@@ -33,6 +33,10 @@ class Config:
     default_case_usd: float = 2.0
     gateway_log: Path | None = None
     kill_grace_s: float = 30.0
+    cases_root: Path | None = None  # CONTRACT v1.0.6: <root>/cases.json, the data-driven registry (re-read every tick)
+    env_cases: dict[str, CaseSpec] = field(default_factory=dict)  # ONTOFILL_CONSOLE_CASES fallback
+    env_budgets: dict[str, float] = field(default_factory=dict)
+    to_phases: dict[str, int] = field(default_factory=dict)
     stale_running_s: float = 90.0  # a lake status "running" older than this is not a live engine
 
 
@@ -81,4 +85,37 @@ def config_from_env(env: dict[str, str] | None = None) -> Config:
         default_case_usd=float(env.get("ONTOFILL_RUNNER_DEFAULT_CASE_USD") or 2.0),
         gateway_log=path("ONTOFILL_RUNNER_GATEWAY_LOG"),
         kill_grace_s=float(env.get("ONTOFILL_RUNNER_KILL_GRACE_S") or 30),
+        cases_root=path("ONTOFILL_CASES_ROOT"),
+        env_cases=parse_cases(env.get("ONTOFILL_CONSOLE_CASES", "")),
+        env_budgets=parse_budgets(env.get("ONTOFILL_RUNNER_BUDGETS")),
     )
+
+
+ID_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def load_registry(root: Path) -> tuple[dict[str, CaseSpec], dict[str, float], dict[str, int]]:
+    """Read <root>/cases.json (CONTRACT v1.0.6): active (non-archived) cases, their budgets and to_phase defaults.
+    Paths are absolute (migrated cases) or relative to the root; a relative path must resolve inside the root.
+    Raises ValueError/OSError on a missing or malformed file (the caller keeps its last good copy)."""
+    import json
+
+    doc = json.loads((root / "cases.json").read_text(encoding="utf-8"))
+    cases: dict[str, CaseSpec] = {}
+    budgets: dict[str, float] = {}
+    phases: dict[str, int] = {}
+    root_real = root.resolve()
+    for item in doc.get("cases") or []:
+        cid = str(item.get("id") or "")
+        if not ID_RE.match(cid) or item.get("archived"):
+            continue
+        raw = Path(str(item.get("path") or ""))
+        case_dir = raw if raw.is_absolute() else (root / raw)
+        if not raw.is_absolute() and root_real not in case_dir.resolve().parents:
+            continue  # a relative path escaping the root is ignored
+        cases[cid] = CaseSpec(cid, case_dir)
+        if isinstance(item.get("budget_usd"), (int, float)):
+            budgets[cid] = float(item["budget_usd"])
+        if isinstance(item.get("to_phase"), int):
+            phases[cid] = int(item["to_phase"])
+    return cases, budgets, phases
