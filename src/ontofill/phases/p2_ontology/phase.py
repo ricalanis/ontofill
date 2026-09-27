@@ -1232,9 +1232,21 @@ def _review_ontology_semantics(
         except (ValidationError, ValueError) as exc:
             errors.append(str(exc))
 
+    rule_error = None
+    try:
+        _review_rule_semantics(ontology, decision)
+    except OntologyProposalErrors as exc:
+        rule_error = exc
+    except (ValidationError, ValueError) as exc:
+        errors.append(str(exc))
     if errors:
+        # A rule-only mismatch is salvageable; a simultaneous core or relation
+        # defect is not. Keep every critic result in the retry feedback.
+        if rule_error is not None:
+            errors.append(str(rule_error))
         raise ValueError("; ".join(errors))
-    _review_rule_semantics(ontology, decision)
+    if rule_error is not None:
+        raise rule_error
     return relation_counts
 
 

@@ -126,10 +126,11 @@ def test_p2_exhaustion_pauses_run_with_three_attempt_steps(tmp_path, monkeypatch
         to_phase=2,
     )
 
-    assert code == 3
+    assert code == workflow.NEEDS_HUMAN_EXIT
     status = json.loads(lake.read_key(f"runs/case/{run_id}/status.json"))
     assert status["state"] == "paused"
-    assert status["checkpoint_pending"] == "factors"
+    assert status["checkpoint_pending"] is None
+    assert "factor IDs must be unique" in status["reason"]
     trace = [
         json.loads(line)
         for line in lake.read_key(f"runs/case/{run_id}/trace.live.jsonl").splitlines()
