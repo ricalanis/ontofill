@@ -291,6 +291,89 @@ def test_synthetic_biff_respects_row_limit_without_partial_rows() -> None:
         _PARSER._parse(payload, "xls", 1, "")
 
 
+def test_malformed_biff_diagnostic_is_bounded_and_recorded_without_payload_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    secret_marker = b"AWS_SECRET_ACCESS_KEY=synthetic-leak API_TOKEN=synthetic-leak"
+    payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + secret_marker
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+
+    class MalformedBiffExecutor(FakeExecutor):
+        def run(self, payload_bytes, *, kind, format, max_rows, base_url, limits):
+            input_path = tmp_path / "parse-input.json"
+            output_path = tmp_path / "parse-output.json"
+            input_path.write_text(
+                json.dumps(
+                    {
+                        "kind": kind,
+                        "max_rows": max_rows,
+                        "base_url": base_url,
+                        "payload": base64.b64encode(payload_bytes).decode("ascii"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            _PARSER.run(input_path, output_path)
+            self.output = json.loads(output_path.read_text(encoding="utf-8"))
+            return super().run(
+                payload_bytes,
+                kind=kind,
+                format=format,
+                max_rows=max_rows,
+                base_url=base_url,
+                limits=limits,
+            )
+
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(payload, {"content_type": "application/vnd.ms-excel"})
+
+    with pytest.raises(SandboxParseError, match="invalid_xls") as raised:
+        parse_bronze(
+            lake,
+            key,
+            format="xls",
+            run_id="mock-malformed-xls",
+            source_id="source:synthetic-xls-download",
+            generated_by=PROVENANCE,
+            executor=MalformedBiffExecutor(),
+        )
+
+    record = raised.value.job_record
+    task_result = record["checkpoints"]["task"]["result"]
+    message = task_result["message"]
+    assert task_result["reason"] == "invalid_xls"
+    assert message.startswith("Legacy XLS workbook could not be opened by xlrd (")
+    assert message.endswith(").")
+    assert len(message) <= 160
+    assert record["outcome"]["reason"] == f"invalid_xls: {message}"
+    assert len(record["checkpoints"]) == 6
+    assert raised.value.trace[0]["executed"]["message"] == message
+    assert raised.value.trace[0]["evaluated"]["reason"] == message
+    receipts = json.dumps({"job": record, "trace": raised.value.trace})
+    assert secret_marker.decode("ascii") not in receipts
+    assert "AWS_SECRET_ACCESS_KEY" not in receipts
+    assert "API_TOKEN" not in receipts
+    assert "synthetic-leak" not in receipts
+    assert payload.hex() not in receipts
+    assert (
+        parse_module._safe_parse_diagnostic(
+            {
+                "error": {
+                    "code": "invalid_xls",
+                    "message": "Legacy XLS workbook could not be opened by xlrd (SecretToken).",
+                }
+            }
+        )
+        is None
+    )
+
+
 def test_file_lake_uses_docker_file_staging_without_python_byte_reads(tmp_path: Path, monkeypatch):
     lake = FileLake(tmp_path / "lake")
     payload = b"synthetic staged bytes"

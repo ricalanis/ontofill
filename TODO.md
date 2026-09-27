@@ -421,3 +421,13 @@ FILES: `sandbox/parse-pod/runner.py`, `sandbox/parse-pod/Dockerfile`, `src/ontof
 TASK: Add bounded legacy `.xls` BIFF parsing from bronze inside the runsc pod only, with explicit and auto detection, preserving six-checkpoint proof and default runsc refusal.
 DONE: parent composed gate passed 52 tests/2 skips; full engine gate passed 541 tests/5 skips, Ruff lint, engine-owned format, lock and diff checks. Attempt 1 was the expected parser red baseline; attempt 2 needed a narrow Ruff BLE001 annotation, verified in the composed gate.
 FORMAT: Ruff format for changed Python files.
+
+
+## R40 malformed XLS parse diagnostics
+
+1. [x] Add a synthetic malformed-BIFF regression that exercises the pod runner and checks code, diagnostic bounds, secret/raw-byte absence, and all six receipt checkpoints. The red baseline failed at the expected missing `message` field.
+2. [x] Emit stage-specific safe diagnostic text from the pod and validate/propagate only the bounded format through the adapter into task outcome and trace. The stable task reason remains `invalid_xls`; the job outcome includes the code prefix plus safe detail.
+3. [ ] Run the managed focused test/Ruff/format/diff gate, inspect the owned diff, and commit only the allowed paths and task notes. Record exact command, result, and SHA here.
+
+Managed check: `agent-progress run --task r40-parse-error --paths sandbox/parse-pod/runner.py,src/ontofill/sandbox/parse.py,tests/test_sandbox_parse.py --check malformed-biff-diagnostic --strategy bounded-stage-diagnostic-without-payload-text --hypothesis 'A malformed synthetic BIFF workbook keeps invalid_xls as its stable task reason and emits bounded safe diagnostic text in its six-checkpoint job and task trace, without leaking raw bytes or secret-like text.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && git diff --check'`
+Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2 passed 26 tests, skipped 2 containment tests, and passed Ruff lint, format, and `git diff --check`.

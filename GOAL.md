@@ -154,3 +154,12 @@ Wrap all captured page content sent to P3/P5 and page-derived repair stderr in s
 DONE R9b: `uv run pytest -q tests/test_r9b_prompt_screening.py tests/test_pattern_a.py tests/test_inference.py` and Ruff check/format for the edited engine and test files.
 
 Constraints: synthetic-only prompts and tokens; no secrets, console/browser-agent edits, coordination status updates, pushes, merges, or deployment.
+
+
+# Current task: R40 malformed XLS parse diagnostics
+
+When malformed legacy BIFF reaches the isolated parser pod, preserve its stable failure code and add bounded, safe diagnostic text to the six-checkpoint task/job receipts and task trace.
+
+DONE (passed): `agent-progress run --task r40-parse-error --paths sandbox/parse-pod/runner.py,src/ontofill/sandbox/parse.py,tests/test_sandbox_parse.py --check malformed-biff-diagnostic --strategy bounded-stage-diagnostic-without-payload-text --hypothesis 'A malformed synthetic BIFF workbook keeps invalid_xls as its stable task reason and emits bounded safe diagnostic text in its six-checkpoint job and task trace, without leaking raw bytes or secret-like text.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && git diff --check'` passed: 26 passed, 2 skipped; Ruff lint, format, and diff checks clean. Attempt 1 was the expected red baseline at the missing diagnostic field.
+
+Constraints: own only the parse-pod runner, sandbox parse adapter, focused synthetic tests, and task notes. Do not touch P5/source review, R36 TLS, PA-owned files, real case/APPROVED, secrets, VM, or deployment. Commit locally; root integrates.

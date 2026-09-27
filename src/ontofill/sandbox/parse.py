@@ -34,6 +34,29 @@ _MAX_ROWS = 10_000
 _MAX_DOCUMENT_ITEMS = 100_000
 _POD_DIRECTORY = Path(__file__).resolve().parents[3] / "sandbox/parse-pod"
 _IMAGE_LOCK = threading.Lock()
+_SAFE_XLS_EXCEPTION_TYPES = frozenset(
+    {
+        "AssertionError",
+        "AttributeError",
+        "CompDocError",
+        "EOFError",
+        "IndexError",
+        "KeyError",
+        "ModuleNotFoundError",
+        "OSError",
+        "OverflowError",
+        "ParserError",
+        "TypeError",
+        "UnicodeDecodeError",
+        "ValueError",
+        "XLRDError",
+        "error",
+    }
+)
+_SAFE_PARSE_DIAGNOSTIC = re.compile(
+    r"Legacy XLS (?:workbook could not be opened|worksheet could not be decoded) "
+    r"by xlrd \(([A-Za-z][A-Za-z0-9_]{0,47})\)\."
+)
 
 
 @dataclass(frozen=True)
@@ -703,6 +726,7 @@ def _result(
         reason = (
             str(error.get("code", "parse_error")) if isinstance(error, Mapping) else "parse_error"
         )
+    diagnostic = _safe_parse_diagnostic(output) if reason == "invalid_xls" else None
     detected_kind = output.get("kind", kind)
     result_format = format
     if format == "auto":
@@ -825,6 +849,7 @@ def _result(
             "dom_skeleton_hash": result.dom_skeleton_hash,
         },
         limits=limits,
+        diagnostic=diagnostic,
     )
     if not task_ok:
         raise SandboxParseError(reason or "parse failed", job_record=record, trace=trace)
@@ -845,6 +870,19 @@ def _result(
         job_record=record,
         challenge_detected=result.challenge_detected,
     )
+
+
+def _safe_parse_diagnostic(output: Mapping[str, Any]) -> str | None:
+    error = output.get("error")
+    if not isinstance(error, Mapping) or error.get("code") != "invalid_xls":
+        return None
+    message = error.get("message")
+    if not isinstance(message, str) or len(message) > 160:
+        return None
+    match = _SAFE_PARSE_DIAGNOSTIC.fullmatch(message)
+    if match is None or match.group(1) not in _SAFE_XLS_EXCEPTION_TYPES:
+        return None
+    return message
 
 
 def _valid_form_record(value: object) -> bool:
@@ -903,6 +941,7 @@ def _job_and_trace(
     request: dict[str, Any],
     result: dict[str, Any],
     limits: SandboxLimits,
+    diagnostic: str | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     host = execution.host
     pod = execution.pod
@@ -936,6 +975,8 @@ def _job_and_trace(
     task_result = {**result, "status": "parsed" if task_ok else "failed"}
     if reason:
         task_result["reason"] = reason
+    if diagnostic:
+        task_result["message"] = diagnostic
     isolation_checkpoint = _isolation_checkpoint(isolation)
     secret_checkpoint = _secrets_checkpoint(secrets)
     teardown_detail = {
@@ -964,7 +1005,13 @@ def _job_and_trace(
         },
         "outcome": {
             "status": "completed" if task_ok else "failed",
-            **({"reason": reason} if isinstance(reason, str) and reason else {}),
+            **(
+                {
+                    "reason": f"{reason}: {diagnostic}" if diagnostic else reason,
+                }
+                if isinstance(reason, str) and reason
+                else {}
+            ),
         },
         "checkpoints": {
             "host": host_checkpoint,
@@ -1035,6 +1082,9 @@ def _trace_rows(
     )
     rows = []
     for index, (checkpoint, requested, executed, status) in enumerate(checkpoints):
+        evaluated = {"status": status, "proof_checkpoint": checkpoint}
+        if checkpoint == "task" and isinstance(result.get("message"), str):
+            evaluated["reason"] = result["message"]
         rows.append(
             {
                 "step_id": context["step_id"] if index == 0 else f"step:{uuid.uuid4().hex}",
@@ -1047,7 +1097,7 @@ def _trace_rows(
                 "observed": {"proof_checkpoint": checkpoint},
                 "requested": requested,
                 "executed": executed,
-                "evaluated": {"status": status, "proof_checkpoint": checkpoint},
+                "evaluated": evaluated,
                 "parent_step_id": None if index == 0 else context["step_id"],
                 "value_ids": [],
                 "ts": context["started_at"],

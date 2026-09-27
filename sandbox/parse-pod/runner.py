@@ -50,6 +50,25 @@ _SECRET_MARKERS = (
     "AWS_",
     "JEV_",
 )
+_SAFE_XLS_EXCEPTION_TYPES = frozenset(
+    {
+        "AssertionError",
+        "AttributeError",
+        "CompDocError",
+        "EOFError",
+        "IndexError",
+        "KeyError",
+        "ModuleNotFoundError",
+        "OSError",
+        "OverflowError",
+        "ParserError",
+        "TypeError",
+        "UnicodeDecodeError",
+        "ValueError",
+        "XLRDError",
+        "error",
+    }
+)
 _SENSITIVE_FIELD = re.compile(
     r"(?i)(?:password|secret|token|credential|authorization|bearer|csrf|session)"
 )
@@ -57,9 +76,10 @@ _SEARCH_FORM_CUE = re.compile(r"(?i)\b(?:search|find|lookup|look up|query)\b")
 
 
 class ParseFailure(ValueError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, message: str | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.message = message
 
 
 def _json_no_constants(value: str) -> None:
@@ -176,11 +196,22 @@ def _open_xls(data: bytes) -> tuple[Any, Any]:
     return xlrd, xlrd.open_workbook(file_contents=data, on_demand=True)
 
 
+def _xls_failure_message(stage: str, error: Exception) -> str:
+    stage_label = {
+        "open": "Legacy XLS workbook could not be opened by xlrd",
+        "decode": "Legacy XLS worksheet could not be decoded by xlrd",
+    }[stage]
+    error_type = type(error).__name__
+    if error_type not in _SAFE_XLS_EXCEPTION_TYPES:
+        error_type = "ParserError"
+    return f"{stage_label} ({error_type})."
+
+
 def _parse_xls(data: bytes, max_rows: int) -> list[dict[str, Any]]:
     try:
         xlrd, workbook = _open_xls(data)
-    except Exception:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
-        raise ParseFailure("invalid_xls") from None
+    except Exception as exc:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
+        raise ParseFailure("invalid_xls", message=_xls_failure_message("open", exc)) from None
 
     rows: list[dict[str, Any]] = []
     total_rows = 0
@@ -212,8 +243,8 @@ def _parse_xls(data: bytes, max_rows: int) -> list[dict[str, Any]]:
                     rows.append(_row(sheet.name, row_index + 1, values))
     except ParseFailure:
         raise
-    except Exception:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
-        raise ParseFailure("invalid_xls") from None
+    except Exception as exc:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
+        raise ParseFailure("invalid_xls", message=_xls_failure_message("decode", exc)) from None
     finally:
         workbook.release_resources()
     return rows
@@ -681,6 +712,8 @@ def run(input_path: Path, output_path: Path) -> None:
             table_headers = _parse_table_headers(payload)
     except ParseFailure as exc:
         error = {"code": exc.code}
+        if exc.message is not None:
+            error["message"] = exc.message
     except Exception as exc:  # noqa: BLE001 - all input parsing is confined to this pod
         error = {"code": "parse_error", "exception": type(exc).__name__}
     finally:

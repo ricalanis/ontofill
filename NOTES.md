@@ -415,3 +415,12 @@ Read-only findings before edits: `_robot_state` currently treats only 404 as una
 Selected strategy: model each robots response with `robots_status` (`available`, `unavailable`, `rate_limited`, `unreachable`, `redirect`, or `invalid`), keep the existing `decision` field as the actual allow/disallow/stop decision, and add the status as an optional additive site-graph property so old v1.0.3 artifacts remain valid. Tests use synthetic injected fetch responses and graph fixtures only. No live crawl is part of this task; SAT verification waits for the no-engine window.
 
 The managed red baseline failed 11 new assertions: ordinary 4xx stopped before fetching pages (except pre-existing 404 handling), no robots status was present, and the graph dropped the normalized status. After implementation, the same task/check/strategy passed 31 focused tests, Ruff lint/format, JSON schema parsing, and `git diff --check`. No live request was made.
+
+
+# R40 malformed XLS parse diagnostics (2026-09-27)
+
+Strategy: keep `invalid_xls` as the stable task reason; have the pod emit a fixed-format message that names only the parser stage and exception class, never `str(exc)` or workbook-derived text. The adapter accepts only that exact bounded message pattern before putting it in task results and task trace. Preserve six proof checkpoints and return no partial rows. Do not change the schema in this ownership slice; `jobs.schema.json` forbids extra outcome fields, so include safe diagnostic text in the existing outcome reason after the stable code prefix.
+
+Assumptions: exception class names come from trusted parser/runtime types and are checked against a short identifier allowlist; malformed synthetic bytes include recognizable secret-looking markers so a leak is detectable; known limit codes such as `max_rows_exceeded` remain unchanged and need no additional detail. Existing `.xls` parsing is already on this branch through ancestor `e76d552`; do not cherry-pick it again.
+
+Diagnostic limit: the receipt identifies the failure stage and exception family (for example, OLE/container open versus workbook or worksheet decode) but intentionally omits `str(exc)`, which may quote bytes from a corrupt workbook. It may not distinguish two details within the same exception family, such as unsupported versus corrupt BIFF. If that distinction is needed, map known safe xlrd phrases to fixed labels and keep the original exception string out of receipts.
