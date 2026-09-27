@@ -32,6 +32,14 @@ def test_cli_contract_arguments() -> None:
     assert run.preview_past_checkpoints is True
 
 
+def test_refine_help_describes_trace_bounded_bronze_replay(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "trace-referenced bronze files" in help_text
+
+
 def test_cells_serve_reads_env_and_stops_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     from ontofill.sandbox import cell_api
 

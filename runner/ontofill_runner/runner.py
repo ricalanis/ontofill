@@ -151,6 +151,12 @@ class Runner:
         self.refresh_cases()
         killed = self.state.killed
         glob = self.global_spent()
+        if glob is not None:  # the number the global cap is enforced on, published every tick for the console
+            for cid in self.cfg.cases:
+                st = self.state.status(cid)
+                if st.get("spent_usd_global") != round(glob, 4) or "spent_usd_global_basis" not in st:
+                    self.state.set_status(cid, spent_usd_global=round(glob, 4),
+                                          spent_usd_global_basis="gateway call log, every principal and session")
         for cid in self.cfg.cases:
             try:
                 self._reap(cid)

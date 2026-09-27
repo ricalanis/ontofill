@@ -140,6 +140,7 @@ def case_runner(root: Path, case_id: str, evs: list[dict], ok: bool) -> dict:
             "running_since": st.get("running_since"), "last_started_at": st.get("last_started_at"),
             "last_resumed_at": st.get("last_resumed_at"), "updated_at": st.get("updated_at"),
             "spent_usd_case": _num(st.get("spent_usd_case")), "spent_usd_global": _num(st.get("spent_usd_global")),
+            "spent_usd_global_basis": st.get("spent_usd_global_basis"),
             "last_trigger": st.get("last_trigger"), "last_resume": ev(resume), "last_event": ev(last),
             "_status": st}
 
@@ -569,6 +570,24 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
     return out
 
 
+def _fallback_global(spends: list[dict]) -> tuple[float | None, str | None]:
+    """While the runner isn't reporting: the same measure it enforces the cap on (every principal and session in the
+    gateway call log), else the sum of the cases' priced trace steps (which reads lower). Always labelled."""
+    try:
+        from .inference import load_log
+
+        log = load_log()
+    except Exception:  # noqa: BLE001 — no log module or an unreadable mount: fall through to the traces
+        log = {}
+    if log.get("mounted"):
+        total = sum(float(r.get("est_usd") or 0) for r in log.get("records") or [] if isinstance(r, dict))
+        return round(total, 6), "gateway call log, every principal (runner not reporting)"
+    if any(s.get("case_usd") is not None for s in spends):
+        return (round(sum(s.get("case_usd") or 0 for s in spends), 6),
+                "sum of the cases' traces (runner not reporting; reads lower than the gateway log)")
+    return None, None
+
+
 # the page -----------------------------------------------------------------------------------------------------------
 def model(settings, now: datetime | None = None, stale_min: float = STALE_MIN, env: dict | None = None) -> dict:
     now = now or datetime.now(UTC)
@@ -578,6 +597,11 @@ def model(settings, now: datetime | None = None, stale_min: float = STALE_MIN, e
     cases = [case_model(c, root, rover, now, stale_min, env) for c in settings.cases.values()]
     g = [c["spend"] for c in cases]
     gl_usd = max((s["global_usd"] for s in g if s["global_usd"] is not None), default=None)
+    basis = next((c["runner"].get("spent_usd_global_basis") for c in cases
+                  if isinstance(c.get("runner"), dict) and c["runner"].get("spent_usd_global_basis")), None)
+    gl_basis = f"runner spent_usd_global ({basis})" if basis else "runner spent_usd_global"
+    if gl_usd is None:
+        gl_usd, gl_basis = _fallback_global(g)
     gl_cap = next((s["global_cap_usd"] for s in g if s["global_cap_usd"] is not None), None)
     for s in g:  # the gateway-wide figure is one number: the newest the runner reported for any case
         s["global_usd"] = gl_usd
@@ -592,7 +616,8 @@ def model(settings, now: datetime | None = None, stale_min: float = STALE_MIN, e
         lm["poll_ms"] = POLL_MS
     runner = {k: v for k, v in rover.items() if k != "events"}
     return {"generated_at": _iso(now), "stale_min": stale_min, "live": lm, "runner": runner,
-            "global_spend": {"global_usd": gl_usd, "global_cap_usd": gl_cap, "burn_usd_per_h": gl_burn,
+            "global_spend": {"global_usd": gl_usd, "global_basis": gl_basis if gl_usd is not None else None,
+                             "global_cap_usd": gl_cap, "burn_usd_per_h": gl_burn,
                              "projection": projection(gl_usd, gl_cap, gl_burn, now)},
             "cases": cases, "attention": items, "n_attention": len(items),
             "n_stale": sum(1 for c in cases if c["liveness"]["stale"]),

@@ -19,7 +19,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--budget-usd", type=float)
     run.add_argument("--preview-past-checkpoints", action="store_true")
 
-    refine = commands.add_parser("refine", help="Rebuild silver and gold from stored bronze")
+    refine = commands.add_parser(
+        "refine", help="Rebuild silver and gold from trace-referenced bronze files"
+    )
     refine.add_argument("case_dir", type=Path)
     refine.add_argument("--run-id")
 

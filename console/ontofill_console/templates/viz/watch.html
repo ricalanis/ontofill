@@ -106,7 +106,7 @@
       <dl class="kv wt-kv">
         <dt>Burn</dt><dd class="mono">{% if s.burn_usd_per_h is not none %}{{ usd(s.burn_usd_per_h, 3) }} USD/h ({{ usd(s.burn_window_usd, 3) }} over {{ (s.burn_window_h * 60)|round|int }} min){% elif c.moving %}no priced step in the last hour{% else %}not running{% endif %}</dd>
         <dt>Cap hit</dt><dd class="mono">{% if s.case_projection.hours == 0 %}cap reached{% elif s.projected_cap_hit_at %}{{ s.projected_cap_hit_at[:16]|replace("T", " ") }} UTC (in {{ age((s.case_projection.hours * 3600)|round|int) }}){% elif s.case_cap_usd %}no projection (no burn){% else %}unknown: no case cap visible{% endif %}</dd>
-        <dt>Basis</dt><dd>{{ s.case_basis or "no priced step yet" }}{% if s.priced_steps %} · {{ s.priced_steps }} priced steps{% endif %}; case cap {{ s.case_cap_basis or "not visible to the console (ONTOFILL_RUNNER_BUDGETS / _DEFAULT_CASE_USD)" }}; global cap {{ s.global_cap_basis or "not visible (ONTOFILL_RUNNER_GLOBAL_USD)" }}</dd>
+        <dt>Basis</dt><dd>{{ s.case_basis or "no priced step yet" }}{% if s.priced_steps %} · {{ s.priced_steps }} priced steps{% endif %}; case cap {{ s.case_cap_basis or "not visible to the console (ONTOFILL_RUNNER_BUDGETS / _DEFAULT_CASE_USD)" }}; global cap {{ s.global_cap_basis or "not visible (ONTOFILL_RUNNER_GLOBAL_USD)" }}{% if m.global_spend.global_basis %}; global spend: {{ m.global_spend.global_basis }}{% endif %}</dd>
       </dl>
     </section>
 
@@ -155,7 +155,7 @@
   <dl class="kv">
     <dt class="mono">generated_at, stale_min</dt><dd>when the model was computed (UTC); the STALE threshold in minutes</dd>
     <dt class="mono">runner</dt><dd>on, killed, state_dir_ok, state_dir, last_write_at, last_write_age_s, n_events</dd>
-    <dt class="mono">global_spend</dt><dd>global_usd, global_cap_usd, burn_usd_per_h (sum of case burns), projection{remaining_usd, hours, at}</dd>
+    <dt class="mono">global_spend</dt><dd>global_usd, global_basis, global_cap_usd, burn_usd_per_h (sum of case burns), projection{remaining_usd, hours, at}</dd>
     <dt class="mono">cases[]</dt><dd>case_id, title, run_id, n_runs, run_state, phase, checkpoint_pending, run_reason, moving, pending_approvals, lake_error, links{case, run, operation, failures, inference, cost, output, approvals, inbox}</dd>
     <dt class="mono">cases[].runner</dt><dd>seen, state (idle | running | waiting_approval | paused | killed | budget_stop | failed | done), run_id, checkpoint, reason, paused, pid, running_since, last_started_at, last_resumed_at, updated_at, spent_usd_case, spent_usd_global, last_trigger, last_resume{ts, kind, run_id, detail}, last_event{…}</dd>
     <dt class="mono">cases[].liveness</dt><dd>last_step_at, last_step_age_s, status_updated_at, status_age_s, runner_age_s, says_running, quiet_s, stale, stale_min</dd>
