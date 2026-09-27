@@ -280,8 +280,10 @@ class Runner:
         if child.stop_reason == "killed":  # interrupted, not answered: lifting the switch resumes it
             self._transition(cid, "killed", "stopped by the kill switch", run_id=run_id, pid=None, last_trigger=None)
         elif child.stop_reason == "budget_stop":
+            self._usd_cache.pop((cid, run_id), None)  # the run just grew: re-read its trace for the final spend
             self._transition(cid, "budget_stop", "stopped: budget reached", run_id=run_id, pid=None,
-                             reason="budget reached while running", last_trigger=None)
+                             reason="budget reached while running", last_trigger=None,
+                             spent_usd_case=round(self.case_spent(cid, run_id), 4))
         elif rc == PAUSED_EXIT:
             lstatus = self.lake(cid).status(run_id) or {}
             cp = lstatus.get("checkpoint_pending")

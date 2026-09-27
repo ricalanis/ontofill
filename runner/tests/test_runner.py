@@ -150,7 +150,8 @@ def test_running_child_crossing_the_budget_is_stopped(setup, monkeypatch):
     r.poll_once()
     time.sleep(0.5)
     run_until_idle(r, timeout=8)
-    assert r.state.status("c1")["state"] == "budget_stop"
+    st = r.state.status("c1")
+    assert st["state"] == "budget_stop" and st["spent_usd_case"] >= 1.0  # the final spend, not the launch-time value
 
 
 def test_lock_prevents_a_second_child(setup, monkeypatch):
