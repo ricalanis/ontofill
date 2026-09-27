@@ -385,3 +385,16 @@ FILES: `src/ontofill/`, `packages/ontofill-scrape/`, `pyproject.toml`, `uv.lock`
 TASK: Run one source end to end using discovered sources and evidence-backed gold values.
 DONE: local synthetic and real-brief mock check above; live check remains pending credentials and approvals and cannot be replaced by recorded metrics.
 FORMAT: `uv run ruff check . && uv run ruff format --check .`.
+# R40 legacy XLS parser
+
+- [x] Add a synthetic BIFF workbook and failing bronze-to-parse-pod tests for explicit `xls`, auto-detection, distinct XLSX handling, six-checkpoint output, row limits, and missing-runsc refusal.
+  - `DONE`: managed red attempt 1 failed exactly where expected: explicit `xls` was rejected by adapter validation; auto detection classified OLE BIFF as unknown; and the `.xls` no-runsc case was rejected before Docker preflight for the same adapter reason. The other 21 parser tests passed and 2 containment tests were skipped.
+- [x] Add pinned `xlrd` to the networkless parse-pod image and dev test group; parse BIFF in the pod and add adapter format validation without an in-process legacy parser.
+- [x] Run managed attempt 2 for the focused DONE gate; record the exact failure and stop under the two-attempt rule.
+  - `DONE`: 25 parser tests passed and 2 containment tests were skipped; Ruff then reported BLE001 on the three fail-closed malformed BIFF/OLE catches. Root authorized narrow suppressions and will verify the composed branch; this worktree has no green managed DONE result.
+- [ ] Commit the isolated parser patch and report SHA/checks/risks to root; do not push or deploy.
+
+FILES: `sandbox/parse-pod/runner.py`, `sandbox/parse-pod/Dockerfile`, `src/ontofill/sandbox/parse.py`, `pyproject.toml`, `uv.lock`, `tests/test_sandbox_parse.py`, synthetic BIFF fixture, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Add bounded legacy `.xls` BIFF parsing from bronze inside the runsc pod only, with explicit and auto detection, preserving six-checkpoint proof and default runsc refusal.
+DONE: managed tests prove BIFF parses as `xls` through the pod runner, XLSX stays distinct, runsc refusal is unchanged, and Ruff/lock/diff checks pass. Attempt 1 (red baseline) failed at the expected adapter/detection cases; no implementation gate has run yet.
+FORMAT: Ruff format for changed Python files.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -221,6 +222,73 @@ def test_parse_auto_detects_extensionless_octet_stream_csv_in_pod(tmp_path: Path
     assert result.format == "csv"
     assert result.rows[0]["values"] == ["record_key", "established_on"]
     assert result.rows[1]["values"] == ["rec-01", "2001-04-03"]
+
+
+@pytest.mark.parametrize("requested_format", ["xls", "auto"])
+def test_synthetic_biff_parses_in_pod(tmp_path: Path, requested_format: str) -> None:
+    from tests.r17_helpers import SyntheticParseExecutor
+
+    lake = FileLake(tmp_path / "lake")
+    payload = (Path(__file__).parent / "fixtures" / "r40_synthetic.xls").read_bytes()
+    key = lake.put_bytes(payload, {"content_type": "application/octet-stream"})
+
+    result = parse_bronze(
+        lake,
+        key,
+        format=requested_format,
+        max_rows=12,
+        run_id="mock-xls-parse",
+        source_id="source:synthetic-xls-download",
+        generated_by=PROVENANCE,
+        executor=SyntheticParseExecutor(),
+    )
+
+    assert result.format == "xls"
+    assert [row["sheet"] for row in result.rows] == ["Synthetic records"] * 2
+    assert result.rows[0]["values"] == ["record_id", "amount", "as_of"]
+    assert result.rows[1]["values"] == ["SYN-01", 12.5, "2001-04-03T00:00:00"]
+    assert set(result.job_record["checkpoints"]) == {
+        "host",
+        "task",
+        "where",
+        "isolation",
+        "secrets",
+        "teardown",
+    }
+    assert len(result.trace) == 6
+
+
+def test_parse_auto_keeps_ooxml_xlsx_distinct(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    from tests.r17_helpers import SyntheticParseExecutor
+
+    workbook = Workbook()
+    workbook.active.append(["record_id", "amount"])
+    workbook.active.append(["SYN-XLSX-01", 4.5])
+    output = io.BytesIO()
+    workbook.save(output)
+
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(output.getvalue(), {"content_type": "application/octet-stream"})
+    result = parse_bronze(
+        lake,
+        key,
+        format="auto",
+        executor=SyntheticParseExecutor(),
+    )
+
+    assert result.format == "xlsx"
+    assert result.rows[1]["values"] == ["SYN-XLSX-01", 4.5]
+
+
+def test_synthetic_biff_respects_row_limit_without_partial_rows() -> None:
+    from tests.r17_helpers import _PARSER
+
+    payload = (Path(__file__).parent / "fixtures" / "r40_synthetic.xls").read_bytes()
+
+    with pytest.raises(_PARSER.ParseFailure, match="max_rows_exceeded"):
+        _PARSER._parse(payload, "xls", 1, "")
 
 
 def test_file_lake_uses_docker_file_staging_without_python_byte_reads(tmp_path: Path, monkeypatch):
@@ -654,9 +722,24 @@ def test_docker_executor_cleans_up_after_runtime_start_timeout(monkeypatch) -> N
     assert result.teardown["verified"] is True
 
 
-def test_default_parser_refuses_when_runsc_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("requested_format", "payload_kind"),
+    [
+        ("csv", "csv"),
+        ("xls", "xls"),
+    ],
+    ids=["csv", "xls"],
+)
+def test_default_parser_refuses_when_runsc_is_unavailable(
+    monkeypatch, tmp_path: Path, requested_format: str, payload_kind: str
+) -> None:
     lake = FileLake(tmp_path / "lake")
-    key = lake.put_bytes(b"name,value\nExample 01,42\n")
+    payload = (
+        b"name,value\nExample 01,42\n"
+        if payload_kind == "csv"
+        else (Path(__file__).parent / "fixtures" / "r40_synthetic.xls").read_bytes()
+    )
+    key = lake.put_bytes(payload)
     calls: list[tuple[str, ...]] = []
 
     def no_runsc(*args, **_kwargs):
@@ -672,7 +755,7 @@ def test_default_parser_refuses_when_runsc_is_unavailable(monkeypatch, tmp_path:
         parse_bronze(
             lake,
             key,
-            format="csv",
+            format=requested_format,
             run_id="mock-no-runsc",
             source_id="source:synthetic",
             generated_by=PROVENANCE,

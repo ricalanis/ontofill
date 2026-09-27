@@ -25,9 +25,9 @@ from ontofill.sandbox.capture import CaptureError, DockerTimeout, _docker
 from ontofill.sandbox.jobs import validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
-ParseFormat = Literal["csv", "xlsx", "xlsm", "html", "json", "pdf", "auto"]
+ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "auto"]
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_SUPPORTED_FORMATS = frozenset({"csv", "xlsx", "xlsm", "html", "json", "pdf", "auto"})
+_SUPPORTED_FORMATS = frozenset({"csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "auto"})
 _MAX_INPUT_BYTES = 8 * 1024 * 1024
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_ROWS = 10_000
@@ -706,7 +706,7 @@ def _result(
     detected_kind = output.get("kind", kind)
     result_format = format
     if format == "auto":
-        if detected_kind not in {"csv", "xlsx", "xlsm", "json", "pdf"}:
+        if detected_kind not in {"csv", "xls", "xlsx", "xlsm", "json", "pdf"}:
             task_ok = False
             reason = "parse_pod_returned_invalid_detected_format"
         else:

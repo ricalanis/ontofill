@@ -38,6 +38,7 @@ MAX_FORM_TEXT_CHARS = 160
 MAX_TABLES = 40
 MAX_TABLE_HEADERS = 30
 MAX_FORMAT_SNIFF_BYTES = 64 * 1024
+_OLE_COMPOUND_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _SECRET_MARKERS = (
     "API_KEY",
     "SECRET",
@@ -165,6 +166,56 @@ def _parse_xlsx(data: bytes, max_rows: int) -> list[dict[str, Any]]:
                     rows.append(_row(sheet.title, number, values))
     finally:
         workbook.close()
+    return rows
+
+
+def _open_xls(data: bytes) -> tuple[Any, Any]:
+    """Lazily open legacy BIFF bytes with the parse pod's xlrd dependency."""
+    import xlrd
+
+    return xlrd, xlrd.open_workbook(file_contents=data, on_demand=True)
+
+
+def _parse_xls(data: bytes, max_rows: int) -> list[dict[str, Any]]:
+    try:
+        xlrd, workbook = _open_xls(data)
+    except Exception:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
+        raise ParseFailure("invalid_xls") from None
+
+    rows: list[dict[str, Any]] = []
+    total_rows = 0
+    total_cells = 0
+    try:
+        for sheet_index in range(workbook.nsheets):
+            sheet = workbook.sheet_by_index(sheet_index)
+            if sheet.nrows > max_rows - total_rows:
+                raise ParseFailure("max_rows_exceeded")
+            total_rows += sheet.nrows
+            for row_index in range(sheet.nrows):
+                if total_cells + sheet.ncols > MAX_DOCUMENT_ITEMS:
+                    raise ParseFailure("document_item_limit")
+                total_cells += sheet.ncols
+                values: list[Any] = []
+                for cell in sheet.row(row_index):
+                    if cell.ctype in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}:
+                        value = None
+                    elif cell.ctype == xlrd.XL_CELL_DATE:
+                        value = xlrd.xldate_as_datetime(cell.value, workbook.datemode)
+                    elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                        value = bool(cell.value)
+                    elif cell.ctype == xlrd.XL_CELL_ERROR:
+                        value = xlrd.error_text_from_code.get(int(cell.value), "#ERROR!")
+                    else:
+                        value = cell.value
+                    values.append(value)
+                if any(value is not None and value != "" for value in values):
+                    rows.append(_row(sheet.name, row_index + 1, values))
+    except ParseFailure:
+        raise
+    except Exception:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
+        raise ParseFailure("invalid_xls") from None
+    finally:
+        workbook.release_resources()
     return rows
 
 
@@ -387,9 +438,23 @@ def _parse_pdf(data: bytes, max_rows: int) -> list[dict[str, Any]]:
 
 def _detect_document_format(data: bytes) -> str:
     """Infer a bounded supported format from document bytes inside the parse pod."""
+    if len(data) > MAX_INPUT_BYTES:
+        raise ParseFailure("input_too_large")
     prefix = data[:MAX_FORMAT_SNIFF_BYTES]
     if prefix.startswith(b"%PDF-"):
         return "pdf"
+    if prefix.startswith(_OLE_COMPOUND_SIGNATURE):
+        try:
+            _xlrd, workbook = _open_xls(data)
+            try:
+                if workbook.nsheets < 1:
+                    raise ValueError("workbook has no sheets")
+                workbook.sheet_by_index(0)
+            finally:
+                workbook.release_resources()
+        except Exception:  # noqa: BLE001 - malformed OLE input must be rejected by the pod
+            raise ParseFailure("unknown_document_format") from None
+        return "xls"
     if prefix.startswith(b"PK\x03\x04"):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -431,6 +496,8 @@ def _parse(
         raise ParseFailure("input_too_large")
     if kind == "csv":
         return _parse_csv(data, max_rows), "", "", [], None, False
+    if kind == "xls":
+        return _parse_xls(data, max_rows), "", "", [], None, False
     if kind in {"xlsx", "xlsm"}:
         return _parse_xlsx(data, max_rows), "", "", [], None, False
     if kind == "html":

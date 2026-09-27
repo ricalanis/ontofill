@@ -27,7 +27,7 @@ dependencies = [
 ontofill = "ontofill.cli.main:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.12"]
+dev = ["pytest>=8.3", "ruff>=0.12", "xlrd==2.0.2"]
 
 [tool.uv.workspace]
 members = ["packages/ontofill-scrape"]
