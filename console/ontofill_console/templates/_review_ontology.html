@@ -32,7 +32,7 @@
   <div class="two-lists">
     <div>
       <h3>Classes</h3>
-      <table class="ledger"><tbody>{% for c in onto.classes %}<tr><th scope="row" class="mono">{{ c.id }}</th><td>{% if safe_url(c.aligned_to) %}<a href="{{ c.aligned_to }}" target="_blank" rel="noopener">{{ c.aligned_to }}</a>{% else %}{{ c.aligned_to }}{% endif %}</td></tr>{% endfor %}</tbody></table>
+      <table class="ledger"><tbody>{% for c in onto.classes %}<tr><th scope="row" class="mono">{{ c.id }}</th><td>{% if c.label %}{{ c.label }}{% endif %}{% if c.description %}<br><span class="muted">{{ c.description }}</span>{% endif %}{% if not c.label and not c.description %}—{% endif %}</td><td>{% if c.aligned_to and safe_url(c.aligned_to) %}<a href="{{ c.aligned_to }}" target="_blank" rel="noopener">{{ c.aligned_to.rsplit("/", 1)[-1] }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table>
     </div>
     <div>
       <h3>Properties</h3>

@@ -252,6 +252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
+    env.finalize = lambda v: "" if v is None else v  # an absent value never prints as the Python "None"
     env.globals.update(host_of=host_of, safe_url=safe_url, role="approver")
     env.filters["pct"] = lambda x: f"{round((x or 0) * 100)}%"
     env.filters["money"] = lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else (x or "—")
