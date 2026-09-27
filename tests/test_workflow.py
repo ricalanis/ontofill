@@ -8,8 +8,10 @@ import uuid
 import pytest
 
 from ontofill.lake import FileLake
+from ontofill.phases.p1_scope.phase import PrdDraftUnavailable
 from ontofill.phases.p3_fanout.authority import source_fingerprint
 from ontofill.workflow import (
+    NEEDS_HUMAN_EXIT,
     _capture_with_live_trace,
     _persisted_run_trace,
     _preview_decision,
@@ -49,6 +51,47 @@ def test_capture_trace_bridge_publishes_during_capture_and_deduplicates_result()
     assert events == ["published", "capture-returned"]
     assert result["page_trace"] == [step]
     assert published_ids == {step["step_id"]}
+
+
+def test_exhausted_prd_validation_needs_human_without_empty_approval(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    case = tmp_path / "tracked-case"
+    case.mkdir()
+    (case / "brief.md").write_text("Find public reading rooms in Example City.\n")
+    run_id = "mock-" + uuid.uuid4().hex
+    objections = (
+        "Authority policy needs a primary publisher in the case jurisdiction; "
+        "trusted domain is a broad namespace"
+    )
+
+    def exhausted(*_args, **_kwargs):
+        raise PrdDraftUnavailable(
+            f"phase1.prd failed validation after 3 attempts: {objections}",
+            purpose="phase1.prd",
+            attempts=3,
+            reason=objections,
+        )
+
+    monkeypatch.setattr("ontofill.workflow.draft_prd", exhausted)
+    result = run_case(case, run_id=run_id, decision=_preview_decision("Public reading rooms"))
+
+    assert result == NEEDS_HUMAN_EXIT
+    scratch, lake = _scratch_case(case, run_id)
+    assert not (scratch / "01-scope/prd.json").exists()
+    assert not (scratch / "01-scope/APPROVAL_PENDING.md").exists()
+    status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
+    assert status["state"] == "paused"
+    assert status["checkpoint_pending"] is None
+    assert "primary publisher" in status["reason"]
+    assert "broad namespace" in status["reason"]
+    trace = [
+        json.loads(line)
+        for line in lake.read_key(f"runs/{case.name}/{run_id}/trace.live.jsonl").splitlines()
+    ]
+    pause = next(step for step in trace if step["requested"].get("tool") == "phase1.prd.pause")
+    assert pause["evaluated"]["status"] == "needs_human"
+    assert "needs_human=true" in capsys.readouterr().out
 
 
 def test_retained_auto_source_is_rechecked_against_revised_authority_policy(tmp_path) -> None:

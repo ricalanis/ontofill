@@ -1,3 +1,15 @@
+# Urgent P1 validation-exhausted state
+
+FILES: `src/ontofill/workflow.py`, `tests/test_workflow.py`, GOAL/TODO/status.
+TASK: report exhausted P1 validator objections as needs-human, with no empty PRD approval checkpoint.
+DONE: recorded test and budget-path compatibility, full gate, pre-push scan and guarded VM deploy.
+FORMAT: Ruff and clean diff.
+
+1. [x] Reproduce the empty waiting-approval state with a failing recorded test.
+2. [x] Pause needs-human with validator reasons, preserve the distinct budget marker.
+3. [ ] Integrate the P1 clause/jurisdiction/patch preservation fix from its scoped worker.
+4. [ ] Run full gate, scan, push and deploy under a fresh zero-engine guard.
+
 # Urgent P3 no-provider stall with R48 anchor integration
 
 FILES: `src/ontofill/phases/p3_fanout/{discovery_loop,leads}.py`, synthetic P3 tests, GOAL/TODO/status.

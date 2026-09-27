@@ -999,11 +999,29 @@ def run_case(
                 reason = _model_pause_reason(
                     prd_pause_error, getattr(decision, "call_log", [])[prd_call_start:]
                 )
+                validation_exhausted = (
+                    isinstance(prd_pause_error, ModelValidationExhausted)
+                    or prd_pause_error.purpose == "phase1.prd"
+                )
                 step = _trace_step(run_id, 1, provenance, "phase1.prd.pause", "01-scope/prd.json")
-                step["evaluated"] = {"status": "paused", "reason": reason}
+                step["evaluated"] = {
+                    "status": "needs_human" if validation_exhausted else "paused",
+                    "reason": reason,
+                    **(
+                        {"reason_code": "model_validation_exhausted"}
+                        if validation_exhausted
+                        else {}
+                    ),
+                }
                 _publish_steps(feed, [step])
                 trace.append(step)
-                feed.update_status(state="paused", phase=1, checkpoint_pending="prd", reason=reason)
+                checkpoint = None if validation_exhausted else "prd"
+                feed.update_status(
+                    state="paused", phase=1, checkpoint_pending=checkpoint, reason=reason
+                )
+                if validation_exhausted:
+                    print(f"state=paused phase=1 reason={reason} needs_human=true")
+                    return NEEDS_HUMAN_EXIT
                 print(f"state=paused checkpoint_pending=prd reason={reason}")
                 return 3
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")

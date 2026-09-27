@@ -1,4 +1,12 @@
-# Current goal: stop idle P3 dispatch and ship R48 primary-entity discovery anchor
+# Current goal: make exhausted PRD validation decidable
+
+When P1 cannot validate a PRD after its bounded model attempts, the run must
+pause as `needs_human` with the validator objections and no empty PRD approval
+checkpoint. The distinct budget-before-draft path retains its budget marker.
+DONE: a red-to-green recorded workflow test, full pytest/Ruff/diff gate, public
+push, and guarded zero-engine VM deploy together with the reviewed P1 redraft fix.
+
+# Prior goal: stop idle P3 dispatch and ship R48 primary-entity discovery anchor
 
 The stopped live run repeated P3 decisions without a provider call. P3 must pause
 with a specific reason on the first iteration that cannot dispatch a provider,
