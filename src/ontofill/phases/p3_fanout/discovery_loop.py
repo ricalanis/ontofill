@@ -80,7 +80,9 @@ _DOCUMENT_MIME_FORMAT = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
 }
-_DATASET_FILE_SUFFIXES = frozenset({".csv", ".xls", ".xlsx", ".zip", ".json"})
+_DATASET_FILE_SUFFIXES = frozenset(
+    {".csv", ".xls", ".xlsx", ".zip", ".json", ".jsonl", ".jsonl.gz"}
+)
 _STATIC_ASSET_SUFFIXES = frozenset(
     {
         ".css",
@@ -133,6 +135,22 @@ _API_ENDPOINT_CUE = re.compile(
 _NON_DATA_LINK_CUE = re.compile(
     r"\b(?:press|news|release|blog|prensa|comunicado|noticias?|bolet[ií]n)\b",
     re.IGNORECASE,
+)
+_PROCUREMENT_SUBJECT_CUE = re.compile(
+    r"\b(?:procurement|public procurement|contract award(?:s)?|contracting|tenders?|purchas(?:e|ing)|"
+    r"procura(?:mento)?|contrataci[oó]n(?:es)?|licitaci[oó]n(?:es)?|compras? p[uú]blicas|"
+    r"adquisiciones?|contratos? p[uú]blicos)\b",
+    re.IGNORECASE,
+)
+_OPEN_CONTRACTING_CUE = re.compile(
+    r"\b(?:ocds|open[ -]contracting(?:[ -]data[ -]standard)?|"
+    r"contrataciones abiertas|contrataci[oó]n abierta|contrata[cç][oõ]es abertas)\b",
+    re.IGNORECASE,
+)
+_POST_TOKEN_REQUIREMENT_CUE = re.compile(
+    r"\bpost\b.*\b(?:anti[ -]?bot|captcha|challenge)\b.*\btoken\b|"
+    r"\b(?:anti[ -]?bot|captcha|challenge)\b.*\btoken\b.*\bpost\b",
+    re.IGNORECASE | re.DOTALL,
 )
 _AUTH_QUERY_KEY = re.compile(
     r"(?i)(?:api[_-]?key|token|secret|password|credential|authorization|bearer|"
@@ -1108,7 +1126,8 @@ def _dataset_file_suffix(url: str) -> str | None:
     """Return a supported dataset suffix, rejecting credential-like query names."""
     try:
         parsed = urlsplit(url)
-        suffix = Path(parsed.path).suffix.casefold()
+        path = parsed.path.casefold()
+        suffix = ".jsonl.gz" if path.endswith(".jsonl.gz") else Path(path).suffix
         query_pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
     except (ValueError, TypeError):
         return None
@@ -1216,6 +1235,92 @@ def _captured_access_links(context: Mapping) -> list[dict]:
     return [*page_links, *({**item, "network_observed": True} for item in requests)]
 
 
+def _subject_specific_standard_terms(brief: str, ontology: Mapping) -> list[str]:
+    """Return generic standards vocabulary only when the case subject supports it."""
+    labels = [
+        str(value)
+        for section in ("classes", "properties", "source_classes")
+        for item in ontology.get(section, [])
+        if isinstance(item, Mapping)
+        for key, value in item.items()
+        if key in {"label", "label_plural", "description"} and isinstance(value, str)
+    ]
+    subject_text = " ".join([brief[:6000], *labels])
+    if not _PROCUREMENT_SUBJECT_CUE.search(subject_text):
+        return []
+    # The standard's human name, acronym, and local-language name improve recall
+    # without embedding a publisher URL or a case-specific source into the query.
+    return ["open contracting", "OCDS", "contrataciones abiertas"]
+
+
+def _parent_metadata_gets(context: Mapping) -> list[dict]:
+    """Keep a few sanitized successful JSON GETs as evidence for a dataset child."""
+    return [
+        {"url": item["url"], "method": "GET", "content_type": item["content_type"]}
+        for item in _captured_network_requests(context.get("network_requests"))
+        if item.get("content_type") in {"application/json", "application/ld+json"}
+    ][:5]
+
+
+def _download_access_blocker(candidate: Mapping, status: int) -> dict | None:
+    """Classify a denied dataset GET without attempting POST or assuming its method."""
+    if status != 403 or candidate.get("dataset_link") is not True:
+        return None
+    metadata_gets = candidate.get("parent_metadata_gets")
+    if not isinstance(metadata_gets, list):
+        return None
+    metadata_urls = [
+        item.get("url")
+        for item in metadata_gets
+        if isinstance(item, Mapping)
+        and item.get("method") == "GET"
+        and item.get("content_type") in {"application/json", "application/ld+json"}
+        and isinstance(item.get("url"), str)
+    ][:5]
+    if not metadata_urls:
+        return None
+    try:
+        if _dataset_file_suffix(str(candidate.get("url") or "")) not in {
+            ".csv",
+            ".xls",
+            ".xlsx",
+            ".zip",
+            ".jsonl",
+            ".jsonl.gz",
+        }:
+            return None
+    except (TypeError, ValueError):
+        return None
+    post_token_required = candidate.get("parent_post_token_required") is True
+    return {
+        "code": (
+            "download_requires_antibot_post"
+            if post_token_required
+            else "download_control_unresolved"
+        ),
+        "basis": (
+            "captured_page_explicitly_requires_post_antibot_token"
+            if post_token_required
+            else "successful_json_metadata_get_followed_by_file_get_403"
+        ),
+        "metadata_get_urls": metadata_urls,
+        "download_url": str(candidate.get("url") or ""),
+        "download_get_status": 403,
+        "post_antibot_token_requirement_observed": post_token_required,
+        "post_attempted": False,
+        "next_action": "seek_an_alternate_public_source",
+    }
+
+
+def _is_open_contracting_reference(*values: object) -> bool:
+    return bool(_OPEN_CONTRACTING_CUE.search(" ".join(str(value or "") for value in values)))
+
+
+def _parent_post_token_requirement(context: Mapping) -> bool:
+    text = context.get("page_text")
+    return isinstance(text, str) and bool(_POST_TOKEN_REQUIREMENT_CUE.search(text[:6000]))
+
+
 def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping) -> list[dict]:
     """Select a few ontology-relevant data-file links from one captured index page."""
     parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
@@ -1287,6 +1392,7 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
                 "application/csv": ".csv",
                 "application/json": ".json",
                 "application/ld+json": ".json",
+                "application/x-ndjson": ".jsonl",
                 "application/zip": ".zip",
                 "application/vnd.ms-excel": ".xls",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
@@ -1343,6 +1449,8 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
                     "parent_source_id": candidate.get("source_id"),
                     "suffix": suffix,
                     "network_observed": observed,
+                    "content_type": content_type or None,
+                    "parent_metadata_gets": _parent_metadata_gets(context),
                     "follow_kind": "api" if suffix == ".api" else "dataset",
                 },
             )
@@ -1378,6 +1486,8 @@ def _follow_portal_children(
         seen.add(url)
         normalized = dict(child)
         normalized["url"] = url
+        normalized.setdefault("parent_metadata_gets", _parent_metadata_gets(context))
+        normalized.setdefault("parent_post_token_required", _parent_post_token_requirement(context))
         normalized.setdefault("follow_kind", "page")
         children.append(normalized)
         if len(children) >= _MAX_PORTAL_FOLLOW_CHILDREN:
@@ -1855,6 +1965,7 @@ class DiscoveryLoop:
                 if line.strip() and not line.lstrip().startswith("#")
             ).split()[:12]
         )
+        subject_standards = _subject_specific_standard_terms(brief, ontology)
         planned_by_gap: dict[str, list[str]] = {}
         if reuse_theme_pass:
             planned_by_gap = {
@@ -1926,6 +2037,9 @@ class DiscoveryLoop:
                 "standards that fit the brief and ontology. When useful, return their short names "
                 "or acronyms in `standard_terms` and include those terms in the generated query "
                 "phrases; derive them from the current subject rather than using a fixed list. "
+                f"Subject-specific vocabulary identified from this brief and ontology: "
+                f"{json.dumps(subject_standards, ensure_ascii=False)}. Include relevant terms "
+                "while keeping the query within its length limit. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Jurisdiction hierarchy and recall scope: "
                 f"{json.dumps(hierarchy_context, ensure_ascii=False)}. "
@@ -1958,7 +2072,9 @@ class DiscoveryLoop:
                         for term in item.get("standard_terms", [])
                         if isinstance(term, str) and term.strip()
                     ][:3]
-                    standard_phrase = " ".join(standard_terms)[:80]
+                    standard_phrase = " ".join(
+                        dict.fromkeys([*subject_standards, *standard_terms])
+                    )[:130]
 
                     def query_with_standards(query: str, phrase: str = standard_phrase) -> str:
                         if not phrase:
@@ -2043,6 +2159,11 @@ class DiscoveryLoop:
                         f"{prop.get('label', gap)} {title_label} {channel} {subject} {level}",
                     ]
                 )
+                if subject_standards:
+                    variants.insert(
+                        0,
+                        f"{channel} {jurisdiction} {' '.join(subject_standards)} {terms} {subject}",
+                    )
                 for variant in variants:
                     text = " ".join(variant.split())
                     if text and text not in candidates:
@@ -2757,7 +2878,45 @@ class DiscoveryLoop:
             "dataset_link": True,
             "link_provenance": link_provenance,
             "source_state": source_state,
+            "follow_kind": link.get("follow_kind"),
+            "parent_metadata_gets": list(link.get("parent_metadata_gets", []))
+            if isinstance(link.get("parent_metadata_gets"), list)
+            else [],
+            "parent_post_token_required": link.get("parent_post_token_required") is True,
         }
+
+    def _record_download_access_blocker(self, candidate: dict, source_id: str) -> bool:
+        blocker = _download_access_blocker(candidate, 403)
+        if blocker is None:
+            return False
+        candidate.update(
+            status="capture_failed",
+            capture_reason=blocker["code"],
+            capture_outcome="blocked",
+            capture_attempts=1,
+            access_blocker=blocker,
+        )
+        self._step(
+            {
+                "tool": "p3.source.access_blocker",
+                "url": blocker["download_url"],
+                "parent_url": candidate.get("parent_url"),
+            },
+            {
+                "status": "blocked",
+                "method": "GET",
+                "http_status": 403,
+                "post_attempted": False,
+                "metadata_get_urls": blocker["metadata_get_urls"],
+            },
+            {
+                "reason_code": blocker["code"],
+                "basis": blocker["basis"],
+                "next_action": blocker["next_action"],
+            },
+            source_id=source_id,
+        )
+        return True
 
     def _capture_lead(
         self,
@@ -2838,6 +2997,8 @@ class DiscoveryLoop:
                     ),
                 )
                 return None
+            if reason == "http_403" and self._record_download_access_blocker(candidate, source_id):
+                return None
             if reason not in {"http_403", "dns_failed", "navigation_error", "timeout"}:
                 candidate.update(
                     status="capture_failed",
@@ -2888,6 +3049,8 @@ class DiscoveryLoop:
         if "proof" in captured:
             self.jobs.append(captured)
         status = int(captured.get("status", 200))
+        if status == 403 and self._record_download_access_blocker(candidate, source_id):
+            return None
         asset_reason = _static_asset_reason(
             str(captured.get("url") or url),
             str(captured.get("document_content_type") or captured.get("content_type") or ""),
@@ -3059,6 +3222,7 @@ class DiscoveryLoop:
             "page_text": parsed_page.page_text,
             "forms": [dict(form) for form in parsed_page.forms],
             "links": [dict(link) for link in parsed_page.links],
+            "network_requests": _captured_network_requests(captured.get("network_requests")),
             "table_headers": [list(headers) for headers in parsed_page.table_headers],
             "listing_row_count": listing_row_count,
             "listing_sampled_only": True,
@@ -3867,7 +4031,7 @@ class DiscoveryLoop:
                     _source_review_cache_keys(sources_dir),
                     [provider.name for provider in self.providers],
                     decision.backend,
-                    "p3-discovery-loop-v4-approved-source-reuse",
+                    "p3-discovery-loop-v5-subject-standards-access-blockers",
                 ],
                 sort_keys=True,
                 ensure_ascii=False,
@@ -4477,6 +4641,18 @@ class DiscoveryLoop:
                     ),
                     **({"dataset_link": True} if lead.get("dataset_link") else {}),
                     **(
+                        {
+                            "parent_url": lead["parent_url"],
+                            "follow_kind": lead.get("follow_kind"),
+                            "parent_metadata_gets": list(lead["parent_metadata_gets"]),
+                            "parent_post_token_required": lead.get("parent_post_token_required")
+                            is True,
+                        }
+                        if isinstance(lead.get("parent_metadata_gets"), list)
+                        and isinstance(lead.get("parent_url"), str)
+                        else {}
+                    ),
+                    **(
                         {"link_provenance": dict(lead["link_provenance"])}
                         if isinstance(lead.get("link_provenance"), Mapping)
                         else {}
@@ -4507,6 +4683,28 @@ class DiscoveryLoop:
                         )
                     ):
                         child_url = str(child["url"])
+                        asset_reason = _static_asset_reason(
+                            child_url,
+                            str(child.get("content_type") or child.get("mime_type") or ""),
+                        )
+                        if asset_reason is not None:
+                            self._step(
+                                {
+                                    "tool": "lead.skip",
+                                    "url": urlsplit(child_url)
+                                    ._replace(query="", fragment="")
+                                    .geturl(),
+                                    "parent_url": parent_url,
+                                },
+                                {"asset_reason": asset_reason},
+                                {
+                                    "status": "skipped",
+                                    "reason": "static_asset",
+                                    "before_review_or_queue": True,
+                                },
+                                source_id=candidate.get("source_id"),
+                            )
+                            continue
                         child_key = url_identity(child_url)
                         if child_key in candidate_urls:
                             self._step(
@@ -4541,6 +4739,21 @@ class DiscoveryLoop:
                                 lead["property_ids"],
                                 iteration,
                             )
+                            if _is_open_contracting_reference(
+                                child_url,
+                                child.get("title"),
+                                child.get("link_text"),
+                                child.get("context"),
+                            ):
+                                linked_lead.update(
+                                    authority_tier_suggestion="secondary",
+                                    source_role="secondary_cross_check",
+                                    authority_reason=(
+                                        "Possible Open Contracting mirror linked by an approved "
+                                        "official publisher; this remains a secondary source "
+                                        "review candidate and is never auto-approved."
+                                    ),
+                                )
                             draft["leads"][child_url] = linked_lead
                             if linked_lead.get("source_state") == "approved":
                                 follow_status, displaced_url = enqueue_follow(linked_lead)
@@ -4562,9 +4775,19 @@ class DiscoveryLoop:
                                     **({"displaced_url": displaced_url} if displaced_url else {}),
                                 },
                                 {
-                                    "outcome": "off-host child requires source review",
+                                    "outcome": (
+                                        "official-publisher Open Contracting mirror offered as "
+                                        "secondary cross-check; source review required"
+                                        if linked_lead.get("source_role") == "secondary_cross_check"
+                                        else "off-host child requires source review"
+                                    ),
                                     "follow_depth": 1,
                                     "parent_capture_key": candidate["capture_key"],
+                                    **(
+                                        {"authority_tier_suggestion": "secondary"}
+                                        if linked_lead.get("source_role") == "secondary_cross_check"
+                                        else {}
+                                    ),
                                 },
                                 source_id=candidate.get("source_id"),
                             )
@@ -4604,7 +4827,17 @@ class DiscoveryLoop:
                             "follow_kind": follow_kind,
                             "parent_url": parent_url,
                             "parent_capture_key": candidate["capture_key"],
+                            "parent_metadata_gets": list(child.get("parent_metadata_gets", []))
+                            if isinstance(child.get("parent_metadata_gets"), list)
+                            else [],
+                            "parent_post_token_required": child.get("parent_post_token_required")
+                            is True,
                             "link_provenance": link_provenance,
+                            **(
+                                {"content_type": child["content_type"]}
+                                if isinstance(child.get("content_type"), str)
+                                else {}
+                            ),
                             **({"dataset_link": True} if provider_name == "dataset_link" else {}),
                         }
                         existing_url = next(
