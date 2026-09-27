@@ -638,6 +638,60 @@ def _preview(data: bytes, kind: str) -> dict[str, Any]:
     raise ParseFailure("preview_unsupported_format")
 
 
+MIN_RECORDS = 3  # a repeated block counts as a listing from three records up
+MIN_RECORD_FIELDS = (
+    3  # each record carries at least three text fields (a nav menu item carries one)
+)
+MAX_RECORD_FIELDS = 40
+MAX_RECORD_ELEMENTS = 20_000
+
+
+def _repeated_records(document: Any) -> tuple[list[tuple[str, ...]], list[str]]:
+    """A listing laid out as repeated blocks rather than a <table>: the largest group of elements that share a tag
+    and class, where every member carries several text fields (a CMS "views" listing of places, people or records).
+    Returns each record's text fields, and the labels most records share (e.g. "Address", "Telephone"), which act as
+    the listing's header. Members nested inside another member of the same group are skipped."""
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for count, element in enumerate(document.find_all(class_=True)):
+        if count >= MAX_RECORD_ELEMENTS:
+            break
+        classes = " ".join(sorted(str(c) for c in element.get("class") or []))
+        groups.setdefault((element.name, classes), []).append(element)
+    best: list[tuple[str, ...]] = []
+    best_score = 0
+    for members in groups.values():
+        if len(members) < MIN_RECORDS:
+            continue
+        ids = {id(member) for member in members}
+        records = []
+        for member in members:
+            if any(id(parent) in ids for parent in member.parents):
+                continue
+            fields = tuple(
+                " ".join(t.split()) for t in member.stripped_strings
+            )  # in order, repeats kept
+            if len(fields) < MIN_RECORD_FIELDS:
+                records = []
+                break
+            records.append(fields[:MAX_RECORD_FIELDS])
+        # the richest group wins: a whole card (name, address, hours) over its header block (name, address)
+        score = sum(len(record) for record in records)
+        if len(records) >= MIN_RECORDS and score > best_score:
+            best, best_score = records, score
+    if not best:
+        return [], []
+    counts: dict[str, int] = {}
+    for record in best:
+        for field in record:
+            counts[field] = counts.get(field, 0) + 1
+    labels = [
+        field
+        for field, n in counts.items()
+        if n >= 0.6 * len(best) and len(field) <= 40 and any(ch.isalpha() for ch in field)
+    ][:MAX_TABLE_HEADERS]
+    return best, labels
+
+
 def _parse_html(
     data: bytes, max_rows: int, base_url: str
 ) -> tuple[list[dict[str, Any]], str, list[dict[str, str]], str, bool]:
@@ -651,6 +705,11 @@ def _parse_html(
                 if len(rows) >= max_rows:
                     raise ParseFailure("max_rows_exceeded")
                 rows.append(_row(f"html-table-{table_number}", number, values))
+    records, _labels = _repeated_records(document)
+    for number, values in enumerate(records, start=1):
+        if len(rows) >= max_rows:
+            raise ParseFailure("max_rows_exceeded")
+        rows.append(_row("html-records-1", number, values))
     for tag in document.select("a[href], link[href]"):
         href = str(tag.get("href", ""))
         url = urljoin(base_url, href) if base_url else href
@@ -881,6 +940,9 @@ def _parse_table_headers(data: bytes) -> list[list[str]]:
             if cells:
                 headers.append(cells)
                 break
+    _records, labels = _repeated_records(document)
+    if labels and len(headers) < MAX_TABLES:
+        headers.append([label[:MAX_FORM_TEXT_CHARS] for label in labels])
     return headers
 
 

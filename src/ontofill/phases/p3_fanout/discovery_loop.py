@@ -2500,7 +2500,10 @@ class DiscoveryLoop:
         document_sheets = _document_sheet_preview(parsed_page) if is_document else []
         document_headers = _parsed_document_headers(parsed_page)
         listing_row_count = min(
-            sum(str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows),
+            sum(
+                str(row.get("sheet") or "").startswith(("html-table-", "html-records-"))
+                for row in parsed_page.rows
+            ),
             _P3_PREVIEW_ROWS_PER_SHEET,
         )
         document_size = captured.get("document_size_bytes") if is_document else None
@@ -3211,7 +3214,10 @@ class DiscoveryLoop:
                 trusted = publisher_of_record["tier"] == "primary"
                 reason = "approved document link inherits its verified parent publisher"
         listing_row_count = min(
-            sum(str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows),
+            sum(
+                str(row.get("sheet") or "").startswith(("html-table-", "html-records-"))
+                for row in parsed_page.rows
+            ),
             _P3_PREVIEW_ROWS_PER_SHEET,
         )
         document_size = captured.get("document_size_bytes") if is_document else None
