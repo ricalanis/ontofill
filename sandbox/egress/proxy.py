@@ -8,6 +8,7 @@ import json
 import os
 import select
 import socket
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -22,6 +23,21 @@ EXACT_ALLOWED_HOSTS = frozenset(
     for host in os.environ.get("EXACT_ALLOWED_HOSTS", "").split(",")
     if host.strip()
 )
+SIBLING_REGISTRABLE_DOMAINS = frozenset(
+    domain.strip().lower().rstrip(".")
+    for domain in os.environ.get("SIBLING_REGISTRABLE_DOMAINS", "").split(",")
+    if domain.strip()
+)
+SAME_JURISDICTION_PUBLIC_SUFFIXES = frozenset(
+    suffix.strip().lower().rstrip(".")
+    for suffix in os.environ.get("SAME_JURISDICTION_PUBLIC_SUFFIXES", "").split(",")
+    if suffix.strip()
+)
+PAGE_ASSET_TYPES = frozenset({"font", "image", "media", "script", "stylesheet"})
+STATEFUL_RESOURCE_TYPES = frozenset({"eventsource", "websocket"})
+DYNAMIC_ALLOWED_HOSTS: dict[str, str] = {}
+_DYNAMIC_HOSTS_LOCK = threading.Lock()
+_MAX_DYNAMIC_HOSTS = 16
 HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -96,14 +112,95 @@ def _resolve_address_detail(host: str, port: int) -> tuple[str | None, str | Non
     return addresses[0][4][0], None
 
 
+def _under_domain(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
+
+def _jurisdictional_public_suffix(suffix: str) -> bool:
+    """Keep generic one-label TLDs out of the shared-asset exception."""
+    labels = suffix.split(".")
+    return len(labels) > 1 and len(labels[-1]) == 2 and labels[-1].isalpha()
+
+
+def _valid_dns_host(host: str) -> bool:
+    if not host or not host.isascii() or len(host) > 253 or "." not in host:
+        return False
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return False
+    return all(
+        1 <= len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(character.isalnum() or character == "-" for character in label)
+        for label in host.split(".")
+    )
+
+
+def _static_allowed(host: str) -> bool:
+    if EXACT_ALLOWED_HOSTS:
+        return host in EXACT_ALLOWED_HOSTS and host in ALLOWED
+    if host in ALLOWED:
+        return True
+    return any(
+        host.endswith("." + domain)
+        and not any(_under_domain(domain, root) for root in SIBLING_REGISTRABLE_DOMAINS)
+        for domain in ALLOWED
+    )
+
+
+def requested_host_policy(
+    host: str | None,
+    method: str,
+    resource_type: str,
+    page_host: str | None,
+) -> tuple[bool, str | None]:
+    """Decide if one browser request may add an exact host to this job."""
+    if not host:
+        return False, None
+    normalized = host.lower().rstrip(".")
+    page = (page_host or "").lower().rstrip(".")
+    method = method.upper()
+    kind = resource_type.casefold()
+    if method not in {"GET", "HEAD"} or kind in STATEFUL_RESOURCE_TYPES:
+        return False, None
+    if _static_allowed(normalized):
+        return True, None
+    if EXACT_ALLOWED_HOSTS:
+        return False, None
+    sibling = any(_under_domain(normalized, root) for root in SIBLING_REGISTRABLE_DOMAINS)
+    if sibling:
+        if not any(_under_domain(page, root) for root in SIBLING_REGISTRABLE_DOMAINS):
+            return False, None
+    else:
+        same_jurisdiction_asset = (
+            kind in PAGE_ASSET_TYPES
+            and any(_under_domain(page, root) for root in SIBLING_REGISTRABLE_DOMAINS)
+            and any(
+                _jurisdictional_public_suffix(suffix)
+                and normalized != suffix
+                and normalized.endswith("." + suffix)
+                for suffix in SAME_JURISDICTION_PUBLIC_SUFFIXES
+            )
+        )
+        if not same_jurisdiction_asset:
+            return False, None
+    with _DYNAMIC_HOSTS_LOCK:
+        return True, DYNAMIC_ALLOWED_HOSTS.get(normalized, "domain_allowed")
+
+
 def allowed(host: str | None) -> bool:
-    """Match a full DNS name or one of its subdomains, never a string suffix."""
+    """Match TDD hosts or exact hosts admitted for a page request in this job."""
     if not host:
         return False
     normalized = host.lower().rstrip(".")
-    if EXACT_ALLOWED_HOSTS:
-        return normalized in EXACT_ALLOWED_HOSTS and normalized in ALLOWED
-    return any(normalized == domain or normalized.endswith("." + domain) for domain in ALLOWED)
+    if _static_allowed(normalized):
+        return True
+    with _DYNAMIC_HOSTS_LOCK:
+        return normalized in DYNAMIC_ALLOWED_HOSTS
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -162,6 +259,56 @@ class ProxyHandler(BaseHTTPRequestHandler):
         }.get(reason, (403, "domain is not allowed by the TDD"))
         self.send_error(status, message)
 
+    def _admit_page_host(self) -> None:
+        """Admit one exact page-requested host after a bounded read-only check."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 4096:
+            self.send_error(400, "invalid admission request")
+            return
+        try:
+            request = json.loads(self.rfile.read(length))
+            if not isinstance(request, dict):
+                raise TypeError
+            host = str(request.get("host") or "").lower().rstrip(".")
+            method = str(request.get("method") or "").upper()
+            resource_type = str(request.get("resource_type") or "").casefold()
+            page_host = str(request.get("page_host") or "").lower().rstrip(".")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self.send_error(400, "invalid admission request")
+            return
+        if not _valid_dns_host(host) or (page_host and not _valid_dns_host(page_host)):
+            self.decision("block", host, method, reason="invalid_request")
+            self.send_error(400, "invalid admission host")
+            return
+        admitted, reason = requested_host_policy(host, method, resource_type, page_host)
+        if not admitted:
+            denial_reason = (
+                "write_method_blocked"
+                if method not in {"GET", "HEAD"} or resource_type in STATEFUL_RESOURCE_TYPES
+                else "domain_not_allowed"
+            )
+            self.decision("block", host, method, reason=denial_reason)
+            self.send_error(403, "host is outside the page egress policy")
+            return
+        if reason is None:
+            self.send_response(204)
+            self.end_headers()
+            return
+        with _DYNAMIC_HOSTS_LOCK:
+            is_new = host not in DYNAMIC_ALLOWED_HOSTS
+            if is_new and len(DYNAMIC_ALLOWED_HOSTS) >= _MAX_DYNAMIC_HOSTS:
+                self.decision("block", host, method, reason="domain_not_allowed")
+                self.send_error(403, "per-job host admission limit reached")
+                return
+            DYNAMIC_ALLOWED_HOSTS.setdefault(host, reason)
+        if is_new:
+            self.decision("allow", host, method, reason=reason)
+        self.send_response(204)
+        self.end_headers()
+
     def do_CONNECT(self) -> None:
         authority = urlsplit("//" + self.path)
         host = authority.hostname or ""
@@ -213,9 +360,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.forward()
 
     def do_OPTIONS(self) -> None:
-        self.forward()
+        self.decision(
+            "block",
+            urlsplit(self.path).hostname or "",
+            self.command,
+            reason="write_method_blocked",
+        )
+        self.send_error(405, "only GET and HEAD requests are enabled")
 
     def do_POST(self) -> None:
+        if self.path == "/_ontofill/admit":
+            self._admit_page_host()
+            return
         self.decision(
             "block",
             urlsplit(self.path).hostname or "",

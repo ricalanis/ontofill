@@ -295,7 +295,11 @@ def _policy_domains(policy: Mapping) -> list[str]:
             if not isinstance(raw_domain, str):
                 continue
             domain = raw_domain.lower().rstrip(".")
-            if _public_dns_host(domain) and domain not in domains:
+            if (
+                _public_dns_host(domain)
+                and public_suffix(domain) != domain
+                and domain not in domains
+            ):
                 domains.append(domain)
     return domains
 
@@ -313,6 +317,69 @@ def _matching_policy_domains(host: str, policy: Mapping) -> list[str]:
         ):
             matches.append(domain)
     return matches
+
+
+def _matching_policy_sibling_domains(host: str, policy: Mapping) -> list[str]:
+    """Return only PSL registrable roots tied to the lead's trusted publisher."""
+    normalized = host.casefold().rstrip(".")
+    lead_root = registrable_domain(normalized)
+    if not lead_root or public_suffix(lead_root) == lead_root:
+        return []
+    policy_jurisdiction = _jurisdiction_key(policy.get("jurisdiction"))
+    matches: set[str] = set()
+    for publisher in policy.get("trusted_publishers", []):
+        if not isinstance(publisher, Mapping):
+            continue
+        publisher_jurisdiction = _jurisdiction_key(publisher.get("jurisdiction"))
+        if (
+            policy_jurisdiction
+            and publisher_jurisdiction
+            and publisher_jurisdiction != policy_jurisdiction
+        ):
+            continue
+        for raw_domain in publisher.get("domains", []):
+            if not isinstance(raw_domain, str):
+                continue
+            domain = raw_domain.casefold().rstrip(".")
+            if (
+                _public_dns_host(domain)
+                and public_suffix(domain) != domain
+                and registrable_domain(domain) == lead_root
+            ):
+                matches.add(lead_root)
+    return sorted(root for root in matches if public_suffix(root) != root)
+
+
+def _matching_policy_public_suffixes(host: str, policy: Mapping) -> list[str]:
+    """Return suffix evidence from the same-jurisdiction trusted publisher roots."""
+    roots = set(_matching_policy_sibling_domains(host, policy))
+    policy_jurisdiction = _jurisdiction_key(policy.get("jurisdiction"))
+    suffixes: set[str] = set()
+    for publisher in policy.get("trusted_publishers", []):
+        if not isinstance(publisher, Mapping):
+            continue
+        publisher_jurisdiction = _jurisdiction_key(publisher.get("jurisdiction"))
+        if (
+            policy_jurisdiction
+            and publisher_jurisdiction
+            and publisher_jurisdiction != policy_jurisdiction
+        ):
+            continue
+        for raw_domain in publisher.get("domains", []):
+            if not isinstance(raw_domain, str):
+                continue
+            domain = raw_domain.casefold().rstrip(".")
+            suffix = public_suffix(domain)
+            if (
+                _public_dns_host(domain)
+                and suffix
+                and len(suffix.split(".")) > 1
+                and len(suffix.rsplit(".", 1)[-1]) == 2
+                and suffix.rsplit(".", 1)[-1].isalpha()
+                and registrable_domain(domain) in roots
+            ):
+                suffixes.add(suffix)
+    return sorted(suffixes)
 
 
 def _policy_country_suffixes(policy: Mapping) -> set[str]:
@@ -2537,6 +2604,17 @@ class DiscoveryLoop:
             )
             return None
         linked_document = candidate.get("dataset_link") is True
+        publisher_trusted, _publisher_reason = authority_result(url, policy=dict(policy))
+        sibling_domains = (
+            _matching_policy_sibling_domains(host, policy)
+            if publisher_trusted and not linked_document
+            else []
+        )
+        asset_suffixes = (
+            _matching_policy_public_suffixes(host, policy)
+            if sibling_domains and not linked_document
+            else []
+        )
         allowed_domains = (
             [host] if linked_document else sorted({host, *_matching_policy_domains(host, policy)})
         )
@@ -2550,6 +2628,8 @@ class DiscoveryLoop:
             "phase": 3,
             "generated_by": self.provenance,
             **({"exact_hosts": [host]} if linked_document else {}),
+            **({"sibling_domains": sibling_domains} if sibling_domains else {}),
+            **({"asset_suffixes": asset_suffixes} if asset_suffixes else {}),
         }
         attempts = 1
         try:

@@ -17,7 +17,12 @@ from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
 from ontofill.phase_loop import LoopBudget
-from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, _dataset_index_links
+from ontofill.phases.p3_fanout.discovery_loop import (
+    DiscoveryLoop,
+    _dataset_index_links,
+    _matching_policy_public_suffixes,
+    _matching_policy_sibling_domains,
+)
 from ontofill.phases.p5_execute.source_review import reviewable_download_host
 from ontofill.sandbox import ParseExecution
 from tests.r17_helpers import (
@@ -149,6 +154,23 @@ def test_auth_query_keys_never_enter_link_review() -> None:
             )
             == []
         )
+
+
+def test_trusted_publisher_siblings_use_psl_registrable_roots() -> None:
+    policy = {
+        "trusted_publishers": [
+            {"domains": ["www.buengobierno.gob.mx", "gob.mx"]},
+            {"domains": ["catalog.example.co.uk", "co.uk"]},
+        ]
+    }
+    assert _matching_policy_sibling_domains("api.buengobierno.gob.mx", policy) == [
+        "buengobierno.gob.mx"
+    ]
+    assert _matching_policy_sibling_domains("data.catalog.example.co.uk", policy) == [
+        "example.co.uk"
+    ]
+    assert _matching_policy_sibling_domains("not-related.other.gob.mx", policy) == []
+    assert _matching_policy_public_suffixes("api.buengobierno.gob.mx", policy) == ["gob.mx"]
 
 
 def test_captured_403_challenge_is_inconclusive_before_generic_retry(tmp_path: Path) -> None:
@@ -326,6 +348,9 @@ def test_open_data_index_follows_bounded_entity_files_and_reviews_off_host(tmp_p
     )
 
     captured_urls = [url for url, _ in capture.calls]
+    index_dispatch = next(kwargs for url, kwargs in capture.calls if url == _INDEX)
+    assert index_dispatch["sibling_domains"] == ["example.test"]
+    assert index_dispatch.get("asset_suffixes", []) == []
     assert (
         _CSV in captured_urls
         and _XLS in captured_urls

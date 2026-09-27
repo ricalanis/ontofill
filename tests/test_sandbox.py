@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import io
 import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
+import types
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,7 +29,13 @@ from ontofill.sandbox import (
     capture_url,
     fetch_url,
 )
-from ontofill.sandbox.capture import CaptureError, _allowed_host, _limit_row
+from ontofill.sandbox.capture import (
+    CaptureError,
+    _allowed_host,
+    _limit_row,
+    _public_suffixes,
+    _sibling_domains,
+)
 
 
 def validate_trace_rows(rows: list[dict]) -> None:
@@ -219,6 +229,351 @@ def test_allowlist_matches_only_full_hosts() -> None:
     assert _allowed_host("https://source.example.invalid/path", ["example.invalid"])
     assert not _allowed_host("https://example.invalid.evil.invalid/", ["example.invalid"])
     assert not _allowed_host("file:///etc/passwd", ["example.invalid"])
+
+
+def _load_egress_proxy():
+    path = Path(__file__).resolve().parents[1] / "sandbox/egress/proxy.py"
+    spec = importlib.util.spec_from_file_location("synthetic_egress_proxy", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_agent_pod_capture(monkeypatch):
+    pod_dir = Path(__file__).resolve().parents[1] / "sandbox/agent-pod"
+    monkeypatch.syspath_prepend(str(pod_dir))
+    playwright = types.ModuleType("playwright")
+    async_api = types.ModuleType("playwright.async_api")
+    async_api.Error = type("PlaywrightError", (Exception,), {})
+    async_api.async_playwright = object()
+    playwright.async_api = async_api
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", async_api)
+    spec = importlib.util.spec_from_file_location(
+        "synthetic_agent_pod_capture", pod_dir / "capture.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _admit(proxy, payload: dict, events: list[dict]) -> list[int]:
+    body = json.dumps(payload).encode()
+    handler = object.__new__(proxy.ProxyHandler)
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = io.BytesIO(body)
+    statuses: list[int] = []
+    handler.send_response = statuses.append
+    handler.send_error = lambda status, _message: statuses.append(status)
+    handler.end_headers = lambda: None
+    handler.decision = lambda outcome, host, method, *, reason=None: events.append(
+        {"decision": outcome, "host": host, "method": method, "reason": reason}
+    )
+    handler._admit_page_host()
+    return statuses
+
+
+def test_page_egress_admits_bounded_siblings_and_same_jurisdiction_assets() -> None:
+    proxy = _load_egress_proxy()
+    proxy.ALLOWED = frozenset({"portal.buengobierno.gob.mx"})
+    proxy.EXACT_ALLOWED_HOSTS = frozenset()
+    proxy.SIBLING_REGISTRABLE_DOMAINS = frozenset({"buengobierno.gob.mx"})
+    proxy.SAME_JURISDICTION_PUBLIC_SUFFIXES = frozenset({"gob.mx"})
+    proxy.DYNAMIC_ALLOWED_HOSTS.clear()
+    events: list[dict] = []
+
+    assert _admit(
+        proxy,
+        {
+            "host": "api.buengobierno.gob.mx",
+            "method": "GET",
+            "resource_type": "xhr",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [204]
+    assert proxy.allowed("api.buengobierno.gob.mx")
+    assert _admit(
+        proxy,
+        {
+            "host": "api.buengobierno.gob.mx",
+            "method": "POST",
+            "resource_type": "xhr",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [403]
+    assert (
+        next(
+            event
+            for event in events
+            if event["host"] == "api.buengobierno.gob.mx" and event["method"] == "POST"
+        )["reason"]
+        == "write_method_blocked"
+    )
+    assert _admit(
+        proxy,
+        {
+            "host": "portal.buengobierno.gob.mx",
+            "method": "OPTIONS",
+            "resource_type": "fetch",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [403]
+    assert (
+        next(
+            event
+            for event in events
+            if event["host"] == "portal.buengobierno.gob.mx" and event["method"] == "OPTIONS"
+        )["reason"]
+        == "write_method_blocked"
+    )
+    assert _admit(
+        proxy,
+        {
+            "host": "api.buengobierno.gob.mx",
+            "method": "WEBSOCKET",
+            "resource_type": "websocket",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [403]
+    assert (
+        next(
+            event
+            for event in events
+            if event["host"] == "api.buengobierno.gob.mx" and event["method"] == "WEBSOCKET"
+        )["reason"]
+        == "write_method_blocked"
+    )
+    assert _admit(
+        proxy,
+        {
+            "host": "assets.cdn.gob.mx",
+            "method": "GET",
+            "resource_type": "script",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [204]
+    assert _admit(
+        proxy,
+        {
+            "host": "other-cdn.gob.mx",
+            "method": "GET",
+            "resource_type": "script",
+            "page_host": "untrusted.other.example",
+        },
+        events,
+    ) == [403]
+    assert _admit(
+        proxy,
+        {
+            "host": "data-cdn.gob.mx",
+            "method": "GET",
+            "resource_type": "xhr",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [403]
+    assert _admit(
+        proxy,
+        {
+            "host": "media.cdn.gob.mx",
+            "method": "POST",
+            "resource_type": "image",
+            "page_host": "portal.buengobierno.gob.mx",
+        },
+        events,
+    ) == [403]
+
+    assert [event["host"] for event in events if event["decision"] == "allow"] == [
+        "api.buengobierno.gob.mx",
+        "assets.cdn.gob.mx",
+    ]
+    assert all(event["method"] == "GET" for event in events if event["decision"] == "allow")
+    assert not proxy.allowed("other-buengobierno.gob.mx.evil.example")
+
+
+def test_sibling_scope_uses_registrable_domains_not_public_suffixes() -> None:
+    assert _sibling_domains(["buengobierno.gob.mx"]) == ["buengobierno.gob.mx"]
+    assert _sibling_domains(["example.co.uk"]) == ["example.co.uk"]
+    with pytest.raises(ValueError, match="registrable domains"):
+        _sibling_domains(["gob.mx"])
+    with pytest.raises(ValueError, match="registrable domains"):
+        _sibling_domains(["co.uk"])
+    assert _public_suffixes(["gob.mx", "co.uk"]) == ["co.uk", "gob.mx"]
+    with pytest.raises(ValueError, match="jurisdictional Public Suffix List"):
+        _public_suffixes(["com"])
+    with pytest.raises(ValueError, match="Public Suffix List"):
+        _public_suffixes(["buengobierno.gob.mx"])
+
+
+def test_playwright_closes_websockets_before_proxy_tunnels(monkeypatch) -> None:
+    module = _load_agent_pod_capture(monkeypatch)
+    admissions: list[tuple[str, dict]] = []
+    module._request_egress_host_admission = lambda host, **kwargs: admissions.append((host, kwargs))
+
+    class FakeContext:
+        async def route(self, pattern, handler):
+            self.http_route = (pattern, handler)
+
+        async def route_web_socket(self, pattern, handler):
+            self.websocket_route = (pattern, handler)
+
+    class FakePage:
+        url = "https://portal.buengobierno.gob.mx/list"
+
+    class FakeWebSocketRoute:
+        url = "wss://api.buengobierno.gob.mx/events"
+        closed: dict | None = None
+
+        async def close(self, *, code, reason):
+            self.closed = {"code": code, "reason": reason}
+
+    async def exercise_routes():
+        context = FakeContext()
+        page = FakePage()
+        await module._install_page_egress_routes(context, page, object())
+        assert context.http_route[0] == "**/*"
+        assert context.websocket_route[0] == "**/*"
+        websocket = FakeWebSocketRoute()
+        await context.websocket_route[1](websocket)
+        return websocket
+
+    websocket = asyncio.run(exercise_routes())
+    assert websocket.closed == {
+        "code": 1008,
+        "reason": "WebSockets are disabled in read-only capture",
+    }
+    assert admissions == [
+        (
+            "api.buengobierno.gob.mx",
+            {
+                "method": "WEBSOCKET",
+                "resource_type": "websocket",
+                "page_url": "https://portal.buengobierno.gob.mx/list",
+            },
+        )
+    ]
+
+
+def test_page_cannot_invoke_proxy_sideband_through_http_proxy() -> None:
+    proxy = _load_egress_proxy()
+    handler = object.__new__(proxy.ProxyHandler)
+    handler.path = "http://egress:8888/_ontofill/admit"
+    handler.command = "POST"
+    statuses: list[int] = []
+    events: list[dict] = []
+    handler.send_error = lambda status, _message: statuses.append(status)
+    handler.decision = lambda outcome, host, method, *, reason=None: events.append(
+        {"outcome": outcome, "host": host, "method": method, "reason": reason}
+    )
+    handler.do_POST()
+    assert statuses == [405]
+    assert events == [
+        {
+            "outcome": "block",
+            "host": "egress",
+            "method": "POST",
+            "reason": "write_method_blocked",
+        }
+    ]
+
+
+def test_proxy_refuses_options_even_for_allowed_host() -> None:
+    proxy = _load_egress_proxy()
+    proxy.ALLOWED = frozenset({"portal.buengobierno.gob.mx"})
+    proxy.EXACT_ALLOWED_HOSTS = frozenset()
+    proxy.SIBLING_REGISTRABLE_DOMAINS = frozenset()
+    proxy.DYNAMIC_ALLOWED_HOSTS.clear()
+    handler = object.__new__(proxy.ProxyHandler)
+    handler.path = "http://portal.buengobierno.gob.mx/api"
+    handler.command = "OPTIONS"
+    statuses: list[int] = []
+    events: list[dict] = []
+    handler.send_error = lambda status, _message: statuses.append(status)
+    handler.decision = lambda outcome, host, method, *, reason=None: events.append(
+        {"outcome": outcome, "host": host, "method": method, "reason": reason}
+    )
+    handler.do_OPTIONS()
+    assert statuses == [405]
+    assert events == [
+        {
+            "outcome": "block",
+            "host": "portal.buengobierno.gob.mx",
+            "method": "OPTIONS",
+            "reason": "write_method_blocked",
+        }
+    ]
+
+
+def test_capture_sends_sibling_policy_and_preserves_host_events(tmp_path, monkeypatch) -> None:
+    target = "https://portal.buengobierno.gob.mx/open-data"
+    events = [
+        {
+            "host": "api.buengobierno.gob.mx",
+            "method": "GET",
+            "decision": "allow",
+            "reason": "domain_allowed",
+        },
+        {
+            "host": "assets.cdn.gob.mx",
+            "method": "GET",
+            "decision": "allow",
+            "reason": "domain_allowed",
+        },
+    ]
+    _mock_capture_runtime(monkeypatch, target=target, final_url=target, egress_events=events)
+    module = importlib.import_module("ontofill.sandbox.capture")
+    commands: list[tuple[str, ...]] = []
+    agent_args: list[str] = []
+
+    def fake_docker(*args, **_kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    run_agent = module._run_agent_pod
+
+    def record_agent(name, output, *args, limits):
+        agent_args.extend(args)
+        return run_agent(name, output, *args, limits=limits)
+
+    monkeypatch.setattr(module, "_docker", fake_docker)
+    monkeypatch.setattr(module, "_run_agent_pod", record_agent)
+    result = capture_url(
+        target,
+        allowed_domains=["portal.buengobierno.gob.mx", "buengobierno.gob.mx"],
+        sibling_domains=["buengobierno.gob.mx"],
+        asset_suffixes=["gob.mx"],
+        lake=FileLake(tmp_path / "lake"),
+        run_id="synthetic-egress-run",
+        source_id="synthetic-egress-source",
+        objective_id=None,
+        tdd_path="03-fanout/synthetic-tdd.json",
+    )
+
+    proxy_run = next(args for args in commands if "egress-image" in args)
+    assert "SIBLING_REGISTRABLE_DOMAINS=buengobierno.gob.mx" in proxy_run
+    assert "SAME_JURISDICTION_PUBLIC_SUFFIXES=gob.mx" in proxy_run
+    assert "EGRESS_CONTROL_URL=http://egress:8888/_ontofill/admit" in agent_args
+    assert "SIBLING_REGISTRABLE_DOMAINS=buengobierno.gob.mx" in agent_args
+    assert {event["host"] for event in result["egress_events"]} >= {
+        "api.buengobierno.gob.mx",
+        "assets.cdn.gob.mx",
+    }
+    trace_event_hosts = {
+        event["host"]
+        for row in result["trace"]
+        for event in row.get("evaluated", {}).get("egress_events", [])
+    }
+    assert trace_event_hosts >= {
+        "api.buengobierno.gob.mx",
+        "assets.cdn.gob.mx",
+    }
 
 
 def test_cross_domain_redirect_is_blocked_with_sandbox_proof(tmp_path, monkeypatch) -> None:
@@ -868,7 +1223,16 @@ def test_live_docker_capture_and_egress_gate(
         event["decision"] == "block" and event["host"] == "blocked.invalid"
         for event in result["egress_events"]
     )
-    assert not any(event["method"] == "POST" for event in result["egress_events"])
+    assert not any(
+        event["decision"] == "allow" and event["method"] == "POST"
+        for event in result["egress_events"]
+    )
+    assert any(
+        event["decision"] == "block"
+        and event["method"] == "POST"
+        and event["reason"] == "write_method_blocked"
+        for event in result["egress_events"]
+    )
 
     trace = result["trace"]
     assert len(trace) == 6

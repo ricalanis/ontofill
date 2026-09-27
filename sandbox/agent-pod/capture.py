@@ -143,6 +143,110 @@ class NetworkRequestRecorder:
         self._by_url[url] = record
 
 
+def _egress_static_allowed(host: str) -> bool:
+    allowed = {
+        item.strip().lower().rstrip(".")
+        for item in os.environ.get("EGRESS_ALLOWED_DOMAINS", "").split(",")
+        if item.strip()
+    }
+    exact = {
+        item.strip().lower().rstrip(".")
+        for item in os.environ.get("EGRESS_EXACT_ALLOWED_HOSTS", "").split(",")
+        if item.strip()
+    }
+    siblings = {
+        item.strip().lower().rstrip(".")
+        for item in os.environ.get("SIBLING_REGISTRABLE_DOMAINS", "").split(",")
+        if item.strip()
+    }
+    normalized = host.casefold().rstrip(".")
+    if exact:
+        return normalized in exact and normalized in allowed
+    if normalized in allowed:
+        return True
+    return any(
+        normalized.endswith("." + domain)
+        and not any(domain == root or domain.endswith("." + root) for root in siblings)
+        for domain in allowed
+    )
+
+
+def _request_egress_host_admission(
+    host: str, *, method: str, resource_type: str, page_url: str
+) -> bool:
+    control_url = os.environ.get("EGRESS_CONTROL_URL")
+    if not control_url:
+        return False
+    try:
+        control = urlsplit(control_url)
+        host = host.casefold().rstrip(".")
+        page_host = (urlsplit(page_url).hostname or "").casefold().rstrip(".")
+        if (
+            control.scheme != "http"
+            or control.hostname != "egress"
+            or control.port != 8888
+            or control.path != "/_ontofill/admit"
+            or not host
+        ):
+            return False
+        body = json.dumps(
+            {
+                "host": host,
+                "method": method.upper(),
+                "resource_type": resource_type,
+                "page_host": page_host,
+            }
+        )
+        connection = http.client.HTTPConnection("egress", 8888, timeout=1)
+        try:
+            connection.request(
+                "POST",
+                control.path,
+                body=body,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            )
+            response = connection.getresponse()
+            response.read()
+            return response.status == 204
+        finally:
+            connection.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+
+
+def _request_egress_admission(request, *, page_url: str) -> bool:
+    return _request_egress_host_admission(
+        urlsplit(request.url).hostname or "",
+        method=request.method,
+        resource_type=request.resource_type,
+        page_url=page_url,
+    )
+
+
+async def _block_websocket(websocket_route, *, page_url: str) -> None:
+    """Report and close every WebSocket before Chromium can open a tunnel."""
+    host = urlsplit(websocket_route.url).hostname or ""
+    if host:
+        await asyncio.to_thread(
+            _request_egress_host_admission,
+            host,
+            method="WEBSOCKET",
+            resource_type="websocket",
+            page_url=page_url,
+        )
+    await websocket_route.close(code=1008, reason="WebSockets are disabled in read-only capture")
+
+
+async def _install_page_egress_routes(context, page, request_handler) -> None:
+    """Install HTTP and WebSocket guards before navigating to page content."""
+    await context.route("**/*", request_handler)
+
+    async def close_websocket(websocket_route) -> None:
+        await _block_websocket(websocket_route, page_url=page.url)
+
+    await context.route_web_socket("**/*", close_websocket)
+
+
 class StepLimitReached(RuntimeError):
     """The pod's local action counter reached its configured cap."""
 
@@ -617,14 +721,35 @@ async def capture() -> None:
                 # Route callbacks run before the request reaches the egress proxy.
                 # Keep the attempted main-frame URL even when the proxy rejects it
                 # and Playwright later reports a navigation error.
-                record_navigation(route.request)
-                network_requests.observe_request(route.request)
-                if route.request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+                request = route.request
+                record_navigation(request)
+                network_requests.observe_request(request)
+                method = request.method.upper()
+                host = (urlsplit(request.url).hostname or "").casefold().rstrip(".")
+                static_allowed = _egress_static_allowed(host)
+                if method in {"GET", "HEAD"} and static_allowed:
                     await route.continue_()
+                    return
+                if method in {"GET", "HEAD"}:
+                    try:
+                        page_url = request.frame.url or page.url
+                    except PlaywrightError:
+                        page_url = page.url
+                    admitted = await asyncio.to_thread(
+                        _request_egress_admission, request, page_url=page_url
+                    )
+                    if admitted:
+                        await route.continue_()
+                        return
                 else:
-                    await route.abort()
+                    try:
+                        page_url = request.frame.url or page.url
+                    except PlaywrightError:
+                        page_url = page.url
+                    await asyncio.to_thread(_request_egress_admission, request, page_url=page_url)
+                await route.abort()
 
-            await context.route("**/*", read_only)
+            await _install_page_egress_routes(context, page, read_only)
 
             def observe_request(request) -> None:
                 record_navigation(request)

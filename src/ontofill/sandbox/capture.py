@@ -22,7 +22,7 @@ from typing import BinaryIO
 from urllib.parse import parse_qsl, urlsplit
 
 from ontofill.lake import FileLake, S3Lake
-from ontofill.sandbox.domains import registrable_domain, same_registrable_domain
+from ontofill.sandbox.domains import public_suffix, registrable_domain, same_registrable_domain
 from ontofill.sandbox.jobs import (
     _safe_error_message,
     normalize_egress_events,
@@ -312,6 +312,37 @@ def _domains(allowed_domains: list[str]) -> list[str]:
         not _DOMAIN.fullmatch(domain) or ".." in domain for domain in normalized
     ):
         raise ValueError("allowed_domains must contain plain DNS names")
+    return normalized
+
+
+def _sibling_domains(values: list[str] | None) -> list[str]:
+    """Validate explicit publisher registrable roots, never public suffixes."""
+    if values is None:
+        return []
+    normalized = _domains(values)
+    if any(
+        not public_suffix(domain)
+        or public_suffix(domain) == domain
+        or registrable_domain(domain) != domain
+        for domain in normalized
+    ):
+        raise ValueError("sibling_domains must be public-suffix-aware registrable domains")
+    return normalized
+
+
+def _public_suffixes(values: list[str] | None) -> list[str]:
+    """Validate PSL suffix evidence used to bound page-requested external assets."""
+    if values is None:
+        return []
+    normalized = _domains(values)
+    if any(
+        public_suffix(suffix) != suffix
+        or len(suffix.split(".")) < 2
+        or len(suffix.rsplit(".", 1)[-1]) != 2
+        or not suffix.rsplit(".", 1)[-1].isalpha()
+        for suffix in normalized
+    ):
+        raise ValueError("asset_suffixes must contain jurisdictional Public Suffix List suffixes")
     return normalized
 
 
@@ -1069,6 +1100,8 @@ def capture_url(
     *,
     allowed_domains: list[str],
     exact_hosts: list[str] | None = None,
+    sibling_domains: list[str] | None = None,
+    asset_suffixes: list[str] | None = None,
     lake: FileLake | S3Lake,
     run_id: str,
     source_id: str,
@@ -1085,8 +1118,12 @@ def capture_url(
     """Capture a public page or one bounded gVisor spider job."""
     domains = _domains(allowed_domains)
     exact = _domains(exact_hosts) if exact_hosts is not None else None
+    siblings = _sibling_domains(sibling_domains)
+    suffixes = _public_suffixes(asset_suffixes)
     if exact is not None and not set(exact).issubset(domains):
         raise ValueError("exact_hosts must be a subset of allowed_domains")
+    if exact is not None and (siblings or suffixes):
+        raise ValueError("page egress policy cannot widen an exact-host capture")
     step_id = f"step:{uuid.uuid4().hex}"
     job_id = job_id or f"job:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
@@ -1105,6 +1142,8 @@ def capture_url(
         "url": url,
         "job_id": job_id,
         "allowed_domains": domains,
+        "sibling_domains": siblings,
+        "asset_suffixes": suffixes,
         "capture": ["site_graph"] if settings is not None else ["html", "a11y", "screenshot"],
         "limits": budget.as_dict(),
     }
@@ -1241,6 +1280,12 @@ def capture_url(
             "-e",
             "ALLOWED_DOMAINS=" + ",".join(domains),
             *(["-e", "EXACT_ALLOWED_HOSTS=" + ",".join(exact)] if exact is not None else []),
+            *(["-e", "SIBLING_REGISTRABLE_DOMAINS=" + ",".join(siblings)] if siblings else []),
+            *(
+                ["-e", "SAME_JURISDICTION_PUBLIC_SUFFIXES=" + ",".join(suffixes)]
+                if suffixes
+                else []
+            ),
             egress_image,
         )
         _docker("network", "connect", "bridge", proxy_name)
@@ -1272,6 +1317,14 @@ def capture_url(
                 "CAPTURE_URL=" + url,
                 "-e",
                 "PROXY_URL=http://egress:8888",
+                "-e",
+                "EGRESS_CONTROL_URL=http://egress:8888/_ontofill/admit",
+                "-e",
+                "EGRESS_ALLOWED_DOMAINS=" + ",".join(domains),
+                "-e",
+                "EGRESS_EXACT_ALLOWED_HOSTS=" + ",".join(exact or []),
+                "-e",
+                "SIBLING_REGISTRABLE_DOMAINS=" + ",".join(siblings),
                 "-e",
                 "CAPTURE_MODE=" + ("spider" if settings is not None else "page"),
                 "-e",
