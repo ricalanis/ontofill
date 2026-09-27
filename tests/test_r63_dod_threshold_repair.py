@@ -109,9 +109,10 @@ def _draft(criterion_ids: list[str], *, unsupported: set[str] | None = None) -> 
 
 
 def test_approved_sf_shaped_thresholds_are_repaired_and_receipted(tmp_path) -> None:
-    prd = _prd()
+    # one criterion: three identical completeness queries for three criteria are copies (R64b), set aside
+    prd = {"definition_of_done": _prd()["definition_of_done"][:1]}
     _approve_prd(tmp_path, prd)
-    decision = _client([_draft(["dod1", "dod2", "dod3"])])
+    decision = _client([_draft(["dod1"])])
     repairs: list[dict] = []
 
     queries = _draft_dod_queries(
@@ -122,8 +123,8 @@ def test_approved_sf_shaped_thresholds_are_repaired_and_receipted(tmp_path) -> N
     assert [
         (item["criterion_id"], item["target"], item["operator"], item["min_ratio"])
         for item in queries["queries"]
-    ] == [(criterion_id, 1, ">=", 1.0) for criterion_id in ("dod1", "dod2", "dod3")]
-    assert [item["criterion_id"] for item in repairs] == ["dod1", "dod2", "dod3"]
+    ] == [("dod1", 1, ">=", 1.0)]
+    assert [item["criterion_id"] for item in repairs] == ["dod1"]
     assert all(item["fields"] == ["target", "operator", "min_ratio"] for item in repairs)
     assert all(item["approved_values"]["min_ratio"] == 1.0 for item in repairs)
 

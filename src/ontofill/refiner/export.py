@@ -657,10 +657,15 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int | float:
         return len(selected)
     if aggregate == "count_entities_with_relation":
         relation_id = query["relation_id"]
-        return sum(
+        linked = sum(
             any(link["property"] == relation_id for link in entity.get("links", []))
             for entity in selected
         )
+        if (
+            query.get("measure") == "share"
+        ):  # the share of the counted class that carries the relation
+            return linked / len(selected) if selected else 0.0
+        return linked
     if aggregate == "count_entities_with_properties":
         return sum(
             all(

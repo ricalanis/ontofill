@@ -1740,6 +1740,35 @@ def _is_cross_check(relation_id: str | None, ontology: dict) -> bool:
     return bool(joined_on) and identifier is not None and joined_on != identifier
 
 
+def _full_share(criterion: dict) -> bool:
+    """A criterion that asks for all of something: `>= 1` on a share (it declares a per-entity min_ratio, or its
+    target is exactly 1 with `>=`)."""
+    return criterion.get("operator") == ">=" and criterion.get("target") == 1
+
+
+def _zero_count_equivalent(query: dict, criterion: dict) -> bool:
+    """ "Every value carries evidence" asked as a full share is the same criterion as "no value lacks evidence":
+    `count_values_without_evidence <= 0`. The engine compiles it so, with a receipt."""
+    return query.get("aggregate") == "count_values_without_evidence" and _full_share(criterion)
+
+
+def _relation_share(query: dict, criterion: dict) -> bool:
+    """A share of primary entities that carry a relation ("share of entities cross-checked"): the criterion is a
+    share (declares min_ratio, target <= 1) compiled as a relation count, which is measured as linked / all."""
+    target = criterion.get("target")
+    return (
+        query.get("aggregate") == "count_entities_with_relation"
+        and criterion.get("min_ratio") is not None
+        and isinstance(target, (int, float))
+        and target <= 1
+    )
+
+
+def _query_signature(query: dict) -> str:
+    keep = {k: v for k, v in query.items() if k not in {"criterion_id", "target", "operator"}}
+    return json.dumps(keep, sort_keys=True, default=str)
+
+
 _ZERO_OPERATORS = {"<=", "<", "=", "=="}
 _ENTITY_COUNTS = {"count_entities", "count_entities_with_relation"}
 
@@ -1794,6 +1823,11 @@ def _draft_dod_queries(
         "entities, use count_entities_with_relation with the exact reviewed relation_id and "
         "class_id. The relation domain must be the class named by that criterion. Do not use the "
         "relation aggregate for a criterion the critic marked as an ordinary entity count. "
+        "Each criterion must compile to a query that measures its own metric; never reuse another "
+        "criterion's query. A criterion that every value carries a cited source compiles to "
+        "count_values_without_evidence. A criterion about the share of primary-class entities that "
+        "carry a relation (for example, cross-checked against a secondary source) compiles to "
+        "count_entities_with_relation with measure='share' and that relation_id. "
         "Copy each criterion's target and comparison operator exactly. Do not write SQL or code. "
         "Human revisions override prior proposals, including objections to earlier DoD queries: "
         f"{json.dumps(revisions or [], ensure_ascii=False)}. "
@@ -1817,14 +1851,20 @@ def _draft_dod_queries(
             if criterion is None:
                 continue
             before = deepcopy(query)
-            query["target"] = criterion["target"]
-            query["operator"] = criterion["operator"]
+            equivalent = _zero_count_equivalent(query, criterion)
+            query["target"] = 0 if equivalent else criterion["target"]
+            query["operator"] = "<=" if equivalent else criterion["operator"]
             changed_fields = []
             approved_values = {
                 "target": criterion["target"],
                 "operator": criterion["operator"],
             }
             removed_fields = []
+            if equivalent:
+                approved_values["compiled_as"] = "count_values_without_evidence <= 0"
+            if _relation_share(query, criterion) and query.get("measure") != "share":
+                query["measure"] = "share"
+                changed_fields.append("measure")
             if query["target"] != before.get("target"):
                 changed_fields.append("target")
             if query["operator"] != before.get("operator"):
@@ -1866,6 +1906,8 @@ def _draft_dod_queries(
             if (
                 criterion.get("min_ratio") is not None
                 and query.get("aggregate") != "entities_meeting_completeness"
+                and not _relation_share(query, criterion)
+                and not equivalent
             ):
                 safe_proposal = {
                     key: deepcopy(before[key])
@@ -1918,6 +1960,32 @@ def _draft_dod_queries(
                                 else f" of the primary class `{primary}`, which is met only when "
                                 f"there are no `{primary}` entities at all"
                             )
+                        ),
+                    }
+                )
+        flagged = {item["criterion_id"] for item in unsupported}
+        first_by_signature: dict[str, str] = {}
+        for query in response.get("queries", []):
+            criterion = criteria.get(query.get("criterion_id"))
+            if criterion is None:
+                continue
+            signature = _query_signature(query)
+            first = first_by_signature.setdefault(signature, criterion["id"])
+            if first != criterion["id"] and criterion["id"] not in flagged:
+                unsupported.append(
+                    {
+                        "criterion_id": criterion["id"],
+                        "metric": criterion.get("metric", ""),
+                        "approved_thresholds": {
+                            "target": criterion["target"],
+                            "operator": criterion["operator"],
+                        },
+                        "aggregate": query.get("aggregate", "unknown"),
+                        "proposal": deepcopy(query),
+                        "why": (
+                            f"DoD criterion `{criterion['id']}` ({criterion.get('metric', '')!r}) was "
+                            f"compiled to the same query as `{first}`; each criterion must measure its "
+                            "own metric"
                         ),
                     }
                 )
@@ -2119,7 +2187,14 @@ def _validate_queries(
     relations = {item["id"]: item for item in ontology.get("relations", [])}
     for query in queries:
         criterion = criteria[query["criterion_id"]]
-        if query["target"] != criterion["target"] or query["operator"] != criterion["operator"]:
+        equivalent = (
+            _zero_count_equivalent(query, criterion)
+            and query["target"] == 0
+            and query["operator"] == "<="
+        )
+        if not equivalent and (
+            query["target"] != criterion["target"] or query["operator"] != criterion["operator"]
+        ):
             raise ValueError(
                 f"DoD criterion `{criterion['id']}` query target/operator "
                 f"({query['target']!r}, {query['operator']!r}) differs from approved PRD "
@@ -2137,7 +2212,11 @@ def _validate_queries(
                     f"{query.get('min_ratio')!r} differs from approved PRD "
                     f"{criterion['min_ratio']!r}"
                 )
-        elif criterion.get("min_ratio") is not None:
+        elif (
+            criterion.get("min_ratio") is not None
+            and not equivalent
+            and not (_relation_share(query, criterion) and query.get("measure") == "share")
+        ):
             raise ValueError(
                 f"DoD criterion `{criterion['id']}` approved min_ratio="
                 f"{criterion['min_ratio']!r} is not evaluable by aggregate "
