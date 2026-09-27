@@ -22,7 +22,7 @@ FORMAT: `uv run ruff check src/ontofill/workflow.py tests/test_r10_workflow.py &
 - [x] Add a synthetic recorded test for P3 selection and captured-page prompt spans; wrap the unwrapped P3 candidate title/snippet.
 - [x] Assert P5 extracted-page spans and hostile page-derived repair stderr remain inside escaped `<page_content>` boundaries.
 - [x] Keep the new gateway token preferred and prove fallback to the legacy environment name with synthetic values.
-- [ ] Run the focused managed test and Ruff checks, then commit the isolated branch.
+- [x] Run the focused managed test and Ruff checks, then commit the isolated branch.
 FILES: `src/ontofill/inference/page_content.py`, `src/ontofill/inference/decision.py`, `src/ontofill/phases/p3_fanout/`, `src/ontofill/phases/p5_execute/`, `src/ontofill/repair/`, focused tests.
 TASK: Keep every page-derived string sent by the engine inside a gateway-screenable content span.
 DONE: `uv run pytest -q tests/test_r9b_prompt_screening.py tests/test_pattern_a.py tests/test_inference.py` and Ruff check/format for the edited engine and test files.
