@@ -2,7 +2,7 @@
 
 1. [x] Add synthetic status regressions: ordinary robots 4xx allows pages under the page cap; 429, 5xx, timeout and unreachable keep the conservative stop. Baseline failed at the expected policy assertions.
 2. [x] Record normalized robots status through sandbox output and the P3 site-graph schema without changing the existing graph envelope version.
-3. [x] Run the focused managed pytest/Ruff/schema/diff DONE gate and commit the isolated branch; no push or live run. The gate passed 31 tests and all configured checks.
+3. [x] Run the focused managed pytest/Ruff/schema/diff DONE gate and commit the isolated branch; the root full gate passed 559 tests/5 skips. Public push and live SAT proof are separate.
 FILES: `sandbox/agent-pod/spider_policy.py`, `src/ontofill/phases/p3_fanout/site_graph.py`, `schemas/site-graph.schema.json`, `tests/test_spider_policy.py`, `tests/test_site_graph.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
 TASK: Apply RFC 9309's unavailable versus unreachable distinction while honoring R38's stricter 429 stop, and preserve each robots outcome in the graph.
 DONE: the managed focused gate in `GOAL.md` passes with branch-specific synthetic coverage and schema validation.
