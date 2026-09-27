@@ -79,4 +79,3 @@ back to `uv run --project tools/containment --extra dev ontofill-containment`.
 
 Running the engine's own suite from the checkout root is unchanged
 (`uv run pytest -q`); the tool is not an engine workspace member.
-
