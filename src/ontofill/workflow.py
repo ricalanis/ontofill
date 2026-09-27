@@ -1076,14 +1076,16 @@ def run_case(
                     "phase2.factors.pause",
                     "02-ontology/factors/factors.json",
                 )
-                step["evaluated"] = {"status": "paused", "reason": reason}
+                step["evaluated"] = {
+                    "status": "needs_human",
+                    "reason": reason,
+                    "reason_code": "model_validation_exhausted",
+                }
                 _publish_steps(feed, [step])
                 trace.append(step)
-                feed.update_status(
-                    state="paused", phase=2, checkpoint_pending="factors", reason=reason
-                )
-                print(f"state=paused checkpoint_pending=factors reason={reason}")
-                return 3
+                feed.update_status(state="paused", phase=2, checkpoint_pending=None, reason=reason)
+                print(f"state=paused phase=2 reason={reason} needs_human=true")
+                return NEEDS_HUMAN_EXIT
             step = _trace_step(
                 run_id, 2, provenance, "phase2.factors", "02-ontology/factors/factors.json"
             )
@@ -1126,14 +1128,16 @@ def run_case(
                 step = _trace_step(
                     run_id, 2, provenance, "phase2.ontology.pause", "02-ontology/ontology.json"
                 )
-                step["evaluated"] = {"status": "paused", "reason": reason}
+                step["evaluated"] = {
+                    "status": "needs_human",
+                    "reason": reason,
+                    "reason_code": "model_validation_exhausted",
+                }
                 _publish_steps(feed, [step])
                 trace.append(step)
-                feed.update_status(
-                    state="paused", phase=2, checkpoint_pending="ontology", reason=reason
-                )
-                print(f"state=paused checkpoint_pending=ontology reason={reason}")
-                return 3
+                feed.update_status(state="paused", phase=2, checkpoint_pending=None, reason=reason)
+                print(f"state=paused phase=2 reason={reason} needs_human=true")
+                return NEEDS_HUMAN_EXIT
             step = _trace_step(
                 run_id, 2, provenance, "phase2.ontology", "02-ontology/ontology.json"
             )

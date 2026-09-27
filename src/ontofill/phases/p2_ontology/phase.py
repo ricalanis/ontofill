@@ -1052,6 +1052,8 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
         )
 
     properties = {item["id"]: item for item in ontology["properties"]}
+    requirements_by_id = {item["id"]: item for item in requirements}
+    candidate_labels = ", ".join(f"`{item['label']}` (`{item['id']}`)" for item in primary_dod)
     bindings_seen = set()
     core_fields_seen = 0
     errors = []
@@ -1077,9 +1079,12 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
             bindings_seen.add(binding_key)
             prop = properties.get(property_id) if isinstance(property_id, str) else None
             if prop is None:
+                requirement_text = requirements_by_id[requirement_id].get("description", "")
                 errors.append(
                     f"core PRD field `{field_label}` from requirement `{requirement_id}` has no "
-                    f"matching property on primary class `{primary_class}` marked `dod: true`"
+                    f"matching property on primary class `{primary_class}` marked `dod: true`; "
+                    f"PRD wording: {requirement_text!r}. Candidate primary-class `dod: true` "
+                    f"properties: {candidate_labels or '(none)'}"
                 )
             elif prop["domain"] != primary_class or not prop["dod"]:
                 errors.append(
@@ -1199,14 +1204,16 @@ def _review_rule_semantics(ontology: dict, decision: DecisionClient) -> None:
     received_ids = [item["rule_id"] for item in response["assessments"]]
     if len(received_ids) != len(set(received_ids)) or set(received_ids) != expected_ids:
         raise ValueError("rule critic must assess every executable rule exactly once")
-    errors = [
-        f"rule `{item['rule_id']}` label/checks do not match its executable predicate: "
-        f"{item['reason']}"
+    errors = {
+        item["rule_id"]: (
+            f"rule `{item['rule_id']}` label/checks do not match its executable predicate: "
+            f"{item['reason']}"
+        )
         for item in response["assessments"]
         if not item["matches"]
-    ]
+    }
     if errors:
-        raise ValueError("; ".join(errors))
+        raise OntologyProposalErrors(errors, {})
 
 
 def _review_ontology_semantics(
@@ -1225,12 +1232,9 @@ def _review_ontology_semantics(
         except (ValidationError, ValueError) as exc:
             errors.append(str(exc))
 
-    try:
-        _review_rule_semantics(ontology, decision)
-    except (ValidationError, ValueError) as exc:
-        errors.append(str(exc))
     if errors:
         raise ValueError("; ".join(errors))
+    _review_rule_semantics(ontology, decision)
     return relation_counts
 
 

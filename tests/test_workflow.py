@@ -7,8 +7,10 @@ import uuid
 
 import pytest
 
+from ontofill.inference import generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p1_scope.phase import PrdDraftUnavailable
+from ontofill.phases.p2_ontology.phase import OntologyDraftUnavailable
 from ontofill.phases.p3_fanout.authority import source_fingerprint
 from ontofill.workflow import (
     NEEDS_HUMAN_EXIT,
@@ -92,6 +94,56 @@ def test_exhausted_prd_validation_needs_human_without_empty_approval(
     ]
     pause = next(step for step in trace if step["requested"].get("tool") == "phase1.prd.pause")
     assert pause["evaluated"]["status"] == "needs_human"
+    assert "needs_human=true" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("phase", ["factors", "ontology"])
+def test_exhausted_p2_without_artifact_needs_human_and_has_no_pending_checkpoint(
+    tmp_path, monkeypatch, capsys, phase
+) -> None:
+    case = tmp_path / "tracked-case"
+    case.mkdir()
+    (case / "brief.md").write_text("Find public reading rooms in Example City.\n")
+    run_id = "mock-" + uuid.uuid4().hex
+    decision = _preview_decision("Public reading rooms")
+
+    def prd(*_args, **_kwargs):
+        return {"generated_by": generated_by(decision)}
+
+    def factors(*_args, **_kwargs):
+        if phase == "factors":
+            raise OntologyDraftUnavailable("phase2.factors", 3, "synthetic factors exhaustion")
+        return {"generated_by": generated_by(decision)}
+
+    def ontology(*_args, **_kwargs):
+        raise OntologyDraftUnavailable("phase2.schema", 3, "synthetic ontology exhaustion")
+
+    monkeypatch.setattr("ontofill.workflow.draft_prd", prd)
+    monkeypatch.setattr("ontofill.workflow.draft_factors", factors)
+    monkeypatch.setattr("ontofill.workflow.draft_ontology", ontology)
+    monkeypatch.setattr("ontofill.workflow.require_approval", lambda *_args, **_kwargs: True)
+
+    assert run_case(case, run_id=run_id, decision=decision) == NEEDS_HUMAN_EXIT
+    scratch, lake = _scratch_case(case, run_id)
+    artifact = (
+        scratch / "02-ontology/factors/factors.json"
+        if phase == "factors"
+        else scratch / "02-ontology/ontology.json"
+    )
+    assert not artifact.exists()
+    status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
+    assert status["state"] == "paused"
+    assert status["checkpoint_pending"] is None
+    assert "synthetic" in status["reason"]
+    trace = [
+        json.loads(line)
+        for line in lake.read_key(f"runs/{case.name}/{run_id}/trace.live.jsonl").splitlines()
+    ]
+    tool = f"phase2.{phase}.pause"
+    pause = next(step for step in trace if step["requested"].get("tool") == tool)
+    assert pause["evaluated"]["status"] == "needs_human"
+    assert pause["evaluated"]["reason_code"] == "model_validation_exhausted"
+    assert "synthetic" in pause["evaluated"]["reason"]
     assert "needs_human=true" in capsys.readouterr().out
 
 

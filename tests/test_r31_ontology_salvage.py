@@ -11,7 +11,11 @@ from ontofill.case.checkpoints import write_json
 from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
-from ontofill.phases.p2_ontology.phase import OntologyDraftUnavailable, draft_ontology
+from ontofill.phases.p2_ontology.phase import (
+    OntologyDraftUnavailable,
+    _review_core_field_bindings,
+    draft_ontology,
+)
 
 
 def _prd() -> dict:
@@ -163,7 +167,9 @@ def _candidate() -> dict:
     }
 
 
-def _decision(candidates: list[dict]) -> RecordedDecisionClient:
+def _decision(
+    candidates: list[dict], *, rule_semantics: list[dict] | None = None
+) -> RecordedDecisionClient:
     return RecordedDecisionClient(
         {
             "phase2.factors": [_factors()],
@@ -202,7 +208,8 @@ def _decision(candidates: list[dict]) -> RecordedDecisionClient:
                     ]
                 }
             ],
-            "critic.phase2.rule_semantics": [
+            "critic.phase2.rule_semantics": rule_semantics
+            or [
                 {
                     "assessments": [
                         {
@@ -314,6 +321,100 @@ def test_invalid_relation_endpoint_feedback_and_salvage(tmp_path) -> None:
     ]
     assert "record" in recommendations["unresolved"][0]["reason"]
     assert "event" in recommendations["unresolved"][0]["reason"]
+
+
+def test_semantically_invalid_presence_rule_is_set_aside_after_three_attempts(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Inspect generic public records.", encoding="utf-8")
+    candidate = _candidate()
+    candidate["relations"] = []
+    candidate["rules"] = [
+        {
+            "id": "address_presence",
+            "label": "Address is present",
+            "checks": "The record has an address value",
+            "verify": ["Confirm the address is populated"],
+            "predicate": {
+                "all": [
+                    {
+                        "op": "same_value",
+                        "left_property": "record_name",
+                        "right_property": "record_name",
+                    }
+                ]
+            },
+        }
+    ]
+    bad_rule_critic = {
+        "assessments": [
+            {
+                "rule_id": "address_presence",
+                "matches": False,
+                "reason": "same_value compares the property with itself and is tautological, not presence.",
+            }
+        ]
+    }
+    decision = _decision(
+        [deepcopy(candidate) for _ in range(3)], rule_semantics=[bad_rule_critic] * 3
+    )
+
+    ontology = draft_ontology(tmp_path, _prd(), _factors(), decision)
+
+    assert ontology["rules"] == []
+    prompts = [prompt for purpose, prompt in decision.calls if purpose == "phase2.schema"]
+    assert "same_value compares the property with itself" in prompts[1]
+    recommendations = json.loads(
+        (tmp_path / "02-ontology/recommendations/unresolved.json").read_text(encoding="utf-8")
+    )
+    assert len(recommendations["unresolved"]) == 1
+    unresolved = recommendations["unresolved"][0]
+    assert unresolved["kind"] == "rule"
+    assert unresolved["id"] == "address_presence"
+    assert unresolved["proposal"] == candidate["rules"][0]
+    assert "tautological" in unresolved["reason"]
+    validate_document("ontology", ontology)
+
+
+def test_core_field_feedback_names_prd_phrase_and_primary_dod_candidates() -> None:
+    prd = _prd()
+    prd["requirements"][0]["description"] = "Collect weekly opening hours for every branch."
+    prd["definition_of_done"][0]["min_ratio"] = 0.95
+    ontology = _candidate()
+    ontology["properties"].append(
+        {
+            "id": "weekly_hours_text",
+            "label": "Weekly hours text",
+            "domain": "record",
+            "datatype": "string",
+            "dod": True,
+            "order": len(ontology["properties"]),
+            "description": "Synthetic opening hours",
+            "aligned_to": None,
+        }
+    )
+    decision = RecordedDecisionClient(
+        {
+            "critic.phase2.core_field_bindings": [
+                {
+                    "requirements": [
+                        {
+                            "requirement_id": "trace",
+                            "core_fields": [{"field": "weekly opening hours", "property_id": None}],
+                            "non_core_reason": None,
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError) as error:
+        _review_core_field_bindings(prd, ontology, decision)
+
+    message = str(error.value)
+    assert "weekly opening hours" in message
+    assert "Collect weekly opening hours" in message
+    assert "Weekly hours text" in message
+    assert "weekly_hours_text" in message
 
 
 def test_clean_draft_clears_prior_unresolved_recommendations(tmp_path) -> None:
