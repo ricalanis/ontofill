@@ -164,6 +164,18 @@ def _secondary_clauses(revisions: list[dict]) -> list[str]:
         previous = ""
         for fragment in _revision_clauses(revision["reason"]):
             if SECONDARY_REQUEST.search(fragment):
+                # A later denial can ask to preserve already reviewed secondary
+                # publishers. Its other objects (DoD, tiers, etc.) are not new
+                # source subjects; earlier revisions still enforce the sources.
+                if re.search(
+                    r"\b(?:keep|preserve|maintain|mantener|conservar)\b", fragment, re.IGNORECASE
+                ) and re.search(
+                    r"\b(?:as they are|unchanged|tal como est[aá]n|sin cambios)\b",
+                    fragment,
+                    re.IGNORECASE,
+                ):
+                    previous = fragment
+                    continue
                 clause = fragment
                 if not _secondary_subjects(clause) and previous:
                     clause = f"{previous} {clause}"
@@ -569,6 +581,25 @@ def _remove_grounding_notes(document: dict) -> None:
                 item["description"] = clean or "Description requires human review"
 
 
+def _narrow_domain_patch_target(document: dict, reason: str) -> tuple[int, str] | None:
+    """Find the one existing publisher domain explicitly named by a domain-only denial."""
+    if not re.search(
+        r"\b(?:one|single|only)\s+(?:defect|issue|change|fix)\b|\bonly\s+(?:fix|change|replace)\b",
+        reason,
+        re.IGNORECASE,
+    ):
+        return None
+    if not re.search(r"\b(?:domain|dominio|host)\b", reason, re.IGNORECASE):
+        return None
+    named = [
+        (index, domain)
+        for index, publisher in enumerate(document["authority_policy"]["trusted_publishers"])
+        for domain in publisher["domains"]
+        if re.search(rf"(?<![\w.-]){re.escape(domain)}(?![\w.-])", reason, re.IGNORECASE)
+    ]
+    return named[0] if len(named) == 1 else None
+
+
 def draft_prd(
     case_dir: Path,
     decision: DecisionClient,
@@ -604,6 +635,8 @@ def draft_prd(
             ).encode()
         ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
+    prior_for_patch: dict | None = None
+    domain_patch_target: tuple[int, str] | None = None
     if output.exists():
         document = load_json(output)
         cached_digest = (
@@ -619,6 +652,18 @@ def draft_prd(
         if not mock_preview and decision.backend == "vultr" and approval_path.exists():
             approval = load_verified_approval(approval_path, case_dir, ["01-scope/prd.json"], "prd")
             approved = approval.get("decision", "approve") != "deny"
+            if not approved and document.get("generated_by", {}).get("backend") == "vultr":
+                try:
+                    validate_document("global-prd", document)
+                except ValidationError:
+                    pass  # a reviewed legacy draft may still need the full bounded redraft
+                else:
+                    if _authority_policy_check(document, revisions[:-1]).passed:
+                        domain_patch_target = _narrow_domain_patch_target(
+                            document, revisions[-1]["reason"]
+                        )
+                        if domain_patch_target is not None:
+                            prior_for_patch = document
         if document.get("generated_by", {}).get("backend") == decision.backend and (
             cache_matches or approved
         ):
@@ -675,6 +720,10 @@ def draft_prd(
     base_schema = model_output_schema("global-prd")
     base_schema["properties"].pop("revisions", None)
     base_schema["properties"].pop("open_issues", None)
+    if decision.backend == "vultr":
+        publisher_required = base_schema["$defs"]["trusted_publisher"]["required"]
+        if "tier" not in publisher_required:
+            publisher_required.append("tier")
     sections = (
         ("personas", "jobs_to_be_done", "requirements"),
         ("constraints", "non_goals", "authority_policy"),
@@ -759,6 +808,66 @@ def draft_prd(
             ) from exc
         return normalize_prd(raw)
 
+    def domain_patch(extra_objections: tuple[str, ...] = ()) -> dict:
+        assert prior_for_patch is not None and domain_patch_target is not None
+        index, old_domain = domain_patch_target
+        publisher = prior_for_patch["authority_policy"]["trusted_publishers"][index]
+        patch_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["domains"],
+            "properties": {
+                "domains": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "items": deepcopy(
+                        base_schema["$defs"]["trusted_publisher"]["properties"]["domains"]["items"]
+                    ),
+                }
+            },
+        }
+
+        def candidate(patch: dict) -> dict:
+            document = deepcopy(prior_for_patch)
+            document["authority_policy"]["trusted_publishers"][index]["domains"] = patch["domains"]
+            document["revisions"] = revisions
+            document["generated_by"] = generated_by(decision)
+            return document
+
+        def validate_patch(patch: dict) -> None:
+            if any(domain.casefold() == old_domain.casefold() for domain in patch["domains"]):
+                raise ValueError("replacement domains still include the denied domain")
+            document = candidate(patch)
+            validate_document("global-prd", document)
+            authority = _authority_policy_check(document, revisions)
+            if not authority.passed:
+                raise ValueError("; ".join(authority.objections))
+
+        patch_prompt = (
+            "Revise the digest-reviewed PRD by replacing ONLY the domains array for one publisher. "
+            "All other fields, publisher tiers, jurisdictions, DoD criteria and source classes are fixed. "
+            "Return only the replacement domains array. The proposed domains must be specific publisher "
+            "domains that resolve; do not repeat the denied domain. "
+            f"Publisher: {json.dumps(publisher, ensure_ascii=False)}. "
+            f"Human denial: {revisions[-1]['reason']}. "
+            f"Reviewer objections: {json.dumps(extra_objections, ensure_ascii=False)}"
+        )
+        try:
+            patch = complete_validated(
+                decision,
+                "phase1.prd.domain_patch",
+                patch_prompt,
+                patch_schema,
+                validate_patch,
+                max_attempts=3,
+            )
+        except ModelValidationExhausted as exc:
+            raise PrdDraftUnavailable(
+                str(exc), purpose=exc.purpose, attempts=exc.attempts, reason=exc.reason
+            ) from exc
+        return candidate(patch)
+
     review = getattr(decision, "review_json", None)
 
     def critique(artifact: dict, _context: dict, _iteration: int) -> dict:
@@ -782,6 +891,8 @@ def draft_prd(
         objections = (*verdict.objections, *check_objections)
         if not objections or decision.backend == "recorded":
             return artifact
+        if prior_for_patch is not None:
+            return domain_patch(objections)
         repaired = prompt + (
             "\nIndependent critic objections (resolve every item verbatim): "
             + json.dumps(verdict.objections, ensure_ascii=False)
@@ -804,7 +915,7 @@ def draft_prd(
     def propose(context: dict, iteration: int) -> dict:
         previous = context["previous"]
         if previous is None:
-            return complete(prompt)
+            return domain_patch() if prior_for_patch is not None else complete(prompt)
         return previous
 
     loop = PhaseLoop[dict](

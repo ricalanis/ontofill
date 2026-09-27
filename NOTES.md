@@ -1,5 +1,12 @@
 # Strategy and assumptions
 
+## R26c narrow domain denial (2026-09-27)
+- Red baseline: all three new recorded regressions failed as intended: the fourth human denial created false SECONDARY subjects, the engine redrafted the whole PRD, and the model schema left publisher tier optional.
+- First focused post-change check: 14 passed, 1 failed. The remaining failure was a test fixture mismatch: the synthetic v4 declared two prior revisions inside `prd.json` but did not create their archived denial markers, so `checkpoint_revisions` correctly assigned the active denial `n=1` rather than the real case's `n=3`. The fixture now creates synthetic archived markers; no production change is needed for that failure.
+- The successor focused test passed all 15 cases; Ruff then rejected five new `re.I` aliases and import order in the new test. This is a distinct style-only cause. Apply Ruff's deterministic fixes and formatter before the next managed check.
+- The first full integration gate passed 444 tests, failed one, and skipped five. A pre-existing live fake transport produced a valid secondary publisher without `jurisdiction`; R26c required only `tier`, but my initial model-tool schema also required jurisdiction. That extra requirement caused three bounded schema retries and the test failure. Removed only the extra jurisdiction requirement; the deterministic authority check still requires an in-scope primary publisher. This is distinct from the fixture and style issues above.
+- The final reviewed gate passed **445 tests, 5 skipped**, Ruff lint and format clean on 165 files. It includes invalid-patch rollback: a refused replacement leaves the reviewed PRD, sidecar, Markdown and active denial byte-for-byte unchanged. A schema-invalid legacy denied draft falls back to the existing full bounded redraft rather than raising from patch-target selection.
+
 ## R28 runner integration and formatter baseline (2026-09-27)
 - The first integrated runner check passed 22 tests and Ruff lint, then failed `ruff format --check` across the runner tree. Six runner files already have formatting drift on origin/main; `git show origin/main:runner/ontofill_runner/runner.py | ruff format --check --stdin-filename ... -` also exits 1.
 - A second, narrower runner check passed the same 22 tests and lint, then failed `ruff format --check runner/ontofill_runner/state.py`. Its docstring indentation and pre-existing `event` line wrap also fail on origin/main. The hypothesis that only unrelated runner files caused the failure was wrong.

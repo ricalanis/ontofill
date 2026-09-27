@@ -1,4 +1,10 @@
-# Goal
+# Current goal: R26c live PRD redraft after a narrow human deny
+
+Preserve a reviewed PRD while correcting only the field named by a new digest-verified denial; keep the authority policy valid under all human revisions.
+
+DONE: the recorded v4 plus fourth denial demonstrates a bounded structured domain patch that changes only the named publisher domains, new full-draft tool schemas require tier, and the full engine pytest and Ruff gate passes. Public main and the control VM fast-forward; the orchestrator alone starts the next live console run. This lane never writes the real case.
+
+## Prior R26b goal
 R26b: a human secondary-source clause remains intact across common abbreviations, and a PRD with a matching secondary publisher kind plus a specific domain passes the authority check. Missing publishers receive actionable, subject-specific feedback before approval.
 DONE: the exact archived ES and EN denial reasons pass a recorded PRD check with domain-bearing secondary publishers; a missing publisher names the unmatched subject; `uv run pytest -q`, Ruff lint/format, pre-push scan and VM fast-forward pass. The live case is resumed only by the orchestrator through the console.
 

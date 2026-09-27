@@ -1,5 +1,12 @@
 # Work list
 
+## R26c current slice
+- [x] Reproduce false secondary subjects, full redraft and optional tier with the recorded v4 plus fourth denial.
+- [x] Require tier in new live PRD tool output, preserving legacy artifact validation.
+- [x] Patch only the denied publisher domains from the digest-reviewed PRD; retain all other fields.
+- [x] Pass focused and full managed checks: 445 passed, 5 skipped; Ruff clean.
+- [ ] Pre-push scan, push main, fast-forward control VM, and hand the next console run to the orchestrator.
+
 ## R26b live PRD authority clauses
 - [x] Integrate the separately owned exact-text recorded regression.
 - [x] Preserve abbreviations in secondary clauses and merge marker-only fragments with their subject.
