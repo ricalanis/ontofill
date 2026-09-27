@@ -16,9 +16,74 @@
     "repairs": {
       "type": "array",
       "items": {"$ref": "#/$defs/repair"}
+    },
+    "query_repairs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/query_repair"}
+    },
+    "unresolved_criteria": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/unresolved_criterion"}
     }
   },
   "$defs": {
+    "query_repair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion_id", "fields", "approved_values", "reason"],
+      "properties": {
+        "criterion_id": {"type": "string", "minLength": 1},
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["target", "operator", "min_ratio"]}
+        },
+        "approved_values": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target", "operator"],
+          "properties": {
+            "target": {"type": "number", "minimum": 0},
+            "operator": {"enum": [">=", ">", "=", "<=", "<"]},
+            "min_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "removed_fields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["min_ratio"]}
+        },
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "unresolved_criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criterion_id",
+        "metric",
+        "reason",
+        "approved_thresholds",
+        "rejected_query"
+      ],
+      "properties": {
+        "criterion_id": {"type": "string", "minLength": 1},
+        "metric": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1},
+        "approved_thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target", "operator", "min_ratio"],
+          "properties": {
+            "target": {"type": "number", "minimum": 0},
+            "operator": {"enum": [">=", ">", "=", "<=", "<"]},
+            "min_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "rejected_query": {"$ref": "dod-queries.schema.json#/$defs/query"}
+      }
+    },
     "repair": {
       "type": "object",
       "additionalProperties": false,

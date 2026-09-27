@@ -258,6 +258,20 @@ class OntologyProposalErrors(ValueError):
         super().__init__("; ".join(messages))
 
 
+class UnsupportedDoDQuerySemantics(ValueError):
+    """Approved per-entity thresholds cannot be represented by a proposed query aggregate."""
+
+    def __init__(self, unsupported: list[dict]) -> None:
+        self.unsupported = unsupported
+        descriptions = [
+            f"DoD criterion `{item['criterion_id']}` has approved min_ratio="
+            f"{item['approved_min_ratio']!r}, but aggregate `{item['aggregate']}` cannot "
+            "evaluate per-entity completeness"
+            for item in unsupported
+        ]
+        super().__init__("; ".join(descriptions))
+
+
 _VALIDATION_ATTEMPTS = 3
 _VALIDATION_ERROR_LIMIT = 10000
 
@@ -291,6 +305,7 @@ def _complete_validated_json(
     validate: Callable[[dict], None],
     on_validation_error: ValidationErrorCallback | None = None,
     on_exhaustion: Callable[[dict, Exception], dict | None] | None = None,
+    on_rejected: Callable[[dict | None, Exception], None] | None = None,
 ) -> dict:
     """Run a P2 model step with bounded JSON Schema and semantic repair feedback."""
     current_prompt = prompt
@@ -328,6 +343,8 @@ def _complete_validated_json(
                 )
                 if recovered is not None:
                     return recovered
+            if on_rejected is not None:
+                on_rejected(last_structurally_valid_response, exc)
             raise OntologyDraftUnavailable(exc.purpose, exc.attempts, reason) from exc
         except (ValidationError, ValueError) as exc:
             validation_error: ValidationError | ValueError | None = exc
@@ -365,6 +382,8 @@ def _complete_validated_json(
                 recovered = recover(salvage_candidate, salvage_error)
                 if recovered is not None:
                     return recovered
+            if on_rejected is not None:
+                on_rejected(salvage_candidate, validation_error)
             raise OntologyDraftUnavailable(purpose, attempt, reason) from validation_error
         current_prompt += (
             f"\nThe previous response failed validation on attempt {attempt}. "
@@ -882,6 +901,8 @@ def draft_ontology(
 
     unresolved: list[dict] = []
     repairs: list[dict] = []
+    query_repairs: list[dict] = []
+    unresolved_criteria: list[dict] = []
 
     def salvage_invalid_proposals(candidate: dict, error: Exception) -> dict | None:
         if not isinstance(error, OntologyProposalErrors):
@@ -994,6 +1015,9 @@ def draft_ontology(
         decision,
         relation_count_assessments=schema_reviews.get("relation_counts"),
         on_validation_error=on_validation_error,
+        case_dir=case_dir,
+        query_repairs=query_repairs,
+        unresolved_criteria=unresolved_criteria,
     )
     recommendation_document = {
         "schema_version": "1",
@@ -1001,6 +1025,8 @@ def draft_ontology(
         "generated_by": ontology["generated_by"],
         "unresolved": unresolved,
         "repairs": repairs,
+        "query_repairs": query_repairs,
+        "unresolved_criteria": unresolved_criteria,
     }
     for item in recommendation_document["unresolved"]:
         if item["id"] != item["proposal"]["id"]:
@@ -1008,6 +1034,9 @@ def draft_ontology(
     for item in recommendation_document["repairs"]:
         if item["id"] != item["property"]["id"]:
             raise ValueError("ontology repair ID must match its created property")
+    for item in recommendation_document["unresolved_criteria"]:
+        if item["criterion_id"] not in {criterion["id"] for criterion in prd["definition_of_done"]}:
+            raise ValueError("unresolved DoD criterion must exist in the PRD")
     validate_document("ontology-recommendations", recommendation_document)
     shapes = _compile_shapes(ontology)
     archived_revisions = checkpoint_revisions(
@@ -1691,7 +1720,12 @@ def _draft_dod_queries(
     *,
     relation_count_assessments: dict[str, dict] | None = None,
     on_validation_error: ValidationErrorCallback | None = None,
+    case_dir: Path | None = None,
+    query_repairs: list[dict] | None = None,
+    unresolved_criteria: list[dict] | None = None,
 ) -> dict:
+    query_repairs = query_repairs if query_repairs is not None else []
+    unresolved_criteria = unresolved_criteria if unresolved_criteria is not None else []
     schema = model_output_schema("dod-queries")
     prompt = (
         "Compile every approved definition-of-done criterion into exactly one safe declarative "
@@ -1713,7 +1747,149 @@ def _draft_dod_queries(
         f"Reviewed relation-count semantics: {relation_count_assessments or {}}."
     )
 
+    approved_prd = _approved_prd_matches_case(case_dir, prd) if case_dir is not None else False
+    excluded_criterion_ids: set[str] = set()
+    repair_receipts: dict[str, dict] = {}
+
+    def normalize_thresholds(response: dict) -> list[dict]:
+        if not approved_prd:
+            return []
+        criteria = {item["id"]: item for item in prd["definition_of_done"]}
+        unsupported = []
+        for query in response.get("queries", []):
+            criterion = criteria.get(query.get("criterion_id"))
+            if criterion is None:
+                continue
+            before = deepcopy(query)
+            query["target"] = criterion["target"]
+            query["operator"] = criterion["operator"]
+            changed_fields = []
+            approved_values = {
+                "target": criterion["target"],
+                "operator": criterion["operator"],
+            }
+            removed_fields = []
+            if query["target"] != before.get("target"):
+                changed_fields.append("target")
+            if query["operator"] != before.get("operator"):
+                changed_fields.append("operator")
+            if query.get("aggregate") == "entities_meeting_completeness":
+                approved_ratio = criterion.get("min_ratio")
+                if approved_ratio is not None:
+                    query["min_ratio"] = approved_ratio
+                    approved_values["min_ratio"] = approved_ratio
+                    if before.get("min_ratio") != approved_ratio:
+                        changed_fields.append("min_ratio")
+                elif "min_ratio" in query:
+                    query.pop("min_ratio")
+                    changed_fields.append("min_ratio")
+                    removed_fields.append("min_ratio")
+            elif "min_ratio" in query:
+                query.pop("min_ratio")
+                changed_fields.append("min_ratio")
+                removed_fields.append("min_ratio")
+            if changed_fields:
+                receipt = {
+                    "criterion_id": criterion["id"],
+                    "fields": changed_fields,
+                    "approved_values": approved_values,
+                    "reason": (
+                        "Copied target and operator from the digest-verified approved PRD; "
+                        "min_ratio is retained only for the executable completeness aggregate."
+                    ),
+                }
+                if removed_fields:
+                    receipt["removed_fields"] = removed_fields
+                repair_receipts[criterion["id"]] = receipt
+            if (
+                criterion.get("min_ratio") is not None
+                and query.get("aggregate") != "entities_meeting_completeness"
+            ):
+                safe_proposal = {
+                    key: deepcopy(before[key])
+                    for key in (
+                        "criterion_id",
+                        "aggregate",
+                        "class",
+                        "class_id",
+                        "relation_id",
+                        "measure",
+                        "properties",
+                        "target",
+                        "operator",
+                        "min_ratio",
+                    )
+                    if key in before
+                }
+                unsupported.append(
+                    {
+                        "criterion_id": criterion["id"],
+                        "metric": criterion.get("metric", ""),
+                        "approved_thresholds": {
+                            "target": criterion["target"],
+                            "operator": criterion["operator"],
+                            "min_ratio": criterion["min_ratio"],
+                        },
+                        "approved_min_ratio": criterion["min_ratio"],
+                        "aggregate": query.get("aggregate", "unknown"),
+                        "proposal": safe_proposal,
+                    }
+                )
+        return unsupported
+
+    def validation_prd() -> dict:
+        if not excluded_criterion_ids:
+            return prd
+        return {
+            **prd,
+            "definition_of_done": [
+                item
+                for item in prd["definition_of_done"]
+                if item["id"] not in excluded_criterion_ids
+            ],
+        }
+
+    def persist_rejected_queries(candidate: dict | None, error: Exception) -> None:
+        if case_dir is None:
+            return
+        snapshots = []
+        for query in (candidate or {}).get("queries", []):
+            if not isinstance(query, dict):
+                continue
+            snapshots.append(
+                {
+                    key: deepcopy(query[key])
+                    for key in (
+                        "criterion_id",
+                        "aggregate",
+                        "class",
+                        "class_id",
+                        "relation_id",
+                        "measure",
+                        "properties",
+                        "target",
+                        "operator",
+                        "min_ratio",
+                    )
+                    if key in query
+                }
+            )
+        rejected_path = case_dir / "02-ontology/recommendations/rejected-dod-queries.json"
+        write_json(
+            rejected_path,
+            {
+                "schema_version": "1",
+                "status": "rejected",
+                "attempts": _VALIDATION_ATTEMPTS,
+                "reason": _bounded_validation_error(error),
+                "queries": snapshots,
+            },
+        )
+
     def validate_queries(response: dict) -> None:
+        unsupported = normalize_thresholds(response)
+        if unsupported:
+            raise UnsupportedDoDQuerySemantics(unsupported)
         document = {
             **response,
             "generated_by": generated_by(decision),
@@ -1722,11 +1898,48 @@ def _draft_dod_queries(
         }
         validate_document("dod-queries", document)
         _validate_queries(
-            prd,
+            validation_prd(),
             ontology,
             document,
             relation_count_assessments=relation_count_assessments,
         )
+
+    def salvage_unsupported_criteria(candidate: dict, error: Exception) -> dict | None:
+        if not approved_prd or not isinstance(error, UnsupportedDoDQuerySemantics):
+            return None
+        unsupported_by_id = {item["criterion_id"]: item for item in error.unsupported}
+        recovered = deepcopy(candidate)
+        recovered["queries"] = [
+            item
+            for item in recovered.get("queries", [])
+            if item.get("criterion_id") not in unsupported_by_id
+        ]
+        if not recovered["queries"]:
+            return None
+        excluded_criterion_ids.update(unsupported_by_id)
+        try:
+            validate_queries(recovered)
+        except (ValidationError, ValueError):
+            excluded_criterion_ids.difference_update(unsupported_by_id)
+            return None
+        for criterion_id, item in unsupported_by_id.items():
+            reason = (
+                f"Approved min_ratio={item['approved_min_ratio']!r} for DoD criterion "
+                f"`{criterion_id}` cannot be evaluated by aggregate `{item['aggregate']}`. "
+                "The query was excluded after three bounded retries; it remains unresolved and "
+                "must not count toward export or gold until a supported query is approved."
+            )
+            unresolved_criteria.append(
+                {
+                    "criterion_id": criterion_id,
+                    "metric": item["metric"],
+                    "reason": reason,
+                    "approved_thresholds": item["approved_thresholds"],
+                    "rejected_query": item["proposal"],
+                }
+            )
+        persist_rejected_queries(candidate, error)
+        return recovered
 
     response = _complete_validated_json(
         decision,
@@ -1735,13 +1948,31 @@ def _draft_dod_queries(
         schema,
         validate_queries,
         on_validation_error,
+        on_exhaustion=salvage_unsupported_criteria,
+        on_rejected=persist_rejected_queries,
     )
+    if query_repairs is not None:
+        query_repairs.extend(repair_receipts.values())
     return {
         **response,
         "generated_by": generated_by(decision),
         "prd_path": "01-scope/prd.json",
         "ontology_version": ontology["version"],
     }
+
+
+def _approved_prd_matches_case(case_dir: Path, prd: dict) -> bool:
+    """Return true only when the exact PRD bytes have a current, non-denied approval."""
+    prd_path = case_dir / "01-scope/prd.json"
+    approval_path = prd_path.parent / "APPROVED"
+    if not prd_path.is_file() or not approval_path.is_file():
+        return False
+    try:
+        approval = load_verified_approval(approval_path, case_dir, ["01-scope/prd.json"], "prd")
+        stored_prd = load_json(prd_path)
+    except (OSError, ValueError):
+        return False
+    return approval.get("decision", "approve") != "deny" and stored_prd == prd
 
 
 def _legacy_completeness_relation_id(
@@ -1796,17 +2027,29 @@ def _validate_queries(
     for query in queries:
         criterion = criteria[query["criterion_id"]]
         if query["target"] != criterion["target"] or query["operator"] != criterion["operator"]:
-            raise ValueError("DoD query target/operator differs from approved PRD")
-        if (
-            criterion.get("min_ratio") is not None
-            and query.get("min_ratio") != criterion["min_ratio"]
-        ):
-            raise ValueError("DoD query min_ratio differs from approved PRD")
-        if (
-            criterion.get("min_ratio") is not None
-            and query["aggregate"] != "entities_meeting_completeness"
-        ):
-            raise ValueError("per-entity completeness requires its declarative aggregate")
+            raise ValueError(
+                f"DoD criterion `{criterion['id']}` query target/operator "
+                f"({query['target']!r}, {query['operator']!r}) differs from approved PRD "
+                f"({criterion['target']!r}, {criterion['operator']!r})"
+            )
+        if query["aggregate"] == "entities_meeting_completeness":
+            if criterion.get("min_ratio") is None:
+                raise ValueError(
+                    f"DoD criterion `{criterion['id']}` uses completeness without an approved "
+                    "PRD min_ratio"
+                )
+            if query.get("min_ratio") != criterion["min_ratio"]:
+                raise ValueError(
+                    f"DoD criterion `{criterion['id']}` query min_ratio "
+                    f"{query.get('min_ratio')!r} differs from approved PRD "
+                    f"{criterion['min_ratio']!r}"
+                )
+        elif criterion.get("min_ratio") is not None:
+            raise ValueError(
+                f"DoD criterion `{criterion['id']}` approved min_ratio="
+                f"{criterion['min_ratio']!r} is not evaluable by aggregate "
+                f"`{query['aggregate']}`; keep the criterion unresolved"
+            )
         if query["aggregate"] == "entities_meeting_completeness":
             if query["class"] != ontology["primary_class"]:
                 raise ValueError("completeness query must use the primary class")
