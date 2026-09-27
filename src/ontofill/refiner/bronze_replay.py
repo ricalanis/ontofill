@@ -77,6 +77,24 @@ def _trace_url(step: dict) -> str | None:
     return url
 
 
+def _metadata_matches_trace(metadata: dict, step: dict) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    observed = step.get("observed")
+    if not isinstance(observed, dict):
+        return False
+    expected = {
+        "url": observed.get("url"),
+        "source_id": step.get("source_id"),
+        "step_id": step.get("step_id"),
+        "captured_at": step.get("ts"),
+    }
+    return all(
+        isinstance(value, str) and value and metadata.get(key) == value
+        for key, value in expected.items()
+    )
+
+
 def _replay_safe(trace: Sequence[dict], index: int, source_id: str, objective_id: str) -> bool:
     for prior in trace[:index]:
         if (prior.get("source_id"), prior.get("objective_id")) != (source_id, objective_id):
@@ -107,7 +125,25 @@ def _screenshot_key(
             continue
         executed = step.get("executed") or {}
         key = step.get("screenshot_key") or executed.get("screenshot_key")
-        if isinstance(key, str) and _BRONZE_KEY.fullmatch(key) and lake.exists(key):
+        observed = step.get("observed")
+        evaluated = step.get("evaluated")
+        if (
+            step.get("run_id") != trace[index].get("run_id")
+            or step.get("phase") != 5
+            or not isinstance(observed, dict)
+            or observed.get("status") != 200
+            or not isinstance(evaluated, dict)
+            or evaluated.get("status") != "captured"
+            or not isinstance(key, str)
+            or not _BRONZE_KEY.fullmatch(key)
+            or not lake.exists(key)
+        ):
+            continue
+        try:
+            metadata = lake.read_metadata(key)
+        except (OSError, ValueError, KeyError):
+            continue
+        if _metadata_matches_trace(metadata, step):
             return key
     return None
 
@@ -269,6 +305,7 @@ def _replay_file(
     ontology: dict,
     provenance: dict,
     objectives: dict[tuple[str, str], dict],
+    historical_ontology_version: str,
 ) -> tuple[list[Observation], dict] | None:
     context = _safe_trace_context(step, run_id)
     if context is None:
@@ -299,6 +336,8 @@ def _replay_file(
     except (OSError, ValueError, KeyError):
         return None
     if hashlib.sha256(data).hexdigest() != key.removeprefix("sha256:"):
+        return None
+    if not _metadata_matches_trace(metadata, step):
         return None
     format_name = _file_format(data, str(metadata.get("content_type", "")))
     if format_name is None:
@@ -347,14 +386,48 @@ def _replay_file(
         tdd is None
         or tdd.get("source_id") != source_id
         or tdd.get("objective_id") != objective_id
-        or tdd.get("ontology_version") != ontology.get("version")
+        or tdd.get("ontology_version") != historical_ontology_version
+        or not isinstance(tdd.get("local_prd_path"), str)
+        or tdd.get("local_prd_path") != f"04-local/{source_id}__{objective_id}/local-prd.json"
     ):
         return None
-    if not isinstance(objective.get("target_fields"), list) or not isinstance(
-        tdd.get("target_fields"), list
+    local_prd = _read_case_json(case_dir, tdd["local_prd_path"])
+    if (
+        local_prd is None
+        or local_prd.get("source_id") != source_id
+        or local_prd.get("objective_id") != objective_id
+        or local_prd.get("global_prd_path") != "01-scope/prd.json"
+        or not isinstance(objective.get("target_fields"), list)
+        or not isinstance(tdd.get("target_fields"), list)
+        or not isinstance(local_prd.get("target_fields"), list)
+        or any(
+            not isinstance(item, str)
+            for fields in (
+                objective.get("target_fields", []),
+                tdd.get("target_fields", []),
+                local_prd.get("target_fields", []),
+            )
+            for item in fields
+        )
     ):
         return None
-    allowed_properties = set(objective["target_fields"]) & set(tdd["target_fields"])
+    historical_targets = (
+        set(objective["target_fields"])
+        | set(tdd["target_fields"])
+        | set(local_prd["target_fields"])
+    )
+    allowed_properties = (
+        set(objective["target_fields"])
+        & set(tdd["target_fields"])
+        & set(local_prd["target_fields"])
+    )
+    ontology_only_properties = {
+        item["id"]
+        for item in ontology.get("properties", [])
+        if item.get("domain") == class_id and item.get("id") not in historical_targets
+    }
+    if historical_ontology_version != ontology.get("version"):
+        allowed_properties.update(ontology_only_properties)
     columns = _column_properties(macro, headers, ontology, class_id, allowed_properties)
     if not columns:
         return None
@@ -446,9 +519,16 @@ def _replay_file(
             "format": parsed.format,
             "rows": len(rows),
             "replayed_properties": sorted({item[1] for item in planned}),
+            "ontology_only_properties": sorted(
+                {item[1] for item in planned} & ontology_only_properties
+            ),
         },
         "requested": {"tool": "bronze.replay", "ontology_version": ontology.get("version")},
-        "executed": {"bronze_key": key, "observations": len(observations)},
+        "executed": {
+            "bronze_key": key,
+            "capture_ontology_version": historical_ontology_version,
+            "observations": len(observations),
+        },
         "evaluated": {"status": "replayed"},
         "parent_step_id": step["step_id"],
         "value_ids": sorted(value_ids),
@@ -471,7 +551,7 @@ def replay_bronze_observations(
     objective_doc = _read_case_json(case_dir, "03-fanout/objectives.json")
     if (
         objective_doc is None
-        or objective_doc.get("ontology_version") != ontology.get("version")
+        or not isinstance(objective_doc.get("ontology_version"), str)
         or not isinstance(objective_doc.get("objectives"), list)
     ):
         return BronzeReplayResult([], [])
@@ -495,6 +575,7 @@ def replay_bronze_observations(
             ontology=ontology,
             provenance=provenance,
             objectives=objectives,
+            historical_ontology_version=objective_doc["ontology_version"],
         )
         if replayed is None:
             continue

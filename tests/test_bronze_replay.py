@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -53,7 +54,9 @@ def _step(
 
 def _recorded_case(tmp_path, *, duplicate_property_label: bool = False):
     case_dir = tmp_path / "case"
-    model = ontology()
+    historical_model = ontology()
+    model = deepcopy(historical_model)
+    model["version"] = "v2"
     model["properties"].append(
         {
             "id": "service_zone",
@@ -80,7 +83,9 @@ def _recorded_case(tmp_path, *, duplicate_property_label: bool = False):
             }
         )
     queries = dod_queries()
-    write_lineage(case_dir, model, queries, RECORDED)
+    write_lineage(case_dir, historical_model, queries, RECORDED)
+    current_ontology_path = case_dir / "02-ontology/ontology.json"
+    current_ontology_path.write_text(json.dumps(model), encoding="utf-8")
     shape_path = case_dir / model["shacl_path"]
     shape_path.parent.mkdir(parents=True, exist_ok=True)
     shape_path.write_text("", encoding="utf-8")
@@ -194,6 +199,20 @@ def _install_refine_case(monkeypatch, case_dir, lake, trace: list[dict]) -> tupl
 
 def test_replay_fills_new_ontology_property_and_exports_trace_lineage(tmp_path) -> None:
     case_dir, lake, model, queries, bronze_key, screenshot_key, trace = _recorded_case(tmp_path)
+    historical_objectives = json.loads(
+        (case_dir / "03-fanout/objectives.json").read_text(encoding="utf-8")
+    )
+    historical_tdd = json.loads((case_dir / TDD_PATH).read_text(encoding="utf-8"))
+    historical_local_prd = json.loads(
+        (case_dir / f"04-local/{SOURCE_ID}__{OBJECTIVE_ID}/local-prd.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "service_zone" not in historical_objectives["objectives"][0]["target_fields"]
+    assert "service_zone" not in historical_tdd["target_fields"]
+    assert "service_zone" not in historical_local_prd["target_fields"]
+    assert historical_objectives["ontology_version"] == "v1"
+    assert model["version"] == "v2"
 
     replay = replay_bronze_observations(
         case_dir=case_dir,
@@ -220,6 +239,9 @@ def test_replay_fills_new_ontology_property_and_exports_trace_lineage(tmp_path) 
         "format": "csv",
     }
     assert replay.trace_steps[0]["parent_step_id"] == "step:file"
+    assert replay.trace_steps[0]["requested"]["ontology_version"] == "v2"
+    assert replay.trace_steps[0]["executed"]["capture_ontology_version"] == "v1"
+    assert replay.trace_steps[0]["observed"]["ontology_only_properties"] == ["service_zone"]
     assert set(replay.trace_steps[0]["value_ids"]) == {
         item.value_id for item in replay.observations
     }
@@ -272,6 +294,112 @@ def test_replay_ignores_unreferenced_files_incomplete_fetches_and_ambiguous_head
     )
     assert replay.observations == []
     assert replay.trace_steps == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("url", "https://example.invalid/other.csv"),
+        ("source_id", "another-source"),
+        ("step_id", "step:other"),
+        ("captured_at", "2026-01-01T00:00:01Z"),
+    ],
+)
+def test_replay_rejects_file_sidecar_metadata_not_bound_to_capture_trace(
+    tmp_path, monkeypatch, field: str, value: str
+) -> None:
+    case_dir, lake, model, _queries, bronze_key, _screenshot_key, trace = _recorded_case(tmp_path)
+    read_metadata = lake.read_metadata
+
+    def read_tampered_metadata(key: str) -> dict[str, str]:
+        metadata = read_metadata(key)
+        if key == bronze_key:
+            metadata[field] = value
+        return metadata
+
+    monkeypatch.setattr(lake, "read_metadata", read_tampered_metadata)
+    replay = replay_bronze_observations(
+        case_dir=case_dir,
+        lake=lake,
+        run_id=RUN_ID,
+        trace=trace,
+        ontology=model,
+        provenance=RECORDED,
+    )
+    assert replay.observations == []
+    assert replay.trace_steps == []
+
+
+def test_replay_rejects_screenshot_sidecar_not_bound_to_capture_trace(
+    tmp_path, monkeypatch
+) -> None:
+    case_dir, lake, model, _queries, _bronze_key, screenshot_key, trace = _recorded_case(tmp_path)
+    read_metadata = lake.read_metadata
+
+    def read_tampered_metadata(key: str) -> dict[str, str]:
+        metadata = read_metadata(key)
+        if key == screenshot_key:
+            metadata["source_id"] = "another-source"
+        return metadata
+
+    monkeypatch.setattr(lake, "read_metadata", read_tampered_metadata)
+    replay = replay_bronze_observations(
+        case_dir=case_dir,
+        lake=lake,
+        run_id=RUN_ID,
+        trace=trace,
+        ontology=model,
+        provenance=RECORDED,
+    )
+    assert replay.observations == []
+    assert replay.trace_steps == []
+
+
+def test_export_rejects_ontology_only_value_without_valid_replay_parent(tmp_path) -> None:
+    case_dir, lake, model, queries, _bronze_key, _screenshot_key, trace = _recorded_case(tmp_path)
+    replay = replay_bronze_observations(
+        case_dir=case_dir,
+        lake=lake,
+        run_id=RUN_ID,
+        trace=trace,
+        ontology=model,
+        provenance=RECORDED,
+    )
+    refined = refine_observations(replay.observations, ontology=model, generated_by=RECORDED)
+    malformed_replay = {
+        **replay.trace_steps[0],
+        "parent_step_id": "step:unknown-capture",
+    }
+    with pytest.raises(ValueError, match="preceding capture parent"):
+        export_run(
+            lake,
+            case_dir,
+            "library-case",
+            RUN_ID,
+            refined.entities,
+            ontology=model,
+            dod_queries=queries,
+            trace=[*trace, malformed_replay],
+            generated_by=RECORDED,
+            preview=True,
+        )
+
+
+def test_export_rejects_stale_lineage_without_ontology_only_replay(tmp_path) -> None:
+    case_dir, lake, model, queries, _bronze_key, _screenshot_key, trace = _recorded_case(tmp_path)
+    with pytest.raises(ValueError, match="objectives ontology version"):
+        export_run(
+            lake,
+            case_dir,
+            "library-case",
+            RUN_ID,
+            [],
+            ontology=model,
+            dod_queries=queries,
+            trace=trace,
+            generated_by=RECORDED,
+            preview=True,
+        )
 
 
 def test_replay_step_is_deterministic_for_the_same_capture_and_ontology(tmp_path) -> None:
