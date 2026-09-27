@@ -1,4 +1,12 @@
-# R30 P2 factor grounding
+# R35/R36 integration
+
+- [ ] Review R35 capability evidence: exact captured access path, authority verdict, bounded form metadata, persistence in source/objective; registry accepted, blog refused.
+- [ ] Review R36 navigation/document/DNS/TLS changes: no egress bypass, no unbounded payload/error, bronze lineage and six-checkpoint job, additive schemas.
+- [x] Add a recorded direct-document P5 regression: a sandbox-captured CSV source URL parses its `document_key` in the networkless parse pod and emits literal cells without a second fetch or HTML landing; PDF text remains bounded and never invents values. Managed red test failed on the old S1 fallback, then the focused second check passed 2 tests plus Ruff lint/format and diff.
+- [ ] Integrate workers on latest origin/main and run the managed full DONE gate.
+- [ ] Scan outgoing commits, push only main, wait for a no-engine VM window, fast-forward and sync; mark R35/R36 READY FOR VERIFY and tell orchestrator to relaunch.
+
+# Prior task: R30 P2 factor grounding
 
 - `FILES`: `src/ontofill/phases/p2_ontology/phase.py`, `schemas/factors.schema.json`, `tests/test_r30_factors.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
 - `TASK`: validate grounded factors against published PRD records, give exact retry feedback, and recast unsupported factors conceptual only after bounded retries.

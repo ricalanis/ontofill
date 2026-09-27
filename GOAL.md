@@ -1,4 +1,12 @@
-# Current goal: R30 P2 factor grounding
+# Current goal: R35/R36 source capability and capture diagnostics
+
+Integrate authority-checked P3 access-path capability with sandbox document capture and bounded navigation diagnostics. A captured registry search form can become a source; a blog cannot. Binary downloads are captured as bronze documents through the same gVisor proxy, and navigation/DNS/TLS failures remain distinguishable in job and trace receipts.
+
+DONE (currently failing on this base): `agent-progress run --task r35-r36-integration --paths src/ontofill/phases/p3_fanout,src/ontofill/sandbox,sandbox/agent-pod,sandbox/egress,schemas,tests --check r35-r36-full --strategy integrate-reviewed-worker-patches --hypothesis 'An authority-checked registry capability is accepted and a blog refused; binary and failed navigation jobs retain bounded receipts without weakening the proxy' -- sh -c 'uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox && git diff --check'` passes on the reviewed combined tree. Before delivery, scan outgoing commits for secrets/internal data, push only main, and fast-forward the control VM only with no `ontofill run` process alive.
+
+Scope: engine P3, sandbox capture/proxy/pod, additive schemas and recorded tests. No case or APPROVED edits, no PA-owned console or browser-agent edits, no runner restart, no public port changes.
+
+# Prior goal: R30 P2 factor grounding
 
 Every factor labeled grounded cites an existing PRD record by record ID and exact quote; unsupported factors are retried and then recast conceptual without fabricated evidence.
 
