@@ -756,7 +756,8 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
     jobs = a.jobs(rid)
     lv = liveness(runner, status, steps, now, stale_min)
     stall_min = float(env.get("ONTOFILL_WATCH_STALL_MIN") or STALL_MIN)
-    stall = progress_stall(steps, lv["says_running"], now, stall_min)
+    # a quiet run is not moving at all: STALE covers it, and a stall would keep counting minutes on a dead run
+    stall = None if lv["stale"] else progress_stall(steps, lv["says_running"], now, stall_min)
     capturing = None
     if stall:
         probe = bronze_probe(root if rover["state_dir_ok"] else None, case.id, now, stall_min)
@@ -870,7 +871,7 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
                 f"(threshold {lv['stale_min']:g} min)",
                 L["run"],
             )
-        if c.get("stall") and not lv["stale"]:
+        if c.get("stall"):
             add(2, cid, "MOVING BUT NOT PROGRESSING: " + c["stall"]["text"], L["run"])
         if r["state"] in CRITICAL:
             why = r["reason"] or (r["last_event"] or {}).get("detail") or ""

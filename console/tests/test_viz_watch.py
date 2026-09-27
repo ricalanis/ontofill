@@ -633,7 +633,13 @@ def model_call(i: int, minutes_ago: float, purpose="phase3.plan_queries") -> dic
     }
 
 
-def test_moving_but_not_progressing(cases_dir, tmp_path):
+def pin_now(monkeypatch) -> None:
+    """Render /watch at the fixture clock (NOW), so a page check sees the same liveness as the model check."""
+    orig = watch.model
+    monkeypatch.setattr(watch, "model", lambda s, now=None, **k: orig(s, now=now or NOW, **k))
+
+
+def test_moving_but_not_progressing(cases_dir, tmp_path, monkeypatch):
     """Live: P3 kept proposing publishers and planning queries every few minutes and never searched or captured.
     Steps kept landing, so it was never STALE; /watch now calls it out."""
     root = tmp_path / "runner"
@@ -647,8 +653,24 @@ def test_moving_but_not_progressing(cases_dir, tmp_path):
     assert "phase3.plan_queries" in stall["purposes"]
     alert = next(a for a in m["attention"] if a["case_id"] == "libraries" and a["text"].startswith("MOVING BUT"))
     assert alert["severity"] == 2 and "12 model calls in 40 min" in alert["text"]
+    pin_now(monkeypatch)
     html = TestClient(create_app(settings(cases_dir, root))).get("/watch").text
     assert "moving but not progressing" in html
+
+
+def test_a_quiet_run_is_stale_not_moving(cases_dir, tmp_path, monkeypatch):
+    """Live: after run-fb09d5cbb4a4 was killed, its lake status still said running and /watch kept reporting "moving
+    but not progressing: 39 model calls in 56 min", the minutes growing on a run that had stopped. Quiet is STALE."""
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="idle", run_id=LIVE_RID)
+    steps = [step(0, 70, src="ok-src")] + [model_call(i, 66 - 3 * i) for i in range(12)]  # last step 33 min ago
+    live_run(cases_dir, steps)
+    m = watch.model(settings(cases_dir, root), now=NOW)
+    c = case_of(m)
+    assert c["liveness"]["stale"] and c["stall"] is None and c["capturing"] is None
+    assert not any(a["text"].startswith("MOVING BUT") for a in m["attention"])
+    pin_now(monkeypatch)
+    assert "moving but not progressing" not in TestClient(create_app(settings(cases_dir, root))).get("/watch").text
 
 
 def test_a_progressing_run_is_not_a_stall(cases_dir, tmp_path):
