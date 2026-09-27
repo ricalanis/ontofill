@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Manage · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/case-admin.css">{% endblock %}
+{% set done = request.query_params.get("done") %}
+{% block main %}
+{{ v.head("Manage the case", "Edit the question while no run exists; afterwards revise it as a new case version (the PRD is bound to its brief). Archive hides the case and keeps every file; restore brings it back.", "cases.json · brief.md · decisions.jsonl") }}
+{% if done %}<p class="notice" role="status">{{ {"brief": "The question was updated.", "meta": "Saved.", "revise": "A new case version was created.", "archive": "Archived.", "restore": "Restored."}.get(done, "Done.") }}</p>{% endif %}
+{% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}
+{% include "_question.html" %}
+<div class="panels">
+  <section class="panel" aria-labelledby="rec-h">
+    <h2 class="section-h" id="rec-h">Case record</h2>
+    <ul class="strips"><li>{{ v.strip(status.state, "Status: " ~ status.label, status.detail) }}</li></ul>
+    {% if meta %}
+    <dl class="kv">
+      <dt>Id</dt><dd class="mono">{{ case.id }}</dd>
+      <dt>Created</dt><dd>{{ (meta.created_at or "")|replace("T", " ") }} · {% if meta.created_by %}{% if meta.created_by.unverified_name %}{{ meta.created_by.unverified_name }} (self-declared) · {% endif %}{{ meta.created_by.approver or meta.created_by.group or "" }}{% endif %}</dd>
+      <dt>Budget</dt><dd class="mono">{{ meta.budget_usd }} USD</dd>
+      <dt>Up to phase</dt><dd class="mono">{{ meta.to_phase or 5 }}</dd>
+      <dt>Version</dt><dd>{{ meta.version or 1 }}{% if meta.supersedes %} · revises <a href="/cases/{{ meta.supersedes }}/manage">{{ meta.supersedes }}</a>{% endif %}{% if meta.superseded_by %} · revised as <a href="/cases/{{ meta.superseded_by }}/manage">{{ meta.superseded_by }}</a>{% endif %}</dd>
+      <dt>Brief</dt><dd class="mono">sha256 {{ (meta.brief_sha256 or "")[:16] }}…</dd>
+    </dl>
+    {% else %}<p class="muted">Registered from the environment (ONTOFILL_CONSOLE_CASES): read-only here.</p>{% endif %}
+  </section>
+
+  {% if meta and registry_on %}
+  <section class="panel" aria-labelledby="edit-h">
+    {% if not started and not meta.archived %}
+    <h2 class="section-h" id="edit-h">Edit the question (no run yet)</h2>
+    <form class="case-form" method="post" action="/cases/{{ case.id }}/brief">
+      <label for="question">The question</label>
+      <textarea id="question" name="question" required minlength="10" maxlength="4000" rows="5">{{ case.brief or "" }}</textarea>
+      <label for="notes">Constraints and notes</label>
+      <textarea id="notes" name="notes" maxlength="4000" rows="3"></textarea>
+      {% with digests = {} %}{% include "_signer.html" %}{% endwith %}
+      <p><button type="submit">Save the question</button></p>
+    </form>
+    {% elif not meta.archived %}
+    <h2 class="section-h" id="edit-h">Revise the question (new version)</h2>
+    <p class="hint">A run exists, so its PRD is bound to this brief. Revising creates <b>a new case</b> with the new question; this one is archived and linked to it.</p>
+    <form class="case-form" method="post" action="/cases/{{ case.id }}/revise">
+      <label for="question">The revised question</label>
+      <textarea id="question" name="question" required minlength="10" maxlength="4000" rows="5">{{ case.brief or "" }}</textarea>
+      <label for="notes">Constraints and notes</label>
+      <textarea id="notes" name="notes" maxlength="4000" rows="3"></textarea>
+      {% with digests = {} %}{% include "_signer.html" %}{% endwith %}
+      <p><button type="submit">Create the new version</button></p>
+    </form>
+    {% endif %}
+
+    <h2 class="section-h">Title{% if not started %} and budget{% endif %}</h2>
+    <form class="case-form" method="post" action="/cases/{{ case.id }}/meta">
+      <label for="title">Title</label>
+      <input id="title" name="title" type="text" maxlength="120" value="{{ meta.title }}">
+      {% if not started %}<label for="budget_usd">Budget (USD, at most {{ max_budget }})</label>
+      <input id="budget_usd" name="budget_usd" type="number" step="0.01" min="0.01" max="{{ max_budget }}" value="{{ meta.budget_usd }}">
+      {% else %}<p class="hint">The budget is fixed once the case has started (the engine fingerprints it).</p>{% endif %}
+      {% with digests = {} %}{% include "_signer.html" %}{% endwith %}
+      <p><button type="submit" class="btn--quiet btn">Save</button></p>
+    </form>
+
+    <h2 class="section-h">{{ "Restore" if meta.archived else "Archive" }}</h2>
+    <form class="case-form" method="post" action="/cases/{{ case.id }}/{{ 'restore' if meta.archived else 'archive' }}">
+      {% if not meta.archived %}<label for="reason">Why (optional, logged)</label><input id="reason" name="reason" type="text" maxlength="500">{% endif %}
+      {% with digests = {} %}{% include "_signer.html" %}{% endwith %}
+      <p><button type="submit" class="btn--quiet btn">{{ "Restore the case" if meta.archived else "Archive the case (files are kept)" }}</button></p>
+    </form>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

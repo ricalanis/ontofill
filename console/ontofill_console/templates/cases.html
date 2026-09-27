@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% import "viz/_macros.html" as v %}
 {% block title %}Cases{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/case-admin.css">{% endblock %}
 {% set RUN_STATE = {"running": "run", "paused": "pause", "failed": "block", "done": "done"} %}
 {% block main %}
 {{ v.head("Cases", "Every case package the engine works on: the question it answers, its latest run, and what is waiting for a person.", "ONTOFILL_CONSOLE_CASES registry · brief.md · runs/<case>/latest.json") }}
+<p class="case-actions">{% if registry_enabled() %}<a class="btn" href="/cases/new">New case</a> <a class="btn btn--quiet" href="/cases-archived">Archived cases</a>{% else %}<span class="source">case registry not configured (ONTOFILL_CASES_ROOT): cases come from ONTOFILL_CONSOLE_CASES</span>{% endif %}</p>
 {% include "_runner_kill.html" %}
 {% if rows %}
 <ul class="strips">
-  {% for c in rows %}{% set q = cases[c.id].brief if cases.get(c.id) else None %}
-  <li>{{ v.strip("need" if c.pending else (RUN_STATE.get(c.state or "", "none")), c.title, (q or "No brief.md yet"), ((c.pending ~ " waiting · ") if c.pending else "") ~ (c.run_id or "no run yet") ~ ((" · " ~ c.state) if c.state else ""), "/cases/" ~ c.id) }}
+  {% for c in rows %}{% set q = cases[c.id].brief if cases.get(c.id) else None %}{% set st = case_status(cases[c.id]) if cases.get(c.id) and case_status is defined else None %}{% set budget = (cases[c.id].meta or {}).budget_usd if cases.get(c.id) else None %}
+  <li>{{ v.strip(st.state if st else ("need" if c.pending else (RUN_STATE.get(c.state or "", "none"))), c.title, (q or "No brief.md yet"), ((st.label ~ " · ") if st else "") ~ ((c.pending ~ " waiting · ") if c.pending else "") ~ (c.run_id or "no run yet") ~ ((" · $" ~ budget) if budget else ""), "/cases/" ~ c.id) }}
     {% if c.lake_error %}<p class="source">{{ c.lake_error }}</p>{% endif %}</li>
   {% endfor %}
 </ul>

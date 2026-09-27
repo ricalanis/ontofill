@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}New case{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/case-admin.css">{% endblock %}
+{% block main %}
+{{ v.head("New case", "A case starts from one question. It becomes the case's brief.md exactly as you type it; the engine does everything else (the definition, the sources, the data) and stops at each checkpoint for a person.", "writes <cases root>/<id>/case/brief.md · <id>/lake.yaml · cases.json · decisions.jsonl") }}
+{% if not registry_on %}
+<div class="empty"><b>The case registry is not configured</b><span>Set <span class="mono">ONTOFILL_CASES_ROOT</span> to a writable directory to create cases here.</span></div>
+{% else %}
+{% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}
+<form class="case-form panel" method="post" action="/cases">
+  <label for="title">Title</label>
+  <input id="title" name="title" type="text" required maxlength="120" value="{{ form.title or '' }}" autocomplete="off">
+  <label for="question">The question</label>
+  <p class="hint">What should the engine answer? Be concrete about what counts as an answer. This is the only human-written input.</p>
+  <textarea id="question" name="question" required minlength="10" maxlength="4000" rows="6">{{ form.question or '' }}</textarea>
+  <label for="notes">Constraints and notes <span class="muted">(optional; a section of the brief)</span></label>
+  <textarea id="notes" name="notes" maxlength="4000" rows="3">{{ form.notes or '' }}</textarea>
+  <div class="case-form__row">
+    <div><label for="budget_usd">Budget (USD)</label>
+      <input id="budget_usd" name="budget_usd" type="number" step="0.01" min="0.01" max="{{ max_budget }}" value="{{ form.budget_usd or default_budget }}">
+      <p class="hint">At most {{ max_budget }} USD; the runner also applies the global cap. Fixed once the case has started.</p></div>
+    <div><label for="to_phase">Run up to phase</label>
+      <select id="to_phase" name="to_phase">{% for n, name in [(1, "1 · Scope"), (2, "2 · Ontology"), (3, "3 · Fan out"), (4, "4 · Local scoping"), (5, "5 · Execute")] %}<option value="{{ n }}" {% if (form.to_phase or '5')|string == n|string %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div>
+  </div>
+  <fieldset class="case-form__lake"><legend>Lake</legend>
+    <label class="check"><input type="radio" name="lake" value="default" {% if (form.lake or ('default' if has_template else 'scratch')) == 'default' %}checked{% endif %} {% if not has_template %}disabled{% endif %}> Default lake (object storage, namespaced by the case id){% if not has_template %} <span class="muted">· not configured</span>{% endif %}</label>
+    <label class="check"><input type="radio" name="lake" value="scratch" {% if (form.lake or ('default' if has_template else 'scratch')) == 'scratch' %}checked{% endif %}> Scratch lake (a local folder next to the case; for demos)</label>
+  </fieldset>
+  <label class="check"><input type="checkbox" name="start_now" value="1" {% if form.start_now %}checked{% endif %}> Start now (hand it to the runner; it stops at the first checkpoint for you)</label>
+  {% with digests = {} %}{% include "_signer.html" %}{% endwith %}
+  <p><button type="submit">Create the case</button> <a class="btn btn--quiet" href="/">Cancel</a></p>
+</form>
+{% endif %}
+{% endblock %}
