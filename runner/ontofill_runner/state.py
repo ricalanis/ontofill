@@ -18,9 +18,30 @@ from pathlib import Path
 
 import yaml
 
-STATES = ("idle", "running", "waiting_approval", "paused", "killed", "budget_stop", "failed", "done")
-EVENT_KINDS = ("started", "resumed", "paused_at_checkpoint", "done", "failed", "budget_stop", "killed",
-               "start_requested", "paused", "unpaused")
+STATES = (
+    "idle",
+    "running",
+    "waiting_approval",
+    "paused",
+    "needs_human",
+    "killed",
+    "budget_stop",
+    "failed",
+    "done",
+)
+EVENT_KINDS = (
+    "started",
+    "resumed",
+    "paused_at_checkpoint",
+    "done",
+    "failed",
+    "budget_stop",
+    "killed",
+    "needs-human",
+    "start_requested",
+    "paused",
+    "unpaused",
+)
 
 
 def now() -> str:

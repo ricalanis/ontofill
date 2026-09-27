@@ -27,6 +27,7 @@ from .state import State, decision_for, now
 log = logging.getLogger("ontofill-runner")
 
 PAUSED_EXIT = 3  # the engine paused at a checkpoint and waits for a decision
+NEEDS_HUMAN_EXIT = 4  # P3 found no authoritative source; a person must revise the question
 SECRETISH = [
     re.compile(r"(?i)\b(api[_-]?key|token|secret|password|authorization|bearer)\b[^\n]*"),
     re.compile(r"[A-Za-z0-9_\-]{32,}"),
@@ -183,8 +184,9 @@ class Runner:
         """Set the case state; an event is logged only when the state actually changes into a notable one."""
         prev = self.state.status(cid).get("state")
         self.state.set_status(cid, state=state, **fields)
-        if prev != state and state in ("killed", "budget_stop", "failed", "done"):
-            self.state.event(cid, state, detail, run_id=fields.get("run_id"))
+        if prev != state and state in ("killed", "budget_stop", "failed", "done", "needs_human"):
+            kind = "needs-human" if state == "needs_human" else state
+            self.state.event(cid, kind, detail, run_id=fields.get("run_id"))
 
     def _consider(self, cid: str, killed: bool, glob: float | None) -> None:
         spec = self.cfg.cases[cid]
@@ -237,7 +239,7 @@ class Runner:
             self._transition(cid, "done", run_id=run_id, checkpoint=None)
             return
         if trigger is None:
-            if status.get("state") not in ("failed", "killed", "budget_stop"):
+            if status.get("state") not in ("failed", "killed", "budget_stop", "needs_human"):
                 self._transition(cid, "idle", run_id=run_id)
             return
         if killed:
@@ -361,6 +363,30 @@ class Runner:
                                   reason=lstatus.get("reason"), engine_stop=stop)
             self.state.event(cid, "paused_at_checkpoint", f"waiting for the {cp} decision"
                              + (f" (engine: {lstatus['reason']})" if lstatus.get("reason") else ""), run_id=run_id)
+        elif rc == NEEDS_HUMAN_EXIT:
+            reason = lstatus.get("reason")
+            if (
+                lstatus.get("state") == "paused"
+                and lstatus.get("phase") == 3
+                and isinstance(reason, str)
+                and reason.startswith("no authoritative source found for ")
+            ):
+                self._transition(
+                    cid,
+                    "needs_human",
+                    reason,
+                    run_id=run_id,
+                    phase=3,
+                    checkpoint=None,
+                    pid=None,
+                    reason=reason,
+                    engine_stop=stop,
+                )
+            else:
+                detail = f"engine exited {rc}\n{tail(child.log_path)}"
+                self.state.set_status(cid, state="failed", run_id=run_id, pid=None, reason=f"engine exited {rc}",
+                                      engine_stop=stop)
+                self.state.event(cid, "failed", detail, run_id=run_id)
         elif rc == 0:
             self._transition(cid, "done", "the run finished", run_id=run_id, pid=None, checkpoint=None,
                              engine_stop=stop)

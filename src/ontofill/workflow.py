@@ -38,7 +38,7 @@ from ontofill.phases.p2_ontology.phase import (
     draft_ontology,
 )
 from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
-from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop
+from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, NoConfirmedSources
 from ontofill.phases.p3_fanout.leads import default_lead_providers
 from ontofill.phases.p3_fanout.phase import discover_objectives
 from ontofill.phases.p3_fanout.search import (
@@ -60,6 +60,8 @@ from ontofill.sandbox import (
     fetch_url,
     parse_bronze_json,
 )
+
+NEEDS_HUMAN_EXIT = 4
 
 
 class _SandboxCkanJsonFetcher:
@@ -1300,6 +1302,24 @@ def run_case(
             )
             print(f"state=paused reason={exc}")
             return 3
+        except NoConfirmedSources as exc:
+            step = _trace_step(
+                run_id,
+                3,
+                provenance,
+                "source.discover",
+                "03-fanout/surface-map/discovery.json",
+            )
+            step["evaluated"] = {
+                "status": "needs_human",
+                "reason": exc.reason,
+                **exc.summary,
+            }
+            _publish_steps(feed, [step])
+            trace.append(step)
+            feed.update_status(state="paused", phase=3, reason=exc.status_reason)
+            print(f"state=paused phase=3 reason={exc.status_reason} needs_human=true")
+            return NEEDS_HUMAN_EXIT
         except Exception:
             phase = feed.current_status["phase"] if feed.current_status else 1
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)

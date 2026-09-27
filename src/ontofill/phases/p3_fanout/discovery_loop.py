@@ -52,6 +52,57 @@ _NON_AUTHORITATIVE_PUBLISHER_KIND = re.compile(
     r"user[ -]generated|consumer review(?:s)?)\b",
     re.IGNORECASE,
 )
+_SUMMARY_SECRET = re.compile(
+    r"(?i)\b(api[_-]?key|token|secret|password|authorization|bearer)\b[^\n]*"
+)
+_SUMMARY_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,}")
+
+
+def _summary_text(value: object, limit: int = 180) -> str:
+    text = " ".join(str(value).split())
+    text = _SUMMARY_SECRET.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _SUMMARY_TOKEN.sub("<redacted>", text)
+    return text[:limit]
+
+
+class NoConfirmedSources(ValueError):
+    """P3 reached its bounded stop without a source accepted by the authority policy."""
+
+    def __init__(
+        self,
+        gaps: Sequence[str],
+        queries: Sequence[str],
+        objections: Sequence[str],
+        *,
+        iterations: int,
+        stop_reason: str,
+    ) -> None:
+        gap_ids = [_summary_text(gap, 80) for gap in gaps]
+        reason_gaps = ", ".join(gap_ids[:5])
+        if len(gap_ids) > 5:
+            reason_gaps += f", and {len(gap_ids) - 5} more"
+        self.reason = _summary_text(f"no authoritative source found for {reason_gaps}", 300)
+        self.summary = {
+            "gaps": gap_ids[:12],
+            "gaps_omitted": max(0, len(gap_ids) - 12),
+            "queries": [_summary_text(item) for item in queries[:8]],
+            "queries_omitted": max(0, len(queries) - 8),
+            "objections": [_summary_text(item) for item in objections[:8]],
+            "objections_omitted": max(0, len(objections) - 8),
+            "iterations": max(0, int(iterations)),
+            "stop_reason": _summary_text(stop_reason, 40),
+        }
+        query_summary = (
+            _summary_text("; ".join(self.summary["queries"][:2]), 160) or "none recorded"
+        )
+        objection_summary = (
+            _summary_text("; ".join(self.summary["objections"][:2]), 220) or "none recorded"
+        )
+        self.status_reason = (
+            f"{self.reason} | queries: {query_summary} | objections: {objection_summary} "
+            f"| iterations: {self.summary['iterations']}"
+        )
+        super().__init__(f"{self.reason}; discovery confirmed no source candidates")
 
 
 def _tokens(text: str) -> set[str]:
@@ -1215,8 +1266,19 @@ class DiscoveryLoop:
             {"request_fingerprint": request_key, "rounds": rounds, "generated_by": provenance},
         )
         if not document["objectives"]:
-            raise ValueError(
-                "discovery confirmed no source candidates; see 03-fanout/surface-map/discovery.json"
+            queries = sorted(
+                {
+                    attempt["query"]
+                    for attempt in self.attempts
+                    if isinstance(attempt.get("query"), str) and attempt["query"].strip()
+                }
+            )
+            raise NoConfirmedSources(
+                targets,
+                queries,
+                result.objections,
+                iterations=result.iterations,
+                stop_reason=result.stop_reason,
             )
         write_json(case_dir / "03-fanout/objectives.json", document)
         (case_dir / "03-fanout/objectives.yaml").write_text(

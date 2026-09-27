@@ -177,6 +177,27 @@ def test_failure_records_a_redacted_tail(setup, monkeypatch):
     assert r.state.status("c1")["state"] == "failed"
 
 
+def test_no_authoritative_source_exits_needs_human_and_is_not_relaunched(setup, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "needs-human")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+
+    run_until_idle(r)
+
+    st = r.state.status("c1")
+    assert st["state"] == "needs_human"
+    assert st["checkpoint"] is None and st["phase"] == 3
+    assert st["reason"].startswith("no authoritative source found for opening_hours")
+    assert "queries:" in st["reason"] and "objections:" in st["reason"]
+    assert [event["kind"] for event in events(setup)] == ["resumed", "needs-human"]
+    assert "queries:" in events(setup)[-1]["detail"]
+    assert "objections:" in events(setup)[-1]["detail"]
+
+    r.poll_once()
+    assert r.state.status("c1")["state"] == "needs_human"
+    assert len(calls(setup)) == 1
+
+
 def test_start_request_launches_a_new_run_once(setup, monkeypatch):
     monkeypatch.setenv("FAKE_MODE", "pause:prd")
     (setup["lake"] / "runs").rename(setup["lake"] / "runs-old")  # a case with no run yet

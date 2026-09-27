@@ -44,6 +44,19 @@ if mode.startswith("fail_phase:"):  # like the engine: status failed + phase, th
 if mode == "done":
     (run / "status.json").write_text(json.dumps({"state": "done"}))
     sys.exit(0)
+if mode == "needs-human":
+    (run / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "paused",
+                "phase": 3,
+                "checkpoint_pending": None,
+                "reason": "no authoritative source found for opening_hours | queries: opening hours Example City "
+                "| objections: opening_hours: 0/1 confirmed sources | iterations: 2",
+            }
+        )
+    )
+    sys.exit(4)
 if mode == "fail":
     print("Traceback: boom api_key=sk-THISISASECRETVALUE1234567890abcdef token: abc", file=sys.stderr)
     sys.exit(1)
