@@ -388,6 +388,32 @@ def test_parse_failure_returns_no_partial_rows_and_failed_job(tmp_path: Path) ->
     )
 
 
+def test_max_links_parse_failure_records_sanitized_source_url(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(
+        b"synthetic HTML bytes",
+        {
+            "content_type": "text/html",
+            "url": "https://synthetic.example.test/catalog/list?page=2",
+        },
+    )
+    executor = FakeExecutor(
+        _output(error={"code": "max_links_exceeded"}),
+        error="max_links_exceeded",
+    )
+
+    with pytest.raises(SandboxParseError, match="max_links_exceeded") as raised:
+        parse_bronze(lake, key, format="html", executor=executor)
+
+    expected_url = "https://synthetic.example.test/catalog/list"
+    task_request = raised.value.job_record["checkpoints"]["task"]["requested"]
+    assert task_request["url"] == expected_url
+    assert raised.value.trace[0]["requested"]["url"] == expected_url
+    assert raised.value.job_record["checkpoints"]["task"]["result"]["reason"] == (
+        "max_links_exceeded"
+    )
+
+
 def test_invalid_html_metadata_does_not_return_partial_rows(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     key = lake.put_bytes(b"synthetic HTML bytes")

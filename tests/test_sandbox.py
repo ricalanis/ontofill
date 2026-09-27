@@ -25,7 +25,7 @@ from ontofill.sandbox import (
     capture_url,
     fetch_url,
 )
-from ontofill.sandbox.capture import _allowed_host
+from ontofill.sandbox.capture import _allowed_host, _limit_row
 
 
 def validate_trace_rows(rows: list[dict]) -> None:
@@ -45,7 +45,14 @@ def validate_trace_rows(rows: list[dict]) -> None:
 
 
 def _mock_capture_runtime(
-    monkeypatch, *, target: str, final_url: str, events: list[dict] | None = None
+    monkeypatch,
+    *,
+    target: str,
+    final_url: str,
+    events: list[dict] | None = None,
+    redirect_chain: list[str] | None = None,
+    navigation_error: str | None = None,
+    limit_reason: str | None = None,
 ) -> list[dict]:
     module = importlib.import_module("ontofill.sandbox.capture")
     events = events or [{"host": "blocked.invalid", "decision": "block"}]
@@ -81,7 +88,10 @@ def _mock_capture_runtime(
                 {
                     "url": final_url,
                     "status": 200,
-                    "redirect_chain": [target, final_url] if target != final_url else [target],
+                    "redirect_chain": redirect_chain
+                    or ([target, final_url] if target != final_url else [target]),
+                    **({"navigation_error": navigation_error} if navigation_error else {}),
+                    **({"limit_reason": limit_reason} if limit_reason else {}),
                     "pod_identity": {
                         "hostname": "synthetic-pod",
                         "uname": {"system": "Linux"},
@@ -180,65 +190,154 @@ def test_allowlist_matches_only_full_hosts() -> None:
 
 
 def test_cross_domain_redirect_is_blocked_with_sandbox_proof(tmp_path, monkeypatch) -> None:
-    target = "https://dept.example.co.uk/branches"
-    redirected = "https://other.co.uk/branches"
+    target = "https://dept.example.test/branches"
+    redirected = "https://identity.unknown.test/landing"
+    chain = [
+        target,
+        "https://auth.dept.example.test/start",
+        redirected,
+    ]
     events = _mock_capture_runtime(
         monkeypatch,
         target=target,
-        final_url=redirected,
+        final_url=target,
+        redirect_chain=chain,
+        navigation_error="PlaywrightError",
         events=[
             {"host": "blocked.invalid", "decision": "block"},
-            {"host": "other.co.uk", "decision": "block"},
+            {"host": "identity.unknown.test", "decision": "block"},
         ],
     )
 
     with pytest.raises(CaptureBlocked) as raised:
         capture_url(
             target,
-            allowed_domains=["example.co.uk"],
+            allowed_domains=["dept.example.test"],
             lake=FileLake(tmp_path / "lake"),
             run_id="synthetic-run",
             source_id="synthetic-source",
             objective_id=None,
             tdd_path="04-local/synthetic-tdd.json",
-            redirect_domain="example.co.uk",
+            redirect_domain="example.test",
         )
 
     assert raised.value.result is not None
+    dispatch = raised.value.result["proof"]["dispatch_result"]
     assert raised.value.result["proof"]["dispatch_result"]["redirect_chain"] == [
         target,
+        "https://auth.dept.example.test/start",
         redirected,
     ]
+    assert raised.value.result["redirect_chain"] == chain
+    assert raised.value.result["url"] == redirected
+    assert raised.value.result["allowed_domains"] == ["dept.example.test"]
+    assert dispatch["allowed_domains"] == ["dept.example.test"]
+    assert dispatch["reason"] == "redirect_outside_allowlist"
     assert raised.value.result["egress_events"] == events
     assert any(
-        event["host"] == "other.co.uk" and event["decision"] == "block"
+        event["host"] == "identity.unknown.test" and event["decision"] == "block"
         for event in raised.value.result["egress_events"]
     )
     assert raised.value.result["proof"]["isolation_probe"]["blocked"] is True
-    assert raised.value.trace[0]["evaluated"]["reason"] == "redirect_outside_registrable_domain"
+    assert raised.value.result["proof"]["secrets"]["ok"] is True
+    assert len(raised.value.trace) == 6
+    assert {row["evaluated"].get("proof_checkpoint") for row in raised.value.trace} == {
+        "dispatch_result",
+        "host_check",
+        "pod_identity",
+        "isolation_probe",
+        "secrets",
+        "teardown",
+    }
+    assert raised.value.trace[0]["requested"]["url"] == target
+    assert raised.value.trace[0]["evaluated"]["reason"] == "redirect_outside_allowlist"
+    assert raised.value.trace[0]["evaluated"]["redirect_chain"] == chain
+    assert raised.value.trace[0]["evaluated"]["allowed_domains"] == ["dept.example.test"]
     assert raised.value.trace[-1]["evaluated"]["proof_checkpoint"] == "teardown"
     validate_trace_rows(raised.value.trace)
 
 
-def test_same_registrable_domain_redirect_is_captured_and_logged(tmp_path, monkeypatch) -> None:
-    target = "https://dept.example.co.uk/branches"
-    redirected = "https://www.example.co.uk/libraries"
+def test_allowlisted_cross_domain_redirect_is_captured_and_logged(tmp_path, monkeypatch) -> None:
+    target = "https://dept.example.test/branches"
+    redirected = "https://catalog.other.test/libraries"
     _mock_capture_runtime(monkeypatch, target=target, final_url=redirected)
 
     result = capture_url(
         target,
-        allowed_domains=["example.co.uk"],
+        allowed_domains=["catalog.other.test", "dept.example.test"],
         lake=FileLake(tmp_path / "lake"),
         run_id="synthetic-run",
         source_id="synthetic-source",
         objective_id=None,
         tdd_path="03-fanout/discovery-loop.json",
         phase=3,
-        redirect_domain="example.co.uk",
+        redirect_domain="example.test",
     )
 
     assert result["url"] == redirected
     assert result["proof"]["dispatch_result"]["redirect_chain"] == [target, redirected]
+    assert result["proof"]["dispatch_result"]["allowed_domains"] == [
+        "catalog.other.test",
+        "dept.example.test",
+    ]
+    assert "redirect_domain" not in result["trace"][0]["requested"]
+
+
+def test_capture_limit_trace_retains_requested_url_and_policy(tmp_path, monkeypatch) -> None:
+    target = "https://dept.example.test/branches"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=target,
+        limit_reason="max_steps",
+    )
+
+    with pytest.raises(SandboxLimitExceeded) as raised:
+        capture_url(
+            target,
+            allowed_domains=["dept.example.test"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+
+    assert raised.value.result is not None
+    assert raised.value.result["requested"]["url"] == target
+    assert raised.value.result["requested"]["allowed_domains"] == ["dept.example.test"]
+    limit = raised.value.result["trace"][0]
+    assert limit["requested"]["url"] == target
+    assert limit["requested"]["allowed_domains"] == ["dept.example.test"]
+    assert limit["evaluated"]["reason"] == "max_steps"
+    assert limit["evaluated"]["redirect_chain"] == [target]
+    assert limit["evaluated"]["allowed_domains"] == ["dept.example.test"]
+
+
+def test_max_links_limit_row_retains_requested_url_and_policy() -> None:
+    target = "https://catalog.example.test/records"
+    row = _limit_row(
+        parent_step_id="step:synthetic-parent",
+        run_id="synthetic-run",
+        phase=3,
+        source_id="synthetic-source",
+        objective_id=None,
+        tdd_path="03-fanout/discovery-loop.json",
+        mode="S1",
+        generated_by={
+            "backend": "recorded",
+            "model": "sandbox-test",
+            "at": datetime.now(UTC).isoformat(),
+        },
+        reason="max_links_exceeded",
+        url=target,
+        allowed_domains=["catalog.example.test"],
+    )
+
+    assert row["requested"]["url"] == target
+    assert row["requested"]["allowed_domains"] == ["catalog.example.test"]
+    assert row["evaluated"]["reason"] == "max_links_exceeded"
+    assert row["evaluated"]["redirect_chain"] == [target]
 
 
 def test_legacy_exact_subdomain_allowlist_without_redirect_boundary_still_captures(
@@ -262,9 +361,10 @@ def test_legacy_exact_subdomain_allowlist_without_redirect_boundary_still_captur
 
 
 def test_disallowed_target_fails_before_browser(tmp_path) -> None:
+    target = "http://blocked.invalid/private"
     with pytest.raises(CaptureBlocked) as raised:
         capture_url(
-            "http://blocked.invalid/private",
+            target,
             allowed_domains=["example.invalid"],
             lake=FileLake(tmp_path),
             run_id="synthetic-run",
@@ -273,7 +373,14 @@ def test_disallowed_target_fails_before_browser(tmp_path) -> None:
             tdd_path="04-local/synthetic-tdd.json",
         )
     assert raised.value.trace[0]["evaluated"]["status"] == "blocked"
+    assert raised.value.trace[0]["evaluated"]["reason"] == "domain_not_allowed"
+    assert raised.value.trace[0]["evaluated"]["redirect_chain"] == [target]
+    assert raised.value.trace[0]["evaluated"]["allowed_domains"] == ["example.invalid"]
+    assert raised.value.trace[0]["requested"]["url"] == target
     assert raised.value.trace[0]["executed"]["network_request"] is False
+    assert raised.value.result is not None
+    assert raised.value.result["url"] == target
+    assert raised.value.result["allowed_domains"] == ["example.invalid"]
     validate_trace_rows(raised.value.trace)
 
 
@@ -373,7 +480,13 @@ def test_live_docker_step_limit_stops_pod_and_proves_teardown(
         )
     assert raised.value.reason == "max_steps"
     assert raised.value.trace[0]["event"] == "limit_kill"
-    assert raised.value.trace[0]["evaluated"] == {"status": "hard_stop", "reason": "max_steps"}
+    assert raised.value.trace[0]["requested"]["url"] == synthetic_server
+    assert raised.value.trace[0]["evaluated"] == {
+        "status": "hard_stop",
+        "reason": "max_steps",
+        "redirect_chain": [synthetic_server],
+        "allowed_domains": ["host.docker.internal"],
+    }
     assert raised.value.trace[-1]["evaluated"]["proof_checkpoint"] == "teardown"
     assert raised.value.trace[-1]["evaluated"]["status"] == "verified"
     failed = build_job_record(raised.value.result)

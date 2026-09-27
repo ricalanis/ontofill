@@ -163,6 +163,22 @@ def _allowed_host(url: str, domains: list[str]) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
+def _navigation_chain(url: str, chain: object, final_url: object) -> list[str]:
+    if not isinstance(chain, list) or not all(isinstance(item, str) for item in chain):
+        normalized = [url]
+    else:
+        normalized = list(chain)
+        if not normalized or normalized[0] != url:
+            normalized.insert(0, url)
+    if (
+        isinstance(final_url, str)
+        and urlsplit(final_url).scheme in {"http", "https"}
+        and final_url not in normalized
+    ):
+        normalized.append(final_url)
+    return normalized
+
+
 def _domains(allowed_domains: list[str]) -> list[str]:
     normalized = sorted({domain.lower().rstrip(".") for domain in allowed_domains})
     if not normalized or any(
@@ -403,7 +419,13 @@ def _limit_row(
     mode: str,
     generated_by: dict,
     reason: str,
+    url: str,
+    allowed_domains: list[str],
+    redirect_chain: list[str] | None = None,
 ) -> dict:
+    chain = redirect_chain or [url]
+    if not chain or chain[0] != url:
+        chain = [url, *chain]
     return _trace(
         step_id=f"step:{uuid.uuid4().hex}",
         run_id=run_id,
@@ -412,9 +434,18 @@ def _limit_row(
         objective_id=objective_id,
         tdd_path=tdd_path,
         observed={"limit": reason},
-        requested={"enforce_limit": reason},
+        requested={
+            "enforce_limit": reason,
+            "url": url,
+            "allowed_domains": allowed_domains,
+        },
         executed={"pod_stop_requested": True},
-        evaluated={"status": "hard_stop", "reason": reason},
+        evaluated={
+            "status": "hard_stop",
+            "reason": reason,
+            "redirect_chain": chain,
+            "allowed_domains": allowed_domains,
+        },
         ts=datetime.now(UTC).isoformat(),
         mode=mode,
         generated_by=generated_by,
@@ -901,6 +932,7 @@ def capture_url(
         request["spider"] = settings
         request["job_id"] = job_id
     if not _allowed_host(url, domains):
+        reason = "domain_not_allowed"
         row = _trace(
             step_id=step_id,
             run_id=run_id,
@@ -911,15 +943,31 @@ def capture_url(
             observed={"url": url},
             requested=request,
             executed={"network_request": False},
-            evaluated={"status": "blocked", "reason": "domain_not_allowed"},
+            evaluated={
+                "status": "blocked",
+                "reason": reason,
+                "redirect_chain": [url],
+                "allowed_domains": domains,
+            },
             ts=timestamp,
             generated_by=provenance,
         )
-        raise CaptureBlocked("URL domain is not allowed by the TDD", [row])
-    if redirect_domain is not None:
-        redirect_domain = registrable_domain(redirect_domain)
+        raise CaptureBlocked(
+            "URL domain is not allowed by the TDD",
+            [row],
+            {
+                "url": url,
+                "redirect_chain": [url],
+                "allowed_domains": domains,
+                "reason": reason,
+                "trace": [row],
+            },
+        )
+    if settings is not None:
+        redirect_domain = registrable_domain(redirect_domain or "")
         request["redirect_domain"] = redirect_domain
         if redirect_domain not in domains or not same_registrable_domain(url, redirect_domain):
+            reason = "redirect_policy_invalid"
             row = _trace(
                 step_id=step_id,
                 run_id=run_id,
@@ -930,11 +978,27 @@ def capture_url(
                 observed={"url": url},
                 requested=request,
                 executed={"network_request": False},
-                evaluated={"status": "blocked", "reason": "redirect_policy_invalid"},
+                evaluated={
+                    "status": "blocked",
+                    "reason": reason,
+                    "redirect_chain": [url],
+                    "allowed_domains": domains,
+                },
                 ts=timestamp,
                 generated_by=provenance,
             )
-            raise CaptureBlocked("redirect domain must be the URL's registrable domain", [row])
+            raise CaptureBlocked(
+                "redirect domain must be the URL's registrable domain",
+                [row],
+                {
+                    "url": url,
+                    "redirect_chain": [url],
+                    "allowed_domains": domains,
+                    "reason": reason,
+                    "trace": [row],
+                },
+            )
+    spider_allowed_domain = (redirect_domain or "") if settings is not None else ""
 
     if settings is not None:
         selected_runtime = os.environ.get("ONTOFILL_SANDBOX_RUNTIME")
@@ -963,6 +1027,7 @@ def capture_url(
     secrets: dict | None = None
     pod_steps = 0
     peak_memory_mb = 0.0
+    pod_result: dict = {}
     _docker("network", "create", "--internal", network)
     try:
         _docker(
@@ -1026,7 +1091,7 @@ def capture_url(
                 "-e",
                 "CAPTURE_MODE=" + ("spider" if settings is not None else "page"),
                 "-e",
-                "SPIDER_ALLOWED_DOMAIN=" + (redirect_domain or ""),
+                "SPIDER_ALLOWED_DOMAIN=" + spider_allowed_domain,
                 "-e",
                 "SPIDER_CONFIG=" + json.dumps(settings or {}),
                 "-e",
@@ -1047,6 +1112,7 @@ def capture_url(
                 detail = (browser.stderr or browser.stdout).strip()[-2000:]
                 raise CaptureError(f"browser pod failed: {detail}; egress={events}")
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            pod_result = result
             pod_identity = result.get("pod_identity")
             if pod_identity is not None:
                 host["cpu_virtualization_flags"] = pod_identity["cpu_virtualization_flags"]
@@ -1093,25 +1159,26 @@ def capture_url(
                 trace_rows = job_result["trace"]
                 proof = job_result["proof"]
             else:
-                final_url = result["url"]
-                redirect_chain = result.get("redirect_chain")
-                if not isinstance(redirect_chain, list) or not all(
-                    isinstance(item, str) for item in redirect_chain
-                ):
-                    redirect_chain = [url]
-                elif not redirect_chain or redirect_chain[0] != url:
-                    redirect_chain = [url, *redirect_chain]
-                navigation_error = result.get("navigation_error")
-                invalid_redirect = redirect_domain is not None and any(
-                    not _allowed_host(item, domains) or not same_registrable_domain(url, item)
-                    for item in [*redirect_chain, final_url]
+                raw_final_url = result.get("url")
+                redirect_chain = _navigation_chain(url, result.get("redirect_chain"), raw_final_url)
+                final_url = (
+                    raw_final_url
+                    if isinstance(raw_final_url, str)
+                    and urlsplit(raw_final_url).scheme in {"http", "https"}
+                    else redirect_chain[-1]
                 )
+                navigation_error = result.get("navigation_error")
+                invalid_redirect = any(not _allowed_host(item, domains) for item in redirect_chain)
                 if navigation_error or invalid_redirect:
                     blocked = invalid_redirect
-                    reason = (
-                        "redirect_outside_registrable_domain"
-                        if blocked
-                        else "sandbox_navigation_error"
+                    reason = "redirect_outside_allowlist" if blocked else "sandbox_navigation_error"
+                    final_url = next(
+                        (
+                            item
+                            for item in reversed(redirect_chain)
+                            if urlsplit(item).scheme in {"http", "https"}
+                        ),
+                        final_url,
                     )
                     status = result.get("status")
                     status = int(status) if isinstance(status, int) else 0
@@ -1120,6 +1187,7 @@ def capture_url(
                         "url": final_url,
                         "status": status,
                         "redirect_chain": redirect_chain,
+                        "allowed_domains": domains,
                         "navigation_error": navigation_error,
                         "reason": reason,
                         "egress_events": events,
@@ -1137,6 +1205,8 @@ def capture_url(
                         evaluated={
                             "status": "blocked" if blocked else "failed",
                             "reason": reason,
+                            "redirect_chain": redirect_chain,
+                            "allowed_domains": domains,
                             "proof_checkpoint": "dispatch_result",
                         },
                         ts=captured_at,
@@ -1171,6 +1241,8 @@ def capture_url(
                         "url": final_url,
                         "status": status,
                         "redirect_chain": redirect_chain,
+                        "allowed_domains": domains,
+                        "reason": reason,
                         "trace": trace_rows,
                         "egress_events": events,
                         "proof": proof,
@@ -1183,7 +1255,7 @@ def capture_url(
                         },
                     }
                     message = (
-                        "redirect left the registrable domain"
+                        "redirect left the job allowlist"
                         if blocked
                         else "sandbox navigation failed"
                     )
@@ -1256,6 +1328,7 @@ def capture_url(
                             "url": final_url,
                             "status": result["status"],
                             "redirect_chain": redirect_chain,
+                            "allowed_domains": domains,
                             **keys,
                         },
                         "host_check": host,
@@ -1269,6 +1342,7 @@ def capture_url(
                         "url": final_url,
                         "status": result["status"],
                         "redirect_chain": redirect_chain,
+                        "allowed_domains": domains,
                         "trace": trace_rows,
                         "egress_events": events,
                         "proof": proof,
@@ -1294,6 +1368,11 @@ def capture_url(
                 mode="S1",
                 generated_by=provenance,
                 reason=exc.reason,
+                url=url,
+                allowed_domains=domains,
+                redirect_chain=_navigation_chain(
+                    url, pod_result.get("redirect_chain"), pod_result.get("url")
+                ),
             )
         )
         raise
@@ -1592,6 +1671,8 @@ def fetch_url(
                 mode="D0",
                 generated_by=provenance,
                 reason=exc.reason,
+                url=url,
+                allowed_domains=domains,
             )
         )
         raise

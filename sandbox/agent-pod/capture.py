@@ -13,6 +13,7 @@ import socket
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from playwright.async_api import Error as PlaywrightError
@@ -182,30 +183,78 @@ async def capture() -> None:
         )
         try:
             context = await browser.new_context(ignore_https_errors=False, service_workers="block")
+            page = await context.new_page()
+            navigation_chain: list[str] = []
+            redirect_location_reads: list[asyncio.Task] = []
+
+            def record_navigation(request) -> None:
+                try:
+                    main_frame_navigation = (
+                        request.is_navigation_request() and request.frame == page.main_frame
+                    )
+                except PlaywrightError:
+                    return
+                if main_frame_navigation and (
+                    not navigation_chain or navigation_chain[-1] != request.url
+                ):
+                    navigation_chain.append(request.url)
+
+            async def record_redirect_location(response) -> None:
+                try:
+                    request = response.request
+                    if (
+                        not request.is_navigation_request()
+                        or request.frame != page.main_frame
+                        or response.status not in {300, 301, 302, 303, 307, 308}
+                    ):
+                        return
+                    location = await response.header_value("location")
+                except PlaywrightError:
+                    return
+                if location:
+                    redirected_url = urljoin(response.url, location)
+                    try:
+                        source_index = (
+                            len(navigation_chain) - 1 - navigation_chain[::-1].index(response.url)
+                        )
+                    except ValueError:
+                        navigation_chain.append(response.url)
+                        source_index = len(navigation_chain) - 1
+                    if (
+                        source_index + 1 == len(navigation_chain)
+                        or navigation_chain[source_index + 1] != redirected_url
+                    ):
+                        navigation_chain.insert(source_index + 1, redirected_url)
+
+            async def flush_redirect_locations() -> None:
+                if redirect_location_reads:
+                    await asyncio.gather(*redirect_location_reads, return_exceptions=True)
+
+            def observe_response(response) -> None:
+                if response.status in {300, 301, 302, 303, 307, 308}:
+                    redirect_location_reads.append(
+                        asyncio.create_task(record_redirect_location(response))
+                    )
 
             async def read_only(route) -> None:
+                # Route callbacks run before the request reaches the egress proxy.
+                # Keep the attempted main-frame URL even when the proxy rejects it
+                # and Playwright later reports a navigation error.
+                record_navigation(route.request)
                 if route.request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
                     await route.continue_()
                 else:
                     await route.abort()
 
             await context.route("**/*", read_only)
-            page = await context.new_page()
-            navigation_chain: list[str] = []
-
-            def record_navigation(request) -> None:
-                if (
-                    request.is_navigation_request()
-                    and request.frame == page.main_frame
-                    and (not navigation_chain or navigation_chain[-1] != request.url)
-                ):
-                    navigation_chain.append(request.url)
 
             page.on("request", record_navigation)
+            page.on("response", observe_response)
             budget.take()
             try:
                 response = await page.goto(target, wait_until="load", timeout=30000)
             except PlaywrightError as exc:
+                await flush_redirect_locations()
                 write_result(
                     output,
                     {
@@ -218,6 +267,7 @@ async def capture() -> None:
                     },
                 )
                 return
+            await flush_redirect_locations()
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()
             budget.take()

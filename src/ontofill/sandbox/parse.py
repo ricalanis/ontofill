@@ -605,6 +605,7 @@ def parse_bronze(
         max_bytes=max_bytes,
         limits=budget,
         context=context,
+        base_url=safe_base_url,
     )
 
 
@@ -656,6 +657,7 @@ def parse_bronze_json(
         max_bytes=max_bytes,
         limits=budget,
         context=context,
+        base_url=base_url,
     )
     document = result.rows[0].get("document") if result.rows else None
     if not isinstance(document, Mapping):
@@ -689,6 +691,7 @@ def _result(
     max_bytes: int,
     limits: SandboxLimits,
     context: dict[str, Any],
+    base_url: str = "",
 ) -> ParseResult:
     output = execution.output or {}
     task_ok = output.get("ok") is True and execution.error is None
@@ -770,19 +773,22 @@ def _result(
         job_record={},
         challenge_detected=challenge_detected if task_ok else False,
     )
+    request = {
+        "tool": "file.parse",
+        "bronze_key": bronze_key,
+        "format": format,
+        "kind": kind,
+        "max_rows": max_rows,
+        "max_bytes": max_bytes,
+    }
+    if base_url:
+        request["url"] = base_url
     record, trace = _job_and_trace(
         execution,
         context=context,
         task_ok=task_ok,
         reason=reason,
-        request={
-            "tool": "file.parse",
-            "bronze_key": bronze_key,
-            "format": format,
-            "kind": kind,
-            "max_rows": max_rows,
-            "max_bytes": max_bytes,
-        },
+        request=request,
         result={
             "bronze_key": bronze_key,
             "format": format,
