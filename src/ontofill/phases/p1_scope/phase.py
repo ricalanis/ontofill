@@ -41,6 +41,10 @@ PERCENT_METRIC = re.compile(
 SECONDARY_REQUEST = re.compile(r"secondary|secundari|cross[ -]?check|contraste", re.IGNORECASE)
 PRIMARY_REQUEST = re.compile(r"\bprimary\b|\bprimari[oa]s?\b|\bprincipal(?:es)?\b", re.IGNORECASE)
 _DOTTED_ABBREVIATION = re.compile(r"\b(?:[A-Za-zÀ-ÿ]{1,2}\.\s*){2,}")
+PUBLISHER_DOMAIN = re.compile(
+    r"(?<![\w.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z0-9-]{2,63}(?![\w.-])"
+)
 SECONDARY_STOPWORDS = {
     "are",
     "as",
@@ -86,6 +90,27 @@ JURISDICTION_SCOPE_WORDS = {
     "state",
     "the",
     "y",
+}
+JURISDICTION_LABEL_WORDS = {
+    "city",
+    "cities",
+    "county",
+    "counties",
+    "district",
+    "districts",
+    "kingdom",
+    "municipal",
+    "municipality",
+    "municipalities",
+    "province",
+    "provinces",
+    "republic",
+    "republics",
+    "territory",
+    "territories",
+    "united",
+    "state",
+    "states",
 }
 RECALL_GOVERNMENT_LEVELS = (
     "national_federal",
@@ -213,7 +238,7 @@ def _secondary_subjects(clause: str) -> list[tuple[str, set[str]]]:
     marker = SECONDARY_REQUEST.search(clause)
     assert marker is not None
     named_part = clause[: marker.start()] or clause[marker.end() :]
-    parts = re.split(r"\s*(?:,|\band\b|\by\b)\s*", named_part, flags=re.IGNORECASE)
+    parts = re.split(r"\s*(?:,|/|\band\b|\by\b)\s*", named_part, flags=re.IGNORECASE)
     return [(part, subject) for part in parts if (subject := _subject_tokens(part))]
 
 
@@ -229,11 +254,37 @@ def _jurisdiction_aliases(jurisdiction: str) -> set[str]:
     return aliases
 
 
+def _jurisdiction_matches(left: str, right: str) -> bool:
+    """Match root and formal jurisdiction names without matching shared labels."""
+    left_words = _tokens(left) - JURISDICTION_SCOPE_WORDS - JURISDICTION_LABEL_WORDS
+    right_words = _tokens(right) - JURISDICTION_SCOPE_WORDS - JURISDICTION_LABEL_WORDS
+    if left_words & right_words:
+        return True
+    for first in left_words:
+        for second in right_words:
+            common = 0
+            for a, b in zip(first, second):
+                if a != b:
+                    break
+                common += 1
+            if common >= 5 and len(first) - common <= 2 and len(second) - common <= 2:
+                return True
+    return False
+
+
 def _kind_token_matches(subject_token: str, kind_token: str) -> bool:
     """Allow close cross-language cognates only in an explicitly named publisher kind."""
-    return subject_token == kind_token or (
-        min(len(subject_token), len(kind_token)) >= 4
-        and SequenceMatcher(None, subject_token, kind_token).ratio() >= 0.84
+    return (
+        subject_token == kind_token
+        or (
+            min(len(subject_token), len(kind_token)) >= 4
+            and SequenceMatcher(None, subject_token, kind_token).ratio() >= 0.84
+        )
+        or (
+            min(len(subject_token), len(kind_token)) >= 5
+            and abs(len(subject_token) - len(kind_token)) <= 2
+            and subject_token[:5] == kind_token[:5]
+        )
     )
 
 
@@ -425,7 +476,6 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
     publishers = document["authority_policy"]["trusted_publishers"]
     jurisdiction = document["authority_policy"]["jurisdiction"]
     case_aliases = _jurisdiction_aliases(jurisdiction)
-    case_tokens = _tokens(jurisdiction) - JURISDICTION_SCOPE_WORDS
     jurisdiction_stems = {
         token[:4] for token in _tokens(jurisdiction) - JURISDICTION_SCOPE_WORDS if len(token) >= 4
     }
@@ -452,8 +502,11 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
             foreign_scope = bool(named_codes) and not bool(named_codes & case_aliases)
             candidates = [item for item in publishers if item.get("tier") != "secondary"]
             for item in _named_secondary_matches(subject_text, subject, candidates):
-                item_tokens = _tokens(item.get("jurisdiction", "")) - JURISDICTION_SCOPE_WORDS
-                if foreign_scope and item.get("tier") == "primary" and item_tokens & case_tokens:
+                if (
+                    foreign_scope
+                    and item.get("tier") == "primary"
+                    and _jurisdiction_matches(jurisdiction, item.get("jurisdiction", ""))
+                ):
                     continue
                 item["tier"] = "secondary"
 
@@ -461,7 +514,6 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
 def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResult:
     policy = document["authority_policy"]
     versioned = policy.get("schema_version") == "1"
-    case_tokens = _tokens(policy["jurisdiction"]) - JURISDICTION_SCOPE_WORDS
     objections = []
     seen_kinds: set[str] = set()
     seen_domains: set[str] = set()
@@ -488,14 +540,13 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
                 objections.append(f"Duplicate trusted domain: {domain}")
             seen_domains.add(normalized)
         if publisher.get("tier") == "primary":
-            publisher_tokens = _tokens(publisher.get("jurisdiction", "")) - JURISDICTION_SCOPE_WORDS
-            if case_tokens and publisher_tokens & case_tokens:
+            if _jurisdiction_matches(policy["jurisdiction"], publisher.get("jurisdiction", "")):
                 local_primary = True
         elif "tier" in publisher and _claims_primary(publisher["rationale"]):
             objections.append(
                 f"Publisher {publisher['kind']} is {publisher['tier']} but rationale claims primary"
             )
-    if not versioned and not local_primary:
+    if not local_primary:
         objections.append("Authority policy needs a primary publisher in the case jurisdiction")
     if versioned:
         hierarchy = policy.get("jurisdiction_hierarchy", {})
@@ -707,6 +758,24 @@ def _narrow_domain_patch_target(document: dict, reason: str) -> tuple[int, str] 
     return named[0] if len(named) == 1 else None
 
 
+def _publisher_addition_plan(reason: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return the new and explicitly retired publisher domains from a narrow revision."""
+    if not (
+        re.search(r"\bpublisher\s+is\s+now\b", reason, re.IGNORECASE)
+        and re.search(r"\bprimary\b", reason, re.IGNORECASE)
+    ):
+        return (), ()
+    replacement = re.search(r"\b(?:replace|remove|retire)\b", reason, re.IGNORECASE)
+    requested = reason[: replacement.start()] if replacement else reason
+    new_domains = tuple(dict.fromkeys(PUBLISHER_DOMAIN.findall(requested)))
+    retired_domains = (
+        tuple(dict.fromkeys(PUBLISHER_DOMAIN.findall(reason[replacement.start() :])))
+        if replacement
+        else ()
+    )
+    return new_domains, retired_domains
+
+
 def draft_prd(
     case_dir: Path,
     decision: DecisionClient,
@@ -744,6 +813,8 @@ def draft_prd(
     fingerprint_path = output.with_suffix(".input.sha256")
     prior_for_patch: dict | None = None
     domain_patch_target: tuple[int, str] | None = None
+    publisher_addition_domains: tuple[str, ...] = ()
+    publisher_retired_domains: tuple[str, ...] = ()
     if output.exists():
         document = load_json(output)
         cached_digest = (
@@ -766,11 +837,18 @@ def draft_prd(
                     pass  # a reviewed legacy draft may still need the full bounded redraft
                 else:
                     if _authority_policy_check(document, revisions[:-1]).passed:
-                        domain_patch_target = _narrow_domain_patch_target(
-                            document, revisions[-1]["reason"]
-                        )
-                        if domain_patch_target is not None:
+                        (
+                            publisher_addition_domains,
+                            publisher_retired_domains,
+                        ) = _publisher_addition_plan(revisions[-1]["reason"])
+                        if publisher_addition_domains:
                             prior_for_patch = document
+                        else:
+                            domain_patch_target = _narrow_domain_patch_target(
+                                document, revisions[-1]["reason"]
+                            )
+                            if domain_patch_target is not None:
+                                prior_for_patch = document
         if document.get("generated_by", {}).get("backend") == decision.backend and (
             cache_matches or approved
         ):
@@ -984,6 +1062,97 @@ def draft_prd(
             ) from exc
         return candidate(patch)
 
+    def publisher_addition_patch(extra_objections: tuple[str, ...] = ()) -> dict:
+        assert prior_for_patch is not None and publisher_addition_domains
+        publisher_schema = deepcopy(base_schema["$defs"]["trusted_publisher"])
+        publisher_schema["required"] = list(
+            dict.fromkeys([*publisher_schema["required"], "tier", "jurisdiction"])
+        )
+        patch_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["publisher"],
+            "properties": {"publisher": publisher_schema},
+        }
+
+        def candidate(patch: dict) -> dict:
+            document = deepcopy(prior_for_patch)
+            publishers = document["authority_policy"]["trusted_publishers"]
+            for retired_domain in publisher_retired_domains:
+                matches = [
+                    (index, item)
+                    for index, item in enumerate(publishers)
+                    if any(
+                        domain.casefold() == retired_domain.casefold() for domain in item["domains"]
+                    )
+                ]
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"explicitly retired domain must identify one prior publisher: {retired_domain}"
+                    )
+                index, item = matches[0]
+                item["domains"] = [
+                    domain
+                    for domain in item["domains"]
+                    if domain.casefold() != retired_domain.casefold()
+                ]
+                if not item["domains"]:
+                    publishers.pop(index)
+            publishers.append(patch["publisher"])
+            document["revisions"] = revisions
+            document["generated_by"] = generated_by(decision)
+            return document
+
+        def validate_patch(patch: dict) -> None:
+            publisher = patch["publisher"]
+            if publisher["tier"] != "primary":
+                raise ValueError("new publisher must have the explicitly requested primary tier")
+            actual_domains = {domain.casefold() for domain in publisher["domains"]}
+            requested_domains = {domain.casefold() for domain in publisher_addition_domains}
+            if actual_domains != requested_domains or len(actual_domains) != len(
+                publisher["domains"]
+            ):
+                raise ValueError(
+                    "new publisher domains must exactly match the human supplied domains"
+                )
+            if not _jurisdiction_matches(
+                prior_for_patch["authority_policy"]["jurisdiction"], publisher["jurisdiction"]
+            ):
+                raise ValueError("new primary publisher must match the case jurisdiction")
+            document = candidate(patch)
+            validate_document("global-prd", document)
+            authority = _authority_policy_check(document, revisions)
+            if not authority.passed:
+                raise ValueError("; ".join(authority.objections))
+
+        patch_prompt = (
+            "Patch the digest-reviewed PRD by appending exactly one trusted publisher. Preserve every "
+            "existing publisher, tier, domain, DoD criterion, and other PRD field byte-for-byte, "
+            "except remove only the explicitly retired domain; drop its publisher only if it has no "
+            "remaining domain. "
+            "Return only the new publisher object. Use tier=primary and the policy's root jurisdiction. "
+            "The domains must be exactly the domains explicitly named before the human's replacement "
+            "instruction; do not invent or add domains. "
+            f"Case jurisdiction: {prior_for_patch['authority_policy']['jurisdiction']}. "
+            f"Human revision: {revisions[-1]['reason']}. "
+            f"Requested domains: {json.dumps(publisher_addition_domains)}. "
+            f"Reviewer objections: {json.dumps(extra_objections, ensure_ascii=False)}"
+        )
+        try:
+            patch = complete_validated(
+                decision,
+                "phase1.prd.publisher_addition_patch",
+                patch_prompt,
+                patch_schema,
+                validate_patch,
+                max_attempts=3,
+            )
+        except ModelValidationExhausted as exc:
+            raise PrdDraftUnavailable(
+                str(exc), purpose=exc.purpose, attempts=exc.attempts, reason=exc.reason
+            ) from exc
+        return candidate(patch)
+
     review = getattr(decision, "review_json", None)
 
     def critique(artifact: dict, _context: dict, _iteration: int) -> dict:
@@ -1013,6 +1182,8 @@ def draft_prd(
         if not objections or decision.backend == "recorded":
             return artifact
         if prior_for_patch is not None:
+            if publisher_addition_domains:
+                return publisher_addition_patch(objections)
             return domain_patch(objections)
         repaired = prompt + (
             "\nIndependent critic objections (resolve every item verbatim): "
@@ -1036,7 +1207,11 @@ def draft_prd(
     def propose(context: dict, iteration: int) -> dict:
         previous = context["previous"]
         if previous is None:
-            return domain_patch() if prior_for_patch is not None else complete(prompt)
+            if prior_for_patch is None:
+                return complete(prompt)
+            if publisher_addition_domains:
+                return publisher_addition_patch()
+            return domain_patch()
         return previous
 
     loop = PhaseLoop[dict](

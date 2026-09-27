@@ -8,6 +8,7 @@ from ontofill.phases.p1_scope.phase import (
     _apply_human_authority_revisions,
     _authority_policy_check,
     _secondary_clauses,
+    _secondary_subjects,
 )
 
 ENGLISH_REVISION = (
@@ -123,6 +124,100 @@ def test_subjectless_secondary_fragments_do_not_create_objections() -> None:
         _recorded_prd(_us_secondary_publishers()),
         [{"reason": "Secondary sources, e.g. these are secondary."}],
     )
+
+    assert result.passed, "; ".join(result.objections)
+
+
+def test_revision_history_matches_each_secondary_subject_without_quoted_domains() -> None:
+    revisions = [
+        {"reason": ENGLISH_REVISION},
+        {"reason": SPANISH_REVISION},
+        {
+            "reason": (
+                "The >=80% complete-profile target comes from my reason (basis human, quote "
+                "'>=80% of them with a complete core profile'). Mexican official publishers "
+                "(CompraNet/compras públicas, SAT incl. 69-B, public registries) are tier PRIMARY "
+                "with their domains; US sanctions/registry lists are SECONDARY."
+            )
+        },
+        {
+            "reason": (
+                "Keep dod1-dod4, the tiers and the secondary US publishers exactly as they are. "
+                "One defect: the primary procurement publisher domain comprar.gob.mx does not exist "
+                "(no DNS record), so no CompraNet/compras publicas source could ever match it. "
+                "Replace it with the actual, resolvable domain(s) of Mexico's federal public "
+                "procurement publisher."
+            )
+        },
+        {
+            "reason": (
+                "The federal public-procurement publisher is now ComprasMX / Buen Gobierno: "
+                "comprasmx.buengobierno.gob.mx (open data at /datos-abiertos) together with the "
+                "historic CompraNet at historico-compranet.buengobierno.gob.mx; tier PRIMARY for "
+                "contract awards (supplier name, RFC, contracting agency, amount, date). Replace "
+                "the dead compranet.hacienda.gob.mx (no DNS). Keep dod1-dod4, the other publishers "
+                "and tiers as they are."
+            )
+        },
+    ]
+    document = _recorded_prd(
+        [
+            *_us_secondary_publishers(),
+            _publisher(
+                "Mexican public procurement records",
+                "procurement.example.test",
+                tier="primary",
+                jurisdiction="Mexico",
+            ),
+            _publisher(
+                "Mexican tax authority",
+                "tax.example.test",
+                tier="primary",
+                jurisdiction="Mexico",
+            ),
+            _publisher(
+                "Mexican public registries",
+                "registries.example.test",
+                tier="primary",
+                jurisdiction="Mexico",
+            ),
+            _publisher(
+                "ComprasMX Buen Gobierno federal procurement publisher",
+                "comprasmx.buengobierno.gob.mx",
+                tier="primary",
+                jurisdiction="Mexico",
+            ),
+        ]
+    )
+    document["authority_policy"]["jurisdiction"] = "Mexico"
+    document["authority_policy"]["trusted_publishers"][-1]["domains"] = [
+        "comprasmx.buengobierno.gob.mx",
+        "historico-compranet.buengobierno.gob.mx",
+    ]
+
+    clauses = _secondary_clauses(revisions)
+    assert len(clauses) == 3
+    assert any("EE. UU." in clause for clause in clauses)
+    assert any(len(_secondary_subjects(clause)) == 2 for clause in clauses)
+    result = _authority_policy_check(document, revisions)
+
+    assert result.passed, "; ".join(result.objections)
+
+
+def test_primary_publisher_with_formal_country_jurisdiction_counts_as_local() -> None:
+    document = _recorded_prd(
+        [
+            _publisher(
+                "ComprasMX Buen Gobierno federal procurement publisher",
+                "comprasmx.buengobierno.gob.mx",
+                tier="primary",
+                jurisdiction="Mexico",
+            )
+        ]
+    )
+    document["authority_policy"]["jurisdiction"] = "United Mexican States"
+
+    result = _authority_policy_check(document, [])
 
     assert result.passed, "; ".join(result.objections)
 

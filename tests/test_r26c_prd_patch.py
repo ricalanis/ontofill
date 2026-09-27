@@ -25,6 +25,14 @@ THIRD_DENIAL = (
     "(CompraNet/compras públicas, SAT incl. 69-B, public registries) are tier PRIMARY "
     "with their domains; US sanctions/registry lists are SECONDARY."
 )
+FIFTH_REVISION = (
+    "The federal public-procurement publisher is now ComprasMX / Buen Gobierno: "
+    "comprasmx.buengobierno.gob.mx (open data at /datos-abiertos) together with the historic "
+    "CompraNet at historico-compranet.buengobierno.gob.mx; tier PRIMARY for contract awards "
+    "(supplier name, RFC, contracting agency, amount, date). Replace the dead "
+    "compranet.hacienda.gob.mx (no DNS). Keep dod1-dod4, the other publishers and tiers as they "
+    "are."
+)
 
 
 def _v4() -> dict:
@@ -187,6 +195,109 @@ def test_invalid_domain_patch_keeps_reviewed_bytes_and_denial(tmp_path) -> None:
 
     assert {name: (scope / name).read_bytes() for name in names} == before
     assert not (scope / "revisions/4").exists()
+
+
+class PublisherAdditionDecision(PatchDecision):
+    def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
+        self.calls.append((purpose, prompt, schema))
+        assert purpose == "phase1.prd.publisher_addition_patch"
+        assert "compranet.hacienda.gob.mx" in prompt
+        return {
+            "publisher": {
+                "kind": "ComprasMX / Buen Gobierno federal procurement publisher",
+                "tier": "primary",
+                "jurisdiction": "Mexico",
+                "domains": [
+                    "historico-compranet.buengobierno.gob.mx",
+                    "comprasmx.buengobierno.gob.mx",
+                ],
+                "rationale": "Official federal procurement publisher for contract awards.",
+            }
+        }
+
+
+def _case_with_v5_denial(tmp_path) -> dict:
+    (tmp_path / "brief.md").write_text(
+        "Find public contract records with evidence.", encoding="utf-8"
+    )
+    scope = tmp_path / "01-scope"
+    scope.mkdir()
+    prior = _v4()
+    prior["authority_policy"]["trusted_publishers"][0]["domains"] = ["compranet.hacienda.gob.mx"]
+    prior["revisions"].append(
+        {
+            "n": 4,
+            "reason": FOURTH_DENIAL,
+            "decision": "deny",
+            "approver": "reviewer",
+            "date": "2026-09-27",
+        }
+    )
+    (scope / "prd.json").write_text(json.dumps(prior) + "\n", encoding="utf-8")
+    (scope / "prd.md").write_text("Reviewed v5 draft\n", encoding="utf-8")
+    (scope / "prd.input.sha256").write_text("old-input-key\n", encoding="utf-8")
+    for revision in prior["revisions"]:
+        archive = scope / "revisions" / str(revision["n"])
+        archive.mkdir(parents=True)
+        (archive / "APPROVED").write_text(
+            json.dumps({**revision, "checkpoint": "prd"}) + "\n", encoding="utf-8"
+        )
+    marker = bind_approval(
+        tmp_path,
+        ["01-scope/prd.json"],
+        {
+            "approver": "reviewer",
+            "date": "2026-09-27",
+            "checkpoint": "prd",
+            "decision": "deny",
+            "reason": FIFTH_REVISION,
+        },
+    )
+    (scope / "APPROVED").write_text(json.dumps(marker) + "\n", encoding="utf-8")
+    return prior
+
+
+def test_v5_patch_preserves_reviewed_publishers_and_replaces_only_dead_procurement_publisher(
+    tmp_path,
+) -> None:
+    prior = _case_with_v5_denial(tmp_path)
+    scope = tmp_path / "01-scope"
+    decision = PublisherAdditionDecision()
+
+    revised = draft_prd(tmp_path, decision, run_id="run-r26c-v6")
+
+    expected = deepcopy(prior)
+    expected["authority_policy"]["trusted_publishers"] = expected["authority_policy"][
+        "trusted_publishers"
+    ][1:]
+    expected["authority_policy"]["trusted_publishers"].append(
+        {
+            "kind": "ComprasMX / Buen Gobierno federal procurement publisher",
+            "tier": "primary",
+            "jurisdiction": "Mexico",
+            "domains": [
+                "historico-compranet.buengobierno.gob.mx",
+                "comprasmx.buengobierno.gob.mx",
+            ],
+            "rationale": "Official federal procurement publisher for contract awards.",
+        }
+    )
+    expected["revisions"].append(
+        {
+            "n": 5,
+            "reason": FIFTH_REVISION,
+            "decision": "deny",
+            "approver": "reviewer",
+            "date": "2026-09-27",
+        }
+    )
+    expected["generated_by"] = revised["generated_by"]
+    assert revised == expected
+    assert decision.calls and all(
+        call[0] == "phase1.prd.publisher_addition_patch" for call in decision.calls
+    )
+    assert not (scope / "APPROVED").exists()
+    assert (scope / "revisions/5/APPROVED").exists()
 
 
 class SchemaProbeDecision:
