@@ -40,6 +40,7 @@ MAX_PAGE_TEXT_CHARS = 200_000
 MAX_FORMS = 40
 MAX_FORM_FIELDS = 200
 MAX_FORM_TEXT_CHARS = 160
+MAX_LINK_TEXT_CHARS = 500
 MAX_TABLES = 40
 MAX_TABLE_HEADERS = 30
 MAX_FORMAT_SNIFF_BYTES = 64 * 1024
@@ -78,6 +79,8 @@ _SENSITIVE_FIELD = re.compile(
     r"(?i)(?:password|secret|token|credential|authorization|bearer|csrf|session)"
 )
 _SEARCH_FORM_CUE = re.compile(r"(?i)\b(?:search|find|lookup|look up|query)\b")
+_NAVIGATION_CONTAINER_CUE = re.compile(r"(?i)\b(?:nav|navigation|navbar|menu|menubar|breadcrumb)\b")
+_NAVIGATION_ROLES = frozenset({"navigation", "menu", "menubar", "menuitem"})
 
 
 class ParseFailure(ValueError):
@@ -478,17 +481,24 @@ def _parse_html(
             if isinstance(rel_value, list)
             else str(rel_value)
         )
-        container = next(
-            (
-                parent
-                for parent in tag.parents
-                if getattr(parent, "name", None) in {"article", "li"}
-                or any(
-                    "result" in str(class_name).casefold() or str(class_name).casefold() == "b_algo"
-                    for class_name in parent.get("class", [])
-                )
-            ),
-            None,
+        own_text = _anchor_text(tag)
+        in_navigation = _inside_navigation(tag)
+        container = (
+            None
+            if in_navigation
+            else next(
+                (
+                    parent
+                    for parent in tag.parents
+                    if getattr(parent, "name", None) in {"article", "li"}
+                    or any(
+                        "result" in str(class_name).casefold()
+                        or str(class_name).casefold() == "b_algo"
+                        for class_name in parent.get("class", [])
+                    )
+                ),
+                None,
+            )
         )
         container_classes = (
             [str(item).casefold() for item in container.get("class", [])]
@@ -504,19 +514,17 @@ def _parse_html(
         else:
             result_kind = "other"
         context = (
-            " ".join(container.get_text(" ", strip=True).split())
-            if container is not None
-            else tag.get_text(" ", strip=True)
-        )[:900]
+            _bounded_html_text(container.get_text(" ", strip=True), 900) if container else own_text
+        )
         heading = container.find(["h2", "h3", "h4", "h5"]) if container is not None else None
         links.append(
             {
                 "url": url,
-                "text": tag.get_text(" ", strip=True),
+                "text": own_text,
                 "rel": rel,
-                "title": heading.get_text(" ", strip=True)
+                "title": _bounded_html_text(heading.get_text(" ", strip=True))
                 if heading
-                else tag.get_text(" ", strip=True),
+                else own_text,
                 "context": context,
                 "result_kind": result_kind,
             }
@@ -534,6 +542,52 @@ def _parse_html(
         or "captcha" in str(document.title.string if document.title else "").casefold()
     )
     return rows, page_text, links, skeleton_hash, challenge_detected
+
+
+def _bounded_html_text(value: object, limit: int = MAX_LINK_TEXT_CHARS) -> str:
+    """Collapse and cap untrusted text returned with one parsed link."""
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _anchor_text(tag: Any) -> str:
+    """Return an anchor's own visible label or a bounded accessible-name fallback."""
+    visible = _bounded_html_text(tag.get_text(" ", strip=True))
+    if visible:
+        return visible
+    for value in (tag.get("aria-label"), tag.get("title")):
+        fallback = _bounded_html_text(value)
+        if fallback:
+            return fallback
+    for image in tag.find_all("img", alt=True, limit=8):
+        fallback = _bounded_html_text(image.get("alt"))
+        if fallback:
+            return fallback
+    for title in tag.find_all("title", limit=4):
+        fallback = _bounded_html_text(title.get_text(" ", strip=True))
+        if fallback:
+            return fallback
+    return ""
+
+
+def _inside_navigation(tag: Any) -> bool:
+    """Keep menu wrappers from becoming the text context for an individual link."""
+    ancestor = tag
+    while ancestor is not None:
+        if getattr(ancestor, "name", None) in {"nav", "menu"}:
+            return True
+        role = " ".join(str(ancestor.get("role") or "").casefold().split())
+        if _NAVIGATION_ROLES.intersection(role.split()):
+            return True
+        labels = [ancestor.get("id"), ancestor.get("class"), ancestor.get("aria-label")]
+        for label in labels:
+            if isinstance(label, list):
+                text = " ".join(str(value) for value in label)
+            else:
+                text = str(label or "")
+            if _NAVIGATION_CONTAINER_CUE.search(text):
+                return True
+        ancestor = ancestor.parent
+    return False
 
 
 def _parse_forms(data: bytes) -> list[dict[str, Any]]:

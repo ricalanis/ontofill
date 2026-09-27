@@ -827,6 +827,45 @@ def test_parse_runner_extracts_html_and_decodes_json_in_worker_code() -> None:
     assert json_rows == [{"document": {"success": True, "result": {"id": "synthetic-01"}}}]
 
 
+def test_parse_runner_uses_anchor_text_without_ancestor_navigation_text() -> None:
+    spec = importlib.util.spec_from_file_location("ontofill_parse_pod_runner", _PARSE_RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    accessible_label = "Accessible branch records " * 40
+    html = (
+        "<html><body>"
+        "<nav id='primary-menu' aria-label='Primary navigation'><ul><li>"
+        "<a href='/catalog'>Data catalog</a><ul class='submenu'>"
+        f"<li><a href='/datasets/branches' aria-label='{accessible_label}'></a></li>"
+        "<li><a href='/unrelated'>Unrelated menu destination</a></li>"
+        "</ul></li></ul></nav>"
+        "<main><article><h2>Official branch registry</h2>"
+        "<a href='/registry'>Branch registry</a><p>Records published by the city.</p>"
+        "</article></main></body></html>"
+    ).encode()
+
+    _rows, _text, _page_text, links, _skeleton, _challenge = runner._parse(
+        html, "html", 20, "https://synthetic.example.test/"
+    )
+    by_url = {link["url"]: link for link in links}
+
+    catalog = by_url["https://synthetic.example.test/catalog"]
+    accessible = by_url["https://synthetic.example.test/datasets/branches"]
+    article = by_url["https://synthetic.example.test/registry"]
+    assert catalog["text"] == "Data catalog"
+    assert catalog["context"] == "Data catalog"
+    assert "Unrelated menu destination" not in catalog["context"]
+    assert accessible["text"] == accessible_label[:500]
+    assert accessible["title"] == accessible_label[:500]
+    assert accessible["context"] == accessible_label[:500]
+    assert len(accessible["text"]) <= 500
+    assert article["text"] == "Branch registry"
+    assert article["title"] == "Official branch registry"
+    assert "Records published by the city." in article["context"]
+
+
 def test_parse_runner_extracts_search_form_labels_without_form_values() -> None:
     spec = importlib.util.spec_from_file_location("ontofill_parse_pod_runner", _PARSE_RUNNER_PATH)
     assert spec is not None and spec.loader is not None
