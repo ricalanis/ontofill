@@ -23,7 +23,8 @@
 
 .glegend { margin: var(--space-xs) 0; display: grid; gap: var(--space-2xs); }
 .glegend .legend { margin: 0; }
-.glegend .legend > span { display: inline-block; }
+.glegend .legend > span { display: inline-flex; flex-wrap: wrap; align-items: center; column-gap: 4px; max-width: 100%; }
+.glegend .legend > span i { display: inline; width: auto; height: auto; background: none; margin: 0; vertical-align: baseline; }
 .glegend .gsw { margin-right: 4px; }
 .glegend i { font-style: normal; color: var(--fg-3); }
 .gsw { flex: none; vertical-align: middle; overflow: visible; }
