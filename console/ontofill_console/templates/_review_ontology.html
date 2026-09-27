@@ -1,5 +1,6 @@
 {% set onto = docs.ontology %}
 {% set CRITIC = {"Good-Exclusive": "good, exclusive", "Good-Overlapping": "good, overlaps a sibling", "Redundant": "redundant", "Bad": "bad"} %}
+{% macro pred(p) %}{% for term in (p or {}).get("all") or [] %}{% if not loop.first %} and {% endif %}<span class="mono">{% if term.op == "equals" %}{{ term.property }} = {{ term.value }}{% elif term.op == "same_value" %}{{ term.left_property }} = {{ term.right_property }}{% elif term.op == "date_before" %}{{ term.earlier_property }} before {{ term.later_property }}{% else %}{{ term.op }} {{ term|tojson }}{% endif %}</span>{% else %}<span class="muted">no predicate</span>{% endfor %}{% endmacro %}
 {% macro tree(nodes) %}
 <ul class="tree">
   {% for n in nodes %}
@@ -36,8 +37,25 @@
     </div>
     <div>
       <h3>Properties</h3>
-      <table class="ledger"><tbody>{% for pr in onto.properties %}<tr><th scope="row" class="mono">{{ pr.id }}</th><td class="mono">{{ pr.datatype }}</td><td>{% if pr.aligned_to and safe_url(pr.aligned_to) %}<a href="{{ pr.aligned_to }}" target="_blank" rel="noopener">{{ pr.aligned_to.rsplit("/", 1)[-1] }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table>
+      <table class="ledger"><tbody>{% for pr in onto.properties %}<tr><th scope="row" class="mono">{{ pr.id }}</th><td class="mono muted">{{ pr.domain or "—" }}</td><td class="mono">{{ pr.datatype }}</td><td>{% if pr.aligned_to and safe_url(pr.aligned_to) %}<a href="{{ pr.aligned_to }}" target="_blank" rel="noopener">{{ pr.aligned_to.rsplit("/", 1)[-1] }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table>
     </div>
   </div>
+  {% if dod_rows %}
+  <h3 id="dodq-h">Definition of done, compiled</h3>
+  <table class="ledger"><thead><tr><th scope="col">Criterion</th><th scope="col">Measures</th><th scope="col">On class</th><th scope="col">Target</th></tr></thead><tbody>{% for q in dod_rows %}<tr><th scope="row" class="mono">{{ q.criterion_id }}</th><td>{{ q.what }}{% if q.relation %} <span class="mono">{{ q.relation.domain }} —{{ q.relation_id }}→ {{ q.relation.range }}</span>{% elif q.relation_id %} <span class="mono">{{ q.relation_id }}</span>{% endif %}{% if q.properties %}<span class="sub mono muted">{% if q.dod_all %}DoD properties: {% endif %}{{ q.properties|join(", ") }}</span>{% endif %}{% if q.warn %}<span class="sub dodq-warn">⚠ {{ q.warn }}</span>{% endif %}</td><td>{% if q["class"] %}<span class="mono">{{ q["class"] }}</span><span class="sub muted">{{ q.n_dod_props }} DoD propert{{ "y" if q.n_dod_props == 1 else "ies" }}</span>{% else %}<span class="muted">all values</span>{% endif %}</td><td class="mono">{{ q.target }}{% if q.min_ratio is not none %}<span class="sub muted">per entity ≥ {{ q.min_ratio }}</span>{% endif %}</td></tr>{% endfor %}</tbody></table>
+  {% endif %}
+  <h3 id="relations-h">Relations</h3>
+  {% if onto.relations %}
+  <table class="ledger"><thead><tr><th scope="col">Relation</th><th scope="col">From → to</th><th scope="col">Linked when</th></tr></thead><tbody>{% for r in onto.relations %}<tr><th scope="row"><span class="mono">{{ r.id }}</span>{% if r.label %} <span class="muted">{{ r.label }}</span>{% endif %}</th><td class="mono">{{ r.domain }} → {{ r.range }}{% if r.symmetric %} (both ways){% endif %}</td><td>{% if r.match %}<span class="mono">{{ r.domain }}.{{ r.match.domain_property }} = {{ r.range }}.{{ r.match.range_property }}</span>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table>
+  {% else %}<p class="muted">No relations: the classes are not linked to each other.</p>{% endif %}
+  <h3 id="rules-h">Rules</h3>
+  {% if onto.rules %}
+  <table class="ledger"><thead><tr><th scope="col">Rule</th><th scope="col">Checks</th><th scope="col">Predicate</th></tr></thead><tbody>{% for r in onto.rules %}<tr><th scope="row">{{ r.label or r.id }}<span class="sub mono muted">{{ r.id }}</span></th><td>{{ r.checks or "—" }}</td><td>{{ pred(r.predicate) }}</td></tr>{% endfor %}</tbody></table>
+  {% else %}<p class="muted">No rules in this schema.</p>{% endif %}
+  {% if set_aside %}
+  <h3 id="setaside-h">Set aside: not in this schema ({{ set_aside.rows|length }})</h3>
+  <p class="notice" role="note">The engine proposed these but could not fit them into a valid schema, so approving this ontology leaves them out. <a class="mono" href="{{ base }}/files/{{ set_aside.path }}" target="_blank" rel="noopener">{{ set_aside.path }}</a></p>
+  <table class="ledger"><thead><tr><th scope="col">Proposal</th><th scope="col">Why it was set aside</th></tr></thead><tbody>{% for u in set_aside.rows %}<tr><th scope="row">{{ (u.proposal or {}).get("label") or u.id }}<span class="sub mono muted">{{ u.kind }} · {{ u.id }}</span></th><td>{{ (u.reason or "")|truncate(260, true, "…") }}</td></tr>{% endfor %}</tbody></table>
+  {% endif %}
   <p class="note">SHACL shapes: <a class="mono" href="{{ base }}/files/{{ onto.shacl_path }}" target="_blank" rel="noopener">{{ onto.shacl_path }}</a></p>
 </section>

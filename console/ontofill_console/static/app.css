@@ -304,6 +304,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .factor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-md); padding: var(--space-sm) 0; border-bottom: var(--rule-hair); align-items: start; }
 .factor__text { display: grid; gap: var(--space-2xs); }
 .factor__noev { color: var(--color-signal); }
+.dodq-warn { color: var(--color-signal); font-weight: 600; }
 .factor__prereject { font-weight: 600; margin-left: var(--space-2xs); }
 .kind { font-size: var(--text-xs); font-weight: 600; padding: 0 var(--space-2xs); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); margin-left: var(--space-2xs); vertical-align: 1px; }
 .kind--grounded { border-color: var(--color-ink); }

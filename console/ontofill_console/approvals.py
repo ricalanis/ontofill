@@ -157,6 +157,83 @@ def load_artifacts(case: CaseDir, item: Approval) -> dict:
     return docs
 
 
+RECOMMENDATIONS = "02-ontology/recommendations/unresolved.json"
+
+
+def set_aside(case: CaseDir) -> dict | None:
+    """Phase 2 proposals the engine could not fit into a valid schema (R31): shown beside the ontology review for
+    context, never part of the approved artifact (not in artifact_paths, so not in the digests)."""
+    text = case.read(RECOMMENDATIONS, limit=10**6)
+    try:
+        doc = json.loads(text) if text else None
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("unresolved"), list):
+        return None
+    rows = [u for u in doc["unresolved"] if isinstance(u, dict) and u.get("id")]
+    return {"path": RECOMMENDATIONS, "rows": rows} if rows else None
+
+
+AGGREGATE_WORDS = {
+    "count_entities": "count of",
+    "count_entities_with_properties": "count of entities with these properties, of",
+    "count_distinct_source_classes": "distinct source classes",
+    "count_values_without_evidence": "values without evidence",
+    "entities_meeting_completeness": "share meeting completeness, of",
+    "count_entities_with_relation": "count of entities linked by a relation, of",
+}
+
+
+def dod_compiled(case: CaseDir, onto: dict) -> list[dict]:
+    """Each compiled definition-of-done query beside the class it is measured on and that class's DoD properties, so
+    an approver sees at a glance a criterion that can never be met (e.g. completeness over a class with no DoD
+    properties). Display only: dod-queries.json is not part of the approved artifact."""
+    rel = onto.get("dod_queries_path") or "02-ontology/dod-queries.json"
+    text = case.read(rel, limit=10**6)
+    try:
+        doc = json.loads(text) if text else None
+    except ValueError:
+        return []
+    queries = doc.get("queries") if isinstance(doc, dict) else None
+    if not isinstance(queries, list):
+        return []
+    props = [p for p in onto.get("properties") or [] if isinstance(p, dict)]
+    relations = {r.get("id"): r for r in onto.get("relations") or [] if isinstance(r, dict)}
+    rows = []
+    for q in queries:
+        if not isinstance(q, dict):
+            continue
+        cls = q.get("class_id") or q.get("class")
+        rel_doc = relations.get(q.get("relation_id")) if q.get("relation_id") else None
+        dod_props = [p["id"] for p in props if p.get("domain") == cls and p.get("dod")] if cls else []
+        named = q.get("properties")
+        warn = None
+        if named == "dod" and cls and not dod_props:
+            warn = f"{cls} has no definition-of-done properties, so this criterion can never be met"
+        elif q.get("relation_id") and rel_doc is None:
+            warn = f"relation {q['relation_id']} is not in this ontology"
+        elif isinstance(named, list):
+            missing = [n for n in named if not any(p.get("id") == n and p.get("domain") == cls for p in props)]
+            if cls and missing:
+                warn = f"{', '.join(missing)} not declared on {cls}"
+        rows.append(
+            {
+                "criterion_id": q.get("criterion_id"),
+                "what": AGGREGATE_WORDS.get(q.get("aggregate"), q.get("aggregate")),
+                "class": cls,
+                "relation": rel_doc,
+                "relation_id": q.get("relation_id"),
+                "properties": dod_props if named == "dod" else (named if isinstance(named, list) else []),
+                "dod_all": named == "dod",
+                "n_dod_props": len(dod_props) if cls else None,
+                "min_ratio": q.get("min_ratio"),
+                "target": f"{q.get('operator', '')} {q.get('target')}".strip(),
+                "warn": warn,
+            }
+        )
+    return rows
+
+
 def revision_history(docs: dict) -> list[dict]:
     """`revisions: [{n, decision, reason, approver, date}]` recorded in the reviewed artifact (v0.9.5), newest first."""
     rows = []

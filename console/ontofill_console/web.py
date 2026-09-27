@@ -664,6 +664,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             digests=ap.artifact_digests(case.dir, item),
             can_decide=can_decide,
             log=log,
+            set_aside=ap.set_aside(case.dir) if "ontology" in docs else None,
+            dod_rows=ap.dod_compiled(case.dir, docs["ontology"]) if "ontology" in docs else [],
         )
         response.status_code = status_code
         return response
