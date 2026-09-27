@@ -805,9 +805,15 @@ def run_case(
                         )
                         append_job_record(lake, case_id, build_job_record(job, value_ids=ids))
             shapes = case_dir / ontology["shacl_path"]
+            classification_start = len(getattr(decision, "call_log", []))
             refined = refine_observations(
-                observations, ontology=ontology, generated_by=provenance, shapes_ttl=shapes
+                observations,
+                ontology=ontology,
+                generated_by=provenance,
+                shapes_ttl=shapes,
+                decision=decision,
             )
+            _publish_decision_calls(feed, trace, decision, classification_start, run_id, 5)
             dod_queries = load_json(case_dir / "02-ontology/dod-queries.json")
             export_trace = _persisted_run_trace(lake, case_id, run_id, trace)
             metrics = export_run(
@@ -822,6 +828,7 @@ def run_case(
                 generated_by=provenance,
                 preview=preview_past_checkpoints,
                 decisions_by_backend=getattr(decision, "decisions_by_backend", None),
+                taxonomy_classified=refined.classified,
             )
             outer = decide_outer_gap(
                 metrics=metrics,
@@ -848,6 +855,7 @@ def run_case(
                 generated_by=provenance,
                 preview=preview_past_checkpoints,
                 decisions_by_backend=getattr(decision, "decisions_by_backend", None),
+                taxonomy_classified=refined.classified,
             )
             sources = [
                 {
@@ -1009,14 +1017,26 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
     observations = store.list_for_run(run_id) or _read_silver_cache(case_id, run_id)
     if not observations:
         raise RuntimeError(f"no silver observations for {run_id}; refusing to overwrite gold")
+    decision = None
+    if provenance["backend"] == "vultr":
+        if not os.environ.get("ONTOFILL_GATEWAY_TOKEN"):
+            raise RuntimeError(
+                "live refine requires ONTOFILL_GATEWAY_TOKEN for the screened gateway"
+            )
+        decision = VultrDecisionClient.from_env()
+    decision_start = len(getattr(decision, "call_log", []))
     refined = refine_observations(
         observations,
         ontology=ontology,
         generated_by=provenance,
         shapes_ttl=case_dir / ontology["shacl_path"],
+        decision=decision,
     )
     key = f"runs/{case_id}/{run_id}/trace.live.jsonl"
     trace = [json.loads(line) for line in lake.read_key(key).splitlines()]
+    if decision is not None:
+        with RunFeed(lake, case_id, run_id, provenance, start_heartbeat=False) as feed:
+            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 5)
     export_run(
         lake,
         case_dir,
@@ -1028,6 +1048,7 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
         trace=trace,
         generated_by=provenance,
         preview=status.get("preview", False),
+        taxonomy_classified=refined.classified,
     )
     return 0
 

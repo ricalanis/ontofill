@@ -1,5 +1,14 @@
 # Work list
 
+## R10 workflow handoff
+- [ ] Pass a live decision client into P5 refinement and both exports; publish classifier call usage before export.
+- [ ] On `refine_case`, require the screened gateway for live provenance and append classification calls to the existing run trace.
+- [ ] Add focused workflow tests and run the acceptance gate after the R10 branch is integrated.
+FILES: `src/ontofill/workflow.py`, `tests/test_r10_workflow.py`.
+TASK: Make separate-critic taxonomy classification visible and honest in production run/refine paths.
+DONE: `uv run pytest -q tests/test_r10_workflow.py tests/test_r10_taxonomy.py tests/test_workflow.py`.
+FORMAT: `uv run ruff check src/ontofill/workflow.py tests/test_r10_workflow.py && uv run ruff format --check src/ontofill/workflow.py tests/test_r10_workflow.py`.
+
 ## R16: cell browser liveness and idle CDP
 - [x] Reproduce the relay idle close with a failing local test and seek the demo cell's memory/timeout evidence; no demo job feed was available.
 - [x] Keep the in-pod CDP bridge and sidecar relay open across idle polls; detect browser/target death in status and action counting, with an honest failed job record and measured memory (synthetic gate).
