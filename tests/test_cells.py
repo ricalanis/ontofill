@@ -59,6 +59,18 @@ def _fake_docker(monkeypatch) -> list[tuple[str, ...]]:
     monkeypatch.setattr(
         cells_module, "_wait_cdp", lambda port: f"ws://127.0.0.1:{port}/devtools/browser/synthetic"
     )
+
+    class LiveTargets:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'[{"id":"page-1","type":"page","webSocketDebuggerUrl":"ws://localhost/page-1"}]'
+
+    monkeypatch.setattr(cells_module, "urlopen", lambda *_args, **_kwargs: LiveTargets())
     monkeypatch.setattr(
         cells_module,
         "_wait_preflight",
@@ -155,6 +167,83 @@ def test_max_steps_kills_cell_and_records_honest_failure(monkeypatch) -> None:
     assert job["failure_reason"] == "max_steps"
     assert not job["checkpoints"]["task"]["ok"]
     assert job["usage"]["steps"] == 1
+
+
+def test_missing_browser_target_stops_cell_and_records_failure(monkeypatch) -> None:
+    _fake_docker(monkeypatch)
+    manager = CellManager()
+    cell_id = manager.create("native", ["example.invalid"], SandboxLimits(timeout_s=600))["cell_id"]
+
+    class EmptyTargets:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    monkeypatch.setattr(cells_module, "urlopen", lambda *_args, **_kwargs: EmptyTargets())
+    status = manager.status(cell_id)
+    assert status["state"] == "stopped"
+    assert status["failure_reason"] == "browser_closed"
+    job = manager.destroy(cell_id)["job_record"]
+    assert job["failure_reason"] == "browser_closed"
+    assert job["checkpoints"]["task"]["ok"] is False
+
+
+def test_disappeared_controller_target_stops_cell_even_if_blank_page_remains(monkeypatch) -> None:
+    _fake_docker(monkeypatch)
+    manager = CellManager()
+    cell_id = manager.create("native", ["example.invalid"], SandboxLimits(timeout_s=600))["cell_id"]
+    target_sets = iter(
+        [
+            ["original", "controller-page"],
+            ["original"],
+        ]
+    )
+
+    class Targets:
+        def __init__(self, ids):
+            self.ids = ids
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                [
+                    {"id": item, "type": "page", "webSocketDebuggerUrl": f"ws://localhost/{item}"}
+                    for item in self.ids
+                ]
+            ).encode()
+
+    monkeypatch.setattr(
+        cells_module, "urlopen", lambda *_args, **_kwargs: Targets(next(target_sets))
+    )
+    assert manager.record_step(cell_id) == 1
+    assert manager.status(cell_id)["state"] == "stopped"
+    assert manager.destroy(cell_id)["job_record"]["failure_reason"] == "browser_closed"
+
+
+def test_cell_job_uses_browser_cgroup_peak_memory(monkeypatch) -> None:
+    _fake_docker(monkeypatch)
+    original_docker = cells_module._docker
+
+    def measured_docker(*args, **kwargs):
+        if args[0] == "exec" and args[-1] == "/sys/fs/cgroup/memory.peak":
+            return subprocess.CompletedProcess(args, 0, str(768 * 1024 * 1024), "")
+        return original_docker(*args, **kwargs)
+
+    monkeypatch.setattr(cells_module, "_docker", measured_docker)
+    manager = CellManager()
+    cell_id = manager.create("native", ["example.invalid"])["cell_id"]
+    job = manager.destroy(cell_id)["job_record"]
+    assert job["usage"]["peak_memory_mb"] == 768
 
 
 def test_preflight_failure_closes_resources_without_claiming_proof(monkeypatch) -> None:

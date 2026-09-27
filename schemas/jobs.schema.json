@@ -426,7 +426,9 @@
         "timeout",
         "memory",
         "pids",
-        "max_steps"
+        "max_steps",
+        "browser_closed",
+        "cdp_unreachable"
       ]
     }
   }

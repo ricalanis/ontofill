@@ -24,7 +24,7 @@ class Handler(socketserver.BaseRequestHandler):
                 try:
                     readable, _, _ = select.select(sockets, [], [], 30)
                     if not readable:
-                        return
+                        continue
                     for source in readable:
                         data = source.recv(65536)
                         if not data:

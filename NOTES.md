@@ -1,5 +1,13 @@
 # Strategy and assumptions
 
+## R16 selected strategy (2026-09-26)
+- Both CDP forwarding layers currently return when `select.select(..., 30)` has no readable socket. An idle browser WebSocket therefore closes even while Chromium and the cell container remain alive. Fix both forwarders to continue waiting; add an idle-poll regression test.
+- The substrate currently checks only Docker `State.Running`; it does not test the CDP page target. It also copies `peak_memory_mb` from preflight once and never updates it. Add a target liveness probe before reporting `ready` or accepting a new step, and gather live/peak memory before teardown.
+- The PA-owned HTTP provider uses a 90-second substrate default when the caller supplies no limits, while its controller session default is 900 seconds. That exact mismatch could explain the 1.5-minute symptom in direct console sessions. Tell PA/orchestrator; do not change PA-owned code here.
+- The latest real-case S3 run has no `jobs.jsonl`, and no local jobs feed was found on the control VM; the demo's `peak_memory_mb` is not yet available from the engine lake. A fresh live R16 scratch job will record it. No container was left running after the demo.
+- Managed regression attempt 1 intentionally failed before implementation (idle relay closed; status returned ready). Attempt 2 passed relay and 17 tests but failed two liveness tests because `jobs.schema.json` only permits the four limit reasons. The dead hypothesis was that the existing closed enum already allowed browser/relay deaths. The next strategy is schema-aligned liveness: add the two announced reason values, then re-run the same focused tests and formatting. A third identical `baseline-failing-tests` attempt is forbidden by progress-guard.
+- The first broader focused-suite invocation named a nonexistent `tests/test_cell_api.py`; cell API tests are already in `tests/test_cells.py`. It exited 4 before running tests. Corrected the DONE command and scope; no engine failure was observed from that invocation.
+
 ## R3 controller strategy
 
 - Read the engine definition/plan, brief 14 and R3 gap check before editing. R3 adds no contract schema fields.
