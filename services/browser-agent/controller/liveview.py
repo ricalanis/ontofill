@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 
 PORT_ENV = "BA_LIVEVIEW_PORT"  # default 8702; 0 disables the live view
 PUBLIC_BASE_ENV = "BA_LIVEVIEW_PUBLIC_BASE"  # e.g. the `netbird expose` URL for this control plane
+# Bind address: loopback by default. `netbird expose` dials the peer's NetBird IP, so a published live view binds that
+# IP (still not a public interface).
+HOST_ENV = "BA_LIVEVIEW_HOST"
 DEFAULT_PORT = 8702
 BOUNDARY = "ba-live-frame"
 
@@ -205,7 +208,7 @@ class LiveViewHub:
         with cls._shared_lock:
             hub = cls._shared.get(port)
             if hub is None:
-                hub = cls._shared[port] = cls(port)
+                hub = cls._shared[port] = cls(port, host=os.environ.get(HOST_ENV, "").strip() or "127.0.0.1")
             return hub
 
     # --- server -------------------------------------------------------------------------------------------------

@@ -158,3 +158,20 @@ def test_disabled_hub_and_public_base(tmp_path, monkeypatch):
         assert source.stopped and hub.lookup("bas-0001", url.split("t=")[1]) is None
     finally:
         hub.shutdown()
+
+
+def test_hub_bind_host_from_env(monkeypatch):
+    from controller import liveview
+
+    monkeypatch.setenv("BA_LIVEVIEW_PORT", "8799")
+    monkeypatch.setenv("BA_LIVEVIEW_HOST", "100.64.0.10")
+    liveview.LiveViewHub._shared.pop(8799, None)
+    try:
+        assert liveview.LiveViewHub.from_env().host == "100.64.0.10"
+    finally:
+        liveview.LiveViewHub._shared.pop(8799, None)
+    monkeypatch.delenv("BA_LIVEVIEW_HOST")
+    try:
+        assert liveview.LiveViewHub.from_env().host == "127.0.0.1"
+    finally:
+        liveview.LiveViewHub._shared.pop(8799, None)

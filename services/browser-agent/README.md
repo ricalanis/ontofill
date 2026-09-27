@@ -136,7 +136,7 @@ On the control VM the gateway binds the control plane's NetBird IP so Skyvern br
 it (and nothing else; the sandbox's narrow brain → gateway rule is the substrate's): `BA_GATEWAY_HOST=<control NetBird
 IP>`, `BA_GATEWAY_PORT=8700`; brains get `OPENAI_COMPATIBLE_API_BASE=http://<control NetBird IP>:8700/v1`. The engine's
 cell API (`serve_cells`) and the live view stay on loopback; publish a live view with `netbird expose` and set
-`BA_LIVEVIEW_PUBLIC_BASE`. `BA_CELLS_TIMEOUT_S` (default 600) bounds a cell create, which builds images on a fresh host.
+`BA_LIVEVIEW_PUBLIC_BASE` (the live view must then bind the control NetBird IP: `BA_LIVEVIEW_HOST`, since the proxy dials the peer IP, not loopback). `BA_CELLS_TIMEOUT_S` (default 600) bounds a cell create, which builds images on a fresh host.
 
 ## Environment
 
