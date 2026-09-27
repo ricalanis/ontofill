@@ -362,6 +362,92 @@ def test_replay_complete_pdf_profile_keeps_page_and_row_receipts(tmp_path) -> No
     assert replay.trace_steps[0]["parent_step_id"] == "step:file"
 
 
+def test_replay_adopted_p3_pdf_uses_original_sidecar_and_page_screenshot(tmp_path) -> None:
+    case_dir, lake, model, _queries, _old_key, screenshot, trace = _recorded_case(tmp_path)
+    pdf = make_pdf(
+        [
+            [
+                "book_id          title             Service Zone",
+                "B-1              The First         North",
+            ]
+        ]
+    )
+    url = "https://example.invalid/catalog.pdf"
+    key = lake.put_bytes(
+        pdf,
+        {
+            "content_type": "application/pdf",
+            "url": url,
+            "captured_at": "2026-01-01T00:00:00Z",
+            "source_id": SOURCE_ID,
+            "step_id": "step:p3-file",
+        },
+    )
+    trace[0]["phase"] = 3
+    trace[1]["observed"] = {
+        "url": url,
+        "status": 200,
+        "captured_at": "2026-01-01T00:00:00Z",
+        "screenshot_source_id": SOURCE_ID,
+        "screenshot_step_id": "step:page",
+        "screenshot_captured_at": "2026-01-01T00:00:00Z",
+    }
+    trace[1]["requested"] = {"tool": "bronze.adopt", "fetch": "bytes", "network_request": False}
+    trace[1]["executed"] = {"bronze_key": key, "network_request": False}
+    trace[1]["parent_step_id"] = "step:p3-file"
+    trace[1]["screenshot_key"] = screenshot
+    trace.insert(
+        1,
+        _step(
+            step_id="step:p3-file",
+            source_id=SOURCE_ID,
+            objective_id=OBJECTIVE_ID,
+            tdd_path=TDD_PATH,
+            requested={"url": url},
+            executed={"document_key": key},
+            observed={"url": url, "status": 200},
+        ),
+    )
+    trace[1]["phase"] = 3
+    from ontofill.refiner.bronze_replay import _metadata_matches_trace, _screenshot_key
+
+    assert _metadata_matches_trace(lake.read_metadata(key), trace[2])
+    assert _screenshot_key(trace, 2, SOURCE_ID, OBJECTIVE_ID, TDD_PATH, lake) == screenshot
+
+    class ProfiledExecutor(SyntheticParseExecutor):
+        def run(self, payload, *, kind, format, max_rows, base_url, limits):
+            result = super().run(
+                payload,
+                kind=kind,
+                format=format,
+                max_rows=max_rows,
+                base_url=base_url,
+                limits=limits,
+            )
+            return (
+                replace(result, output={**result.output, "profile": profile_bytes(payload)})
+                if kind == "pdf"
+                else result
+            )
+
+    replay = replay_bronze_observations(
+        case_dir=case_dir,
+        lake=lake,
+        run_id=RUN_ID,
+        trace=trace,
+        ontology=model,
+        provenance=RECORDED,
+        parse_executor=ProfiledExecutor(),
+    )
+    assert {item.property_id: item.value for item in replay.observations} == {
+        "book_id": "B-1",
+        "title": "The First",
+        "service_zone": "North",
+    }
+    assert all(item.evidence["bronze_key"] == key for item in replay.observations)
+    assert all(item.evidence["screenshot_key"] == screenshot for item in replay.observations)
+
+
 def test_replay_ignores_unreferenced_files_incomplete_fetches_and_ambiguous_headers(
     tmp_path,
 ) -> None:

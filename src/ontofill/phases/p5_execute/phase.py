@@ -25,6 +25,7 @@ from ontofill.case.checkpoints import ApprovalArtifactMismatch, load_json, write
 from ontofill.inference import DecisionClient, ModelValidationExhausted, complete_validated
 from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
+from ontofill.phases.p5_execute.bronze_adoption import BronzeAdoptionRefused, adopt_p3_document
 from ontofill.phases.p5_execute.controller import execute_controller
 from ontofill.phases.p5_execute.source_review import (
     MAX_PENDING_LINK_CANDIDATES_PER_PAGE,
@@ -855,9 +856,44 @@ def execute_objective(
         )
         return ExecutionResult(result.observations, result.trace, [], "html")
 
-    page = capture(objective["source_url"], **kwargs)
+    adopted = isinstance(objective.get("document_key"), str)
+    if adopted:
+        try:
+            if feed is None:
+                raise BronzeAdoptionRefused("document adoption requires the run feed")
+            page = adopt_p3_document(
+                case_dir=case_dir,
+                lake=lake,
+                case_id=feed.case_id,
+                run_id=run_id,
+                objective=objective,
+                tdd_path=tdd_path,
+                provenance=provenance,
+            )
+        except BronzeAdoptionRefused as exc:
+            reason = "invalid_bronze_adoption: " + str(exc)
+            refusal = {
+                "step_id": f"step:{uuid.uuid4().hex}",
+                "run_id": run_id,
+                "phase": 5,
+                "source_id": source_id,
+                "objective_id": objective_id,
+                "tdd_path": tdd_path,
+                "mode": "D0",
+                "observed": {"document_key": objective.get("document_key")},
+                "requested": {"tool": "bronze.adopt", "network_request": False},
+                "executed": {"adopted": False},
+                "evaluated": {"status": "refused", "reason": reason},
+                "parent_step_id": None,
+                "value_ids": [],
+                "ts": datetime.now(UTC).isoformat(),
+                "generated_by": provenance,
+            }
+            return ExecutionResult([], [refusal], [], "unknown", True, reason)
+    else:
+        page = capture(objective["source_url"], **kwargs)
     traces = list(page["trace"])
-    jobs = [page]
+    jobs = [] if adopted else [page]
     page_parse = None
     if isinstance(page.get("html_key"), str):
         try:

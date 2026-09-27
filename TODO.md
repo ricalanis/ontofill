@@ -707,5 +707,14 @@ FILES: `src/ontofill/phases/p1_scope/phase.py`, `tests/test_p1_jurisdiction.py`,
 
 1. [x] Red synthetic city/country and missing-jurisdiction tests.
 2. [x] Normalize missing primary scope and include actual compared scopes in feedback.
-3. [ ] Full managed gate, pre-push scan, public push.
+3. [x] Full managed gate, pre-push scan, public push.
 4. [ ] Guarded VM deploy in coordinated two-case window.
+
+# R54 same-run bronze adoption
+
+FILES: `src/ontofill/phases/p5_execute/bronze_adoption.py`, P5 phase, refiner replay, synthetic tests, notes. TASK: verify and reuse confirmed P3 document bronze without browsing. DONE: GOAL.md gate. FORMAT: Ruff.
+
+1. [x] Red test: P3 document with trace, job and sidecar emits P5 values with capture/fetch stubs that fail if called.
+2. [x] Add fail-closed provenance, approval and digest checks; append an adoption step with original capture parent.
+3. [x] Make `ontofill refine` recognize that adoption step and replay the same PDF.
+4. [ ] Full managed gate passed (713 passed, 5 skipped, Ruff/diff clean); pre-push scan, public main push, guarded VM deploy and runsc proof remain.

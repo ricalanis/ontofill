@@ -368,3 +368,11 @@ Constraints: P3/P5 consumers only, no parser/profiler files (sibling owns those)
 # Current goal: generic primary publisher jurisdiction for new cases
 
 P1 normalizes a primary trusted publisher with an omitted jurisdiction to the policy's root jurisdiction, and matches country abbreviations to a fuller name inside a city scope. A mismatch objection names the compared values so bounded inference retries can correct it. DONE: synthetic city and foreign-country tests, full pytest, Ruff, public push; VM deployment only with both live cases stopped or paused.
+
+# Current goal: adopt a same-run P3 document in P5 without a second network fetch
+
+When a confirmed P3 objective includes a document bronze key, P5 verifies its candidate manifest, exact URL/source sidecar, original capture trace and six-checkpoint runsc job, then appends a fresh adoption step and parses the held bronze in a networkless pod. A missing or mismatched receipt refuses that source with no observations and never falls through to browsing. `ontofill refine CASE --run-id RUN` can later replay the adopted capture after an ontology change because the adoption step binds back to the original P3 step.
+
+DONE: synthetic P3 capture plus job yields P5 values without invoking capture/fetch; tampered sidecar, missing job or denied/stale source approval yields zero observations; full pytest, Ruff lint/format and diff gate, public push and guarded live proof.
+
+Constraints: same run only, no historical trace invention, no case/APPROVED edits, no run process interruption.

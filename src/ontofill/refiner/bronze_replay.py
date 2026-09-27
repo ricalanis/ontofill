@@ -78,11 +78,12 @@ def _metadata_matches_trace(metadata: dict, step: dict) -> bool:
     observed = step.get("observed")
     if not isinstance(observed, dict):
         return False
+    adopted = (step.get("requested") or {}).get("tool") == "bronze.adopt"
     expected = {
         "url": observed.get("url"),
         "source_id": step.get("source_id"),
-        "step_id": step.get("step_id"),
-        "captured_at": step.get("ts"),
+        "step_id": step.get("parent_step_id") if adopted else step.get("step_id"),
+        "captured_at": observed.get("captured_at") if adopted else step.get("ts"),
     }
     return all(
         isinstance(value, str) and value and metadata.get(key) == value
@@ -111,7 +112,11 @@ def _screenshot_key(
     tdd_path: str,
     lake: FileLake | S3Lake,
 ) -> str | None:
-    for step in reversed(trace[:index]):
+    # An adoption step references an earlier P3 screenshot directly; ordinary
+    # P5 fetches continue to require a preceding page capture.
+    current = trace[index]
+    through = index + 1 if (current.get("requested") or {}).get("tool") == "bronze.adopt" else index
+    for step in reversed(trace[:through]):
         if (
             step.get("source_id"),
             step.get("objective_id"),
@@ -138,7 +143,18 @@ def _screenshot_key(
             metadata = lake.read_metadata(key)
         except (OSError, ValueError, KeyError):
             continue
-        if _metadata_matches_trace(metadata, step):
+        if (step.get("requested") or {}).get("tool") == "bronze.adopt":
+            screenshot_expected = {
+                "source_id": observed.get("screenshot_source_id"),
+                "step_id": observed.get("screenshot_step_id"),
+                "captured_at": observed.get("screenshot_captured_at"),
+            }
+            if all(
+                isinstance(value, str) and value and metadata.get(field) == value
+                for field, value in screenshot_expected.items()
+            ):
+                return key
+        elif _metadata_matches_trace(metadata, step):
             return key
     return None
 
