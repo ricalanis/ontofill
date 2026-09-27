@@ -500,3 +500,19 @@ def test_bronze_probe_samples_each_lake_once_and_keeps_the_file_bounded(setup, t
         path = bronze_probe.append(cfg.state_dir, line)
     rows = [json.loads(x) for x in path.read_text().splitlines()]
     assert len(rows) == 5 and rows[-1]["objects"] == 3
+
+
+def test_an_exhausted_prd_exit_4_is_needs_human_not_failed(setup, monkeypatch):
+    """Found live (sf-library-wi-fi-and-hours): exit 4 at phase 1 (PRD validation exhausted after a deny) was
+    recorded as failed. Any exit-4 pause is needs_human with the engine's reason, and is not relaunched."""
+    monkeypatch.setenv("FAKE_MODE", "prd-exhausted")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    st = r.state.status("c1")
+    assert st["state"] == "needs_human" and st["phase"] == 1 and st["checkpoint"] is None
+    assert st["reason"].startswith("phase1.prd failed validation after 3 attempts")
+    ev = events(setup)[-1]
+    assert ev["kind"] == "needs-human" and "could not be redrafted" in ev["detail"]
+    r.poll_once()
+    assert r.state.status("c1")["state"] == "needs_human" and len(calls(setup)) == 1

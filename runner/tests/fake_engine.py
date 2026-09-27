@@ -4,6 +4,7 @@ FAKE_MODE: pause:<checkpoint>[:<reason>] (exit 3) | done (exit 0) | fail (noisy 
   | fail_phase:<n> (engine-like failure, exit 1) | sleep (wait for a signal)
 FAKE_USD: est_usd to record in this run's trace (for budget tests).
 """
+
 import argparse
 import json
 import os
@@ -23,27 +24,50 @@ run = Path(a.lake) / "runs" / case_id / a.run_id
 run.mkdir(parents=True, exist_ok=True)
 (Path(a.lake) / "runs" / case_id / "latest.json").write_text(json.dumps({"run_id": a.run_id}))
 with open(Path(a.case_dir).parent / "calls.jsonl", "a") as fh:
-    fh.write(json.dumps({"run_id": a.run_id, "to_phase": a.to_phase, "budget": a.budget_usd,
-                        "secret_seen": "ENGINE_SECRET" in os.environ}) + "\n")
+    fh.write(
+        json.dumps(
+            {
+                "run_id": a.run_id,
+                "to_phase": a.to_phase,
+                "budget": a.budget_usd,
+                "secret_seen": "ENGINE_SECRET" in os.environ,
+            }
+        )
+        + "\n"
+    )
 if os.environ.get("FAKE_USD"):
     with open(run / "trace.live.jsonl", "a") as fh:
         fh.write(json.dumps({"step_id": "s", "usage": {"est_usd": float(os.environ["FAKE_USD"])}}) + "\n")
 mode = os.environ.get("FAKE_MODE", "done")
 if mode.startswith("pause:"):
     cp, _, reason = mode.split(":", 1)[1].partition(":")
-    (run / "status.json").write_text(json.dumps({"state": "paused", "checkpoint_pending": cp,
-                                                 **({"reason": reason} if reason else {})}))
+    (run / "status.json").write_text(
+        json.dumps({"state": "paused", "checkpoint_pending": cp, **({"reason": reason} if reason else {})})
+    )
     print(f"state=paused checkpoint_pending={cp} reason={reason or 'awaiting approval'}")
     sys.exit(3)
 if mode.startswith("fail_phase:"):  # like the engine: status failed + phase, the exception message last on stderr
-    (run / "status.json").write_text(json.dumps({"state": "failed", "phase": int(mode.split(":")[1]),
-                                                 "checkpoint_pending": None}))
+    (run / "status.json").write_text(
+        json.dumps({"state": "failed", "phase": int(mode.split(":")[1]), "checkpoint_pending": None})
+    )
     print("Traceback (most recent call last):\n  ...", file=sys.stderr)
     print("RuntimeError: fan-out loop stopped at the iteration cap token=abc123secretvalue", file=sys.stderr)
     sys.exit(1)
 if mode == "done":
     (run / "status.json").write_text(json.dumps({"state": "done"}))
     sys.exit(0)
+if mode == "prd-exhausted":  # b9deddf: P1 cannot redraft a valid PRD after a decision -> exit 4
+    (run / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "paused",
+                "phase": 1,
+                "checkpoint_pending": None,
+                "reason": "phase1.prd failed validation after 3 attempts: Authority policy needs a primary publisher",
+            }
+        )
+    )
+    sys.exit(4)
 if mode == "unreachable":  # R37: the engine's prefixed no-source reason
     (run / "status.json").write_text(
         json.dumps(

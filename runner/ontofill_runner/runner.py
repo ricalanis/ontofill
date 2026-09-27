@@ -470,25 +470,30 @@ class Runner:
             )
         elif rc == NEEDS_HUMAN_EXIT:
             reason = lstatus.get("reason")
-            if (
-                lstatus.get("state") == "paused"
-                and lstatus.get("phase") == 3
-                and isinstance(reason, str)
-                and ("no authoritative source found for " in reason or reason.startswith("sources unreachable"))
-            ):
-                # R37: the engine may prefix "sources unreachable (N blocked/redirected/403); " to the no-source reason
-                ask = (
-                    "sources were unreachable (blocked, redirected or 403): fix access or revise the PRD authority "
-                    "policy, then start a new run"
-                    if reason.startswith("sources unreachable")
-                    else "revise the brief or PRD authority policy, then start a new run"
-                )
+            if lstatus.get("state") == "paused" and isinstance(reason, str) and reason:
+                # exit 4 = the engine needs a person, in any phase: P3 found no source (R28/R37) or P1 could not
+                # produce a valid PRD after a decision (exhausted validation). Never "failed", never relaunched.
+                phase = lstatus.get("phase")
+                if phase == 3 and reason.startswith("sources unreachable"):
+                    ask = (
+                        "sources were unreachable (blocked, redirected or 403): fix access or revise the PRD "
+                        "authority policy, then start a new run"
+                    )
+                elif phase == 3:
+                    ask = "revise the brief or PRD authority policy, then start a new run"
+                elif phase == 1:
+                    ask = (
+                        "the PRD could not be redrafted into a valid one: revise the decision or the brief, or "
+                        "wait for an engine fix, then start a new run"
+                    )
+                else:
+                    ask = "see the engine's reason, then start a new run"
                 self._transition(
                     cid,
                     "needs_human",
                     f"{reason} | needs you: {ask}",
                     run_id=run_id,
-                    phase=3,
+                    phase=phase,
                     checkpoint=None,
                     pid=None,
                     reason=reason,
