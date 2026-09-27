@@ -20,6 +20,7 @@ directory with `kind: file`; both use `bronze/sha256/<hex>` for the object and
 | `ontology-recommendations.schema.json` | Phase 2 schema rules or relations set aside after bounded semantic retries |
 | `dod-queries.schema.json` | Safe declarative queries compiled from PRD criteria |
 | `objectives.schema.json` | Phase 3 discovered source objectives |
+| `source-candidate.schema.json` | Phase 3 captured source candidate or redirect authority review packet |
 | `local-prd.schema.json` | Phase 4 requirements for a source and objective |
 | `tdd.schema.json` | Phase 4 technical definition document |
 | `approval-pending.schema.json` | Structured metadata rendered in `APPROVAL_PENDING.md` |
