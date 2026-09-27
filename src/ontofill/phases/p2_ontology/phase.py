@@ -229,12 +229,14 @@ class OntologyProposalErrors(ValueError):
         core_fields: list[dict] | None = None,
         core_errors: list[str] | None = None,
         core_review: dict | None = None,
+        drop_all_rules_reason: str | None = None,
     ) -> None:
         self.rule_errors = rule_errors
         self.relation_errors = relation_errors
         self.core_fields = core_fields or []
         self.core_errors = core_errors or []
         self.core_review = core_review
+        self.drop_all_rules_reason = drop_all_rules_reason
         messages = []
         if relation_errors:
             messages.extend(
@@ -249,6 +251,8 @@ class OntologyProposalErrors(ValueError):
             )
             messages.append(_ALLOWED_RULE_PREDICATES)
         messages.extend(core_errors or [])
+        if drop_all_rules_reason:
+            messages.append(drop_all_rules_reason)
         super().__init__("; ".join(messages))
 
 
@@ -288,8 +292,8 @@ def _complete_validated_json(
 ) -> dict:
     """Run a P2 model step with bounded JSON Schema and semantic repair feedback."""
     current_prompt = prompt
-    last_salvageable_response = None
-    last_salvageable_error = None
+    last_structurally_valid_response = None
+    last_structural_validation_error = None
 
     def recover(candidate: dict, error: Exception) -> dict | None:
         if on_exhaustion is None:
@@ -313,8 +317,13 @@ def _complete_validated_json(
             reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
             if on_validation_error is not None:
                 on_validation_error(exc.purpose, exc.attempts, reason)
-            if last_salvageable_response is not None and last_salvageable_error is not None:
-                recovered = recover(last_salvageable_response, last_salvageable_error)
+            if (
+                last_structurally_valid_response is not None
+                and last_structural_validation_error is not None
+            ):
+                recovered = recover(
+                    last_structurally_valid_response, last_structural_validation_error
+                )
                 if recovered is not None:
                     return recovered
             raise OntologyDraftUnavailable(exc.purpose, exc.attempts, reason) from exc
@@ -329,27 +338,27 @@ def _complete_validated_json(
                 reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
                 if on_validation_error is not None:
                     on_validation_error(exc.purpose, exc.attempts, reason)
-                raise OntologyDraftUnavailable(exc.purpose, exc.attempts, reason) from exc
+                validation_error = ValueError(
+                    f"{exc.purpose} critic exhausted its output retries: {reason}"
+                )
             except (ValidationError, ValueError) as exc:
                 validation_error = exc
             else:
                 return response
 
-        if structurally_valid_response is not None and isinstance(
-            validation_error, OntologyProposalErrors
-        ):
-            last_salvageable_response = structurally_valid_response
-            last_salvageable_error = validation_error
+        if structurally_valid_response is not None:
+            last_structurally_valid_response = structurally_valid_response
+            last_structural_validation_error = validation_error
         reason = _bounded_validation_error(validation_error)
         if on_validation_error is not None:
             on_validation_error(purpose, attempt, reason)
         if attempt == _VALIDATION_ATTEMPTS:
-            if structurally_valid_response is not None:
-                salvage_candidate = structurally_valid_response
-                salvage_error = validation_error
-            else:
-                salvage_candidate = last_salvageable_response
-                salvage_error = last_salvageable_error
+            salvage_candidate = structurally_valid_response or last_structurally_valid_response
+            salvage_error = (
+                validation_error
+                if structurally_valid_response is not None
+                else last_structural_validation_error
+            )
             if salvage_candidate is not None and salvage_error is not None:
                 recovered = recover(salvage_candidate, salvage_error)
                 if recovered is not None:
@@ -872,6 +881,8 @@ def draft_ontology(
             retained = []
             for proposal in recovered[field]:
                 reason = errors.get(proposal["id"])
+                if kind == "rule" and error.drop_all_rules_reason:
+                    reason = reason or error.drop_all_rules_reason
                 if reason is None:
                     retained.append(proposal)
                 else:
@@ -1395,37 +1406,52 @@ def _review_ontology_semantics(
     *,
     core_field_review: dict | None = None,
 ) -> dict[str, dict] | None:
-    errors = []
     core_error = None
+    core_blocker = None
     try:
         _review_core_field_bindings(prd, ontology, decision, review_override=core_field_review)
     except OntologyProposalErrors as exc:
         core_error = exc
     except (ValidationError, ValueError) as exc:
-        errors.append(str(exc))
+        core_blocker = str(exc)
 
     relation_counts = None
+    relation_blocker = None
     if ontology["relations"]:
         try:
             relation_counts = _review_relation_count_semantics(prd, ontology, decision)
         except (ValidationError, ValueError) as exc:
-            errors.append(str(exc))
+            relation_blocker = str(exc)
 
     rule_error = None
+    rule_blocker = None
     try:
         _review_rule_semantics(ontology, decision)
     except OntologyProposalErrors as exc:
         rule_error = exc
     except (ValidationError, ValueError) as exc:
-        errors.append(str(exc))
-    if errors:
-        # A rule-only mismatch is salvageable; a simultaneous core or relation
-        # defect is not. Keep every critic result in the retry feedback.
+        rule_blocker = str(exc)
+    blockers = [item for item in (core_blocker, relation_blocker) if item]
+    if blockers:
         if rule_error is not None:
-            errors.append(str(rule_error))
+            blockers.append(str(rule_error))
+        if rule_blocker is not None:
+            blockers.append(rule_blocker)
         if core_error is not None:
-            errors.append(str(core_error))
-        raise ValueError("; ".join(errors))
+            blockers.append(str(core_error))
+        raise ValueError("; ".join(blockers))
+    if rule_blocker is not None:
+        raise OntologyProposalErrors(
+            rule_error.rule_errors if rule_error is not None else {},
+            {},
+            core_fields=core_error.core_fields if core_error is not None else None,
+            core_errors=core_error.core_errors if core_error is not None else None,
+            core_review=core_error.core_review if core_error is not None else None,
+            drop_all_rules_reason=(
+                f"Rule critic could not return a valid assessment: {rule_blocker}. "
+                "Executable rules were set aside for human review."
+            ),
+        )
     if rule_error is not None or core_error is not None:
         raise OntologyProposalErrors(
             rule_error.rule_errors if rule_error is not None else {},
@@ -1433,6 +1459,9 @@ def _review_ontology_semantics(
             core_fields=core_error.core_fields if core_error is not None else None,
             core_errors=core_error.core_errors if core_error is not None else None,
             core_review=core_error.core_review if core_error is not None else None,
+            drop_all_rules_reason=(
+                rule_error.drop_all_rules_reason if rule_error is not None else None
+            ),
         )
     return relation_counts
 

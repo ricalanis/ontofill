@@ -610,6 +610,121 @@ def test_final_malformed_draft_salvages_latest_structurally_valid_candidate(tmp_
     assert len([item for item in decision.calls if item[0] == "phase2.schema"]) == 2
 
 
+def test_mixed_core_and_rule_failures_salvage_before_final_schema_exhaustion(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Inspect synthetic public records.", encoding="utf-8")
+    prd, candidates, core_reviews, _ = _sf_shaped_repair_inputs()
+    candidate = deepcopy(candidates[-1])
+    candidate["rules"] = [
+        {
+            "id": "r1_complete_values",
+            "label": "All required values are present",
+            "checks": "Every record has each required value.",
+            "verify": ["Check the core fields"],
+            "predicate": {
+                "all": [
+                    {
+                        "op": "same_value",
+                        "left_property": "address",
+                        "right_property": "address",
+                    }
+                ]
+            },
+        },
+        {
+            "id": "r2_primary_publisher",
+            "label": "Primary publisher is the catalog owner",
+            "checks": "The record is published by the primary agency.",
+            "verify": ["Check publisher scope"],
+            "predicate": {
+                "all": [
+                    {
+                        "op": "equals",
+                        "property": "primary_publisher",
+                        "value": "Example Publisher",
+                    }
+                ]
+            },
+        },
+    ]
+    candidate["properties"].append(
+        {
+            "id": "primary_publisher",
+            "label": "Primary publisher",
+            "domain": "record",
+            "datatype": "string",
+            "dod": False,
+            "order": len(candidate["properties"]),
+            "description": "Synthetic publisher value",
+            "aligned_to": None,
+        }
+    )
+    rejected_rules = {
+        "assessments": [
+            {
+                "rule_id": "r1_complete_values",
+                "matches": False,
+                "reason": "Comparing address to itself is tautological and proves no value is present.",
+            },
+            {
+                "rule_id": "r2_primary_publisher",
+                "matches": False,
+                "reason": "The equality fixes a publisher value outside the approved record scope.",
+            },
+        ]
+    }
+    decision = _decision(
+        [deepcopy(candidate), deepcopy(candidate)],
+        core_field_bindings=core_reviews * 2,
+        rule_semantics=[rejected_rules],
+    )
+    decision.responses["phase2.dod_queries"].clear()
+    decision.responses["phase2.dod_queries"].append(_completeness_query())
+    complete_json = decision.complete_json
+    schema_attempts = 0
+    rule_critic_attempts = 0
+
+    def mixed_exhaustion(purpose, prompt, schema):
+        nonlocal schema_attempts, rule_critic_attempts
+        if purpose == "phase2.schema":
+            schema_attempts += 1
+            if schema_attempts == 3:
+                raise ModelValidationExhausted(
+                    purpose, "synthetic final schema output is malformed", 3
+                )
+        if purpose == "critic.phase2.rule_semantics":
+            rule_critic_attempts += 1
+            if rule_critic_attempts == 2:
+                raise ModelValidationExhausted(
+                    purpose, "synthetic final rule critic output is malformed", 3
+                )
+        return complete_json(purpose, prompt, schema)
+
+    decision.complete_json = mixed_exhaustion
+
+    ontology = draft_ontology(tmp_path, prd, _factors(), decision)
+
+    repaired = next(item for item in ontology["properties"] if item["id"] == "weekly_opening_hours")
+    assert repaired["label"] == "weekly opening hours"
+    assert repaired["domain"] == "record"
+    assert repaired["datatype"] == "string"
+    assert repaired["dod"] is True
+    assert ontology["rules"] == []
+    validate_document("ontology", ontology)
+    recommendations = json.loads(
+        (tmp_path / "02-ontology/recommendations/unresolved.json").read_text(encoding="utf-8")
+    )
+    validate_document("ontology-recommendations", recommendations)
+    assert {item["id"] for item in recommendations["unresolved"]} == {
+        "r1_complete_values",
+        "r2_primary_publisher",
+    }
+    assert all(item["kind"] == "rule" for item in recommendations["unresolved"])
+    assert all("human review" in item["reason"] for item in recommendations["unresolved"])
+    assert recommendations["repairs"][0]["field"] == "weekly opening hours"
+    assert schema_attempts == 3
+    assert rule_critic_attempts == 2
+
+
 def test_core_field_feedback_names_prd_phrase_and_primary_dod_candidates() -> None:
     prd = _prd()
     prd["requirements"][0]["description"] = "Collect weekly opening hours for every branch."
