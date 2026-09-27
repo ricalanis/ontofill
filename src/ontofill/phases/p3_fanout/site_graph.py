@@ -14,7 +14,6 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 import yaml
-from bs4 import BeautifulSoup
 from jsonschema import Draft202012Validator, ValidationError
 
 from ontofill.case.checkpoints import load_json, write_json
@@ -24,6 +23,7 @@ from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox.capture import CaptureError
 from ontofill.sandbox.domains import registrable_domain
+from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 SITE_GRAPH_SCHEMA_VERSION = "1.0.3"
 SITE_GRAPH_ROOT = Path("03-fanout/surface-map")
@@ -63,36 +63,20 @@ def _url_template(url: str) -> str:
     return f"{parsed.scheme.casefold()}://{authority}{path}" + (f"?{query}" if query else "")
 
 
-def _skeleton_hash(body: bytes, content_type: str) -> str:
-    if not content_type.casefold().startswith(("text/html", "application/xhtml+xml")):
-        skeleton = f"binary:{content_type.casefold()}"
-        return hashlib.sha256(skeleton.encode()).hexdigest()
-    soup = BeautifulSoup(body, "html.parser")
-    for tag in soup(["script", "style", "noscript", "template"]):
-        tag.decompose()
-    root = soup.body or soup
-    rows: list[str] = []
-    for tag in root.find_all(True):
-        depth = len(list(tag.parents)) - len(list(root.parents)) - 1
-        attrs = []
-        for name in ("role", "type", "name", "rel", "itemprop"):
-            value = tag.get(name)
-            if isinstance(value, list):
-                value = " ".join(str(item) for item in value)
-            if isinstance(value, str) and value.strip():
-                attrs.append(f"{name}={value.strip().casefold()[:60]}")
-        rows.append(f"{depth}:{tag.name.casefold()}[{','.join(attrs)}]")
-    return hashlib.sha256("\n".join(rows).encode()).hexdigest()
-
-
-def _page_text(body: bytes, content_type: str) -> str:
-    text = body.decode("utf-8", errors="replace")
-    if content_type.casefold().startswith(("text/html", "application/xhtml+xml")):
-        soup = BeautifulSoup(text, "html.parser")
-        for tag in soup(["script", "style", "noscript", "template"]):
-            tag.decompose()
-        text = soup.get_text(" ", strip=True)
-    return " ".join(text.split())
+def _graph_parse_format(content_type: str, url: str) -> str | None:
+    media_type = content_type.split(";", 1)[0].strip().casefold()
+    path = urlsplit(url).path.casefold()
+    if media_type in {"text/html", "application/xhtml+xml"}:
+        return "html"
+    if media_type == "application/pdf" or path.endswith(".pdf"):
+        return "pdf"
+    if media_type in {"application/json", "text/json"} or media_type.endswith("+json"):
+        return "json"
+    if media_type in {"text/csv", "application/csv"} or path.endswith(".csv"):
+        return "csv"
+    if "spreadsheetml.sheet" in media_type or path.endswith((".xlsx", ".xlsm")):
+        return "xlsm" if path.endswith(".xlsm") else "xlsx"
+    return None
 
 
 def _classify_page_type(
@@ -254,8 +238,10 @@ def build_site_graph(
     run_id: str,
     capture_result: Mapping,
     trace_out: list[dict] | None = None,
+    jobs_out: list[dict] | None = None,
+    parse_executor: ParseExecutor | None = None,
 ) -> dict:
-    """Cluster fetched pages, label types, and write the envelope and bronze payload."""
+    """Parse bronze pages in the runsc pod, cluster types, and publish the graph."""
     source_id = str(objective["source_id"])
     if not _SAFE_ID.fullmatch(source_id):
         raise ValueError("site graph source_id is not a safe path segment")
@@ -286,12 +272,52 @@ def build_site_graph(
     page_rows: list[dict] = []
     type_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     aliases: dict[str, str] = {}
+    parser_provenance = generated_by(decision)
     for page in fetched:
         url = str(page["final_url"])
         content_type = str(page.get("content_type") or "application/octet-stream")
-        body = lake.read_key(str(page["bronze_key"]))
+        parse_format = _graph_parse_format(content_type, url)
+        if parse_format is not None:
+            try:
+                parsed_page = parse_bronze(
+                    lake,
+                    str(page["bronze_key"]),
+                    format=parse_format,
+                    max_rows=300,
+                    run_id=run_id,
+                    source_id=source_id,
+                    step_id=f"step:{uuid.uuid4().hex}",
+                    objective_id=str(objective["id"]),
+                    tdd_path=f"03-fanout/surface-map/{source_id}/site-graph.json",
+                    phase=3,
+                    generated_by=parser_provenance,
+                    base_url=url,
+                    executor=parse_executor,
+                )
+            except SandboxParseError as exc:
+                if trace_out is not None:
+                    trace_out.extend(exc.trace)
+                if jobs_out is not None:
+                    jobs_out.append(exc.job_record)
+                raise
+            if trace_out is not None:
+                trace_out.extend(parsed_page.trace)
+            if jobs_out is not None:
+                jobs_out.append(parsed_page.job_record)
+            skeleton_hash = (
+                parsed_page.dom_skeleton_hash
+                or hashlib.sha256(f"binary:{content_type.casefold()}".encode()).hexdigest()
+            )
+            if parse_format == "html":
+                page_text = parsed_page.page_text
+            elif parse_format == "pdf":
+                page_text = parsed_page.text
+            else:
+                page_text = json.dumps(parsed_page.rows, ensure_ascii=False, default=str)
+        else:
+            skeleton_hash = hashlib.sha256(f"binary:{content_type.casefold()}".encode()).hexdigest()
+            page_text = ""
         template = _url_template(url)
-        skeleton_hash = _skeleton_hash(body, content_type)
         type_id = "type-" + hashlib.sha256(f"{template}\0{skeleton_hash}".encode()).hexdigest()[:24]
         instance_id = (
             "page-" + hashlib.sha256(f"{url}\0{page['bronze_key']}".encode()).hexdigest()[:24]
@@ -311,7 +337,7 @@ def build_site_graph(
             "bronze_key": page["bronze_key"],
             "trace_step_id": page.get("trace_step_id"),
             "job_id": page.get("job_id", job_id),
-            "text": _page_text(body, content_type),
+            "text": page_text[:200_000],
             "template": template,
             "skeleton_hash": skeleton_hash,
         }
@@ -573,6 +599,7 @@ def run_confirmed_source_spiders(
     capture: Callable[..., dict],
     provenance: Mapping[str, str],
     force_source_ids: Iterable[str] = (),
+    parse_executor: ParseExecutor | None = None,
 ) -> dict:
     """Crawl each approved source once, then persist and rank its site graph."""
     document = deepcopy(dict(objectives))
@@ -659,6 +686,7 @@ def run_confirmed_source_spiders(
         if "proof" in captured:
             jobs.append(dict(captured))
         graph_trace: list[dict] = []
+        graph_jobs: list[dict] = []
         try:
             envelope = build_site_graph(
                 case_dir=case_dir,
@@ -669,6 +697,8 @@ def run_confirmed_source_spiders(
                 run_id=run_id,
                 capture_result=captured,
                 trace_out=graph_trace,
+                jobs_out=graph_jobs,
+                parse_executor=parse_executor,
             )
         except (
             AssertionError,
@@ -679,6 +709,8 @@ def run_confirmed_source_spiders(
             ValidationError,
             ValueError,
         ) as exc:
+            trace.extend(graph_trace)
+            jobs.extend(graph_jobs)
             trace.append(
                 {
                     "step_id": f"step:{uuid.uuid4().hex}",
@@ -700,6 +732,7 @@ def run_confirmed_source_spiders(
             )
             continue
         trace.extend(graph_trace)
+        jobs.extend(graph_jobs)
         envelopes[source_id] = envelope
 
     document = rank_objectives_by_site_graph(case_dir, document, ontology)

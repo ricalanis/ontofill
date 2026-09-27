@@ -47,10 +47,11 @@ def test_failure_then_patch_pass_stores_artifacts_and_trace(tmp_path: Path) -> N
         _case(lake, b"<p>Beta</p>", ({"name": "Beta"},)),
     ]
     feedback: list[RepairFeedback] = []
+    expected_keys = [case.capture_key for case in cases]
 
     class Executor:
-        def run(self, code, captures, limits):
-            assert captures == [b"<p>Alpha</p>", b"<p>Beta</p>"]
+        def run_from_lake(self, _lake, captures, code, limits):
+            assert [case.capture_key for case in captures] == expected_keys
             assert limits.timeout_s == 3
             if code == "broken code":
                 return RepairExecution(
@@ -107,7 +108,7 @@ def test_retry_budget_and_limit_stop_are_visible(tmp_path: Path) -> None:
     cases = [_case(lake, b"item", ({"item": "found"},))]
 
     class FailingExecutor:
-        def run(self, code, captures, limits):
+        def run_from_lake(self, _lake, captures, code, limits):
             return RepairExecution((), "syntax error", error="candidate_error")
 
     outcome = run_code_repair(
@@ -122,7 +123,7 @@ def test_retry_budget_and_limit_stop_are_visible(tmp_path: Path) -> None:
     assert all(row["repair"]["result"] == "fail" for row in outcome.trace)
 
     class LimitedExecutor:
-        def run(self, code, captures, limits):
+        def run_from_lake(self, _lake, captures, code, limits):
             return RepairExecution((), "timed out", limit_reason="timeout")
 
     def patch_must_not_run(_feedback):
@@ -148,7 +149,7 @@ def test_patch_error_returns_the_failed_attempt_for_caller_fallback(tmp_path: Pa
     cases = [_case(lake, b"<p>x</p>", ({"name": "x"},))]
 
     class FailingExecutor:
-        def run(self, code, captures, limits):
+        def run_from_lake(self, _lake, captures, code, limits):
             return RepairExecution((), "candidate did not match", error="candidate_error")
 
     def failed_patch(_feedback):

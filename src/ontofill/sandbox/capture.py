@@ -18,6 +18,7 @@ import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import urlsplit
 
 from ontofill.lake import FileLake, S3Lake
@@ -82,8 +83,14 @@ class SandboxLimitExceeded(CaptureError):
 
 
 def _docker(
-    *args: str, timeout: int = 120, check: bool = True, input_text: str | None = None
+    *args: str,
+    timeout: int = 120,
+    check: bool = True,
+    input_text: str | None = None,
+    input_stream: BinaryIO | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if input_text is not None and input_stream is not None:
+        raise ValueError("Docker input_text and input_stream are mutually exclusive")
     env = os.environ.copy()
     target = env.get("ONTOFILL_SANDBOX_DOCKER_HOST")
     if target:
@@ -91,15 +98,17 @@ def _docker(
             raise CaptureError("ONTOFILL_SANDBOX_DOCKER_HOST must use ssh://")
         env["DOCKER_HOST"] = target
     try:
-        result = subprocess.run(
-            ["docker", *args],
-            input=input_text,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            env=env,
-        )
+        run_options = {
+            "input": input_text,
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout,
+            "env": env,
+        }
+        if input_stream is not None:
+            run_options.pop("input")
+            run_options["stdin"] = input_stream
+        result = subprocess.run(["docker", *args], check=False, **run_options)
     except subprocess.TimeoutExpired as exc:
         raise DockerTimeout(f"Docker {args[0]} exceeded its deadline") from exc
     except OSError as exc:
@@ -1353,6 +1362,7 @@ def fetch_url(
     phase: int = 5,
     generated_by: dict | None = None,
     limits: SandboxLimits | Mapping[str, object] | None = None,
+    include_bytes: bool = True,
 ) -> dict:
     """Fetch a discovered file inside the same contained network and store raw bytes."""
     domains = _domains(allowed_domains)
@@ -1550,7 +1560,6 @@ def fetch_url(
                 "secrets": secrets,
             }
             job_result = {
-                "bytes": content,
                 "content_type": result["content_type"],
                 "bronze_key": bronze_key,
                 "url": final_url,
@@ -1566,6 +1575,8 @@ def fetch_url(
                     "steps": result["steps"],
                 },
             }
+            if include_bytes:
+                job_result["bytes"] = content
             return job_result
     except SandboxLimitExceeded as exc:
         limit_error = exc

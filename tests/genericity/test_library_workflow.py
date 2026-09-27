@@ -12,8 +12,10 @@ from ontofill_scrape import SearchResult
 
 from ontofill.phases.p1_scope.phase import draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
+from ontofill.sandbox import parse as parse_module
 from ontofill.workflow import _scratch_case, export_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
+from tests.r17_helpers import SyntheticParseExecutor
 
 BRIEF = Path(__file__).parent / "cases/libraries/brief.md"
 HTML = """<html><a href="/branches.csv">Download CSV</a><table><tr><th>Branch</th><th>Free internet</th><th>Hours</th></tr>
@@ -96,7 +98,8 @@ def _fetch(url: str, **kwargs):
     }
 
 
-def test_library_brief_runs_all_phases_with_generic_gold(tmp_path) -> None:
+def test_library_brief_runs_all_phases_with_generic_gold(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(parse_module, "DockerParseExecutor", SyntheticParseExecutor)
     case = tmp_path / "case"
     case.mkdir()
     (case / "brief.md").write_text(BRIEF.read_text(encoding="utf-8"), encoding="utf-8")

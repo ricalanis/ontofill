@@ -1,5 +1,10 @@
 # Strategy and assumptions
 
+## R17 integrated gate strategy (2026-09-27)
+- Attempt 1, `r17-integration-main`: 77 passed, 7 failed, 3 skipped. Four replay fixtures omitted the synthetic parser; three assertions assumed raw HTML or capture-only trace. Static fixture corrections preceded the authorized retry.
+- Attempt 2, `r17-integration-authorized-fixture-fix-retry`: 82 passed, 2 failed, 3 skipped. Dead hypothesis: a repeated real parser run could preserve byte-identical live trace, and export failure should erase proof that the parser pod ran. The parser generates a new six-checkpoint job each time; `refine_case` retains that proof and rolls back only unexported replay value steps.
+- New strategy: assert one stable replay value lineage and one new six-checkpoint proof per actual parser run; on failed export, assert parser proof persists but unexported replay steps do not. Broaden the architecture guard for P5 bronze reads, socket connections and direct network subprocesses. The two test files were edited and formatted statically; no third integrated check is authorized yet. Use a transparently named successor with this hypothesis only after the orchestrator decides under `coord/briefs/codex-authorizations.md`.
+
 ## R16 selected strategy (2026-09-26)
 - Both CDP forwarding layers currently return when `select.select(..., 30)` has no readable socket. An idle browser WebSocket therefore closes even while Chromium and the cell container remain alive. Fix both forwarders to continue waiting; add an idle-poll regression test.
 - The substrate currently checks only Docker `State.Running`; it does not test the CDP page target. It also copies `peak_memory_mb` from preflight once and never updates it. Add a target liveness probe before reporting `ready` or accepting a new step, and gather live/peak memory before teardown.

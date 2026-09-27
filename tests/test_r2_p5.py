@@ -20,6 +20,7 @@ from ontofill.phases.p5_execute import (
 from ontofill.refiner import MemorySilverStore, Observation
 from ontofill.workflow import _gaps_for_objective
 from tests.genericity.fixtures.multisource import SOURCE_CLASSES, multisource_objectives
+from tests.r17_helpers import SyntheticParseExecutor
 
 
 def _trace(
@@ -198,6 +199,7 @@ def test_recorded_multisource_batch_flattens_json_and_derives_membership(tmp_pat
         provenance=provenance,
         capture=capture,
         fetch=fetch,
+        parse_executor=SyntheticParseExecutor(),
     )
 
     assert [result.format for result in results] == ["csv", "json", "json", "csv"]
@@ -287,10 +289,13 @@ def test_membership_refuses_partial_file_even_when_tdd_claims_complete(tmp_path)
             generated_by=provenance,
         )
     )
+    lake = FileLake(tmp_path / "lake")
+    page_key = lake.put_bytes(b'<a href="/list.csv">List</a>')
+    partial_key = lake.put_bytes(b"id\nR-1\n")
     page = {
         "url": objective["source_url"],
         "html": '<a href="/list.csv">List</a>',
-        "html_key": "sha256:page",
+        "html_key": page_key,
         "screenshot_key": None,
         "trace": [{"step_id": "step:page"}],
     }
@@ -308,7 +313,7 @@ def test_membership_refuses_partial_file_even_when_tdd_claims_complete(tmp_path)
                 "complete": True,
             },
         },
-        lake=FileLake(tmp_path / "lake"),
+        lake=lake,
         run_id="mock-partial",
         decision=decision,
         store=store,
@@ -317,10 +322,11 @@ def test_membership_refuses_partial_file_even_when_tdd_claims_complete(tmp_path)
         fetch=lambda url, **_kwargs: {
             "url": url,
             "bytes": b"id\nR-1\n",
-            "bronze_key": "sha256:partial-list",
+            "bronze_key": partial_key,
             "status": 206,
             "trace": [{"step_id": "step:file"}],
         },
+        parse_executor=SyntheticParseExecutor(),
     )
     assert not any(item.property_id == "is_listed" for item in result.observations)
     refusal = next(

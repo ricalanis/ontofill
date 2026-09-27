@@ -19,7 +19,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -482,18 +482,20 @@ class CkanLeadProvider(LeadProvider):
     def __init__(
         self,
         *,
-        http: httpx.Client | None = None,
+        fetch_json: Callable[[str, str], Mapping] | None = None,
         cache: JsonCache | None = None,
         rows: int = 5,
         max_calls: int = 6,
     ) -> None:
         super().__init__()
-        self.http = http or httpx.Client(timeout=20, follow_redirects=True)
+        self.fetch_json = fetch_json
         self.cache = cache or JsonCache(None)
         self.rows = rows
         self.max_calls = max_calls
         self.calls = 0
         self.cache_hits = 0
+        self.trace: list[dict] = []
+        self.jobs: list[dict] = []
         self._unsupported: set[str] = set()
 
     @staticmethod
@@ -501,12 +503,33 @@ class CkanLeadProvider(LeadProvider):
         found = []
         for publisher in policy.get("trusted_publishers", []):
             if _CATALOG_KIND.search(publisher.get("kind", "")):
-                found.extend(domain.lower().rstrip(".") for domain in publisher.get("domains", []))
+                for raw_domain in publisher.get("domains", []):
+                    if not isinstance(raw_domain, str):
+                        continue
+                    domain = raw_domain.lower().rstrip(".")
+                    try:
+                        parsed = urlsplit(f"https://{domain}")
+                        port = parsed.port
+                    except ValueError:
+                        continue
+                    if (
+                        not public_url(f"https://{domain}")
+                        or parsed.hostname != domain
+                        or parsed.netloc != domain
+                        or parsed.path
+                        or parsed.query
+                        or parsed.fragment
+                        or port is not None
+                    ):
+                        continue
+                    found.append(domain)
         return list(dict.fromkeys(found))
 
     def _search(self, domain: str, query: str) -> dict:
         request = {"domain": domain, "q": query, "rows": self.rows}
         key = JsonCache.fingerprint("ckan", request)
+        if self.fetch_json is None:
+            raise ProviderUnavailable("sandbox fetch_json callback is not configured")
         cached = self.cache.get("ckan", key)
         if cached is not None:
             self.cache_hits += 1
@@ -514,17 +537,33 @@ class CkanLeadProvider(LeadProvider):
         if self.calls >= self.max_calls:
             raise ProviderUnavailable("catalog call budget spent")
         self.calls += 1
-        response = self.http.get(
-            f"https://{domain}/api/3/action/package_search",
-            params={"q": query, "rows": self.rows},
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        url = (
+            f"https://{domain}/api/3/action/package_search?"
+            f"{urlencode({'q': query, 'rows': self.rows})}"
         )
-        response.raise_for_status()
-        payload = response.json()
+        fetcher = self.fetch_json
+        trace_before = len(getattr(fetcher, "trace", []))
+        jobs_before = len(getattr(fetcher, "jobs", []))
+        try:
+            payload = fetcher(url, domain)
+        finally:
+            self.trace.extend(getattr(fetcher, "trace", [])[trace_before:])
+            self.jobs.extend(getattr(fetcher, "jobs", [])[jobs_before:])
+        if not isinstance(payload, Mapping):
+            raise TypeError("sandbox fetch_json did not return a JSON object")
+        payload = dict(payload)
         self.cache.put("ckan", key, payload)
         return payload
 
     def leads(self, context: LeadContext) -> list[Lead]:
+        if self.fetch_json is None:
+            for query in context.queries:
+                self._attempt(
+                    query.text,
+                    "unavailable: sandbox fetch_json callback is not configured",
+                    0,
+                )
+            return []
         domains = [d for d in self.catalog_domains(context.policy) if d not in self._unsupported]
         found: list[Lead] = []
         for domain in domains:
@@ -534,7 +573,7 @@ class CkanLeadProvider(LeadProvider):
                 except ProviderUnavailable:
                     self._attempt(query.text, "budget", 0, domain=domain)
                     return found
-                except (httpx.HTTPError, ValueError) as exc:
+                except PROVIDER_ERRORS as exc:
                     self._unsupported.add(domain)
                     self._attempt(query.text, f"error: {type(exc).__name__}", 0, domain=domain)
                     break
@@ -754,6 +793,7 @@ def default_lead_providers(
     cache_root: Path | None = DEFAULT_CACHE,
     tavily_max_credits: int | None = None,
     search_client: object | None = None,
+    fetch_json: Callable[[str, str], Mapping] | None = None,
 ) -> list[LeadProvider]:
     """Live providers in the order the loop consults them."""
     cache = JsonCache(cache_root)
@@ -762,7 +802,7 @@ def default_lead_providers(
     if decision.backend == "vultr":
         providers.append(ModelLeadProvider(decision))
     providers.append(WikidataLeadProvider(wikidata))
-    providers.append(CkanLeadProvider(cache=cache))
+    providers.append(CkanLeadProvider(fetch_json=fetch_json, cache=cache))
     credits = tavily_max_credits
     if credits is None:
         credits = int(os.environ.get("ONTOFILL_TAVILY_MAX_CREDITS", "10"))

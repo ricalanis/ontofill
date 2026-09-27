@@ -16,6 +16,7 @@ from ontofill.runfeed import RunFeed
 from ontofill.sandbox import build_job_record
 from ontofill.workflow import _scratch_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
+from tests.r17_helpers import SyntheticParseExecutor
 
 PAGE_URL = "https://libraries.example.test/branches"
 RECORDED = {"backend": "recorded", "model": "synthetic-replay", "at": "2026-09-26T00:00:00Z"}
@@ -516,6 +517,7 @@ def test_missing_download_falls_back_to_controller_and_quarantine_withholds(tmp_
             browser_client=controller,
             browser_steps_root=steps_root,
             browser_captures_root=captures_root,
+            parse_executor=SyntheticParseExecutor(),
         )
         assert result.observations == []
         assert controller.calls == ["open", "act", "observe", "close"]

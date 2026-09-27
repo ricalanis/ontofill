@@ -19,6 +19,7 @@ from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
 from ontofill.repair.runner import CaptureCase, RepairExecutor, RepairFeedback, run_code_repair
 from ontofill.sandbox import SandboxLimits
+from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 _SAFE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _VERSION = re.compile(r"v([1-9][0-9]*)\Z")
@@ -36,6 +37,7 @@ class HtmlRepairResult:
     macro_path: Path | None = None
     promoted: bool = False
     failure_reason: str | None = None
+    sandbox_jobs: tuple[dict, ...] = ()
 
 
 def _source_root(case_dir: Path, source_id: str) -> Path:
@@ -101,14 +103,14 @@ def _code_schema() -> dict:
 def _generate_code(
     decision: DecisionClient,
     *,
-    html: bytes,
+    parsed_summary: str,
     expected: list[dict],
     target_fields: list[str],
     source_type: str,
 ) -> str:
-    html_text = html.decode("utf-8", errors="replace")
-    if len(html_text) > _MAX_PROMPT_HTML:
-        html_text = html_text[:_MAX_PROMPT_HTML] + "\n[page capture truncated for prompt]"
+    summary = parsed_summary
+    if len(summary) > _MAX_PROMPT_HTML:
+        summary = summary[:_MAX_PROMPT_HTML] + "\n[parsed page summary truncated for prompt]"
     prompt = (
         "Write a deterministic Python extractor for one captured public HTML page. The sandbox calls "
         "extract(capture: bytes) and expects a list of dictionaries. Each output row must have exactly "
@@ -122,8 +124,8 @@ def _generate_code(
         + screened_page_content(
             json.dumps(expected[:20], ensure_ascii=False, sort_keys=True, default=str)
         )
-        + " Captured HTML: "
-        + screened_page_content(html_text)
+        + " Bounded sandbox parser output: "
+        + screened_page_content(summary)
         + " Return the complete extractor source in the code field."
     )
     result = decision.complete_json("phase5.repair_generate", prompt, _code_schema())
@@ -223,12 +225,15 @@ def repair_html_extractor(
     generated_by: dict[str, str],
     parent_step_id: str,
     executor: RepairExecutor | None = None,
+    parse_executor: ParseExecutor | None = None,
     limits: SandboxLimits | None = None,
     max_attempts: int = 3,
 ) -> HtmlRepairResult:
     """Replay or generate an HTML extractor against this run's bronze and D1 rows."""
     if not expected:
         return HtmlRepairResult(False, (), (), failure_reason="empty_d1_output")
+    parse_trace: tuple[dict, ...] = ()
+    sandbox_jobs: tuple[dict, ...] = ()
     try:
         source_root = _source_root(case_dir, source_id)
         compatible = _read_compatible_macro(
@@ -238,9 +243,41 @@ def repair_html_extractor(
             backend=generated_by["backend"],
         )
         if compatible is None:
+            parsed = parse_bronze(
+                lake,
+                capture_key,
+                format="html",
+                max_rows=300,
+                run_id=run_id,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                phase=5,
+                generated_by=generated_by,
+                executor=parse_executor,
+            )
+            parse_trace = parsed.trace
+            sandbox_jobs = (parsed.job_record,)
+            if parsed.challenge_detected:
+                return HtmlRepairResult(
+                    False,
+                    parse_trace,
+                    (),
+                    failure_reason="captured_page_is_challenge",
+                    sandbox_jobs=sandbox_jobs,
+                )
             initial_code = _generate_code(
                 decision,
-                html=lake.read_key(capture_key),
+                parsed_summary=json.dumps(
+                    {
+                        "visible_text": parsed.page_text,
+                        "tables": list(parsed.rows[:100]),
+                        "links": list(parsed.links[:100]),
+                        "dom_skeleton_hash": parsed.dom_skeleton_hash,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 expected=expected,
                 target_fields=target_fields,
                 source_type=source_type,
@@ -263,21 +300,36 @@ def repair_html_extractor(
             parent_step_id=parent_step_id,
             executor=executor,
         )
+    except SandboxParseError as exc:
+        return HtmlRepairResult(
+            False,
+            exc.trace,
+            (),
+            failure_reason=exc.reason,
+            sandbox_jobs=(exc.job_record,),
+        )
     except Exception as exc:  # noqa: BLE001 - inference or storage failure safely escalates to S1
-        return HtmlRepairResult(False, (), (), failure_reason=type(exc).__name__)
+        return HtmlRepairResult(
+            False,
+            parse_trace,
+            (),
+            failure_reason=type(exc).__name__,
+            sandbox_jobs=sandbox_jobs,
+        )
 
     if not outcome.passed:
         return HtmlRepairResult(
             False,
-            outcome.trace,
+            (*parse_trace, *outcome.trace),
             outcome.outputs,
             failure_reason=outcome.failure_reason,
+            sandbox_jobs=sandbox_jobs,
         )
 
     code = lake.read_key(outcome.code_key).decode("utf-8")
     should_promote = compatible is None or code != initial_code
     macro_path = None
-    trace = list(outcome.trace)
+    trace = [*parse_trace, *outcome.trace]
     if should_promote:
         try:
             macro_path = _promote(
@@ -296,9 +348,10 @@ def repair_html_extractor(
         except Exception as exc:  # noqa: BLE001 - a non-promoted macro must not enter D1
             return HtmlRepairResult(
                 False,
-                outcome.trace,
+                tuple(trace),
                 outcome.outputs,
                 failure_reason=type(exc).__name__,
+                sandbox_jobs=sandbox_jobs,
             )
         version = int(macro_path.name.removeprefix("v"))
         trace.append(
@@ -336,4 +389,5 @@ def repair_html_extractor(
         outcome.outputs,
         macro_path=macro_path,
         promoted=should_promote,
+        sandbox_jobs=sandbox_jobs,
     )

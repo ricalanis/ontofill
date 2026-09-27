@@ -129,6 +129,28 @@ def link_docker_ssh(
     return f"ssh://root@{sandbox_peer_ip}"
 
 
+def configure_engine_docker_host(
+    control_address: str, docker_host: str, identity_file: str | None = None
+) -> bool:
+    """Persist the verified sandbox daemon for the deployed engine process."""
+    if not docker_host.startswith("ssh://root@"):
+        raise ValueError("sandbox Docker host must be a verified SSH peer")
+    peer_ip = docker_host.removeprefix("ssh://root@")
+    ipaddress.ip_address(peer_ip)
+    configured = ssh(
+        control_address,
+        "if test ! -f /opt/ontofill/engine.env; then echo absent; exit 0; fi; "
+        "IFS= read -r docker_host && "
+        "sed -i '/^ONTOFILL_SANDBOX_DOCKER_HOST=/d' /opt/ontofill/engine.env && "
+        "printf 'ONTOFILL_SANDBOX_DOCKER_HOST=%s\\n' \"$docker_host\" "
+        ">> /opt/ontofill/engine.env && "
+        "chmod 600 /opt/ontofill/engine.env && echo configured",
+        input_text=docker_host + "\n",
+        identity_file=identity_file,
+    )
+    return configured == "configured"
+
+
 def bootstrap(
     control_address: str,
     sandbox_address: str,
@@ -138,11 +160,15 @@ def bootstrap(
     sandbox_peer_ip = verify_peer(sandbox_address, identity_file)
     wait_for_p2p(control_address, sandbox_peer_ip, identity_file)
     docker_host = link_docker_ssh(control_address, sandbox_address, sandbox_peer_ip, identity_file)
+    engine_env_configured = configure_engine_docker_host(
+        control_address, docker_host, identity_file
+    )
     return {
         "control_netbird_ip": control_peer_ip,
         "sandbox_netbird_ip": sandbox_peer_ip,
         "netbird_connection": "P2P",
         "ONTOFILL_SANDBOX_DOCKER_HOST": docker_host,
+        "engine_env_configured": engine_env_configured,
         "DOCKER_SSH_COMMAND": "ssh -i /root/.ssh/ontofill_sandbox -o StrictHostKeyChecking=yes",
     }
 

@@ -12,8 +12,16 @@ from ontofill.case.checkpoints import ApprovalArtifactMismatch
 from ontofill.lake import FileLake
 from ontofill.refiner import MemorySilverStore, export_run, refine_observations
 from ontofill.refiner.bronze_replay import replay_bronze_observations
+from ontofill.sandbox import parse as parse_module
 from tests.approval_support import bind_approval
+from tests.r17_helpers import SyntheticParseExecutor
 from tests.test_refiner import RECORDED, SOURCE_ID, URL, dod_queries, ontology, write_lineage
+
+
+@pytest.fixture(autouse=True)
+def synthetic_parse_pod(monkeypatch):
+    monkeypatch.setattr(parse_module, "DockerParseExecutor", SyntheticParseExecutor)
+
 
 RUN_ID = "mock-bronze-replay"
 OBJECTIVE_ID = "read-catalog"
@@ -465,7 +473,22 @@ def test_refine_case_exports_replayed_values_once_and_persists_lineage_idempoten
     assert gold["properties"]["service_zone"]["value"] == "North"
 
     assert workflow.refine_case(case_dir, run_id=RUN_ID) == 0
-    assert lake.read_key(trace_key) == first_live_trace
+    second_live_trace = lake.read_key(trace_key)
+    assert second_live_trace.startswith(first_live_trace)
+    second_steps = [json.loads(line) for line in second_live_trace.decode("utf-8").splitlines()]
+    # Each actual parser pod gets six new proof steps. The replay value lineage
+    # remains unique for the same capture and ontology.
+    assert (
+        sum(step.get("evaluated", {}).get("proof_checkpoint") is not None for step in first_steps)
+        == 6
+    )
+    assert (
+        sum(step.get("evaluated", {}).get("proof_checkpoint") is not None for step in second_steps)
+        == 12
+    )
+    assert (
+        sum(step.get("requested", {}).get("tool") == "bronze.replay" for step in second_steps) == 1
+    )
     assert len(exported_traces) == 2
     assert all(
         sum(step.get("requested", {}).get("tool") == "bronze.replay" for step in trace_rows) == 1
@@ -493,7 +516,21 @@ def test_refine_case_restores_live_trace_when_export_fails(tmp_path, monkeypatch
         workflow.refine_case(case_dir, run_id=RUN_ID)
 
     assert export_calls == 1
-    assert lake.read_key(trace_key) == original_trace
+    persisted_trace = lake.read_key(trace_key)
+    assert persisted_trace.startswith(original_trace)
+    persisted_steps = [json.loads(line) for line in persisted_trace.decode("utf-8").splitlines()]
+    # The sandbox job happened and stays auditable; only replay value steps that
+    # were never exported are rolled back.
+    assert (
+        sum(
+            step.get("evaluated", {}).get("proof_checkpoint") is not None
+            for step in persisted_steps
+        )
+        == 6
+    )
+    assert not any(
+        step.get("requested", {}).get("tool") == "bronze.replay" for step in persisted_steps
+    )
 
 
 @pytest.mark.parametrize("marker_state", ["missing", "stale", "denied"])

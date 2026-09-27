@@ -18,6 +18,7 @@ from ontofill.phases.p3_fanout.site_graph import (
 )
 from ontofill.phases.p4_local_scoping.phase import draft_local_scope
 from ontofill.runfeed import RunFeed
+from tests.r17_helpers import SyntheticParseExecutor
 
 SOURCE_ID = "source-synthetic"
 OBJECTIVE_ID = "objective-synthetic"
@@ -294,6 +295,7 @@ def test_site_graph_publishes_ontology_labeled_pages_and_keeps_unfetched_links_i
         run_id="mock-synthetic-run",
         capture_result=capture_result,
         trace_out=graph_trace,
+        parse_executor=SyntheticParseExecutor(),
     )
 
     validate_document("site-graph", envelope)
@@ -412,6 +414,7 @@ def test_p4_uses_site_graph_as_bounded_starting_context(tmp_path: Path) -> None:
         lake=lake,
         run_id="synthetic-run",
         capture_result=_capture_result(lake),
+        parse_executor=SyntheticParseExecutor(),
     )
     prd = {"requirements": [{"id": "req-1", "description": "Read source-backed records"}]}
 
@@ -474,6 +477,7 @@ def test_confirmed_source_spider_runner_uses_bounded_policy_and_ranks_objectives
         run_id="run-synthetic-site-graph",
         capture=capture,
         provenance=live_provenance,
+        parse_executor=SyntheticParseExecutor(),
     )
 
     assert len(calls) == 1
@@ -488,7 +492,10 @@ def test_confirmed_source_spider_runner_uses_bounded_policy_and_ranks_objectives
     assert graph["job_ids"] == [calls[0]["job_id"]]
     assert {item["job_id"] for item in graph["instances"]} == {calls[0]["job_id"]}
     assert result["objectives"]["objectives"][0]["expected_contribution"] == 1.0
-    assert len(result["jobs"]) == 1
+    assert len(result["jobs"]) == 4
+    parse_jobs = [job for job in result["jobs"] if "checkpoints" in job]
+    assert len(parse_jobs) == 3
+    assert all(len(job["checkpoints"]) == 6 for job in parse_jobs)
     assert sources_needing_spider(case_dir, result["objectives"], ["record_id"]) == []
     assert sources_needing_spider(tmp_path / "fresh-case", result["objectives"], ["record_id"]) == [
         SOURCE_ID
@@ -529,6 +536,7 @@ def test_site_graph_context_rejects_stale_fingerprint_or_ontology(tmp_path: Path
         lake=lake,
         run_id="synthetic-run",
         capture_result=_capture_result(lake),
+        parse_executor=SyntheticParseExecutor(),
     )
 
     assert site_graph_context(tmp_path, OBJECTIVE, ONTOLOGY) is not None
@@ -550,6 +558,7 @@ def test_ranker_ignores_stale_graphs(tmp_path: Path) -> None:
         lake=lake,
         run_id="synthetic-run",
         capture_result=_capture_result(lake),
+        parse_executor=SyntheticParseExecutor(),
     )
     changed = copy.deepcopy(OBJECTIVES)
     changed["objectives"][0]["source_fingerprint"] = "d" * 64
