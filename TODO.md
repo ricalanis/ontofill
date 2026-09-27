@@ -586,3 +586,13 @@ FORMAT: `uv run ruff check` and `uv run ruff format --check` for the provider an
 2. [x] Implement bounded query planning and metadata scoring; keep scores ranking-only and preserve sandbox fetch plus downstream authority/capture gates.
 3. [x] Run the managed focused DONE gate, record outcome, and commit locally for root integration; do not push or deploy.
    - `agent-progress run --task r48-ckan-anchor`: pass, 39 tests passed; Ruff check and format pass; `git diff --check` pass. Red baseline was recorded under `r48-ckan-anchor-red` with the three new assertions failing on current behavior.
+
+# R48 bounded query dispatch
+
+- [x] Add recorded tests for at-most-five dispatch, hierarchy-aware ontology themes, local/English variants, official namespace first pass, and new queries after tried plans.
+- [x] Implement bounded query generation/selection and retry rotation without editing provider code; keep searches descriptive and generic.
+- [x] Run managed focused gate and update notes; commit locally and send SHA plus per-theme-ledger gap to root.
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r48_recall.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Make discovery dispatch bounded and ensure each later round can try genuinely new ontology- and jurisdiction-derived query themes.
+DONE: the scoped managed gate in `GOAL.md` passes the synthetic dispatch and rotation checks plus Ruff and diff checks.
+FORMAT: Ruff check/format for the two Python files.

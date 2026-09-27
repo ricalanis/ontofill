@@ -95,6 +95,7 @@ _SENSITIVE_HEADER = re.compile(
 _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
+_MAX_DISCOVERY_QUERY_BATCH = 5
 _DISCOVERY_CHANNELS = ("list", "open data", "transparency", "registry", "API", "download")
 _PORTAL_LINK_CUES = (
     *_DISCOVERY_CHANNELS,
@@ -465,6 +466,45 @@ def _primary_anchor_query_terms(anchor: Mapping, *, include_relation: bool = Fal
             seen.add(value.casefold())
             result.append(value)
     return result
+
+
+def _ontology_gap_relations(ontology: Mapping, property_id: str) -> list[dict]:
+    """Describe relations linking a gap property's class or primary class."""
+    properties = {item["id"]: item for item in ontology.get("properties", [])}
+    classes = {item["id"]: item for item in ontology.get("classes", [])}
+    owner_id = properties.get(property_id, {}).get("domain")
+    relevant = {
+        identifier for identifier in (owner_id, ontology.get("primary_class")) if identifier
+    }
+    relations = []
+    for relation in ontology.get("relations", []):
+        domain, range_id = relation.get("domain"), relation.get("range")
+        if domain not in relevant and range_id not in relevant:
+            continue
+        domain_class = classes.get(domain, {})
+        range_class = classes.get(range_id, {})
+        relations.append(
+            {
+                "id": relation.get("id", ""),
+                "label": relation.get("label") or relation.get("id", ""),
+                "domain_class": domain_class.get("label") or domain or "",
+                "range_class": range_class.get("label") or range_id or "",
+            }
+        )
+    return relations
+
+
+def _jurisdiction_query_context(policy: Mapping) -> dict:
+    hierarchy = policy.get("jurisdiction_hierarchy")
+    hierarchy = dict(hierarchy) if isinstance(hierarchy, Mapping) else {}
+    return {
+        "jurisdiction": str(policy.get("jurisdiction") or ""),
+        "hierarchy": hierarchy,
+        "in_scope_government_levels": [
+            level for level in GOVERNMENT_LEVELS if government_level_in_scope(policy, level)
+        ],
+        "recall_coverage": dict(policy.get("recall_coverage") or {}),
+    }
 
 
 def _dod_properties(ontology: Mapping) -> tuple[str, ...]:
@@ -1224,7 +1264,7 @@ class DiscoveryLoop:
         self.spider_capture = spider_capture
         self.parse_executor = parse_executor
         self.max_captures = max_captures_per_iteration
-        self.max_queries = max_queries_per_iteration
+        self.max_queries = min(_MAX_DISCOVERY_QUERY_BATCH, max(1, max_queries_per_iteration))
         self.trace: list[dict] = []
         self.jobs: list[dict] = []
         self.attempts: list[dict] = []
@@ -1322,7 +1362,13 @@ class DiscoveryLoop:
         properties = {item["id"]: item for item in ontology["properties"]}
         classes = {item["id"]: item for item in ontology["classes"]}
         jurisdiction = str(policy.get("jurisdiction") or "").strip()
-        channel = _DISCOVERY_CHANNELS[(iteration - 1) % len(_DISCOVERY_CHANNELS)]
+        theme_round = (iteration - 1) // 2
+        channel = _DISCOVERY_CHANNELS[theme_round % len(_DISCOVERY_CHANNELS)]
+        limit = min(_MAX_DISCOVERY_QUERY_BATCH, getattr(self, "max_queries", 5))
+        pass_tried = set() if iteration == 2 else tried
+        query_cache = getattr(self, "_planned_query_cache", {})
+        reuse_theme_pass = iteration == 2 and bool(query_cache)
+        hierarchy_context = _jurisdiction_query_context(policy)
         subject = " ".join(
             " ".join(
                 line.strip()
@@ -1330,8 +1376,12 @@ class DiscoveryLoop:
                 if line.strip() and not line.lstrip().startswith("#")
             ).split()[:12]
         )
-        planned_by_gap: dict[str, str] = {}
-        if decision.backend == "vultr":
+        planned_by_gap: dict[str, list[str]] = {}
+        if reuse_theme_pass:
+            planned_by_gap = {
+                property_id: list(values) for property_id, values in query_cache.items()
+            }
+        elif decision.backend == "vultr":
             schema = {
                 "type": "object",
                 "additionalProperties": False,
@@ -1340,7 +1390,7 @@ class DiscoveryLoop:
                     "queries": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": len(gaps),
+                        "maxItems": _MAX_DISCOVERY_QUERY_BATCH,
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
@@ -1348,6 +1398,11 @@ class DiscoveryLoop:
                             "properties": {
                                 "property_id": {"enum": gaps},
                                 "query": {"type": "string", "minLength": 5, "maxLength": 240},
+                                "english_query": {
+                                    "type": "string",
+                                    "minLength": 5,
+                                    "maxLength": 240,
+                                },
                             },
                         },
                     }
@@ -1366,29 +1421,37 @@ class DiscoveryLoop:
                         "class": owner.get("label", ""),
                         "requires_entity_records": anchor is not None,
                         "primary_entity_anchor": anchor,
+                        "linking_relations": _ontology_gap_relations(ontology, gap),
                     }
                 )
             prompt = (
-                "Write one short web search query per gap that would find the public "
-                "publisher of that property for the brief's jurisdiction, in the brief's "
-                "language. This round target the local-language equivalent of the source channel "
-                f"{channel!r}; across rounds search open data, transparency obligations, registries, "
-                "lists, APIs and downloadable datasets. For primary-class gaps, first target "
-                "entity-level rows using the class, target property, and identifier or title label; "
-                "also consider datasets exposing a relation link and its linked class. Propose the "
-                "local-language equivalents of list, roster, register, open/public data and API "
-                "terms yourself, choosing one concise route per query instead of concatenating every "
-                "anchor. Exclude aggregate statistics, totals and dashboards. Do not include URLs. "
-                "Do not repeat a tried query. "
+                "Generate at most five distinct, descriptive web-search queries for this batch, "
+                "anchored in the ontology gap properties, primary entity class, and linking relations. "
+                "For each query, use local-language phrasing from the brief in `query` and provide an English equivalent "
+                "in `english_query` when useful (omit it when the query is already English). Use the PRD jurisdiction hierarchy "
+                "and recall levels to cover the configured root and descendants. On the first round the "
+                "search API restricts results to approved official namespaces. The next round broadens "
+                "beyond that allowlist while seeking official institutional records and excluding social "
+                "media, news, blogs, reseller/vendor pages. Do not put exclusion boilerplate into query "
+                "text. For primary-class gaps, target entity-level rows using class, target property, and "
+                "identifier/title labels, or a linking relation plus both endpoint classes. Explore lists, "
+                "registries, open data, APIs, and downloadable datasets; avoid aggregate totals and "
+                "dashboards. Keep each query concise and do not include URLs. Ask for fresh query angles "
+                "when earlier plans have been tried. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
-                f"Gaps: {json.dumps(listing, ensure_ascii=False)}. "
-                f"Tried queries: {sorted(tried)[:20]}."
+                f"Jurisdiction hierarchy and recall scope: "
+                f"{json.dumps(hierarchy_context, ensure_ascii=False)}. "
+                f"Gaps and ontology themes: {json.dumps(listing, ensure_ascii=False)}. "
+                f"Tried queries: {sorted(pass_tried)[:20]}."
             )
 
             def validate_queries(result: dict) -> None:
-                property_ids = [item["property_id"] for item in result["queries"]]
-                if len(property_ids) != len(set(property_ids)):
-                    raise ValueError("query planner must return each property once at most")
+                query_keys = [
+                    (item["property_id"], " ".join(item["query"].casefold().split()))
+                    for item in result["queries"]
+                ]
+                if len(query_keys) != len(set(query_keys)):
+                    raise ValueError("query planner must return distinct query angles")
 
             try:
                 result = complete_validated(
@@ -1398,11 +1461,15 @@ class DiscoveryLoop:
                     schema,
                     validate_queries,
                 )
-                planned_by_gap = {
-                    item["property_id"]: " ".join(item["query"].split())
-                    for item in result["queries"]
-                    if " ".join(item["query"].split())
-                }
+                for item in result["queries"]:
+                    property_id = item["property_id"]
+                    local_query = " ".join(item["query"].split())
+                    english_query = " ".join(item.get("english_query", "").split())
+                    planned_by_gap.setdefault(property_id, []).extend(
+                        query
+                        for query in (local_query, english_query)
+                        if query and query not in planned_by_gap.get(property_id, [])
+                    )
             except PROVIDER_ERRORS as exc:  # fall back to the deterministic template
                 self._step(
                     {"tool": "phase3.plan_queries"},
@@ -1410,7 +1477,7 @@ class DiscoveryLoop:
                     {"outcome": f"error: {type(exc).__name__}", "fallback": "template"},
                     mode="D1",
                 )
-        queries = []
+        candidates_by_gap: dict[str, list[str]] = {}
         for gap in gaps:
             prop = properties[gap]
             owner = classes.get(prop.get("domain"), {})
@@ -1419,43 +1486,99 @@ class DiscoveryLoop:
             title_label = properties.get(owner.get("title_property"), {}).get("label", "")
             anchor = _primary_entity_anchor(ontology, gap)
             if anchor is not None:
-                if planned_by_gap.get(gap):
-                    planned = planned_by_gap[gap]
-                    terms = " ".join(_primary_anchor_query_terms(anchor))
-                    query = " ".join(part for part in (planned, terms) if part)
-                    queries.append(LeadQuery(gap, " ".join(query.split())))
-                    continue
-                terms = " ".join(
-                    _primary_anchor_query_terms(anchor, include_relation=iteration > 1)
-                )
-                variants = [f"{channel} {jurisdiction} {terms} {subject}"]
+                terms = " ".join(_primary_anchor_query_terms(anchor))
             else:
-                variants = [
-                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
-                    f"{prop['label']} {title_label} {channel} {subject}",
-                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction} {subject}",
-                ]
-            if planned_by_gap.get(gap):
-                queries.append(LeadQuery(gap, planned_by_gap[gap]))
-                continue
-            for variant in variants[iteration - 1 :] + variants[: iteration - 1]:
-                text = " ".join(variant.split())
-                if text and text not in tried:
+                terms = " ".join(
+                    value
+                    for value in (
+                        owner.get("label") or owner.get("id", ""),
+                        identity_label or title_label,
+                        prop.get("label", gap),
+                    )
+                    if value
+                )
+            candidates = []
+            for planned in planned_by_gap.get(gap, []):
+                text = (
+                    " ".join(planned.split())
+                    if reuse_theme_pass
+                    else " ".join(f"{planned} {terms}".split())
+                )
+                if text and text not in candidates:
+                    candidates.append(text)
+            if not reuse_theme_pass:
+                variants = []
+                in_scope_levels = hierarchy_context["in_scope_government_levels"]
+                level = (
+                    in_scope_levels[theme_round % len(in_scope_levels)] if in_scope_levels else ""
+                )
+                relations = _ontology_gap_relations(ontology, gap)
+                if relations and theme_round > 0:
+                    relation = relations[(theme_round - 1) % len(relations)]
+                    relation_terms = " ".join(
+                        str(value)
+                        for value in (
+                            relation.get("domain_class"),
+                            relation.get("label"),
+                            relation.get("range_class"),
+                            identity_label or title_label,
+                            prop.get("label", gap),
+                        )
+                        if value
+                    )
+                    variants.append(f"{channel} {jurisdiction} {level} {relation_terms} {subject}")
+                variants.extend(
+                    [
+                        f"{channel} {jurisdiction} {level} {terms} {subject}",
+                        (
+                            f"{prop.get('label', gap)} {plural} {identity_label} {channel} "
+                            f"{jurisdiction} {level}"
+                        ),
+                        f"{prop.get('label', gap)} {title_label} {channel} {subject} {level}",
+                    ]
+                )
+                for variant in variants:
+                    text = " ".join(variant.split())
+                    if text and text not in candidates:
+                        candidates.append(text)
+            candidates_by_gap[gap] = candidates
+
+        queries: list[LeadQuery] = []
+        depth = max((len(candidates) for candidates in candidates_by_gap.values()), default=0)
+        quotas = {gap: min(2, max(1, len(planned_by_gap.get(gap, [])))) for gap in gaps}
+        selected_by_gap = dict.fromkeys(gaps, 0)
+        seen_text: set[str] = set()
+        for candidate_index in range(depth):
+            for gap in gaps:
+                candidates = candidates_by_gap[gap]
+                if candidate_index >= len(candidates) or selected_by_gap[gap] >= quotas[gap]:
+                    continue
+                text = candidates[candidate_index]
+                if text and text not in pass_tried and text not in seen_text:
                     queries.append(LeadQuery(gap, text))
-                    break
+                    seen_text.add(text)
+                    selected_by_gap[gap] += 1
+                    if len(queries) >= limit:
+                        break
+            if len(queries) >= limit:
+                break
+
+        if iteration == 1:
+            self._planned_query_cache = {}
+            for query in queries:
+                self._planned_query_cache.setdefault(query.property_id, []).append(query.text)
         sites = _policy_domains(policy)
-        global_queries = [query for query in queries if query.text not in tried]
-        if not sites:
-            return global_queries
+        if not sites or iteration != 1 or len(queries) >= limit:
+            return queries[:limit]
         restricted: list[LeadQuery] = []
         for index, query in enumerate(queries):
             for offset in range(len(sites)):
                 site = sites[(iteration - 1 + index + offset) % len(sites)]
                 text = f"site:{site} {query.text}"
-                if text not in tried:
+                if text not in pass_tried:
                     restricted.append(LeadQuery(query.property_id, text))
                     break
-        return [*global_queries, *restricted]
+        return [*queries, *restricted][:limit]
 
     # --------------------------------------------------------------- propose
     def _rank_lead(self, lead: dict, policy: Mapping, ontology: Mapping | None = None) -> float:

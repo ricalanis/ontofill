@@ -454,6 +454,12 @@ The synthetic tests use a generic Spanish record class and a nested `/datos-abie
 
 The initial managed red baseline confirmed the planner lacked an ontology anchor, relation-aware lead ordering, and same-round portal context. The first implementation gate passed 41 tests including the new portal assertion; its sole failure was a `NameError` caused by stale assertions from the replaced Spanish regression being left below the portal test. That stale fixture tail is removed. The successor hypothesis is unchanged in behavior scope: use a short class/identifier/property query anchor, expose title and touching-relation labels to the model, try one deterministic relation route on the next iteration, and keep ranking as title/snippet lead ordering only. The managed successor gate verifies the final diff.
 
+# R48 bounded query dispatch follow-up
+
+The intended red baseline reproduced unbounded per-gap site/global query expansion and no English/hierarchy planning. The first implementation gate passed 46 tests; its sole failure was an older R48 assertion for the literal prompt phrase `local-language`, while the new prompt expressed the same requirement as `brief's language`. Keep that discoverable phrase and verify the successor gate.
+
+The final managed successor `r48-query-dispatch / wrap-fallback-variant-string-and-final-verification` passed 47 tests across R48 recall, discovery loop/providers, and genericity/no-case-vocabulary; Ruff lint/format and `git diff --check` passed. Its final command was `uv run pytest -q tests/test_r48_recall.py tests/test_discovery_loop.py tests/test_discovery_providers.py tests/test_no_case_vocabulary.py && uv run ruff check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r48_recall.py && uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r48_recall.py && git diff --check`. Per-theme provider recall remains deferred: provider attempt records aggregate batches, so theme-level recall needs result attribution at the provider interface; query generation itself now rotates by ontology/jurisdiction angle without an extra query-field contract.
+
 
 # R40 malformed XLS parse diagnostics (2026-09-27)
 

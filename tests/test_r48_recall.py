@@ -223,7 +223,7 @@ def test_primary_entity_query_uses_ontology_anchor_and_model_local_terms() -> No
         ontology,
         {"jurisdiction": "Example region", "trusted_publishers": []},
         ["status"],
-        2,
+        3,
         {fallback_first[0].text},
     )
     relation_query = fallback_second[0].text.casefold()
@@ -300,6 +300,130 @@ def test_new_public_portal_is_handed_to_later_provider_in_same_round(tmp_path) -
     loop.discover_sources(tmp_path, ontology, RecordedDecisionClient({}), gaps=("name",))
 
     assert observer.seen_portals == (portal,)
+
+
+def test_query_plan_uses_hierarchy_and_local_english_variants() -> None:
+    ontology = _entity_anchor_ontology()
+    policy = {
+        "jurisdiction": "Example Republic",
+        "jurisdiction_hierarchy": {
+            "root_level": "national_federal",
+            "include_descendants": True,
+        },
+        "recall_coverage": {"government_levels": ["national_federal", "municipal"]},
+        "trusted_publishers": [],
+    }
+
+    class QueryPlanner:
+        backend = "vultr"
+        model = "synthetic-query-planner"
+
+        def complete_json(self, purpose, prompt, schema):
+            self.prompt = prompt
+            return {
+                "queries": [
+                    {
+                        "property_id": "status",
+                        "query": "consulta local de registros por identificador",
+                        "english_query": "official registry records by identifier",
+                    }
+                ]
+            }
+
+    planner = QueryPlanner()
+    loop = object.__new__(DiscoveryLoop)
+    queries = loop._plan_queries(
+        planner,
+        "Find each public record.",
+        ontology,
+        policy,
+        ["status"],
+        1,
+        set(),
+    )
+    query_text = " ".join(query.text for query in queries).casefold()
+
+    assert "consulta local de registros" in query_text
+    assert "official registry records" in query_text
+    assert "national_federal" in planner.prompt
+    assert "municipal" in planner.prompt
+    assert "english_query" in planner.prompt
+    assert "social media" in planner.prompt.casefold()
+    assert "news" in planner.prompt.casefold()
+    assert "blogs" in planner.prompt.casefold()
+
+
+def test_query_batch_is_capped_and_repeated_model_plan_rotates(tmp_path) -> None:
+    ontology = _entity_anchor_ontology()
+    for index in range(3):
+        ontology["properties"].append(
+            {
+                "id": f"status_{index}",
+                "label": f"Status field {index}",
+                "domain": "record",
+            }
+        )
+    policy = {
+        "jurisdiction": "Example Republic",
+        "trusted_publishers": [
+            {
+                "kind": "official registry",
+                "tier": "primary",
+                "domains": ["one.synthetic.test", "two.synthetic.test", "three.synthetic.test"],
+            }
+        ],
+    }
+    loop = object.__new__(DiscoveryLoop)
+    gaps = ["status", "status_0", "status_1", "status_2"]
+
+    first = loop._plan_queries(
+        RecordedDecisionClient({}),
+        "Find each public record.",
+        ontology,
+        policy,
+        gaps,
+        1,
+        set(),
+    )
+    assert 0 < len(first) <= 5
+
+    class RepeatingPlanner:
+        backend = "vultr"
+        model = "synthetic-repeating-planner"
+
+        def complete_json(self, purpose, prompt, schema):
+            return {
+                "queries": [
+                    {
+                        "property_id": "status",
+                        "query": "public status registry records",
+                        "english_query": "public status registry records",
+                    }
+                ]
+            }
+
+    repeated = loop._plan_queries(
+        RepeatingPlanner(),
+        "Find each public record.",
+        ontology,
+        {"jurisdiction": "Example Republic", "trusted_publishers": []},
+        ["status"],
+        1,
+        set(),
+    )
+    tried = {query.text for query in repeated}
+    rotated = loop._plan_queries(
+        RepeatingPlanner(),
+        "Find each public record.",
+        ontology,
+        {"jurisdiction": "Example Republic", "trusted_publishers": []},
+        ["status"],
+        3,
+        tried,
+    )
+
+    assert rotated
+    assert all(query.text not in tried for query in rotated)
 
 
 def test_blank_portal_is_inconclusive_and_capture_error_is_recorded(tmp_path) -> None:
