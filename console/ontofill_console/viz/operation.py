@@ -42,13 +42,21 @@ def safe_url(url) -> str | None:
 def step_usd(s: dict) -> float | None:
     """Estimated cost of one step, if the trace carries it (`usage.est_usd`, CONTRACT §15; older `usd`/`cost_usd`)."""
     usage = s.get("usage") if isinstance(s.get("usage"), dict) else {}
+    if str(usage.get("model")) == "none" and not usage.get("input_tokens") and not usage.get("output_tokens"):
+        return None  # a loop stage without a model call; its evaluated.usd is the loop's running total, not its own
     for v in (usage.get("est_usd"), usage.get("usd"), s.get("cost_usd"), (s.get("detail") or {}).get("usd")):
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             return float(v)
     return None
 
 
-def decided_by(s: dict) -> str:
+def usage_era(steps: list[dict]) -> bool:
+    """CONTRACT v1.0.5: when any step carries `usage`, every model call is its own step with usage (loop stages,
+    `decision.complete_json`, controller plan/verify), and `generated_by` elsewhere is only the run's provenance."""
+    return any(isinstance(s.get("usage"), dict) and s["usage"] for s in steps)
+
+
+def decided_by(s: dict, priced_trace: bool = False) -> str:
     """Which backend made this step's decision. A step with no model behind it was decided by code."""
     d = s.get("detail") or {}
     usage = s.get("usage") if isinstance(s.get("usage"), dict) else {}
@@ -56,12 +64,15 @@ def decided_by(s: dict) -> str:
     if s.get("kind") == "loop":
         if d.get("human"):
             return "human"
-        backend = usage.get("backend") or (gen.get("backend") if d.get("model") else None)
+        model = usage.get("model") or d.get("model")  # a stage without a model call (model "none") is code
+        backend = (usage.get("backend") or gen.get("backend")) if model and model != "none" else None
+    elif s.get("kind") == "gate" and d.get("decided_by"):  # the gate says who rated the action
+        backend = d.get("decided_by")
     elif d.get("backend"):
         backend = d.get("backend")
     elif usage.get("model") or usage.get("backend"):
         backend = usage.get("backend") or gen.get("backend")
-    elif gen.get("model") and s.get("mode") != "D0":
+    elif gen.get("model") and s.get("mode") != "D0" and not priced_trace:
         backend = gen.get("backend")
     else:
         backend = None
@@ -131,6 +142,7 @@ def run_strips(a: Artifacts, case_id: str, selected: str | None, now: datetime) 
         kind = "live" if state == "running" else ("replay" if replay else ("recorded" if backend == "recorded" else "run"))
         detail = [f"phase {phase} · {live.phase_name(phase)}" if phase else None,
                   f"paused at {st['checkpoint_pending']}" if st.get("checkpoint_pending") else None,
+                  str(st["reason"]) if st.get("reason") else None,  # run-status.schema.json: why it paused or failed
                   "live" if kind == "live" else None, "replayed feed" if replay else None,
                   "recorded inference (simulated)" if backend == "recorded" else (f"inference: {backend}" if backend else None),
                   "latest" if rid == latest else None]
@@ -290,8 +302,9 @@ def model(case, run_id: str | None = None) -> dict:
     deciders_usd: dict[str, float] = {}
     modes_n: dict[str, int] = {}
     modes_usd: dict[str, float] = {}
+    priced_trace = usage_era(steps)
     for s in steps:
-        who = decided_by(s)
+        who = decided_by(s, priced_trace)
         mode = s.get("mode") if s.get("mode") in live.MODE_RANK else "none"
         deciders_n[who] = deciders_n.get(who, 0) + 1
         modes_n[mode] = modes_n.get(mode, 0) + 1
@@ -309,6 +322,7 @@ def model(case, run_id: str | None = None) -> dict:
         selected=selected, n_steps=len(steps), backend=backend_of(metrics, [*steps, status]),
         state=status.get("state") or ("running" if steps else "waiting"), phase=status.get("phase"),
         checkpoint=status.get("checkpoint_pending"), updated_at=status.get("updated_at"),
+        reason=str(status["reason"]) if status.get("reason") else None,
         pipe=pipeline(steps, status, reopened), reopens=reopen_markers(steps),
         loop_rows=summary["rows"], threads=threads,
         deciders=share(deciders_n, deciders_usd, DECIDERS, len(steps)),

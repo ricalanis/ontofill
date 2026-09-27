@@ -84,7 +84,8 @@ def _details(s: dict, kind: str) -> dict:
         verdict = str(v.get("verdict") or v.get("status") or "uncertain").lower()
         return {"verdict": VERDICT_ALIASES.get(verdict, verdict), "confidence": v.get("confidence"),
                 "backend": v.get("backend"), "model": v.get("model"), "goal": v.get("goal"),
-                "reason": v.get("reason"), "screenshot_key": v.get("screenshot_key") or s.get("screenshot_key")}
+                "reason": v.get("reason") or evald.get("reason"),  # the controller puts the verifier's reason there
+                "screenshot_key": v.get("screenshot_key") or s.get("screenshot_key")}
     if kind == "repair":
         r = s.get("repair") if isinstance(s.get("repair"), dict) else {}
         return {"attempt": r.get("attempt") or evald.get("attempt"), "max_attempts": r.get("max_attempts"),
@@ -146,8 +147,10 @@ def _loop_details(s: dict, evald: dict, ex: dict) -> dict:
     phase = lp.get("phase") if lp.get("phase") == "outer" else (lp.get("phase") or s.get("phase"))
     human = role == "revise" and (gen.get("backend") == "human" or evald.get("source") == "human")
     objections = [str(o) for o in lp.get("objections") or [] if str(o).strip()]
+    model = next((m for m in (lp.get("model"), usage.get("model"), None if human else gen.get("model"))
+                  if m and m != "none"), None)  # phase_loop writes model "none" for a stage without a model call
     return {"phase": phase, "iteration": lp.get("iteration") if isinstance(lp.get("iteration"), int) else 1,
-            "role": role, "model": lp.get("model") or usage.get("model") or (None if human else gen.get("model")),
+            "role": role, "model": model,
             "verdict": lp.get("verdict"), "objections": objections, "stop_reason": lp.get("stop_reason"),
             "reopen": ex.get("reopen") if role == "decide" else None, "human": human,
             "reason": evald.get("reason") or ex.get("reason"),
@@ -254,6 +257,14 @@ def property_ratios(metrics: dict, domain: Domain | None) -> list[dict]:
     return [{"name": p.id, "label": p.label, "ratio": per.get(p.id)} for p in domain.dod_props()]
 
 
+def _source_row(src: dict) -> dict:
+    """run-status.schema.json writes `discovered_by` as {provider, at}; the panel shows the provider's name."""
+    found = src.get("discovered_by")
+    if isinstance(found, dict):
+        src = {**src, "discovered_by": found.get("provider")}
+    return src
+
+
 def summarize(steps: list[dict], status: dict | None, domain: Domain | None = None) -> dict:
     """Everything the side panel shows, from the step stream plus status.json."""
     status = status or {}
@@ -279,7 +290,7 @@ def summarize(steps: list[dict], status: dict | None, domain: Domain | None = No
         "checkpoint": status.get("checkpoint_pending"),
         "updated_at": status.get("updated_at"),
         "live_view_url": status.get("live_view_url"),
-        "sources": status.get("sources") or [],
+        "sources": [_source_row(x) for x in status.get("sources") or [] if isinstance(x, dict)],
         "metrics": metrics,
         "fields": property_ratios(metrics, domain),
         "modes": modes,
@@ -301,13 +312,20 @@ CHECKPOINTS = [
     ("secrets", "Secret hygiene", "No keys in the pod; the metadata IP and the NetBird mesh are BLOCKED"),
 ]
 KILL_LABELS = {"timeout": "wall-clock timeout", "memory": "memory cap", "pids": "process cap",
-               "max_steps": "step cap", "steps": "step cap"}
+               "max_steps": "step cap", "steps": "step cap",
+               "browser_closed": "browser closed", "cdp_unreachable": "browser unreachable"}
+LIMIT_REASONS = ("timeout", "memory", "pids", "max_steps", "steps")
+
+
+def job_stop_reason(job: dict) -> str | None:
+    """Why a sandbox job ended early: jobs.schema.json `failure_reason` (earlier guessed shape: `killed_by`)."""
+    return job.get("killed_by") or job.get("failure_reason")
 
 
 def checkpoint_state(job: dict, key: str) -> str:
     """pass | fail | pending for one of the five proof checkpoints of a sandbox job."""
     cp = (job.get("checkpoints") or {}).get(key)
-    if not cp:
+    if not cp or cp.get("not_run") is True:  # jobs.schema.json: a checkpoint the job never reached is not a failure
         return "pending"
     if key == "secrets":
         no_keys = not (cp.get("env_keys_found") or cp.get("files_with_keys"))
@@ -346,8 +364,8 @@ def proof(jobs: list[dict], steps: list[dict] | None = None) -> dict:
     featured = complete[-1] if complete else (jobs[-1] if jobs else None)
     runtime = (((featured or {}).get("checkpoints") or {}).get("host") or {}).get("runtime")
     kills = [s for s in steps or [] if s.get("event") == "limit_kill"]
-    killed = [{"job_id": j.get("job_id"), "reason": j.get("killed_by"), "limits": j.get("limits"),
-               "usage": j.get("usage")} for j in jobs if j.get("killed_by")]
+    killed = [{"job_id": j.get("job_id"), "reason": job_stop_reason(j), "limits": j.get("limits"),
+               "usage": j.get("usage")} for j in jobs if job_stop_reason(j)]
     killed += [{"job_id": s.get("step_id"), "reason": _details(s, "kill")["reason"], "limits": None, "usage": None,
                 "source_id": s.get("source_id")} for s in kills]
     return {"jobs": len(jobs), "counts": counts, "featured": featured, "recent": jobs[-8:][::-1],

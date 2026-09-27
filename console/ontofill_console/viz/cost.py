@@ -52,7 +52,9 @@ def _group(steps: list[dict], keyf) -> list[dict]:
     return list(rows.values())
 
 
-def _model_name(s: dict) -> str:
+def _model_name(s: dict, priced_trace: bool = False) -> str:
+    if priced_trace and hc.usage_of(s) is None:
+        return "no model call"  # CONTRACT v1.0.5: model calls carry usage; generated_by is the run's provenance
     u = hc.usage_of(s) or {}
     gen = s.get("generated_by") if isinstance(s.get("generated_by"), dict) else {}
     lp = s.get("loop") if isinstance(s.get("loop"), dict) else {}
@@ -78,9 +80,9 @@ def model(case, run: str | None = None) -> dict:
 
     dims = {
         "phase": _group(steps, lambda s: f"P{s.get('phase')} · {live.phase_name(s.get('phase'))}" if s.get("phase") else "no phase"),
-        "model": _group(steps, _model_name),
+        "model": _group(steps, lambda s: _model_name(s, bool(with_usage))),
         "mode": _group(steps, lambda s: s.get("mode") or "no mode"),
-        "source": _group(steps, lambda s: s.get("source_id") or "no source (P1–P2, loops)"),
+        "source": _group(steps, lambda s: s.get("source_id") or "no source (case-level steps)"),
         "backend": _group(steps, _backend_name),
     }
     # Engine-reported loop cost per phase (metrics.loops[].usd), shown when the trace has no priced steps.

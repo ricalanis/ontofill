@@ -2,7 +2,7 @@
 quarantines, action gates and dropped sources as strips; one row per sandbox job with its six proof checkpoints.
 
 Reads the run's `trace.live.jsonl` (or the gold `trace.jsonl`), `status.json` (sources health, metrics.jobs) and
-`jobs.jsonl` (checkpoints, limits, usage, killed_by).
+`jobs.jsonl` (checkpoints, limits, usage, failure_reason).
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ SOURCE = "runs/<case>/<run>/trace.live.jsonl · status.json (sources[].health) �
 KINDS = [  # (kind, label, state) in display order
     ("stop", "Captcha, login or injection stops", "block"),
     ("failure", "Failures and errors", "block"),
+    ("refusal", "Refused derivations", "block"),
     ("blocked_domain", "Blocked domains", "block"),
     ("limit_kill", "Limit kills", "block"),
     ("checkpoint_fail", "Failed proof checkpoints", "block"),
@@ -32,9 +33,12 @@ KINDS = [  # (kind, label, state) in display order
     ("escalation", "Retries and escalations", "pause"),
     ("source_degraded", "Sources with failed steps", "pause"),
 ]
-STOP_WORDS = ("captcha", "login", "log in", "sign in", "injection", "401", "402", "paywall")
+STOP_WORDS = ("captcha", "login", "log in", "sign in", "injection", "401", "402", "paywall", "bot_wall", "http_403")
 BLOCK_WORDS = ("domain_not_allowed", "not allowlisted", "not_allowlisted", "egress_blocked", "blocked_domain",
-               "domain blocked", "outside allowed_domains", "not in allowed_domains")
+               "domain blocked", "outside allowed_domains", "not in allowed_domains", "outside allowed domains",
+               "outside_registrable_domain")
+# Terminal statuses of a browser-controller session summary (p5_execute.controller) that produced nothing.
+UNACHIEVED = ("not_achieved", "not_achievable", "trace_missing", "action_blocked")
 CK_GLYPH = {"pass": "✓", "fail": "✗", "pending": "–"}
 CK_WORD = {"pass": "pass", "fail": "fail", "pending": "missing"}
 
@@ -52,11 +56,21 @@ def _attempt(s: dict) -> int | None:
     return None
 
 
+def _ev(s: dict) -> dict:
+    return s.get("evaluated") if isinstance(s.get("evaluated"), dict) else {}
+
+
+def _tool(s: dict) -> str | None:
+    req = s.get("requested") if isinstance(s.get("requested"), dict) else {}
+    return req.get("tool") or req.get("action")
+
+
 def classify(s: dict) -> tuple[str, str, str] | None:
     """(kind, title, detail) for a step that went wrong or was contained, else None."""
     kind, ev, d = s.get("kind"), s.get("event"), s.get("detail") or {}
     text = _text(s)
     src = s.get("source_id") or "no source"
+    evald = _ev(s)
     if kind == "quarantine":
         detail = " · ".join(str(x) for x in (
             d.get("jev_choice"), f"confidence {d['jev_confidence']}" if d.get("jev_confidence") is not None else None,
@@ -75,8 +89,19 @@ def classify(s: dict) -> tuple[str, str, str] | None:
                 d.get("action"), d.get("risk_tier") and f"risk {d['risk_tier']}", d.get("decided_by") and f"by {d['decided_by']}",
                 d.get("approval_path")) if x)
         return None
+    if ev == "hard_stop" and any(w in text for w in BLOCK_WORDS):  # a redirect or start URL off the allowed domains
+        return "blocked_domain", f"Domain blocked · {src}", hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested"))
+    if evald.get("status") == "refused":  # the engine declined to derive values (e.g. a complete list it could not prove)
+        return "refusal", f"Refused: {_tool(s) or 'derivation'} · {src}", " · ".join(x for x in (
+            str(evald.get("reason") or ""), hc.text_of(s.get("observed"), 120)) if x)
+    goal = str(evald.get("goal_status") or (evald.get("status") if _tool(s) == "browser_agent.session.act" else "") or "")
+    if ev is None and kind is None and goal in UNACHIEVED:  # the agent gave up on its goal (or the session did)
+        if any(w in text for w in STOP_WORDS):
+            which = next(w for w in STOP_WORDS if w in text)
+            return "stop", f"Stopped: {which} · {src}", hc.text_of(s.get("evaluated"))
+        return "failure", f"Goal {goal.replace('_', ' ')} · {src}", hc.text_of(s.get("evaluated"))
     if ev == "hard_stop" or (any(w in text for w in STOP_WORDS) and ev in ("failure", "hard_stop")):
-        which = next((w for w in STOP_WORDS if w in text), "hard stop")
+        which = next((w for w in STOP_WORDS if w in text), None) or str(evald.get("reason") or "hard stop")
         return "stop", f"Stopped: {which} · {src}", hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested"))
     if any(w in text for w in BLOCK_WORDS):
         return "blocked_domain", f"Domain blocked · {src}", hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested"))
@@ -112,7 +137,7 @@ def job_row(job: dict, base: str, rid: str) -> dict:
             "tier": tier, "runtime": runtime,
             "limits": ", ".join(f"{k} {v}" for k, v in limits.items()) or None,
             "usage": ", ".join(f"{k} {v}" for k, v in usage.items()) or None,
-            "killed_by": job.get("killed_by"),
+            "killed_by": live.job_stop_reason(job),
             "teardown": live.checkpoint_state(job, "teardown") == "pass"}
 
 
@@ -124,19 +149,38 @@ def model(case, run: str | None = None) -> dict:
     status = a.status(rid)
     jobs = a.jobs(rid)
     strips: list[dict] = []
+    # a pending gate a later gate step answered (its parent) is resolved: show the answer, not the wait
+    answered = {s.get("parent_step_id") for s in steps if s.get("kind") == "gate"
+                and (s.get("detail") or {}).get("outcome") != "pending_approval"}
+    flagged_sessions: set = set()  # a session whose own steps already explain why it ended
     for s in steps:
+        if s.get("kind") == "gate" and s.get("step_id") in answered:
+            continue
+        observed = s.get("observed") if isinstance(s.get("observed"), dict) else {}
+        if _tool(s) == "browser_agent.session.act" and observed.get("controller_session") in flagged_sessions:
+            continue
         c = classify(s)
         if c is None:
             continue
         kind, title, detail = c
+        if s.get("session_id"):
+            flagged_sessions.add(s["session_id"])
         strips.append({"kind": kind, "state": dict((k, st) for k, _, st in KINDS)[kind], "title": title,
                        "detail": detail or None, "step_id": s.get("step_id"), "when": s.get("ts"),
                        "phase": s.get("phase"), "mode": s.get("mode"),
                        "href": f"{base}/runs/{rid}#{s.get('step_id')}"})
     for j in jobs:
-        if j.get("killed_by"):
-            strips.append({"kind": "limit_kill", "state": "block", "title": f"Job stopped by a resource limit · {j.get('job_id')}",
-                           "detail": " · ".join(str(x) for x in (live.KILL_LABELS.get(j["killed_by"], j["killed_by"]),
+        why = live.job_stop_reason(j)
+        label = live.KILL_LABELS.get(why, why) if why else None
+        told = any(x["step_id"] == j.get("step_id") or (  # the trace already has this stop as a step
+            x["kind"] in ("stop", "limit_kill") and label and label in f"{x['title']} {x['detail'] or ''}"
+            and x["title"].endswith(f"· {j.get('source_id')}")) for x in strips)
+        if why and not told:
+            limit = why in live.LIMIT_REASONS
+            strips.append({"kind": "limit_kill" if limit else "stop", "state": "block",
+                           "title": f"Job stopped by a resource limit · {j.get('job_id')}" if limit
+                           else f"Job stopped: {live.KILL_LABELS.get(why, why)} · {j.get('job_id')}",
+                           "detail": " · ".join(str(x) for x in (live.KILL_LABELS.get(why, why),
                                                                  j.get("source_id"), "host untouched") if x),
                            "step_id": j.get("step_id"), "when": j.get("ended_at"), "phase": 5, "mode": None,
                            "href": f"{base}/runs/{rid}#{j.get('step_id') or 'proof-h'}"})

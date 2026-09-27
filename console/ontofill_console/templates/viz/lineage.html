@@ -10,7 +10,7 @@
 <ol class="chain">
   <li id="value">
     <div class="step-h">Value <small>{{ val.status }}{% if val.confidence is not none %} · confidence {{ "%.2f"|format(val.confidence) }}{% endif %}{% if val.backend %} · {{ val.backend }}{% endif %}</small></div>
-    <p class="val">{% if val.value is not none %}{{ val.value }}{% else %}<span class="note">no value</span>{% endif %}</p>
+    <p class="val">{% if val.value is not none %}{{ val.value|value_text }}{% else %}<span class="note">no value</span>{% endif %}</p>
   </li>
 
   <li id="evidence">

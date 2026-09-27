@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse
 
 from .. import live, runner_state
 from .core import Artifacts, VizContext, age, gap, parse_ts
+from .failures import classify
 from .operation import is_live, last_activity, live_marker
 
 ORDER = 0
@@ -52,6 +53,8 @@ def case_items(case, now: datetime) -> list[dict]:
                   " · ".join(f"{m} {n}" for m, n in sorted(modes.items(), key=lambda kv: live.MODE_RANK.get(kv[0], 9)))]
         if status.get("checkpoint_pending"):
             detail.insert(0, f"paused at {status['checkpoint_pending']}")
+        if status.get("reason"):  # run-status.schema.json: why the run paused or failed
+            detail.insert(0, str(status["reason"]))
         items.append({"state": state, "case_id": case.id, "kind": "run", "title": f"Run {rid}: {status.get('state') or 'no status yet'}",
                       "detail": " · ".join(x for x in detail if x), "when": age(status.get("updated_at"), now),
                       "since": status.get("updated_at"), "href": f"{base}/runs/{rid}",
@@ -69,6 +72,14 @@ def case_items(case, now: datetime) -> list[dict]:
                               "title": "Job stopped by a resource limit",
                               "detail": " · ".join(str(x) for x in (live.KILL_LABELS.get(reason, reason), s.get("source_id"), "host untouched") if x),
                               "when": age(s.get("ts"), now), "since": s.get("ts"), "href": f"{base}/runs/{rid}#{s.get('step_id')}"})
+            else:  # hard stops, blocked domains, refused derivations and denied actions (classified as on Failures)
+                c = classify(s)
+                if c is None or not (c[0] in ("stop", "blocked_domain", "refusal") or
+                                     (c[0] == "gate" and (s.get("detail") or {}).get("outcome") == "denied")):
+                    continue
+                items.append({"state": "block", "case_id": case.id, "kind": c[0], "title": c[1],
+                              "detail": c[2] or None, "when": age(s.get("ts"), now), "since": s.get("ts"),
+                              "href": f"{base}/runs/{rid}#{s.get('step_id')}"})
     return items
 
 
