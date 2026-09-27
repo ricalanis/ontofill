@@ -146,7 +146,8 @@ class Session:
             if not _target_closed(exc):
                 raise
             self.browser_gone = True
-            self.call(lambda: self._emit(observed={"error": type(exc).__name__}, requested={"tool": "browser"},
+            error_name = type(exc).__name__
+            self.call(lambda: self._emit(observed={"error": error_name}, requested={"tool": "browser"},
                                          executed={"status": "failed"},
                                          evaluated={"status": "stopped", "reason": "browser closed"},
                                          event="hard_stop"))
