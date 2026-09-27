@@ -288,3 +288,13 @@ def test_registry_is_reread_each_tick_with_budget_clamp_and_archive(setup, tmp_p
     (root / "cases.json").write_text("{not json")  # a torn write keeps the last good copy
     r.refresh_cases()
     assert set(r.cfg.cases) == {"c1", "n1"}
+
+
+def test_global_spend_is_published_every_tick(setup, tmp_path):
+    log = tmp_path / "gw.jsonl"
+    log.write_text(json.dumps({"status": 200, "est_usd": 0.25}) + "\n" + json.dumps({"status": 502, "est_usd": 9}) + "\n")
+    setup["cfg"].gateway_log = log
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    r.poll_once()
+    st = r.state.status("c1")
+    assert st["spent_usd_global"] == 0.25 and "gateway call log" in st["spent_usd_global_basis"]
