@@ -19,7 +19,13 @@ from ontofill.refiner import (
     stable_value_id,
 )
 from ontofill.refiner.core import classify_entities
-from ontofill.refiner.export import _compare, _metrics, _query_actual
+from ontofill.refiner.export import (
+    _approved_zero_count_equivalent,
+    _compare,
+    _metrics,
+    _query_actual,
+    _validators,
+)
 from tests.approval_support import bind_approval
 
 RUN_ID = "mock-books"
@@ -915,6 +921,67 @@ def test_valid_ontology_date_survives_without_string_coercion(tmp_path: Path) ->
     assert result.rejected == []
     assert result.entities[0]["properties"]["published"]["value"] == "2024-02-29"
     assert type(result.entities[0]["properties"]["copies"]["value"]) is int
+
+
+def test_approved_full_share_rewrite_requires_a_current_receipt(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    model, queries = ontology(), dod_queries()
+    write_lineage(case_dir, model, queries, RECORDED)
+    prd_path = case_dir / "01-scope/prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    criterion = prd["definition_of_done"][1]
+    criterion.update(metric="share of listed values with evidence", min_ratio=1.0)
+    write_json(prd_path, prd)
+    rewritten = {
+        "criterion_id": "unavailable",
+        "aggregate": "count_values_without_evidence",
+        "target": 0,
+        "operator": "<=",
+    }
+    receipt_path = case_dir / "02-ontology/recommendations/unresolved.json"
+    write_json(
+        receipt_path,
+        {
+            "schema_version": "1",
+            "ontology_path": "02-ontology/ontology.json",
+            "generated_by": RECORDED,
+            "unresolved": [],
+            "query_repairs": [
+                {
+                    "criterion_id": "unavailable",
+                    "fields": ["target", "operator"],
+                    "approved_values": {
+                        "target": 1,
+                        "operator": ">=",
+                        "min_ratio": 1.0,
+                        "compiled_as": "count_values_without_evidence <= 0",
+                    },
+                    "reason": "Synthetic approved share equivalence",
+                }
+            ],
+        },
+    )
+    for checkpoint, relative in (
+        ("prd", "01-scope/prd.json"),
+        ("ontology", "02-ontology/ontology.json"),
+    ):
+        write_json(
+            case_dir / Path(relative).parent / "APPROVED",
+            bind_approval(
+                case_dir,
+                [relative],
+                {
+                    "approver": "Synthetic reviewer",
+                    "date": "2026-09-27",
+                    "checkpoint": checkpoint,
+                    "decision": "approve",
+                },
+            ),
+        )
+    validators = _validators()
+    assert _approved_zero_count_equivalent(case_dir, rewritten, criterion, model, validators)
+    write_json(receipt_path, {**json.loads(receipt_path.read_text()), "query_repairs": []})
+    assert not _approved_zero_count_equivalent(case_dir, rewritten, criterion, model, validators)
 
 
 def _seed_unresolved_export_case(

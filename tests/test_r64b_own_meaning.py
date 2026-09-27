@@ -4,7 +4,8 @@ cross-checked against the secondary portal" compiled to copies of dod1's complet
 
 from __future__ import annotations
 
-from ontofill.inference import RecordedDecisionClient
+from ontofill.contracts import validate_document
+from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.phases.p2_ontology.phase import _draft_dod_queries, _validate_queries
 from ontofill.refiner.export import _query_actual
 from tests.test_r63_dod_threshold_repair import _approve_prd
@@ -71,10 +72,11 @@ def test_each_criterion_keeps_its_own_meaning(tmp_path) -> None:
         ]
     }
     repairs: list[dict] = []
+    decision = RecordedDecisionClient({"phase2.dod_queries": [draft]})
     compiled = _draft_dod_queries(
         PRD,
         CROSS_CHECK_ONTOLOGY,
-        RecordedDecisionClient({"phase2.dod_queries": [draft]}),
+        decision,
         case_dir=tmp_path,
         query_repairs=repairs,
     )
@@ -87,6 +89,16 @@ def test_each_criterion_keeps_its_own_meaning(tmp_path) -> None:
     assert q["dod3"]["relation_id"] == "address_cross_check"
     by_id = {r["criterion_id"]: r for r in repairs}
     assert by_id["dod2"]["approved_values"]["compiled_as"] == "count_values_without_evidence <= 0"
+    validate_document(
+        "ontology-recommendations",
+        {
+            "schema_version": "1",
+            "ontology_path": "02-ontology/ontology.json",
+            "generated_by": generated_by(decision),
+            "unresolved": [],
+            "query_repairs": repairs,
+        },
+    )
     _validate_queries(PRD, CROSS_CHECK_ONTOLOGY, compiled)  # the equivalent zero count is accepted
 
 

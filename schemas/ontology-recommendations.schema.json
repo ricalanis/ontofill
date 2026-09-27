@@ -37,7 +37,7 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["target", "operator", "min_ratio"]}
+          "items": {"enum": ["target", "operator", "min_ratio", "measure", "relation_id"]}
         },
         "approved_values": {
           "type": "object",
@@ -46,13 +46,14 @@
           "properties": {
             "target": {"type": "number", "minimum": 0},
             "operator": {"enum": [">=", ">", "=", "<=", "<"]},
-            "min_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+            "min_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+            "compiled_as": {"const": "count_values_without_evidence <= 0"}
           }
         },
         "removed_fields": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"enum": ["min_ratio"]}
+          "items": {"enum": ["min_ratio", "relation_id"]}
         },
         "reason": {"type": "string", "minLength": 1}
       }

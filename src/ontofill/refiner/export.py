@@ -269,9 +269,13 @@ def _check_lineage(
         raise ValueError("unresolved DoD criteria must not also have executable queries")
     for query in query_doc["queries"]:
         criterion = approved_criteria.get(query["criterion_id"])
-        if criterion is None or (query["target"], query["operator"]) != (
+        if criterion is None:
+            raise ValueError("DoD query differs from approved PRD criterion")
+        if (query["target"], query["operator"]) != (
             criterion["target"],
             criterion["operator"],
+        ) and not _approved_zero_count_equivalent(
+            case_dir, query, criterion, ontology_doc, validators
         ):
             raise ValueError("DoD query differs from approved PRD criterion")
     for artifact in (objective_doc, ontology_doc, query_doc, global_prd):
@@ -390,6 +394,58 @@ def _check_lineage(
     ) and not authorized_ontology_only_values:
         raise ValueError("stale ontology lineage has no exported ontology-only replay value")
     return unresolved_criteria
+
+
+def _approved_zero_count_equivalent(
+    case_dir: Path,
+    query: dict,
+    criterion: dict,
+    ontology: dict,
+    validators: dict[str, Draft202012Validator],
+) -> bool:
+    """Accept only a digest-bound `all values cited` to `zero uncited` rewrite."""
+    if not (
+        query.get("aggregate") == "count_values_without_evidence"
+        and (query.get("target"), query.get("operator")) == (0, "<=")
+        and (criterion.get("target"), criterion.get("operator")) == (1, ">=")
+        and criterion.get("min_ratio") is not None
+    ):
+        return False
+    try:
+        prd_approval = load_verified_approval(
+            case_dir / "01-scope/APPROVED", case_dir, ["01-scope/prd.json"], "prd"
+        )
+        ontology_approval = load_verified_approval(
+            case_dir / "02-ontology/APPROVED",
+            case_dir,
+            ["02-ontology/ontology.json"],
+            "ontology",
+        )
+        receipt = _read_case_json(
+            case_dir,
+            "02-ontology/recommendations/unresolved.json",
+            validators["ontology-recommendations"],
+        )
+    except (OSError, ValueError, KeyError):
+        return False
+    if (
+        prd_approval.get("decision", "approve") == "deny"
+        or ontology_approval.get("decision", "approve") == "deny"
+        or receipt.get("generated_by") != ontology.get("generated_by")
+    ):
+        return False
+    expected = {
+        "target": criterion["target"],
+        "operator": criterion["operator"],
+        "min_ratio": criterion["min_ratio"],
+        "compiled_as": "count_values_without_evidence <= 0",
+    }
+    return any(
+        item.get("criterion_id") == criterion["id"]
+        and item.get("approved_values") == expected
+        and {"target", "operator"}.issubset(item.get("fields", []))
+        for item in receipt.get("query_repairs", [])
+    )
 
 
 def _approved_unresolved_criteria(
