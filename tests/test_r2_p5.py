@@ -254,6 +254,90 @@ def test_recorded_multisource_batch_flattens_json_and_derives_membership(tmp_pat
     assert normalize_identifier(" Ｒ－1 ") == "r-1"
 
 
+def test_direct_document_capture_maps_literal_cells_without_refetch(tmp_path) -> None:
+    objective = {
+        "id": "objective-direct",
+        "source_id": "source-direct",
+        "source_url": "https://registry.example.test/export",
+        "source_type": "public_dataset",
+    }
+    ontology = {
+        "classes": [
+            {
+                "id": "record",
+                "identifier_property": "record_id",
+                "title_property": "title",
+            }
+        ],
+        "properties": [
+            {"id": "record_id", "domain": "record", "datatype": "string"},
+            {"id": "title", "domain": "record", "datatype": "string"},
+        ],
+    }
+    tdd = {
+        "allowed_domains": ["registry.example.test"],
+        "target_fields": ["record_id", "title"],
+        "target_volume": 10,
+        "extraction_method": "download",
+    }
+    decision = RecordedDecisionClient(
+        {
+            "phase5.map_columns": [
+                {
+                    "class_id": "record",
+                    "columns": [
+                        {"header": "id", "property_id": "record_id"},
+                        {"header": "title", "property_id": "title"},
+                    ],
+                }
+            ]
+        }
+    )
+    provenance = generated_by(decision)
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"id,title\nR-1,First\nR-2,Second\n")
+    run_id = "mock-direct-document"
+
+    def capture(url: str, **kwargs) -> dict:
+        assert url == objective["source_url"]
+        return {
+            "url": url,
+            "status": 200,
+            "document_key": key,
+            "document_content_type": "text/csv",
+            "document_size_bytes": 30,
+            "trace": _trace(
+                run_id, kwargs["source_id"], kwargs["objective_id"], url, key, "step:direct"
+            ),
+        }
+
+    def unexpected_fetch(*_args, **_kwargs):
+        raise AssertionError("a directly captured document must not be fetched again")
+
+    result = execute_objective(
+        case_dir=tmp_path,
+        objective=objective,
+        ontology=ontology,
+        tdd=tdd,
+        lake=lake,
+        run_id=run_id,
+        decision=decision,
+        store=MemorySilverStore(),
+        provenance=provenance,
+        capture=capture,
+        fetch=unexpected_fetch,
+        parse_executor=SyntheticParseExecutor(),
+    )
+
+    assert result.format == "csv"
+    assert {item.value for item in result.observations if item.property_id == "record_id"} == {
+        "R-1",
+        "R-2",
+    }
+    assert all(item.evidence["bronze_key"] == key for item in result.observations)
+    assert any(job.get("document_key") == key for job in result.sandbox_jobs)
+
+
 def test_membership_refuses_partial_file_even_when_tdd_claims_complete(tmp_path) -> None:
     objective = {
         "id": "objective-membership",

@@ -215,6 +215,20 @@ def _format(url: str) -> str | None:
     return None
 
 
+def _document_format(url: str, content_type: str) -> str | None:
+    """Choose a supported parser from a sandbox response, even for extensionless URLs."""
+    mime = content_type.split(";", 1)[0].strip().casefold()
+    by_mime = {
+        "text/csv": "csv",
+        "application/csv": "csv",
+        "application/json": "json",
+        "application/pdf": "pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
+    }
+    return by_mime.get(mime) or _format(url)
+
+
 def _parsed_links(result) -> tuple[PageLink, ...]:
     return tuple(PageLink(link["url"], link["text"], link["rel"]) for link in result.links)
 
@@ -877,7 +891,45 @@ def execute_objective(
     downloaded = None
     repair_trace: list[dict] = []
     mapped = None
-    if candidates:
+    direct_key = page.get("document_key")
+    if isinstance(direct_key, str):
+        direct_format = _document_format(page["url"], str(page.get("document_content_type") or ""))
+        if direct_format is None:
+            return ExecutionResult([], traces, jobs, "unknown", True, "unsupported_document_format")
+        try:
+            parsed_result = parse_bronze(
+                lake,
+                direct_key,
+                format=direct_format,
+                max_rows=10_000 if tdd.get("membership") else 300,
+                run_id=run_id,
+                source_id=source_id,
+                step_id=f"step:{uuid.uuid4().hex}",
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                generated_by=provenance,
+                base_url=page["url"],
+                executor=parse_executor,
+            )
+        except SandboxParseError as exc:
+            traces.extend(exc.trace)
+            jobs.append(exc.job_record)
+            exc.trace = tuple(traces)
+            exc.sandbox_jobs = jobs
+            raise
+        traces.extend(parsed_result.trace)
+        jobs.append(parsed_result.job_record)
+        parsed = parsed_result.as_parsed_file()
+        downloaded = {
+            "bronze_key": direct_key,
+            "url": page["url"],
+            "status": page.get("status"),
+            "content_type": page.get("document_content_type", ""),
+        }
+        candidate_count = 1
+        evidence_url, bronze_key = page["url"], direct_key
+        parent_step = page["trace"][0]["step_id"]
+    elif candidates:
         selection_schema = {
             "type": "object",
             "additionalProperties": False,
@@ -1245,7 +1297,7 @@ def execute_objective(
                 "url": evidence_url,
                 "bronze_key": bronze_key,
                 "selector": selector,
-                "screenshot_key": page["screenshot_key"],
+                "screenshot_key": page.get("screenshot_key"),
                 "captured_at": timestamp,
                 "source_id": source_id,
                 "source_type": source_type,
