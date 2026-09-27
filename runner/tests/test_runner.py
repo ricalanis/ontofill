@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -29,7 +30,9 @@ def setup(tmp_path):
                  engine_cmd=f"{sys.executable} {FAKE} {{case_dir}} --to-phase {{to_phase}} --run-id {{run_id}} "
                             f"--budget-usd {{budget}} --lake {lake}",
                  engine_env_file=envfile, budgets={"c1": 1.0}, kill_grace_s=2)
-    return {"case": case, "lake": lake, "cfg": cfg, "calls": tmp_path / "c" / "calls.jsonl"}
+    yield {"case": case, "lake": lake, "cfg": cfg, "calls": tmp_path / "c" / "calls.jsonl"}
+    # a fake engine the runner no longer tracks (e.g. a sleep-mode child around a kill) must not outlive its test
+    subprocess.run(["pkill", "-f", str(case)], check=False)
 
 
 def run_until_idle(r: Runner, timeout=10):
