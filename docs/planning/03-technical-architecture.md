@@ -79,22 +79,30 @@ question into a verified, evidence-backed dataset and an investigation app.
   per-step hook even inside Skyvern's own loop.
 
 ## 6. Refinement: from raw to trusted
+- **Cut (user, 18:07):** Oxigraph silver/gold graphs; silver is Postgres, gold is the JSONL/CSV/RDF export. Simula runs at depth 1
+  with a separate critic (depth 2, sampling mixes and Elo are cut). P4 negotiation and the P1 research ledger are cut. See
+  the gap tracker for the full cut list.
 - **Bronze:** immutable, content-addressed captures (HTML, accessibility tree, screenshots, files, site graphs) in
   Vultr Object Storage. **Silver:** typed observations with evidence; duplicates and conflicts kept. **Gold:**
-  reconciled, SHACL-valid values; a double critic on high-stakes fields.
+  reconciled, SHACL-valid values (the double critic is cut).
 - Entity resolution uses identifiers compared in code plus model confirmation. Metrics and DoD are computed on gold;
   gaps loop back to discovery. An ontology or PRD change **re-refines gold from bronze without re-browsing**.
 - Gold export (generic): `entities.jsonl` + `ontology.json` + `trace.jsonl` + `jobs.jsonl` + `metrics.json`
   (with `dod[]`), plus a live run feed during execution.
 
-## 7. The application (Proveedor Abierto)
-- Reads only the gold export and live feed; its domain comes from the case's ontology (primary class, labels, rules).
-- Dossier per entity with evidence one click away; red flags as explained signals (not accusations, with a dispute
-  path); relationships; case journal (any value → step → TDD → objective → ontology → PRD → brief); watchlist and
-  open exports (OCDS/CSV/RDF).
-- The live run view shows steps, modes, verdicts, retries, screenshots, the six proof checkpoints, and a "decided by
-  code / Jev / Vultr" cost story. The approver screens handle PRD, factors, ontology and approve-before-submit
-  actions. `/spend` shows the budget. Replay mode runs a cached run as demo insurance.
+## 7. Two products: the engine console (B2B) and Proveedor Abierto (B2C) (user decision, 17:44 Sat)
+The engine and the case product are separate products with separate URLs, and they don't mix.
+- **Ontofill Console** (engine, B2B, in `ontofill/console/`): the operator and approver surface for ANY case the engine
+  runs (the procurement case, the library demo brief, anything else). A case registry lists them. Per case: runs with
+  the live step stream (modes, loop threads, verdicts, retries, screenshots, the six proof checkpoints, "decided by code /
+  Jev / Vultr"), the live view of a cell, **approvals** (PRD, factors, ontology, approve-before-submit actions:
+  SSO identity, digest-bound decisions, append-only decision log, CONTRACT v0.9.7), spend, the track evidence page, and
+  replay. It knows nothing domain-specific: labels come from each case's ontology. Behind NetBird SSO (operators/approvers).
+- **Proveedor Abierto** (case product, B2C, `proveedor-abierto/app/`): a consumer-grade reader of ONE case's gold
+  export. Suppliers, dossier per entity with its receipts (evidence one click away), red flags as explained signals (not
+  accusations, with a dispute path), relationships, the journal (any value → step → TDD → objective → ontology → PRD →
+  brief), watchlist, open exports (OCDS/CSV/RDF), and a plain "how complete is this" view. No approvals, no run control,
+  no spend, no engine internals. It reads the published gold export only, never the live run or the case's pending files.
 
 ## 8. Safety model (the track's core)
 - **Isolation:** gVisor `runsc`, a network isolated per cell, egress allowlist, resource caps, destruction after every session.
@@ -117,8 +125,8 @@ question into a verified, evidence-backed dataset and an investigation app.
 ## 10. Where things live
 | Where | What |
 |---|---|
-| `github.com/ricalanis/ontofill` | generic engine, `ontofill-scrape` toolkit, schemas, sandbox/cell substrate, infra (Vultr, NetBird), `services/browser-agent` (controller + gateway + backends) |
-| `github.com/ricalanis/proveedor-abierto` | case package (brief → PRD → ontology → TDDs → macros, produced by the engine and approved by humans), the app, deploy |
+| `github.com/ricalanis/ontofill` | generic engine, `ontofill-scrape` toolkit, schemas, sandbox/cell substrate, infra (Vultr, NetBird), `services/browser-agent` (controller + gateway + backends), `console/` (the engine console, B2B) |
+| `github.com/ricalanis/proveedor-abierto` | case package (brief → PRD → ontology → TDDs → macros, produced by the engine and approved by humans in the console), the consumer app (B2C), deploy |
 | Vultr (outside git) | VMs, Object Storage (bronze), Postgres + Oxigraph (silver/gold), Serverless Inference |
 | NetBird Cloud | peers, groups, policies, reverse-proxy services, expose sessions |
 
