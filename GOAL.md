@@ -345,3 +345,10 @@ Constraints: engine-owned P3 code and tests only; no case or approvals, no VM pu
 # Current goal: bounded SPA network leads
 
 Capture safe GET XHR/fetch/download request metadata inside the disposable browser pod and return at most 40 validated public URLs to P3. A blocked off-host request may remain a lead without response status. No response bodies, private URLs, or credential-bearing queries leave the pod; the host validates the same boundary before exposing metadata. DONE: red-to-green synthetic request and host tests, managed focused pytest/Ruff gate, local commit.
+# Current goal: P3 approved publisher recall and semantic field labels
+
+Discovery uses each approved authority-policy publisher's kind and exact domain to seed bounded search queries over successive rounds. A captured column header that uses a synonym for an ontology property can establish source capability when a model cites the exact header, the source has a concrete entity-level access path, and authority still passes. P5 independently maps literal columns to properties before values.
+
+DONE: synthetic tests show the named publisher appears in dispatched queries and a synonym header is accepted while an uncaptured quote remains refused. Full pytest, Ruff lint/format and diff checks pass; VM deploy waits for a zero-engine window.
+
+Constraints: no case-specific vocabulary/domains, no real-case or APPROVED edits, no source admission from leads alone.

@@ -1705,6 +1705,7 @@ class DiscoveryLoop:
                     mode="D1",
                 )
         candidates_by_gap: dict[str, list[str]] = {}
+        terms_by_gap: dict[str, str] = {}
         for gap in gaps:
             prop = properties[gap]
             owner = classes.get(prop.get("domain"), {})
@@ -1724,6 +1725,7 @@ class DiscoveryLoop:
                     )
                     if value
                 )
+            terms_by_gap[gap] = terms
             candidates = []
             for planned in planned_by_gap.get(gap, []):
                 text = (
@@ -1770,11 +1772,30 @@ class DiscoveryLoop:
                         candidates.append(text)
             candidates_by_gap[gap] = candidates
 
+        # The approved publisher names are part of the search plan, not merely
+        # an allowlist applied after generic model queries. Rotate them so a
+        # later approved publisher is reached even with a five-query batch.
+        publishers = [
+            (str(item.get("kind") or "").strip(), str(domain).strip().casefold())
+            for item in policy.get("trusted_publishers", [])
+            if isinstance(item, Mapping)
+            for domain in item.get("domains", [])
+            if isinstance(domain, str) and _public_dns_host(domain.strip().casefold())
+        ]
         queries: list[LeadQuery] = []
+        seed_count = min(2, limit, len(publishers))
+        for offset in range(seed_count):
+            kind, domain = publishers[((iteration - 1) * seed_count + offset) % len(publishers)]
+            if not kind:
+                continue
+            gap = gaps[offset % len(gaps)]
+            text = " ".join(f"site:{domain} {kind} {channel} {terms_by_gap[gap]}".split())[:240]
+            if text not in pass_tried:
+                queries.append(LeadQuery(gap, text))
         depth = max((len(candidates) for candidates in candidates_by_gap.values()), default=0)
         quotas = {gap: min(2, max(1, len(planned_by_gap.get(gap, [])))) for gap in gaps}
-        selected_by_gap = dict.fromkeys(gaps, 0)
-        seen_text: set[str] = set()
+        selected_by_gap = {gap: sum(query.property_id == gap for query in queries) for gap in gaps}
+        seen_text: set[str] = {query.text for query in queries}
         for candidate_index in range(depth):
             for gap in gaps:
                 candidates = candidates_by_gap[gap]
@@ -3077,8 +3098,9 @@ class DiscoveryLoop:
             )
             if not any(property_quote in source for source in sources):
                 return None, "property quote is not present in captured access evidence"
-            if wanted and not (_granularity_tokens(property_quote) & wanted):
-                return None, "property quote does not name the target ontology property"
+            # Captured publishers can label the same field differently from the
+            # ontology. The quote remains an exact observed string, the route
+            # must prove entity-level records, and P5 maps literal columns anew.
 
         granularity, granularity_quote, granularity_reason = _record_granularity(
             context, proposed, identity_tokens or set(), class_tokens or set()

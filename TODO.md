@@ -672,3 +672,11 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r55_static
 - DONE: managed focused synthetic pod and host pytest plus Ruff lint/format and `git diff --check`.
 - FORMAT: Ruff check and format on touched Python files.
 - CHECK RESULT: managed `r53-spa-final` passed 41 focused tests (1 live-dependent skip), Ruff lint/format and `git diff --check` (exit 0). The initial red test failed because the host validator was absent; the synthetic browser now emits a GET XHR missing from DOM plus a blocked off-host GET with no response status.
+# P3 eager follow-up
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, synthetic P3 tests, task notes/status. TASK: query approved publishers and admit grounded synonym labels as source capability. DONE: GOAL.md gate. FORMAT: Ruff.
+
+1. [x] Red tests for policy kind/domain seeding and captured synonym header.
+2. [x] Implement bounded publisher rotation and evidence-grounded semantic quote guard.
+3. [ ] Managed focused/full gate passed (691 passed, 5 skipped; Ruff clean); pre-push scan and public main push follow.
+4. [ ] Guarded VM deploy at next paused checkpoint.
