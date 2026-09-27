@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from ontofill.case.checkpoints import (
     checkpoint_revisions,
     load_json,
+    load_verified_approval,
     write_json,
     write_markdown,
 )
@@ -80,7 +81,10 @@ def _digest(value: object) -> str:
 def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
     path = case_dir / "02-ontology/factors/factors.json"
     revisions = checkpoint_revisions(
-        path.parent, "factors", ["factors.json", "factors.md", "factors.input.sha256"]
+        path.parent,
+        "factors",
+        ["factors.json", "factors.md", "factors.input.sha256"],
+        case_dir=case_dir,
     )
     digest = _digest([prd, revisions])
     fingerprint = path.with_suffix(".input.sha256")
@@ -143,8 +147,9 @@ def accepted_factors(case_dir: Path, factors: dict) -> list[dict]:
     marker = case_dir / "02-ontology/factors/APPROVED"
     if not marker.exists():
         return factors["factors"]
-    approval = load_json(marker)
-    validate_document("approved", approval)
+    approval = load_verified_approval(
+        marker, case_dir, ["02-ontology/factors/factors.json"], "factors"
+    )
     decisions = approval.get("decisions", {})
     selected = [
         item for item in factors["factors"] if decisions.get(item["id"], "accept") == "accept"
@@ -162,6 +167,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         path.parent,
         "ontology",
         ["ontology.json", "ontology.md", "ontology.input.sha256", "dod-queries.json", "shapes.ttl"],
+        case_dir=case_dir,
     )
     digest = _digest([prd, chosen, revisions])
     fingerprint = path.with_suffix(".input.sha256")

@@ -12,6 +12,7 @@
     "state": {"enum": ["running", "paused", "done", "failed"]},
     "phase": {"type": "integer", "minimum": 1, "maximum": 5},
     "checkpoint_pending": {"enum": [null, "prd", "factors", "ontology", "source", "action"]},
+    "reason": {"type": "string", "minLength": 1},
     "updated_at": {"type": "string", "format": "date-time"},
     "live_view_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
     "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},

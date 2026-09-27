@@ -7,6 +7,7 @@ from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient
 from ontofill.phases.p1_scope.phase import draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
+from tests.approval_support import bind_approval
 
 
 def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
@@ -150,7 +151,13 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
     front_matter = (scope / "APPROVAL_PENDING.md").read_text().split("---", 2)[1]
     assert yaml.safe_load(front_matter)["generated_by"]["backend"] == "recorded"
     (scope / "APPROVED").write_text(
-        json.dumps({"approver": "Test Reviewer", "date": "2026-09-26", "checkpoint": "prd"}),
+        json.dumps(
+            bind_approval(
+                tmp_path,
+                ["01-scope/prd.md"],
+                {"approver": "Test Reviewer", "date": "2026-09-26", "checkpoint": "prd"},
+            )
+        ),
         encoding="utf-8",
     )
     assert not require_approval(
@@ -173,12 +180,16 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
     factor_dir = tmp_path / "02-ontology/factors"
     (factor_dir / "APPROVED").write_text(
         json.dumps(
-            {
-                "approver": "Test Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "factors",
-                "decisions": {"room_type": "accept", "unneeded_factor": "reject"},
-            }
+            bind_approval(
+                tmp_path,
+                ["02-ontology/factors/factors.json"],
+                {
+                    "approver": "Test Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "factors",
+                    "decisions": {"room_type": "accept", "unneeded_factor": "reject"},
+                },
+            )
         ),
         encoding="utf-8",
     )

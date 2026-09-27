@@ -106,6 +106,7 @@ class RunFeed:
         state: str,
         phase: int,
         checkpoint_pending: str | None = None,
+        reason: str | None = None,
         sources: Sequence[Mapping] | None = None,
         metrics: Mapping | None = None,
         live_view_url: str | None | object = _UNSET,
@@ -139,6 +140,8 @@ class RunFeed:
                 "generated_by": self.generated_by.copy(),
                 "preview": self.preview,
             }
+            if reason is not None:
+                self._status["reason"] = reason
             if live_view_url is not _UNSET:
                 if live_view_url is not None:
                     self._status["live_view_url"] = live_view_url

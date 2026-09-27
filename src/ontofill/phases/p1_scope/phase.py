@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
+import tempfile
 import unicodedata
 from collections.abc import Callable
 from copy import deepcopy
@@ -29,6 +32,7 @@ PERCENT_METRIC = re.compile(
     re.IGNORECASE,
 )
 SECONDARY_REQUEST = re.compile(r"secondary|secundari|cross[ -]?check|contraste", re.IGNORECASE)
+PRIMARY_REQUEST = re.compile(r"\bprimary\b|\bprimari[oa]s?\b|\bprincipal(?:es)?\b", re.IGNORECASE)
 SECONDARY_STOPWORDS = {
     "check",
     "cross",
@@ -210,6 +214,38 @@ def _ground_criteria(
     human_supported, human_rejected = _number_clauses(human_text)
     budget = f"${budget_usd:.2f}" if budget_usd is not None else "an unspecified USD budget"
     for item in document["definition_of_done"]:
+        percent_metric = bool(PERCENT_METRIC.search(item["metric"].strip()))
+        if item["basis"] == "proposed":
+            for basis, source in (("human", human_supported), ("brief", brief)):
+                clauses = re.split(r";\s*|(?<=[.!?])\s+|\n+", source)
+                matching = [
+                    clause.strip()
+                    for clause in clauses
+                    if _contains_number(clause, item["target"], percent_metric=percent_metric)
+                    or (
+                        "min_ratio" in item
+                        and _contains_number(clause, item["min_ratio"], percent_metric=True)
+                    )
+                ]
+                if not matching:
+                    continue
+                if not _contains_number(source, item["target"], percent_metric=percent_metric):
+                    continue
+                if "min_ratio" in item and not _contains_number(
+                    source, item["min_ratio"], percent_metric=True
+                ):
+                    continue
+                if basis == "human" and (
+                    _contains_number(human_rejected, item["target"], percent_metric=percent_metric)
+                    or (
+                        "min_ratio" in item
+                        and _contains_number(human_rejected, item["min_ratio"], percent_metric=True)
+                    )
+                ):
+                    continue
+                item["basis"] = basis
+                item["basis_quote"] = matching[0]
+                break
         if item["basis"] == "proposed":
             item["feasibility"] = (
                 f"{item['feasibility'].rstrip('.')} (run budget: {budget}; elapsed run time unverified)."
@@ -220,7 +256,6 @@ def _ground_criteria(
         quote = " ".join(item.get("basis_quote", "").split())
         grounded = bool(quote) and quote.casefold() in " ".join(quote_source.split()).casefold()
         quote_supported, _ = _number_clauses(quote)
-        percent_metric = bool(PERCENT_METRIC.search(item["metric"].strip()))
         grounded &= _contains_number(
             quote_supported, item["target"], percent_metric=percent_metric
         ) or (
@@ -255,6 +290,27 @@ def _ground_criteria(
 
 def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> None:
     publishers = document["authority_policy"]["trusted_publishers"]
+    jurisdiction = document["authority_policy"]["jurisdiction"]
+    jurisdiction_stems = {
+        token[:4] for token in _tokens(jurisdiction) - JURISDICTION_SCOPE_WORDS if len(token) >= 4
+    }
+    for revision in revisions:
+        for clause in re.split(r";\s*|(?<=[.!?])\s+|\n+", revision["reason"]):
+            marker = PRIMARY_REQUEST.search(clause)
+            if marker is None or SECONDARY_REQUEST.search(clause):
+                continue
+            named = clause[: marker.start()] or clause[marker.end() :]
+            subjects = _subject_tokens(named)
+            matches = _named_secondary_matches(named, subjects, publishers)
+            if not matches and jurisdiction_stems & {token[:4] for token in _tokens(named)}:
+                matches = [
+                    item
+                    for item in publishers
+                    if jurisdiction_stems
+                    & {token[:4] for token in _tokens(item.get("jurisdiction", ""))}
+                ]
+            for item in matches:
+                item["tier"] = "primary"
     for clause in _secondary_clauses(revisions):
         for subject_text, subject in _secondary_subjects(clause):
             candidates = [item for item in publishers if item.get("tier") != "secondary"]
@@ -276,18 +332,25 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
             objections.append(f"Duplicate trusted publisher: {publisher['kind']}")
         seen_kinds.add(kind)
         domains = publisher["domains"]
+        if "tier" not in publisher:
+            objections.append(f"Trusted publisher {publisher['kind']} needs an explicit tier")
         if not domains:
             objections.append(f"Trusted publisher {publisher['kind']} has no domain")
         for domain in domains:
             normalized = domain.casefold().rstrip(".")
+            labels = normalized.split(".")
+            if len(labels) == 2 and len(labels[0]) <= 4 and len(labels[1]) == 2:
+                objections.append(
+                    f"Trusted domain {domain} is a broad namespace; name a specific publisher domain"
+                )
             if normalized in seen_domains:
                 objections.append(f"Duplicate trusted domain: {domain}")
             seen_domains.add(normalized)
-        if publisher.get("tier", "primary") == "primary":
+        if publisher.get("tier") == "primary":
             publisher_tokens = _tokens(publisher.get("jurisdiction", "")) - JURISDICTION_SCOPE_WORDS
             if case_tokens and publisher_tokens & case_tokens:
                 local_primary = True
-        elif _claims_primary(publisher["rationale"]):
+        elif "tier" in publisher and _claims_primary(publisher["rationale"]):
             objections.append(
                 f"Publisher {publisher['kind']} is {publisher['tier']} but rationale claims primary"
             )
@@ -408,11 +471,12 @@ def draft_prd(
     brief = brief_path.read_text(encoding="utf-8").strip()
     if not brief:
         raise ValueError("case brief is empty")
+    artifact_names = ["prd.json", "prd.md", "prd.input.sha256"]
     revisions = checkpoint_revisions(
-        output.parent, "prd", ["prd.json", "prd.md", "prd.input.sha256"]
+        output.parent, "prd", artifact_names, archive_denial=False, case_dir=case_dir
     )
     digest = hashlib.sha256(
-        json.dumps([brief, revisions, budget_usd, "prd-steering-v3"], ensure_ascii=False).encode()
+        json.dumps([brief, revisions, budget_usd, "prd-steering-v4"], ensure_ascii=False).encode()
     ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
     if output.exists():
@@ -525,16 +589,21 @@ def draft_prd(
             f"Human revisions (trusted direction): {json.dumps(revisions, ensure_ascii=False)}",
         )
 
+    check_objections: tuple[str, ...] = ()
+
     def revise(artifact: dict, verdict, _context: dict, iteration: int) -> dict:
-        if verdict.passed or iteration > 1:
+        objections = (*verdict.objections, *check_objections)
+        if not objections or decision.backend == "recorded":
             return artifact
         repaired = prompt + (
-            f"\nIndependent critic objection: {verdict.objections[0]}. "
-            f"Revise this draft once: {json.dumps(artifact, ensure_ascii=False)}"
+            "\nIndependent critic objections (resolve every item verbatim): "
+            + json.dumps(verdict.objections, ensure_ascii=False)
+            + "\nFailed code-owned checks from the prior draft (resolve every item verbatim): "
+            + json.dumps(check_objections, ensure_ascii=False)
+            + f"\nRevision attempt {iteration}. Revise this draft: "
+            + json.dumps(artifact, ensure_ascii=False)
         )
         return complete(repaired)
-
-    check_objections: tuple[str, ...] = ()
 
     def check(artifact: dict, _context: dict, _iteration: int) -> CheckResult:
         nonlocal check_objections
@@ -549,14 +618,6 @@ def draft_prd(
         previous = context["previous"]
         if previous is None:
             return complete(prompt)
-        if check_objections and decision.backend == "vultr":
-            return complete(
-                prompt
-                + "\nThe prior draft failed code-owned checks: "
-                + json.dumps(check_objections, ensure_ascii=False)
-                + "\nRepair the latest revised draft: "
-                + json.dumps(previous, ensure_ascii=False)
-            )
         return previous
 
     loop = PhaseLoop[dict](
@@ -576,10 +637,8 @@ def draft_prd(
         objection_addressed=_objection_subject_changed,
     )
     if result.artifact is None:
-        marker = output.parent / "APPROVED"
-        if marker.exists():
-            marker.rename(marker.with_name(f"APPROVED.stale.{digest[:12]}"))
-        write_prd_budget_pending(output.parent, generated_by(decision))
+        if not (output.parent / "APPROVED").exists():
+            write_prd_budget_pending(output.parent, generated_by(decision))
         raise PrdDraftUnavailable("PRD loop budget exhausted before a draft was produced")
     document = result.artifact
     if result.stop_reason != "checks_passed":
@@ -589,11 +648,6 @@ def draft_prd(
     validate_document("global-prd", document)
     if document["brief_path"] != "brief.md":
         raise ValueError("PRD brief_path must be brief.md")
-    marker = output.parent / "APPROVED"
-    if marker.exists():
-        marker.rename(marker.with_name(f"APPROVED.stale.{digest[:12]}"))
-    write_json(output, document)
-    fingerprint_path.write_text(digest + "\n", encoding="utf-8")
     summary = ["# Global PRD", "", f"Brief: `{document['brief_path']}`", "", "## Personas", ""]
     summary.extend(f"- **{item['id']}** {item['description']}" for item in document["personas"])
     summary.extend(["", "## Jobs to be done", ""])
@@ -620,7 +674,47 @@ def draft_prd(
     if document.get("open_issues"):
         summary.extend(["", "## Open issues for human review", ""])
         summary.extend(f"- {item}" for item in document["open_issues"])
-    write_markdown(
-        case_dir / "01-scope/prd.md", "\n".join(summary) + "\n", document["generated_by"]
-    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    marker = output.parent / "APPROVED"
+    denied = marker.exists() and load_json(marker).get("decision") == "deny"
+    with tempfile.TemporaryDirectory(prefix=".prd-candidate-", dir=output.parent) as temporary:
+        staging = Path(temporary)
+        write_json(staging / "prd.json", document)
+        write_markdown(staging / "prd.md", "\n".join(summary) + "\n", document["generated_by"])
+        (staging / "prd.input.sha256").write_text(digest + "\n", encoding="utf-8")
+        backup = staging / "previous"
+        backup.mkdir()
+        for name in artifact_names:
+            old = output.parent / name
+            if old.exists():
+                shutil.copy2(old, backup / name)
+        archive = output.parent / "revisions" / str(len(revisions))
+        stale_marker = marker.with_name(f"APPROVED.stale.{digest[:12]}")
+        try:
+            if denied:
+                checkpoint_revisions(output.parent, "prd", artifact_names, case_dir=case_dir)
+            elif marker.exists():
+                os.replace(marker, stale_marker)
+            for name in artifact_names:
+                os.replace(staging / name, output.parent / name)
+        except Exception:
+            for name in artifact_names:
+                old = backup / name
+                target = output.parent / name
+                if old.exists():
+                    os.replace(old, target)
+                else:
+                    target.unlink(missing_ok=True)
+            if denied:
+                for name in ["APPROVAL_PENDING.md", "APPROVED"]:
+                    source = archive / name
+                    if source.exists():
+                        os.replace(source, output.parent / name)
+                for name in artifact_names:
+                    (archive / name).unlink(missing_ok=True)
+                if archive.exists():
+                    archive.rmdir()
+            elif stale_marker.exists() and not marker.exists():
+                os.replace(stale_marker, marker)
+            raise
     return document

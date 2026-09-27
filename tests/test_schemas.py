@@ -644,6 +644,8 @@ def test_factor_decisions_are_optional_for_factors_approval() -> None:
         "approver": "Example Reviewer",
         "date": "2026-01-01",
         "checkpoint": "factors",
+        "identity_source": "local",
+        "artifact_sha256": {"02-ontology/factors/factors.json": "0" * 64},
         "decisions": {"supplier_type": "accept"},
     }
     validate("approved", marker)
@@ -657,6 +659,8 @@ def test_factor_decisions_rejected_for_other_checkpoint() -> None:
         "approver": "Example Reviewer",
         "date": "2026-01-01",
         "checkpoint": "prd",
+        "identity_source": "local",
+        "artifact_sha256": {"01-scope/prd.json": "0" * 64},
         "decisions": {"supplier_type": "accept"},
     }
     with pytest.raises(ValidationError):

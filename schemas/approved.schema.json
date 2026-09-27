@@ -8,6 +8,14 @@
   "properties": {
     "approver": {"type": "string", "minLength": 1},
     "date": {"type": "string", "format": "date"},
+    "run_id": {"type": "string", "minLength": 1},
+    "identity_source": {"enum": ["sso", "local"]},
+    "artifact_sha256": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"type": "string", "minLength": 1},
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
     "checkpoint": {"enum": ["prd", "factors", "ontology", "source", "action"]},
     "source_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "decision": {"enum": ["approve", "deny"]},
@@ -19,6 +27,10 @@
     }
   },
   "allOf": [
+    {
+      "if": {"required": ["checkpoint"], "properties": {"checkpoint": {"enum": ["prd", "factors", "ontology", "action"]}}},
+      "then": {"required": ["artifact_sha256", "identity_source"]}
+    },
     {
       "if": {"required": ["decisions"]},
       "then": {"required": ["checkpoint"], "properties": {"checkpoint": {"const": "factors"}}}

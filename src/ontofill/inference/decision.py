@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -270,7 +271,8 @@ class VultrDecisionClient:
         last_error: Exception | None = None
         use_json_schema = False
         retry_model: str | None = None
-        for attempt in range(2):
+        max_attempts = 3 if document_request else 2
+        for attempt in range(max_attempts):
             selected = retry_model or (
                 model
                 if attempt == 0 or structured_request or not self.fallback_model
@@ -350,7 +352,7 @@ class VultrDecisionClient:
                     else "invalid_response"
                 )
                 last_error = exc
-                if record["status"] == "length" and structured_request:
+                if record["status"] == "length" and structured_request and not document_request:
                     break
             else:
                 record["status"] = "ok"
@@ -360,6 +362,8 @@ class VultrDecisionClient:
             request["messages"][1]["content"] += (
                 "\nReturn one complete object matching the schema through the requested output method."
             )
+            if document_request and attempt + 1 < max_attempts:
+                time.sleep(0.05 * (2**attempt))
         attempts = attempt + 1
         noun = "attempt" if attempts == 1 else "attempts"
         raise TypeError(

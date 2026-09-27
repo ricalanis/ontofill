@@ -16,6 +16,7 @@ from ontofill.workflow import (
     _source_review,
     run_case,
 )
+from tests.approval_support import bind_approval
 
 
 def test_export_trace_includes_steps_from_prior_checkpoint_runs(tmp_path) -> None:
@@ -135,7 +136,13 @@ def test_recorded_default_pauses_at_first_checkpoint(tmp_path, capsys) -> None:
     assert "checkpoint_pending=prd" in output
     assert "recorded artifacts cannot satisfy" in output
     (scratch / "01-scope/APPROVED").write_text(
-        '{"approver":"Example Reviewer","date":"2026-09-26","checkpoint":"prd"}',
+        json.dumps(
+            bind_approval(
+                scratch,
+                ["01-scope/prd.json"],
+                {"approver": "Example Reviewer", "date": "2026-09-26", "checkpoint": "prd"},
+            )
+        ),
         encoding="utf-8",
     )
     assert run_case(case, run_id=run_id, decision=_preview_decision("Public reading rooms")) == 3
@@ -143,6 +150,42 @@ def test_recorded_default_pauses_at_first_checkpoint(tmp_path, capsys) -> None:
     assert list((scratch / "01-scope").glob("APPROVED.stale.*"))
     assert sorted(path.name for path in case.iterdir()) == ["brief.md"]
     assert not lake.exists(f"runs/{case.name}/latest.json")
+
+
+def test_stale_review_pauses_run_without_changing_case_files(tmp_path, capsys) -> None:
+    case = tmp_path / "tracked-case"
+    case.mkdir()
+    (case / "brief.md").write_text("Public reading rooms in Example City", encoding="utf-8")
+    run_id = "mock-" + uuid.uuid4().hex
+    assert run_case(case, run_id=run_id, decision=_preview_decision("Public reading rooms")) == 3
+    scratch, lake = _scratch_case(case, run_id)
+    scope = scratch / "01-scope"
+    marker = bind_approval(
+        scratch,
+        ["01-scope/prd.json"],
+        {"approver": "Reviewer", "date": "2026-09-26", "checkpoint": "prd"},
+    )
+    (scope / "APPROVED").write_text(json.dumps(marker), encoding="utf-8")
+    artifact = scope / "prd.json"
+    artifact.write_bytes(artifact.read_bytes() + b" ")
+    before = {
+        path.relative_to(scratch): path.read_bytes()
+        for path in scratch.rglob("*")
+        if path.is_file()
+    }
+    capsys.readouterr()
+    assert run_case(case, run_id=run_id, decision=_preview_decision("Public reading rooms")) == 3
+    assert "reason=approval is for a different artifact version" in capsys.readouterr().out
+    after = {
+        path.relative_to(scratch): path.read_bytes()
+        for path in scratch.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
+    assert status["state"] == "paused"
+    assert status["checkpoint_pending"] == "prd"
+    assert status["reason"] == "approval is for a different artifact version"
 
 
 def test_prd_budget_exhausted_before_draft_pauses_without_artifact(tmp_path, capsys) -> None:

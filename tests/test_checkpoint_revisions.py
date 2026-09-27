@@ -5,6 +5,7 @@ import json
 import pytest
 
 from ontofill.case.checkpoints import checkpoint_revisions
+from tests.approval_support import bind_approval
 
 
 @pytest.mark.parametrize(
@@ -23,8 +24,9 @@ def test_denial_archives_artifact_and_approval(tmp_path, checkpoint, artifact) -
         "decision": "deny",
         "reason": "The requested threshold has no basis.",
     }
+    marker = bind_approval(tmp_path, [f"{checkpoint}/{artifact}"], marker)
     (directory / "APPROVED").write_text(json.dumps(marker), encoding="utf-8")
-    revisions = checkpoint_revisions(directory, checkpoint, [artifact])
+    revisions = checkpoint_revisions(directory, checkpoint, [artifact], case_dir=tmp_path)
     assert revisions == [
         {
             "n": 1,
@@ -36,4 +38,4 @@ def test_denial_archives_artifact_and_approval(tmp_path, checkpoint, artifact) -
     ]
     assert (directory / "revisions/1" / artifact).read_text() == '{"draft":1}'
     assert not (directory / "APPROVED").exists()
-    assert checkpoint_revisions(directory, checkpoint, [artifact]) == revisions
+    assert checkpoint_revisions(directory, checkpoint, [artifact], case_dir=tmp_path) == revisions

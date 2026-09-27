@@ -1,5 +1,34 @@
 # Work list
 
+## Critical path: brief 10d and CONTRACT v0.9.7
+- [x] Make every live P1 revision consume all critic objections and prior failed checks, with deterministic human percent/tier grounding and specific-domain review.
+- [x] Generate and validate a replacement PRD before archiving a denied draft; keep current artifacts and approval intact on inference failure.
+- [x] Require reviewed artifact digests and identity_source on PRD/factors/ontology/action approvals; refuse mismatches without changing case files.
+- [ ] Run a managed full pytest + Ruff gate, pre-push scan, then push main and coordinate the control-VM update with Claude PA.
+FILES: `src/ontofill/phases/p1_scope/`, `src/ontofill/case/`, `src/ontofill/inference/decision.py`, `schemas/approved.schema.json`, relevant tests.
+TASK: Unblock the human PRD review while binding every approval to the exact reviewed artifact.
+DONE: `uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox`; mismatch tests must show byte-for-byte unchanged case files.
+FORMAT: Ruff check and format across edited files.
+CHECK: user-authorized `agent-progress` R1+R5 full gate after the run-status regression → 246 passed, 3 skipped; Ruff check/format clean.
+
+## Gap closure order
+- [ ] R1+R5: push the verified checkpoint fix, pull control VM and run `uv sync --frozen`.
+- [ ] R7: merge orch/p3-discovery with brief 12 fixes; default providers exclude Bing/DDG.
+- [ ] In parallel after R1: R2 P5 real path, R3 controller S1 bridge, R6 signals/relationships, R15 spiders/site graphs.
+- [ ] After R2: R4 in-run repair macros, R10 taxonomy honesty, R11 bronze re-refine.
+- [ ] R8 repair-side containment command; R9 inference base URL/env verification.
+P4 negotiation and P1 research are cut by the user. Mark each shipped row READY FOR VERIFY <sha> in the gap tracker.
+
+## After 10d and P3: brief 13 spiders and site graphs
+- [ ] Start a Luna worker in `.worktrees/brief13-spiders` after P3 lands; keep console and browser-agent files PA-owned.
+- [ ] Crawl confirmed sources only inside bounded gVisor cells, with robots, depth/page/polite limits, GET-only edges and bronze/trace proof.
+- [ ] Cluster page types by URL template plus DOM skeleton, label them against the inferred ontology, and publish the CONTRACT v1.0.3 site graph.
+- [ ] Feed graph coverage and paths into P3 ranking, P4 TDDs and outer-gap reopen; prove synthetic fixture and one live generic site.
+FILES: `src/ontofill/phases/p3_fanout/`, sandbox/cell substrate, `schemas/`, P4/outer integration and synthetic tests.
+TASK: Restore the original spider/site-graph design without domain assumptions or in-process browsing.
+DONE: Synthetic listing→detail→download, robots, POST-never-submitted and cap/depth tests, genericity guard, full pytest/Ruff, and a live gVisor generic-site proof.
+FORMAT: Ruff check and format across edited files.
+
 ## Current delivery gate: live cells and brief 10b PRD steering
 - [x] Push the runsc cell relay, preflight diagnostics, control-VM SSH bootstrap and repair-pod stdin transport; deploy the cell service on the control VM.
 - [x] Prove the destructive loop stays inside a capped runsc pod and that the repair path emits a limit stop.

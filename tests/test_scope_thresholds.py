@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 
 import httpx
+import pytest
 
 from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
@@ -15,6 +16,7 @@ from ontofill.phases.p1_scope.phase import (
     draft_prd,
 )
 from ontofill.phases.p3_fanout.authority import authority_result
+from tests.approval_support import bind_approval
 
 
 def _prd_response(criterion: dict | None = None) -> dict:
@@ -173,6 +175,40 @@ def test_human_numbers_can_be_in_separate_clauses_and_percent_is_normalized() ->
     assert document["definition_of_done"][-1]["basis"] == "proposed"
 
 
+def test_proposed_percent_is_promoted_from_exact_human_revision() -> None:
+    document = _prd_response(
+        {
+            "id": "complete-profiles",
+            "metric": "percentage of rooms with a complete profile",
+            "operator": ">=",
+            "target": 80,
+            "min_ratio": 0.8,
+            "basis": "proposed",
+            "rationale": "Model missed the human number.",
+            "feasibility": "Needs source check.",
+        }
+    )
+    reason = ">=80% of them with a complete core profile"
+    _ground_criteria(document, "Find public rooms.", [{"reason": reason}], 2.0)
+    criterion = document["definition_of_done"][0]
+    assert criterion["basis"] == "human"
+    assert criterion["basis_quote"] == reason
+
+
+def test_human_primary_tier_is_applied_and_broad_domain_is_reviewed() -> None:
+    document = _prd_response()
+    publisher = document["authority_policy"]["trusted_publishers"][0]
+    publisher.pop("tier")
+    publisher["domains"] = ["gov.xy"]
+    _apply_human_authority_revisions(
+        document, [{"reason": "Make Example City archive the primary publisher."}]
+    )
+    assert publisher["tier"] == "primary"
+    assert any(
+        "broad namespace" in issue for issue in _authority_policy_check(document, []).objections
+    )
+
+
 def test_denied_number_and_embedded_percent_cannot_ground_a_count() -> None:
     document = _prd_response(
         {
@@ -286,6 +322,7 @@ def test_overlapping_publisher_kinds_match_only_the_full_named_kind() -> None:
         [
             {
                 "kind": "Registry",
+                "tier": "primary",
                 "jurisdiction": "Example City",
                 "domains": ["registry.example.test"],
                 "rationale": "An official registry.",
@@ -466,7 +503,9 @@ def test_rejected_live_prd_persists_open_issues_and_human_cross_check(tmp_path) 
             "a complete profile. Keep the registry as a secondary cross-check."
         ),
     }
-    (scope / "APPROVED").write_text(json.dumps(denial), encoding="utf-8")
+    (scope / "APPROVED").write_text(
+        json.dumps(bind_approval(tmp_path, ["01-scope/prd.json"], denial)), encoding="utf-8"
+    )
     revised = _prd_response(
         {
             "id": "profiles",
@@ -666,7 +705,9 @@ def test_denied_prd_is_archived_and_human_reason_regenerates(tmp_path) -> None:
         "decision": "deny",
         "reason": "Use at least 1 room with evidence; 1000 is unsupported.",
     }
-    (scope / "APPROVED").write_text(json.dumps(denial), encoding="utf-8")
+    (scope / "APPROVED").write_text(
+        json.dumps(bind_approval(tmp_path, ["01-scope/prd.json"], denial)), encoding="utf-8"
+    )
     new = draft_prd(tmp_path, decision)
     assert new["definition_of_done"][0]["id"] == "evidence"
     assert new["definition_of_done"][0]["basis"] == "human"
@@ -689,3 +730,43 @@ def test_denied_prd_is_archived_and_human_reason_regenerates(tmp_path) -> None:
     assert "**human**" in pending
     assert draft_prd(tmp_path, decision) == new
     assert len(decision.calls) == 2
+
+
+def test_failed_denial_regeneration_preserves_prd_pending_and_approval(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Find public reading rooms.", encoding="utf-8")
+    old = draft_prd(tmp_path, RecordedDecisionClient({"phase1.prd": [_prd_response()]}))
+    scope = tmp_path / "01-scope"
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.json"],
+        generated_by=old["generated_by"],
+    )
+    denial = {
+        "approver": "Example Reviewer",
+        "date": "2026-09-26",
+        "checkpoint": "prd",
+        "decision": "deny",
+        "reason": "Use a smaller grounded target.",
+    }
+    (scope / "APPROVED").write_text(
+        json.dumps(bind_approval(tmp_path, ["01-scope/prd.json"], denial)), encoding="utf-8"
+    )
+    names = ("prd.json", "prd.md", "prd.input.sha256", "APPROVAL_PENDING.md", "APPROVED")
+    before = {name: (scope / name).read_bytes() for name in names}
+
+    class UnavailableDecision:
+        backend = "vultr"
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.call_log: list[dict] = []
+
+        def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
+            raise TypeError("typed decision unavailable")
+
+    with pytest.raises(TypeError, match="typed decision unavailable"):
+        draft_prd(tmp_path, UnavailableDecision())
+    assert {name: (scope / name).read_bytes() for name in names} == before
+    assert not (scope / "revisions").exists()

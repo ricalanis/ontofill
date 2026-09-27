@@ -10,31 +10,6 @@ The local Docker daemon was unavailable at task start and was started with `orb 
 - Authority policy accepts a government domain or a recognized publisher tied to the catalog provider; other candidates get a fingerprinted source checkpoint before TDD/execution. This app-visible enum addition was announced in coord/status before landing.
 - A blocked/captcha provider stops at that endpoint and records failure evidence. A distinct configured provider may be tried next. Gap queries include the missing fields explicitly, and recorded plans derive from those gaps.
 - Mock output remains scratch-only and exit 3. The C4 gate is a synthetic 3-source-type run with gap reopening; no mock metric counts as live DoD.
-
-<!-- agent-session-state:begin -->
-Last session end: 2026-09-26T21:34:07.361310+00:00
-Changed paths:
- M GOAL.md
- M NOTES.md
- M TODO.md
- M packages/ontofill-scrape/src/ontofill_scrape/discovery.py
- M schemas/approval-pending.schema.json
- M schemas/approved.schema.json
- M schemas/common.schema.json
- M schemas/metrics.schema.json
- M schemas/objectives.schema.json
- M schemas/run-status.schema.json
- M src/ontofill/case/checkpoints.py
- M src/ontofill/cli/main.py
- D src/ontofill/phases/p3_fanout/phase.py
- M src/ontofill/phases/p3_fanout/search.py
- M src/ontofill/phases/p5_execute/phase.py
- M src/ontofill/refiner/export.py
- M src/ontofill/runfeed.py
- M src/ontofill/workflow.py
- M tests/test_cli.py
- M tests/test_execute_phase.py
-<!-- agent-session-state:end -->
 # Pattern A repair runner lint note
 
 The first Ruff pass flagged the candidate exception handler, and replacing `BaseException` with
@@ -83,3 +58,27 @@ The user then authorized a B023 closure-binding edit plus one further full
 managed check. Commit `e806618` binds the draft, gathered context and iteration
 as arguments of the nested review function. That one check passed: 232 tests,
 3 opt-in skips, Ruff check clean, and Ruff format check clean.
+
+# Brief 10d progress guard, 2026-09-26
+
+The first full managed check passed the P1-focused tests but failed one recorded
+preview test: the mock has no extra decision response when authority remains
+an open issue. The second full managed check passed 241 tests with 3 skips,
+then Ruff found RUF012 in the new failure-preservation test fixture. Both full
+strategies were stopped under the two-attempt rule. The user then authorized a
+combined R1+R5 full managed check. With the fixture fix and digest-bound
+approvals in place, the final delivery check passed: 246 tests, 3 skips, Ruff lint and format
+clean. No live case files were touched.
+
+<!-- agent-session-state:begin -->
+Last session end: 2026-09-27T00:52:14.923428+00:00
+Changed paths:
+ M NOTES.md
+ M TODO.md
+ M docs/planning/03-technical-architecture.md
+ M src/ontofill/case/checkpoints.py
+ M src/ontofill/inference/decision.py
+ M src/ontofill/phases/p1_scope/phase.py
+ M tests/test_inference.py
+ M tests/test_scope_thresholds.py
+<!-- agent-session-state:end -->

@@ -10,6 +10,7 @@ from jsonschema import ValidationError
 
 from ontofill.case.actions import action_gate
 from ontofill.contracts import validate_document
+from tests.approval_support import bind_approval
 
 VULTR = {"backend": "vultr", "model": "synthetic", "at": "2026-09-26T00:00:00Z"}
 RECORDED = {"backend": "recorded", "model": "synthetic", "at": "2026-09-26T00:00:00Z"}
@@ -52,24 +53,32 @@ def test_high_risk_action_waits_for_explicit_approval_and_denial(tmp_path) -> No
     assert metadata["job_id"] == "job-1"
     (directory / "APPROVED").write_text(
         json.dumps(
-            {
-                "approver": "Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "action",
-                "decision": "deny",
-                "reason": "Insufficient review",
-            }
+            bind_approval(
+                tmp_path,
+                ["05-actions/request-1/request.json"],
+                {
+                    "approver": "Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "action",
+                    "decision": "deny",
+                    "reason": "Insufficient review",
+                },
+            )
         )
     )
     assert request(tmp_path)["outcome"] == "denied"
     (directory / "APPROVED").write_text(
         json.dumps(
-            {
-                "approver": "Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "action",
-                "decision": "approve",
-            }
+            bind_approval(
+                tmp_path,
+                ["05-actions/request-1/request.json"],
+                {
+                    "approver": "Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "action",
+                    "decision": "approve",
+                },
+            )
         )
     )
     assert request(tmp_path)["outcome"] == "allowed"
@@ -78,12 +87,16 @@ def test_high_risk_action_waits_for_explicit_approval_and_denial(tmp_path) -> No
     recorded_approval = recorded_case / "05-actions/request-1/APPROVED"
     recorded_approval.write_text(
         json.dumps(
-            {
-                "approver": "Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "action",
-                "decision": "approve",
-            }
+            bind_approval(
+                recorded_case,
+                ["05-actions/request-1/request.json"],
+                {
+                    "approver": "Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "action",
+                    "decision": "approve",
+                },
+            )
         )
     )
     assert request(recorded_case, generated_by=RECORDED)["outcome"] == "pending_approval"

@@ -317,7 +317,7 @@ def test_strict_tool_rejection_retries_verified_json_schema_method() -> None:
     assert client.call_log[0]["usage"]["est_usd"] is None
 
 
-def test_both_invalid_attempts_fail_closed_and_keep_cost_records() -> None:
+def test_prd_invalid_attempts_fail_closed_and_keep_cost_records() -> None:
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -332,9 +332,10 @@ def test_both_invalid_attempts_fail_closed_and_keep_cost_records() -> None:
         model="glm-5.3-flash",
         client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
-    with pytest.raises(TypeError, match="after 2 attempts"):
+    with pytest.raises(TypeError, match="after 3 attempts"):
         client.complete_json("phase1.prd", "draft", SCHEMA)
     assert [record["status"] for record in client.call_log] == [
+        "invalid_response",
         "invalid_response",
         "invalid_response",
     ]

@@ -2,13 +2,65 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+from jsonschema import ValidationError
 
 from ontofill.contracts import validate_document
+
+
+class ApprovalArtifactMismatch(ValueError):
+    """The review is bound to different artifact bytes."""
+
+    def __init__(self, checkpoint: str | None = None) -> None:
+        self.checkpoint = checkpoint
+        super().__init__("approval is for a different artifact version")
+
+
+def verify_approval_artifacts(case_dir: Path, document: dict, expected_paths: list[str]) -> None:
+    """Check the exact case-relative files the reviewer saw, without writing anything."""
+    digests = document.get("artifact_sha256")
+    if not isinstance(digests, dict) or set(digests) != set(expected_paths):
+        raise ApprovalArtifactMismatch
+    root = case_dir.resolve()
+    for relative in expected_paths:
+        path = Path(relative)
+        if path.is_absolute() or not path.parts or any(part in {".", ".."} for part in path.parts):
+            raise ApprovalArtifactMismatch
+        candidate = case_dir / path
+        try:
+            if not candidate.resolve().is_relative_to(root) or not candidate.is_file():
+                raise ApprovalArtifactMismatch
+            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ApprovalArtifactMismatch from exc
+        if digest != digests[relative]:
+            raise ApprovalArtifactMismatch
+
+
+def load_verified_approval(
+    marker: Path, case_dir: Path, expected_paths: list[str], checkpoint: str
+) -> dict:
+    """Validate a marker and bind protected checkpoint decisions to current bytes."""
+    document = load_json(marker)
+    try:
+        validate_document("approved", document)
+    except ValidationError as exc:
+        if checkpoint in {"prd", "factors", "ontology", "action"}:
+            raise ApprovalArtifactMismatch(checkpoint) from exc
+        raise
+    if document.get("checkpoint") != checkpoint:
+        raise ValueError(f"wrong checkpoint in {marker}")
+    if checkpoint in {"prd", "factors", "ontology", "action"}:
+        try:
+            verify_approval_artifacts(case_dir, document, expected_paths)
+        except ApprovalArtifactMismatch as exc:
+            raise ApprovalArtifactMismatch(checkpoint) from exc
+    return document
 
 
 def write_json(path: Path, document: dict) -> None:
@@ -20,8 +72,15 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def checkpoint_revisions(directory: Path, checkpoint: str, artifact_names: list[str]) -> list[dict]:
-    """Archive a denied draft and return the complete, durable human revision history."""
+def checkpoint_revisions(
+    directory: Path,
+    checkpoint: str,
+    artifact_names: list[str],
+    *,
+    archive_denial: bool = True,
+    case_dir: Path | None = None,
+) -> list[dict]:
+    """Return denied revisions, optionally deferring the active denial's archive."""
     approved = directory / "APPROVED"
     archive_root = directory / "revisions"
     existing = (
@@ -29,29 +88,44 @@ def checkpoint_revisions(directory: Path, checkpoint: str, artifact_names: list[
         if archive_root.exists()
         else []
     )
+    active_denial = None
     if approved.exists():
-        marker = load_json(approved)
-        validate_document("approved", marker)
-        if marker.get("checkpoint", checkpoint) != checkpoint:
-            raise ValueError(f"wrong checkpoint in {approved}")
+        root = case_dir or (directory.parents[1] if checkpoint == "factors" else directory.parent)
+        relative = (directory / artifact_names[0]).relative_to(root).as_posix()
+        marker = load_verified_approval(approved, root, [relative], checkpoint)
         if marker.get("decision", "approve") == "deny":
             if not (directory / artifact_names[0]).exists():
                 raise ValueError(f"cannot deny missing {checkpoint} artifact")
-            target = archive_root / str(len(existing) + 1)
-            target.mkdir(parents=True, exist_ok=False)
-            for name in [*artifact_names, "APPROVAL_PENDING.md", "APPROVED"]:
-                source = directory / name
-                if source.exists():
-                    source.rename(target / name)
-            existing.append(target)
+            active_denial = marker
+            if archive_denial:
+                target = archive_root / str(len(existing) + 1)
+                target.mkdir(parents=True, exist_ok=False)
+                for name in [*artifact_names, "APPROVAL_PENDING.md", "APPROVED"]:
+                    source = directory / name
+                    if source.exists():
+                        source.rename(target / name)
+                existing.append(target)
     revisions = []
     for index, archive in enumerate(existing, start=1):
         marker = load_json(archive / "APPROVED")
-        validate_document("approved", marker)
+        # Archived denials are audit history, not decisions to act on. Older
+        # revisions predate digest-bound approval files and remain readable.
         if marker.get("checkpoint", checkpoint) != checkpoint or marker.get("decision") != "deny":
             raise ValueError(f"invalid {checkpoint} denial in {archive}")
+        if any(
+            not isinstance(marker.get(key), str) or not marker[key]
+            for key in ("reason", "approver", "date")
+        ):
+            raise ValueError(f"incomplete {checkpoint} denial in {archive}")
         revisions.append(
             {"n": index, **{key: marker[key] for key in ("decision", "reason", "approver", "date")}}
+        )
+    if active_denial is not None and not archive_denial:
+        revisions.append(
+            {
+                "n": len(revisions) + 1,
+                **{key: active_denial[key] for key in ("decision", "reason", "approver", "date")},
+            }
         )
     return revisions
 
@@ -92,19 +166,20 @@ def require_approval(
     artifact_paths: list[str],
     generated_by: dict[str, str],
     source_fingerprint: str | None = None,
+    case_dir: Path | None = None,
 ) -> bool:
     """Return False and leave a review file until a valid APPROVED marker exists."""
-    directory.mkdir(parents=True, exist_ok=True)
     approved = directory / "APPROVED"
-    if approved.exists() and generated_by["backend"] == "vultr":
-        document = load_json(approved)
-        validate_document("approved", document)
-        if document.get("checkpoint", checkpoint) != checkpoint:
-            raise ValueError(f"wrong checkpoint in {approved}")
-        if document.get("decision", "approve") != "deny" and (
-            checkpoint != "source" or document.get("source_fingerprint") == source_fingerprint
+    if approved.exists():
+        root = case_dir or (directory.parents[1] if checkpoint == "factors" else directory.parent)
+        document = load_verified_approval(approved, root, artifact_paths, checkpoint)
+        if (
+            generated_by["backend"] == "vultr"
+            and document.get("decision", "approve") != "deny"
+            and (checkpoint != "source" or document.get("source_fingerprint") == source_fingerprint)
         ):
             return True
+    directory.mkdir(parents=True, exist_ok=True)
     metadata = {
         "phase": phase,
         "checkpoint": checkpoint,

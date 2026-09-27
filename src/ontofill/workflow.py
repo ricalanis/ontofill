@@ -13,7 +13,13 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from ontofill.case.checkpoints import load_json, require_approval, write_json
+from ontofill.case.checkpoints import (
+    ApprovalArtifactMismatch,
+    load_json,
+    load_verified_approval,
+    require_approval,
+    write_json,
+)
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
 from ontofill.lake import FileLake, lake_for_case
 from ontofill.outer_gap import decide_outer_gap, outer_trace_step, prior_reopens
@@ -375,6 +381,7 @@ def _request_ontology_gap_review(
     directory = case_dir / "02-ontology"
     marker = directory / "APPROVED"
     if marker.exists():
+        load_verified_approval(marker, case_dir, ["02-ontology/ontology.json"], "ontology")
         marker.rename(directory / f"APPROVED.stale.gap-{iteration}")
     require_approval(
         directory,
@@ -552,6 +559,7 @@ def run_case(
                 checkpoint="prd",
                 artifact_paths=["01-scope/prd.json"],
                 generated_by=prd["generated_by"],
+                case_dir=case_dir,
             ):
                 pending = "prd"
                 if not preview_past_checkpoints:
@@ -583,6 +591,7 @@ def run_case(
                 checkpoint="factors",
                 artifact_paths=["02-ontology/factors/factors.json"],
                 generated_by=factors["generated_by"],
+                case_dir=case_dir,
             ):
                 pending = pending or "factors"
                 if not preview_past_checkpoints:
@@ -604,6 +613,7 @@ def run_case(
                 checkpoint="ontology",
                 artifact_paths=["02-ontology/ontology.json"],
                 generated_by=ontology["generated_by"],
+                case_dir=case_dir,
             ):
                 pending = pending or "ontology"
                 if not preview_past_checkpoints:
@@ -882,6 +892,16 @@ def run_case(
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
             raise
+        except ApprovalArtifactMismatch as exc:
+            phase = feed.current_status["phase"] if feed.current_status else 1
+            feed.update_status(
+                state="paused",
+                phase=phase,
+                checkpoint_pending=exc.checkpoint or pending,
+                reason=str(exc),
+            )
+            print(f"state=paused reason={exc}")
+            return 3
         except Exception:
             phase = feed.current_status["phase"] if feed.current_status else 1
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)

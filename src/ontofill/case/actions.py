@@ -8,7 +8,12 @@ from pathlib import Path
 
 import yaml
 
-from ontofill.case.checkpoints import load_json, write_json
+from ontofill.case.checkpoints import (
+    ApprovalArtifactMismatch,
+    load_json,
+    load_verified_approval,
+    write_json,
+)
 from ontofill.contracts import validate_document
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -43,6 +48,7 @@ def action_gate(
     relative = Path("05-actions") / request_id
     directory = case_dir / relative
     request_path = directory / "request.json"
+    approved_path = directory / "APPROVED"
     request = {
         "intended_action": action,
         "risk_tier": risk_tier,
@@ -60,13 +66,18 @@ def action_gate(
             raise ValueError("action request ID is already bound to different content")
         request = previous
     else:
+        if approved_path.exists():
+            raise ApprovalArtifactMismatch("action")
         write_json(request_path, request)
-    approved_path = directory / "APPROVED"
-    if approved_path.exists() and generated_by["backend"] == "vultr":
-        approved = load_json(approved_path)
-        validate_document("approved", approved)
-        if approved.get("checkpoint") != "action":
-            raise ValueError("action approval has the wrong checkpoint")
+    if approved_path.exists():
+        approved = load_verified_approval(
+            approved_path, case_dir, [(relative / "request.json").as_posix()], "action"
+        )
+        if generated_by["backend"] != "vultr":
+            approved = None
+    else:
+        approved = None
+    if approved is not None:
         return {
             "action": action,
             "risk_tier": risk_tier,
