@@ -1,3 +1,11 @@
+# Current goal: R49 eager authority coverage and tiered value refinement
+
+A versioned, human-approved PRD authority policy covers government levels and public data channels. P3 admits captured official entity-level capabilities at a documented tier, including low-tier flagged unknown official hosts, while unclassifiable hosts still need source review. P5 writes source tier and publisher identity into every silver observation. Silver retains each receipt and independent corroboration count; gold chooses by tier and corroboration with conflicts visible.
+
+DONE: `uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox && python3 -m json.tool schemas/global-prd.schema.json >/dev/null && python3 -m json.tool schemas/objectives.schema.json >/dev/null && python3 -m json.tool schemas/source-candidate.schema.json >/dev/null && git diff --check`. Focused R49 policy, P3, P5 and silver tests must pass. Deploy only after a fresh zero-engine process check.
+
+Constraints: no real case or APPROVED edits, no PA-owned code, no credential output, no hard-coded jurisdiction or source domains, no public push until pre-push scan.
+
 # Current goal: R50 parsed-document capability proof
 
 Approved, fingerprint-bound linked documents are parsed in runsc and their bounded per-sheet headers plus four sample rows reach the P3 critic and candidate property evidence. The approved document host inherits only its verified linking publisher tier. A synthetic certified-company spreadsheet with entity name and identifier becomes a confirmed source for exactly those fields.

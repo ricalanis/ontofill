@@ -1,3 +1,10 @@
+# R49 integration
+
+- [x] FILES: `schemas/global-prd.schema.json`, P1, refiner core, focused tests. TASK: integrate versioned authority matrix and tiered gold selection. DONE: base compatibility 9 passed; silver independent corroboration red baseline and green successor 5 passed. FORMAT: Ruff.
+- [ ] FILES: P3 authority/discovery, objectives and source-candidate schemas, tests. TASK: admit captured official entity-level source capabilities at matrix tier; flag low-tier unknown official hosts. DONE: synthetic official/non-official tests and full gate. FORMAT: Ruff + JSON.
+- [x] FILES: P5 observation construction, bronze replay, tests. TASK: propagate tier/publisher identity to silver. DONE: composed focused check 35 passed with Ruff; first invocation had a mistyped controller test filename and ran no tests. FORMAT: Ruff.
+- [ ] FILES: shared status/GAPS, public main, VM. TASK: run full gate and pre-push scan, push, deploy in zero-engine window, mark READY FOR VERIFY. DONE: public SHA + VM SHA + live proof request recorded. FORMAT: Markdown.
+
 # R50 document context
 
 - [x] Add red synthetic multi-sheet workbook test with a title row, name/identifier headers, four sampled entity rows, and a digest-approved link from a policy-matched parent.
