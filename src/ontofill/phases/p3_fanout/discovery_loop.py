@@ -2069,7 +2069,7 @@ class DiscoveryLoop:
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
-                            "required": ["property_id", "query"],
+                            "required": ["property_id", "query", "standard_terms"],
                             "properties": {
                                 "property_id": {"enum": gaps},
                                 "query": {"type": "string", "minLength": 5, "maxLength": 240},
@@ -2080,6 +2080,7 @@ class DiscoveryLoop:
                                 },
                                 "standard_terms": {
                                     "type": "array",
+                                    "minItems": 1,
                                     "maxItems": 3,
                                     "items": {"type": "string", "minLength": 2, "maxLength": 80},
                                 },
@@ -2118,10 +2119,12 @@ class DiscoveryLoop:
                 "registries, open data, APIs, and downloadable datasets; avoid aggregate totals and "
                 "dashboards. Keep each query concise and do not include URLs. Ask for fresh query angles "
                 "when earlier plans have been tried. "
-                "Also identify subject-specific open-data vocabulary, published schemas, and data "
-                "standards that fit the brief and ontology. When useful, return their short names "
-                "or acronyms in `standard_terms` and include those terms in the generated query "
-                "phrases; derive them from the current subject rather than using a fixed list. "
+                "For every query return `standard_terms`: name the main subject's best-known "
+                "machine-readable publication standard by its formal name and acronym, plus its "
+                "local-language title when available. Include the terms in a query aimed at "
+                "entity-level records or releases. If the subject has no named publication standard, "
+                "use a relevant open-data format instead. Derive these terms from this brief and "
+                "ontology; do not rely on a fixed list. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Jurisdiction hierarchy and recall scope: "
                 f"{json.dumps(hierarchy_context, ensure_ascii=False)}. "

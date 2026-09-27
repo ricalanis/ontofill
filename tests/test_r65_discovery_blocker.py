@@ -112,6 +112,39 @@ def test_fallback_query_uses_case_ontology_without_a_fixed_subject_standard():
     assert "https://" not in queries[0].text.casefold()
 
 
+def test_live_query_plan_requires_model_named_standard_terms() -> None:
+    class ModelPlan:
+        backend = "vultr"
+        model = "synthetic"
+
+        def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
+            assert purpose == "phase3.plan_queries"
+            assert "publication standard" in prompt
+            assert "standard_terms" in schema["properties"]["queries"]["items"]["required"]
+            return {
+                "queries": [
+                    {
+                        "property_id": "award_value",
+                        "query": "public award records machine-readable release",
+                        "english_query": "open public awards data release",
+                        "standard_terms": ["Example Exchange Standard", "EES"],
+                    }
+                ]
+            }
+
+    loop = object.__new__(DiscoveryLoop)
+    queries = loop._plan_queries(
+        ModelPlan(),
+        "Find public award records.",
+        _contract_ontology(),
+        {"jurisdiction": "Example region", "trusted_publishers": []},
+        ["award_value"],
+        1,
+        set(),
+    )
+    assert queries and "Example Exchange Standard EES" in queries[0].text
+
+
 def test_jsonl_release_resources_are_recognized_without_accepting_arbitrary_gzip():
     assert _dataset_file_suffix("https://data.example.test/release.jsonl.gz") == ".jsonl.gz"
     assert _dataset_file_suffix("https://data.example.test/archive.tar.gz") is None
