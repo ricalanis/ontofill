@@ -145,6 +145,7 @@ class FixtureServer:
         self.gateway: str | None = None
         self.subnet: str | None = None
         self._rule_installed = False
+        self._container_may_exist = False
 
     def url(self) -> str:
         return f"http://host.docker.internal:{self.port}/{self.filename}"
@@ -168,20 +169,42 @@ class FixtureServer:
         )
 
     def _install_rule(self) -> None:
+        # If SSH times out after iptables applied the insertion, still attempt the exact
+        # inverse rule during cleanup.
+        self._rule_installed = True
         _host_iptables("-I", "INPUT", "1", *self._rule())
         if _host_iptables("-C", "INPUT", *self._rule(), check=False).returncode:
             raise RuntimeError("fixture firewall rule could not be verified")
-        self._rule_installed = True
 
     def _remove_rule(self) -> None:
         if not self._rule_installed or self.subnet is None:
             return
-        _host_iptables("-D", "INPUT", *self._rule(), check=False)
-        if _host_iptables("-C", "INPUT", *self._rule(), check=False).returncode == 0:
+        delete_error: Exception | None = None
+        try:
+            _host_iptables("-D", "INPUT", *self._rule(), check=False)
+        except RuntimeError as exc:  # still query the host in case the delete took effect
+            delete_error = exc
+        try:
+            rules = _host_iptables("-S", "INPUT", check=False)
+        except RuntimeError as exc:
+            raise RuntimeError("fixture firewall rule removal could not be verified") from (
+                delete_error or exc
+            )
+        if rules.returncode or self.comment in rules.stdout:
             raise RuntimeError("fixture firewall rule could not be removed")
         self._rule_installed = False
 
     def start(self) -> str:
+        started = False
+        try:
+            url = self._start()
+            started = True
+            return url
+        finally:
+            if not started:
+                self.stop()
+
+    def _start(self) -> str:
         remote = _remote_ssh_target() is not None
         if remote:
             self.gateway, self.subnet = bridge_gateway()
@@ -189,6 +212,8 @@ class FixtureServer:
         for _ in range(5):
             self.port = free_port()
             publish = f"{self.gateway}:{self.port}:8000" if remote else f"{self.port}:8000"
+            # A CLI/SSH timeout can happen after the daemon created the container.
+            self._container_may_exist = True
             result = docker(
                 "run",
                 "-d",
@@ -220,13 +245,9 @@ class FixtureServer:
             f"cat > /srv/{self.filename}",
             input_text=self.content,
         )
-        try:
-            if remote:
-                self._install_rule()
-            self._wait_ready()
-        except Exception:
-            self.stop()
-            raise
+        if remote:
+            self._install_rule()
+        self._wait_ready()
         return self.url()
 
     def _wait_ready(self) -> None:
@@ -241,8 +262,32 @@ class FixtureServer:
         raise RuntimeError("fixture server did not become ready")
 
     def stop(self) -> None:
-        self._remove_rule()
-        docker("rm", "-f", self.name, check=False)
+        failures: list[Exception] = []
+        try:
+            self._remove_rule()
+        except RuntimeError as exc:  # attempt container removal even if firewall cleanup failed
+            failures.append(exc)
+        if self._container_may_exist:
+            try:
+                try:
+                    docker("rm", "-f", self.name, check=False)
+                except RuntimeError as exc:  # still inspect whether removal took effect
+                    remove_error = exc
+                else:
+                    remove_error = None
+                absence = docker("inspect", self.name, check=False)
+                detail = (absence.stderr + absence.stdout).lower()
+                if absence.returncode == 0 or not any(
+                    marker in detail for marker in ("no such object", "no such container")
+                ):
+                    raise RuntimeError("fixture container teardown could not be verified") from (
+                        remove_error
+                    )
+                self._container_may_exist = False
+            except RuntimeError as exc:
+                failures.append(exc)
+        if failures:
+            raise RuntimeError("fixture server teardown could not be verified") from failures[0]
 
     def __enter__(self) -> Self:
         self.start()

@@ -345,10 +345,10 @@ def run_destructive_loop(
 ) -> dict:
     sentinel_path = f"/tmp/ontofill-containment-sentinel-{uuid.uuid4().hex[:10]}"
     sentinel_value = uuid.uuid4().hex
-    ssh(f"printf %s {sentinel_value} > {sentinel_path}")
-    if ssh(f"cat {sentinel_path}").stdout.strip() != sentinel_value:
-        raise RuntimeError("host sentinel could not be created")
     try:
+        ssh(f"printf %s {sentinel_value} > {sentinel_path}")
+        if ssh(f"cat {sentinel_path}").stdout.strip() != sentinel_value:
+            raise RuntimeError("host sentinel could not be created")
         return _run_destructive_loop_locked(
             lake=lake,
             feed=feed,
@@ -364,7 +364,20 @@ def run_destructive_loop(
             sentinel_value=sentinel_value,
         )
     finally:
-        ssh(f"rm -f {sentinel_path}", check=False)
+        cleanup_error: Exception | None = None
+        try:
+            ssh(f"rm -f -- {sentinel_path}", check=False)
+        except RuntimeError:
+            # The command may have completed before its SSH response was lost; verify below.
+            pass
+        try:
+            absent = ssh(f"test ! -e {sentinel_path}", check=False)
+            if absent.returncode:
+                cleanup_error = RuntimeError("host sentinel still exists")
+        except RuntimeError as exc:
+            cleanup_error = exc
+        if cleanup_error is not None:
+            raise RuntimeError("host sentinel cleanup could not be verified") from cleanup_error
 
 
 def _run_destructive_loop_locked(

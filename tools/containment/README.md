@@ -35,8 +35,7 @@ never rewrites an existing line; every step id is unique.
 
 Reuses the engine's env (never print values). Needs:
 
-* `VULTR_INFERENCE_BASE_URL` + `ONTOFILL_GATEWAY_TOKEN` (or `VULTR_INFERENCE_API_KEY`)
-  — the screening gateway (R9).
+* `VULTR_INFERENCE_BASE_URL` + `ONTOFILL_GATEWAY_TOKEN` — the screening gateway (R9).
 * `ONTOFILL_SANDBOX_DOCKER_HOST=ssh://…` (and optionally `DOCKER_SSH_COMMAND`)
   — the sandbox VM with `runsc`.
 * the case's `lake.yaml` or `LAKE_ROOT`.

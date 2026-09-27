@@ -8,6 +8,7 @@ This module reuses the engine's own marker (`ontofill.inference.page_content`).
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
 import httpx
 from ontofill.inference.decision import GENERATOR_PREFERENCES
@@ -19,9 +20,12 @@ class Gateway:
 
     def __init__(self, *, client: httpx.Client | None = None, timeout: float = 60) -> None:
         self.base = os.environ.get("VULTR_INFERENCE_BASE_URL", "").rstrip("/")
-        self.token = os.environ.get("ONTOFILL_GATEWAY_TOKEN") or os.environ.get(
-            "VULTR_INFERENCE_API_KEY", ""
-        )
+        parsed = urlsplit(self.base)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("set VULTR_INFERENCE_BASE_URL to the screened gateway")
+        if parsed.hostname.lower().rstrip(".") == "api.vultrinference.com":
+            raise RuntimeError("set VULTR_INFERENCE_BASE_URL to the screened gateway")
+        self.token = os.environ.get("ONTOFILL_GATEWAY_TOKEN", "")
         if not self.base or not self.token:
             raise RuntimeError("set VULTR_INFERENCE_BASE_URL and ONTOFILL_GATEWAY_TOKEN")
         self.client = client or httpx.Client(timeout=timeout)

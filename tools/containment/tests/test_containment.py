@@ -15,6 +15,7 @@ from ontofill.lake import FileLake
 from ontofill.runfeed import RunFeed
 from ontofill.sandbox.jobs import validate_job_record
 
+from ontofill_containment import support as support_mod
 from ontofill_containment.gateway import Gateway
 from ontofill_containment.main import (
     quarantine_step,
@@ -375,8 +376,13 @@ def test_run_destructive_loop_appends_limit_kill_and_six_checkpoints(tmp_path):
                 self.files["sentinel"] = command.split()[2]
             elif command.startswith("cat "):
                 return subprocess.CompletedProcess(command, 0, self.files.get("sentinel", ""), "")
-            elif command.startswith("rm -f "):
+            elif command.startswith("rm -f -- "):
                 self.removed.append(command)
+                self.files.pop("sentinel", None)
+            elif command.startswith("test ! -e "):
+                return subprocess.CompletedProcess(
+                    command, 0 if "sentinel" not in self.files else 1, "", ""
+                )
             return subprocess.CompletedProcess(command, 0, "", "")
 
     def fake_repair(**kwargs):
@@ -423,6 +429,146 @@ def test_run_destructive_loop_appends_limit_kill_and_six_checkpoints(tmp_path):
     assert ssh.removed, "the sentinel must be cleaned up"
 
 
+def test_sentinel_cleanup_runs_when_initial_readback_fails():
+    from ontofill_containment import main as main_mod
+
+    calls = []
+
+    def ssh(command, *, timeout=15, check=True):
+        calls.append(command)
+        if command.startswith("cat "):
+            raise RuntimeError("synthetic readback failure")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="synthetic readback failure"):
+        main_mod.run_destructive_loop(
+            lake=None,
+            feed=None,
+            case_id="case",
+            run_id=RUN_ID,
+            provenance=PROV,
+            ssh=ssh,
+        )
+    assert any(command.startswith("rm -f -- ") for command in calls)
+    assert any(command.startswith("test ! -e ") for command in calls)
+
+
+def test_sentinel_cleanup_reports_unverified_deletion():
+    from ontofill_containment import main as main_mod
+
+    calls = []
+
+    def ssh(command, *, timeout=15, check=True):
+        calls.append(command)
+        if command.startswith("cat "):
+            return subprocess.CompletedProcess(command, 0, "wrong-value", "")
+        if command.startswith("rm -f -- "):
+            return subprocess.CompletedProcess(command, 1, "", "synthetic rm failure")
+        if command.startswith("test ! -e "):
+            return subprocess.CompletedProcess(command, 1, "", "still exists")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="sentinel cleanup could not be verified"):
+        main_mod.run_destructive_loop(
+            lake=None,
+            feed=None,
+            case_id="case",
+            run_id=RUN_ID,
+            provenance=PROV,
+            ssh=ssh,
+        )
+    assert any(command.startswith("rm -f -- ") for command in calls)
+    assert any(command.startswith("test ! -e ") for command in calls)
+
+
+def test_fixture_start_cleans_rule_and_container_after_rule_verification_fails(monkeypatch):
+    server_calls = []
+    iptables_calls = []
+    container_exists = False
+
+    monkeypatch.setattr(support_mod, "_remote_ssh_target", lambda: "sandbox")
+    monkeypatch.setattr(support_mod, "bridge_gateway", lambda: ("172.17.0.1", "172.17.0.0/16"))
+    monkeypatch.setattr(support_mod, "free_port", lambda: 23456)
+
+    def docker(*args, check=True, timeout=120, input_text=None):
+        nonlocal container_exists
+        server_calls.append(args)
+        if args[0] == "run":
+            container_exists = True
+            return subprocess.CompletedProcess(args, 0, "container-id", "")
+        if args[0] == "exec":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "rm":
+            container_exists = False
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "inspect" and not container_exists:
+            return subprocess.CompletedProcess(args, 1, "", "Error: No such container")
+        raise AssertionError(f"unexpected docker command: {args[0]}")
+
+    rule_exists = False
+
+    def iptables(*args, check=True):
+        nonlocal rule_exists
+        iptables_calls.append(args)
+        if args[0] == "-I":
+            rule_exists = True
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "-C" and rule_exists:
+            return subprocess.CompletedProcess(args, 1, "", "synthetic verification failure")
+        if args[0] == "-D":
+            rule_exists = False
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "-S":
+            return subprocess.CompletedProcess(args, 0, "*filter\n", "")
+        raise AssertionError(f"unexpected iptables command: {args[0]}")
+
+    monkeypatch.setattr(support_mod, "docker", docker)
+    monkeypatch.setattr(support_mod, "_host_iptables", iptables)
+    with pytest.raises(RuntimeError, match="fixture firewall rule could not be verified"):
+        support_mod.FixtureServer("hostile.html", "fixture").start()
+
+    assert [call[0] for call in iptables_calls] == ["-I", "-C", "-D", "-S"]
+    assert any(call[0] == "rm" for call in server_calls)
+    assert any(call[0] == "inspect" for call in server_calls)
+    assert not rule_exists and not container_exists
+
+
+def test_fixture_stop_attempts_container_removal_and_verification_after_firewall_error(
+    monkeypatch,
+):
+    server = support_mod.FixtureServer("hostile.html", "fixture")
+    server.port = 23456
+    server.subnet = "172.17.0.0/16"
+    server._rule_installed = True
+    server._container_may_exist = True
+    iptables_calls = []
+    docker_calls = []
+
+    def iptables(*args, check=True):
+        iptables_calls.append(args)
+        if args[0] == "-D":
+            raise RuntimeError("synthetic firewall delete failure")
+        if args[0] == "-S":
+            return subprocess.CompletedProcess(args, 0, f"--comment {server.comment}\n", "")
+        raise AssertionError(f"unexpected iptables command: {args[0]}")
+
+    def docker(*args, check=True, timeout=120, input_text=None):
+        docker_calls.append(args)
+        if args[0] == "rm":
+            raise RuntimeError("synthetic docker rm failure")
+        if args[0] == "inspect":
+            return subprocess.CompletedProcess(args, 1, "", "Error: No such container")
+        raise AssertionError(f"unexpected docker command: {args[0]}")
+
+    monkeypatch.setattr(support_mod, "_host_iptables", iptables)
+    monkeypatch.setattr(support_mod, "docker", docker)
+    with pytest.raises(RuntimeError, match="fixture server teardown could not be verified"):
+        server.stop()
+
+    assert [call[0] for call in iptables_calls] == ["-D", "-S"]
+    assert [call[0] for call in docker_calls] == ["rm", "inspect"]
+
+
 def test_hosts_referenced_filters_probe_hosts():
     from ontofill_containment.main import _hosts_referenced
 
@@ -432,7 +578,46 @@ def test_hosts_referenced_filters_probe_hosts():
     assert "ontofill-proof-denied-abc.invalid" not in hosts
 
 
-def test_gateway_requires_flag_and_reads_header():
+def test_gateway_requires_gateway_token_even_if_legacy_key_is_set(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, json={"data": [{"id": "glm-5.3-flash"}]})
+
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "https://gateway.example.test/v1")
+    monkeypatch.delenv("ONTOFILL_GATEWAY_TOKEN", raising=False)
+    monkeypatch.setenv("VULTR_INFERENCE_API_KEY", "synthetic-legacy")
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler), timeout=5) as client,
+        pytest.raises(RuntimeError, match="ONTOFILL_GATEWAY_TOKEN"),
+    ):
+        Gateway(client=client)
+    assert calls == []
+
+
+def test_gateway_rejects_direct_vultr_before_network_request(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, json={"data": [{"id": "glm-5.3-flash"}]})
+
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
+    monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", "synthetic-gateway")
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler), timeout=5) as client,
+        pytest.raises(RuntimeError, match="screened gateway"),
+    ):
+        Gateway(client=client)
+    assert calls == []
+
+
+def test_gateway_requires_flag_and_reads_header(monkeypatch):
     import httpx
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -445,20 +630,15 @@ def test_gateway_requires_flag_and_reads_header():
             headers={"X-BA-Gate": "flagged"},
         )
 
-    import os
-
-    os.environ["VULTR_INFERENCE_BASE_URL"] = "http://gateway.test/v1"
-    os.environ["ONTOFILL_GATEWAY_TOKEN"] = "synthetic"
-    try:
-        gw = Gateway(client=httpx.Client(transport=httpx.MockTransport(handler), timeout=5))
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", "synthetic")
+    with httpx.Client(transport=httpx.MockTransport(handler), timeout=5) as client:
+        gw = Gateway(client=client)
         out = gw.screen_page("<html>hi</html>", step_id="step:s")
-    finally:
-        os.environ.pop("VULTR_INFERENCE_BASE_URL", None)
-        os.environ.pop("ONTOFILL_GATEWAY_TOKEN", None)
     assert out["gate"] == "flagged" and out["screen"]["by"] == "gateway"
 
 
-def test_gateway_fails_closed_on_clean():
+def test_gateway_fails_closed_on_clean(monkeypatch):
     import httpx
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -466,14 +646,9 @@ def test_gateway_fails_closed_on_clean():
             return httpx.Response(200, json={"data": [{"id": "glm-5.3-flash"}]})
         return httpx.Response(200, json={}, headers={"X-BA-Gate": "clean"})
 
-    import os
-
-    os.environ["VULTR_INFERENCE_BASE_URL"] = "http://gateway.test/v1"
-    os.environ["ONTOFILL_GATEWAY_TOKEN"] = "synthetic"
-    try:
-        gw = Gateway(client=httpx.Client(transport=httpx.MockTransport(handler), timeout=5))
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", "synthetic")
+    with httpx.Client(transport=httpx.MockTransport(handler), timeout=5) as client:
+        gw = Gateway(client=client)
         with pytest.raises(RuntimeError, match="did not flag"):
             gw.screen_page("<html>hi</html>", step_id="step:s")
-    finally:
-        os.environ.pop("VULTR_INFERENCE_BASE_URL", None)
-        os.environ.pop("ONTOFILL_GATEWAY_TOKEN", None)
