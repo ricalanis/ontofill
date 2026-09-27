@@ -392,9 +392,9 @@ FORMAT: `uv run ruff check . && uv run ruff format --check .`.
 - [x] Add pinned `xlrd` to the networkless parse-pod image and dev test group; parse BIFF in the pod and add adapter format validation without an in-process legacy parser.
 - [x] Run managed attempt 2 for the focused DONE gate; record the exact failure and stop under the two-attempt rule.
   - `DONE`: 25 parser tests passed and 2 containment tests were skipped; Ruff then reported BLE001 on the three fail-closed malformed BIFF/OLE catches. Root authorized narrow suppressions and will verify the composed branch; this worktree has no green managed DONE result.
-- [ ] Commit the isolated parser patch and report SHA/checks/risks to root; do not push or deploy.
+- [x] Commit the isolated parser patch and report SHA/checks/risks to root; the parent composed gate passed.
 
 FILES: `sandbox/parse-pod/runner.py`, `sandbox/parse-pod/Dockerfile`, `src/ontofill/sandbox/parse.py`, `pyproject.toml`, `uv.lock`, `tests/test_sandbox_parse.py`, synthetic BIFF fixture, `GOAL.md`, `TODO.md`, `NOTES.md`.
 TASK: Add bounded legacy `.xls` BIFF parsing from bronze inside the runsc pod only, with explicit and auto detection, preserving six-checkpoint proof and default runsc refusal.
-DONE: managed tests prove BIFF parses as `xls` through the pod runner, XLSX stays distinct, runsc refusal is unchanged, and Ruff/lock/diff checks pass. Attempt 1 (red baseline) failed at the expected adapter/detection cases; no implementation gate has run yet.
+DONE: parent composed gate passed 52 tests/2 skips; full engine gate passed 541 tests/5 skips, Ruff lint, engine-owned format, lock and diff checks. Attempt 1 was the expected parser red baseline; attempt 2 needed a narrow Ruff BLE001 annotation, verified in the composed gate.
 FORMAT: Ruff format for changed Python files.

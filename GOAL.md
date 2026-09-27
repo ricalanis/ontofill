@@ -1,10 +1,10 @@
-# Current goal: R40 legacy XLS parsing in the runsc parse pod
+# Current goal: R40/R41 reviewed document downloads
 
-Parse legacy `.xls` BIFF only from bronze inside the networkless, resource-capped runsc parser pod using pinned maintained `xlrd`. Support explicit `xls` selection and auto-detection without routing BIFF through the XLSX parser; preserve the existing six-checkpoint trace/job and fail closed when runsc is unavailable. Cover the pod executor path with a synthetic BIFF workbook only.
+Pause P5 on off-domain document links from a trusted page; bind each source decision to its exact candidate digest; fetch only an approved exact host; parse legacy `.xls` BIFF from bronze inside the networkless, resource-capped runsc parser pod. Keep same-host GET behavior and six-checkpoint job proof.
 
-DONE (currently failing): `agent-progress run --task r40-xls-biff --paths sandbox/parse-pod/runner.py,sandbox/parse-pod/Dockerfile,src/ontofill/sandbox/parse.py,pyproject.toml,uv.lock,tests/test_sandbox_parse.py,tests/fixtures/r40_synthetic.xls,GOAL.md,TODO.md,NOTES.md --check r40-xls-parser-focused --strategy pinned-xlrd-networkless-biff --hypothesis 'Explicit and auto-detected BIFF files parse only through the runsc pod as xls; XLSX stays distinct, six checkpoints remain intact, and missing runsc refuses before container creation.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv lock --check && git diff --check'`
+DONE (passed locally): the managed `r40-composed/r40-full` gate passed 541 tests, 5 skips, Ruff lint, engine-owned format, lock and diff checks. The global format check still flags 24 unchanged PA/reference/runner files present on the base.
 
-Scope: parse-pod runner/image, the sandbox parse adapter, parser dependency declarations and lockfile, synthetic parse tests/fixture, and this worktree's task notes. Do not touch P5 phase/source-review/checkpoints/capture/workflow, PA-owned console/browser-agent, real case/APPROVED, secrets, VM, public main, or deploy.
+Scope: P5 source review and workflow pause, source candidate schema/checkpoints, the parse pod, sandbox adapter, synthetic tests and task notes. Do not touch PA-owned console/browser-agent, real case/APPROVED or secrets.
 
 # Prior goal: R35/R36 source capability and capture diagnostics
 
