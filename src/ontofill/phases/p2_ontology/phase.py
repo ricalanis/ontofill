@@ -344,7 +344,7 @@ def _complete_validated_json(
         if on_validation_error is not None:
             on_validation_error(purpose, attempt, reason)
         if attempt == _VALIDATION_ATTEMPTS:
-            if isinstance(validation_error, OntologyProposalErrors):
+            if structurally_valid_response is not None:
                 salvage_candidate = structurally_valid_response
                 salvage_error = validation_error
             else:
