@@ -408,7 +408,9 @@ def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:
 
 
 def _compile_shapes(ontology: dict) -> str:
+    receipt = json.dumps(ontology["generated_by"], ensure_ascii=False, sort_keys=True)
     lines = [
+        f"# generated_by: {receipt}",
         "@prefix sh: <http://www.w3.org/ns/shacl#> .",
         "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .",
         "@prefix onto: <https://ontofill.dev/ontology/> .",

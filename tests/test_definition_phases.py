@@ -197,5 +197,8 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
     assert ontology["taxonomies"][0]["children"][0]["id"] == "company"
     assert [factor["id"] for factor in ontology["factors"]] == ["room_type"]
     assert ontology["taxonomies"][0]["soundness"] == 1
-    shape = Graph().parse(tmp_path / "02-ontology/shapes.ttl", format="turtle")
+    shape_path = tmp_path / "02-ontology/shapes.ttl"
+    receipt = shape_path.read_text(encoding="utf-8").splitlines()[0]
+    assert json.loads(receipt.removeprefix("# generated_by: ")) == ontology["generated_by"]
+    shape = Graph().parse(shape_path, format="turtle")
     assert len(shape) > 0

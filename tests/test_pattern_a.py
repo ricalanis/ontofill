@@ -151,7 +151,9 @@ def test_html_p5_repairs_against_bronze_and_promotes_macro_into_feed(tmp_path: P
     promoted = [step for step in result.trace if step.get("event") == "crystallization"]
     assert len(promoted) == 1
     macro = tmp_path / "05-macros/source-r4/v1"
-    assert (macro / "extractor.py").read_text() == _PATCHED_CODE
+    promoted_code = (macro / "extractor.py").read_text()
+    assert promoted_code.endswith(_PATCHED_CODE)
+    assert json.loads(promoted_code.splitlines()[0].removeprefix("# generated_by: ")) == provenance
     manifest = json.loads((macro / "manifest.json").read_text())
     assert manifest["code_key"] == repairs[-1]["repair"]["code_key"]
     assert manifest["test"] == {"pages": 1, "precision": 1.0, "coverage": 1.0}
@@ -280,7 +282,12 @@ def test_repaired_existing_html_macro_is_promoted_as_next_version(tmp_path: Path
         "pass",
     ]
     assert any(step.get("event") == "crystallization" for step in repaired.trace)
-    assert (tmp_path / "05-macros/source-r4/v2/extractor.py").read_text() == _PATCHED_CODE
+    promoted_code = (tmp_path / "05-macros/source-r4/v2/extractor.py").read_text()
+    assert promoted_code.endswith(_PATCHED_CODE)
+    assert (
+        json.loads(promoted_code.splitlines()[0].removeprefix("# generated_by: "))
+        == next_provenance
+    )
     assert sorted(path.name for path in (tmp_path / "05-macros/source-r4").iterdir()) == [
         "v1",
         "v2",

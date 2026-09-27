@@ -52,6 +52,7 @@ def _read_compatible_macro(
     *,
     ontology_fingerprint: str,
     target_fields: list[str],
+    backend: str,
 ) -> tuple[int, str] | None:
     if not source_root.exists():
         return None
@@ -70,6 +71,7 @@ def _read_compatible_macro(
             manifest.get("format") != "html"
             or manifest.get("ontology_fingerprint") != ontology_fingerprint
             or manifest.get("target_fields") != target_fields
+            or manifest.get("generated_by", {}).get("backend") != backend
             or manifest.get("code_sha256") != hashlib.sha256(code.encode("utf-8")).hexdigest()
         ):
             continue
@@ -172,7 +174,11 @@ def _promote(
     stage = source_root / f".promote-{uuid.uuid4().hex}"
     stage.mkdir()
     try:
-        code_bytes = code.encode("utf-8")
+        receipt = json.dumps(generated_by, ensure_ascii=False, sort_keys=True)
+        while code.startswith("# generated_by: "):
+            code = code.partition("\n")[2]
+        source = f"# generated_by: {receipt}\n{code}"
+        code_bytes = source.encode("utf-8")
         manifest = {
             "format": "html",
             "version": version,
@@ -229,6 +235,7 @@ def repair_html_extractor(
             source_root,
             ontology_fingerprint=ontology_fingerprint,
             target_fields=target_fields,
+            backend=generated_by["backend"],
         )
         if compatible is None:
             initial_code = _generate_code(
