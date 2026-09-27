@@ -1,3 +1,9 @@
+# R50 document context
+
+- [x] Add red synthetic multi-sheet workbook test with a title row, name/identifier headers, four sampled entity rows, and a digest-approved link from a policy-matched parent.
+- [x] Pass bounded screened per-sheet headers and rows into critic, attach them to property_evidence, and verify parent lineage before tier inheritance.
+- [ ] Run focused and full managed gates; pre-push scan and push only main; deploy to VM only after a fresh zero-engine check; mark READY FOR VERIFY.
+
 # R48 broad source recall
 
 - [x] Add red synthetic regressions for parsed documents, approved packet reuse, priority, one-level portal links, inconclusive empty pages and capture receipts; the capture worker owns its bot-challenge fixture.

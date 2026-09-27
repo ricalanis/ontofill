@@ -1,3 +1,11 @@
+# Current goal: R50 parsed-document capability proof
+
+Approved, fingerprint-bound linked documents are parsed in runsc and their bounded per-sheet headers plus four sample rows reach the P3 critic and candidate property evidence. The approved document host inherits only its verified linking publisher tier. A synthetic certified-company spreadsheet with entity name and identifier becomes a confirmed source for exactly those fields.
+
+DONE: `uv run pytest -q tests/test_r50_document_context.py tests/test_r48_recall.py && uv run ruff check src/ontofill/phases/p3_fanout tests/test_r50_document_context.py && uv run ruff format --check src/ontofill/phases/p3_fanout tests/test_r50_document_context.py && python3 -m json.tool schemas/source-candidate.schema.json >/dev/null && git diff --check` (red baseline failed on the missing helpers; managed focused retry passed 31 tests, and composed full gate passed 608 tests/5 skips, Ruff lint/format, schema and diff checks). Pre-push scan and zero-engine VM deploy follow.
+
+Constraints: no real case or APPROVED edits, no PA-owned code, no case-specific source domain, no unscreened page text in prompts, bounded row/cell payloads.
+
 # Current goal: R48 broad source recall
 
 P3 must reach sandbox-confirmed entity-level official source routes across open data, transparency, registries, lists, datasets, APIs and documents, without treating empty portals or bot challenges as negative capability evidence. Prioritize trusted roots, explore one level of portal links, and retain visible capture failures. Unknown publishers keep the human source gate.
