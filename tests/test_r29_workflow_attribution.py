@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from ontofill import workflow
 from ontofill.inference import VultrDecisionClient
 from ontofill.workflow import _publish_decision_calls, run_case
+from tests.approval_support import bind_approval
 
 
 @pytest.mark.parametrize("supplied_run_id", [None, "run-r29-explicit"])
@@ -66,3 +70,62 @@ def test_model_call_trace_uses_gateway_step_id() -> None:
     assert trace[0]["run_id"] == "run-r29"
     assert trace[0]["step_id"] == "step:gateway-r29"
     assert feed.steps == trace
+
+
+def test_standalone_refine_attributes_gateway_catalog_to_existing_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    case = tmp_path / "case"
+    ontology_path = case / "02-ontology/ontology.json"
+    ontology_path.parent.mkdir(parents=True)
+    ontology_path.write_text("{}\n", encoding="utf-8")
+    approval = bind_approval(
+        case,
+        ["02-ontology/ontology.json"],
+        {"approver": "Test Reviewer", "date": "2026-09-27", "checkpoint": "ontology"},
+    )
+    (ontology_path.parent / "APPROVED").write_text(json.dumps(approval), encoding="utf-8")
+
+    class Lake:
+        def read_key(self, _key: str) -> bytes:
+            return b""
+
+    class Store:
+        def list_for_run(self, _run_id: str) -> list[object]:
+            return [object()]
+
+    monkeypatch.setattr(
+        workflow,
+        "_existing_run",
+        lambda *_args, **_kwargs: (
+            "test-case",
+            Lake(),
+            "run-r29-refine",
+            {
+                "generated_by": {
+                    "backend": "vultr",
+                    "model": "test-model",
+                    "at": "2026-09-27T00:00:00Z",
+                }
+            },
+        ),
+    )
+    monkeypatch.setattr(workflow, "silver_store_from_env", Store)
+    monkeypatch.setattr(
+        workflow,
+        "replay_bronze_observations",
+        lambda **_kwargs: SimpleNamespace(
+            parse_job_records=[], parse_trace_steps=[], observations=[]
+        ),
+    )
+    monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", "synthetic-token")
+    seen: list[str] = []
+
+    def capture_factory(*, run_id: str):
+        seen.append(run_id)
+        raise RuntimeError("catalog intercepted")
+
+    monkeypatch.setattr(VultrDecisionClient, "from_env", capture_factory)
+    with pytest.raises(RuntimeError, match="catalog intercepted"):
+        workflow.refine_case(case, run_id="run-r29-refine")
+    assert seen == ["run-r29-refine"]

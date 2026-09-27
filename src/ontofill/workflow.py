@@ -1519,7 +1519,7 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
             raise RuntimeError(
                 "live refine requires ONTOFILL_GATEWAY_TOKEN for the screened gateway"
             )
-        decision = VultrDecisionClient.from_env()
+        decision = VultrDecisionClient.from_env(run_id=run_id)
     decision_start = len(getattr(decision, "call_log", []))
     refined = refine_observations(
         observations,

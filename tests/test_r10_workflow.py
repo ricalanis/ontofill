@@ -75,10 +75,16 @@ def test_live_refine_appends_classifier_usage_and_exports_measured_coverage(
     case_dir, lake, run_id = _refine_fixture(tmp_path, monkeypatch, backend="vultr")
     monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", "synthetic-token")
     decision = SimpleNamespace(call_log=[])
+    catalog_runs: list[str] = []
+
+    def attributed_factory(_cls, *, run_id: str):
+        catalog_runs.append(run_id)
+        return decision
+
     monkeypatch.setattr(
         workflow.VultrDecisionClient,
         "from_env",
-        classmethod(lambda _cls: decision),
+        classmethod(attributed_factory),
     )
 
     def fake_refine(_observations, *, decision, **_kwargs):
@@ -110,6 +116,7 @@ def test_live_refine_appends_classifier_usage_and_exports_measured_coverage(
     monkeypatch.setattr(workflow, "export_run", fake_export)
 
     assert workflow.refine_case(case_dir, run_id=run_id) == 0
+    assert catalog_runs == [run_id]
     assert exported["taxonomy_classified"] is True
     steps = [
         json.loads(line)
