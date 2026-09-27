@@ -76,3 +76,26 @@ def test_every_write_is_403_with_a_forged_group_header(viewer, cases_dir, tmp_pa
 def test_unknown_mode_is_refused(cases_dir):
     with pytest.raises(ValueError, match="readonly"):
         settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "judges"})
+
+
+def test_hand_typed_confirmations_render_nothing(viewer):
+    """A readonly console never decides, so a confirmation query string (?runner=start, ?kill=on, ?done=…) must not
+    render a banner that reads as if something happened."""
+    for url, text in (
+        ("/cases/libraries?runner=start", "Start requested"),
+        ("/?kill=on", "Kill switch on:"),
+        ("/cases/libraries/approvals?done=01-scope", 'role="status"'),
+        ("/cases/libraries/manage?done=archive", "Archived."),
+    ):
+        r = viewer.get(url, headers=FORGED)
+        assert r.status_code == 200 and text not in r.text, url
+
+
+def test_the_same_confirmations_render_on_a_deciding_console(client):
+    for url, text in (
+        ("/cases/libraries?runner=start", "Start requested"),
+        ("/?kill=on", "Kill switch on:"),
+        ("/cases/libraries/approvals?done=01-scope", 'role="status"'),
+        ("/cases/libraries/manage?done=archive", "Archived."),
+    ):
+        assert text in client.get(url).text, url

@@ -5,7 +5,7 @@
 {% set done = request.query_params.get("done") %}
 {% block main %}
 {{ v.head("Manage the case", "Edit the question while no run exists; afterwards revise it as a new case version (the PRD is bound to its brief). Archive hides the case and keeps every file; restore brings it back.", "cases.json · brief.md · decisions.jsonl") }}
-{% if done %}<p class="notice" role="status">{{ {"brief": "The question was updated.", "meta": "Saved.", "revise": "A new case version was created.", "archive": "Archived.", "restore": "Restored."}.get(done, "Done.") }}</p>{% endif %}
+{% if done and identity_mode != "readonly" %}<p class="notice" role="status">{{ {"brief": "The question was updated.", "meta": "Saved.", "revise": "A new case version was created.", "archive": "Archived.", "restore": "Restored."}.get(done, "Done.") }}</p>{% endif %}
 {% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}
 {% include "_question.html" %}
 <div class="panels">
