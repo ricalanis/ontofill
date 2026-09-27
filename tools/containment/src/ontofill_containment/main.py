@@ -343,16 +343,49 @@ def run_destructive_loop(
     ssh: Callable = ssh_run,
     leftover_check: Callable[[], list[str]] | None = None,
 ) -> dict:
-    code = fixture_text(DESTRUCTIVE_FIXTURE)
-    limits = SandboxLimits(timeout_s=3, max_steps=2)
-    capture_key = lake.put_bytes(b"<p>x</p>", {"content_type": "text/html"})
-    cases = [CaptureCase(capture_key, ({"name": "x"},))]
-
     sentinel_path = f"/tmp/ontofill-containment-sentinel-{uuid.uuid4().hex[:10]}"
     sentinel_value = uuid.uuid4().hex
     ssh(f"printf %s {sentinel_value} > {sentinel_path}")
     if ssh(f"cat {sentinel_path}").stdout.strip() != sentinel_value:
         raise RuntimeError("host sentinel could not be created")
+    try:
+        return _run_destructive_loop_locked(
+            lake=lake,
+            feed=feed,
+            case_id=case_id,
+            run_id=run_id,
+            provenance=provenance,
+            repair=repair,
+            probe=probe,
+            docker_cmd=docker_cmd,
+            ssh=ssh,
+            leftover_check=leftover_check,
+            sentinel_path=sentinel_path,
+            sentinel_value=sentinel_value,
+        )
+    finally:
+        ssh(f"rm -f {sentinel_path}", check=False)
+
+
+def _run_destructive_loop_locked(
+    *,
+    lake,
+    feed: RunFeed,
+    case_id: str,
+    run_id: str,
+    provenance: Mapping,
+    repair: Callable,
+    probe: Callable,
+    docker_cmd: Callable,
+    ssh: Callable,
+    leftover_check: Callable[[], list[str]] | None,
+    sentinel_path: str,
+    sentinel_value: str,
+) -> dict:
+    code = fixture_text(DESTRUCTIVE_FIXTURE)
+    limits = SandboxLimits(timeout_s=3, max_steps=2)
+    capture_key = lake.put_bytes(b"<p>x</p>", {"content_type": "text/html"})
+    cases = [CaptureCase(capture_key, ({"name": "x"},))]
 
     def patch_must_not_run(_feedback) -> str:
         raise AssertionError("a limit stop must not ask for a patch")
@@ -420,7 +453,6 @@ def run_destructive_loop(
         provenance=provenance,
     )
     feed.append_step(step)
-    ssh(f"rm -f {sentinel_path}", check=False)
     return {
         "limit_kill": limit_step["step_id"],
         "reason": outcome.failure_reason,
