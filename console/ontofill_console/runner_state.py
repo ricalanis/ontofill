@@ -131,6 +131,11 @@ def line(root: Path, case_id: str) -> dict:
         text = "Stopped: budget"
     elif state == "failed":
         text = "Stopped: the last run failed (see the inbox); Resume retries once"
+    elif state == "needs_human":
+        text = (
+            "Needs you: the engine found no authoritative source; revise the brief or the PRD's authority policy, "
+            "then start a new run"
+        )
     elif state == "done":
         text = "Done"
     elif state:
@@ -163,6 +168,7 @@ def events(root: Path, limit: int = 200) -> list[dict]:
 
 
 INBOX_KINDS = {
+    "needs-human": ("need", "Runner: needs you, no authoritative source found"),
     "failed": ("block", "Runner: the run failed"),
     "budget_stop": ("block", "Runner stopped: budget reached"),
     "killed": ("pause", "Runner stopped by the kill switch"),
@@ -177,6 +183,10 @@ def inbox_items(root: Path, case_ids: set[str]) -> list[dict]:
             latest[(ev["case_id"], ev["kind"])] = ev
     items = []
     for (cid, kind), ev in latest.items():
+        if kind == "needs-human":  # only while the case still waits on a person (a new run clears it)
+            cur = status(root, cid)
+            if cur.get("state") != "needs_human" or (cur.get("run_id") and cur.get("run_id") != ev.get("run_id")):
+                continue
         st, title = INBOX_KINDS[kind]
         detail = (ev.get("detail") or "").splitlines()
         items.append(

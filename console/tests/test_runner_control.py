@@ -123,3 +123,31 @@ def test_runner_line_texts(tmp_path):
     assert runner_state.line(root, "a")["text"] == "Stopped: budget"
     (root / "KILL").write_text("on")
     assert runner_state.line(root, "a")["text"] == "Runner off (kill switch)"
+
+
+def test_needs_human_is_a_needs_you_strip_while_it_lasts(cases_dir, tmp_path):
+    """R28: P3 found no authoritative source; the runner's needs_human state is the inbox's 'needs you'."""
+    root = tmp_path / "runner"
+    (root / "cases" / "libraries").mkdir(parents=True)
+    reason = "no authoritative source found for library"
+    status_file = root / "cases" / "libraries" / "status.json"
+    status_file.write_text(json.dumps({"state": "needs_human", "run_id": "run-y", "phase": 3, "reason": reason}))
+    runner_state.append_line(
+        root / "events.jsonl",
+        {
+            "ts": "2026-09-27T07:00:00+00:00",
+            "case_id": "libraries",
+            "kind": "needs-human",
+            "detail": f"{reason} | needs you: revise the brief or PRD authority policy, then start a new run",
+            "run_id": "run-y",
+        },
+    )
+    assert runner_state.line(root, "libraries")["text"].startswith("Needs you: the engine found no authoritative")
+    c = client(cases_dir, tmp_path)
+    inbox = c.get("/api/viz/inbox", headers=GROUPS).json()
+    [strip] = [s for s in inbox["strips"] if s["kind"] == "runner_needs-human"]
+    assert strip["state"] == "need" and "run-y" in strip["detail"] and reason in strip["detail"]
+    assert inbox["needs_you"] >= 1
+    status_file.write_text(json.dumps({"state": "running", "run_id": "run-z"}))  # a person started a new run
+    inbox = c.get("/api/viz/inbox", headers=GROUPS).json()
+    assert not [s for s in inbox["strips"] if s["kind"] == "runner_needs-human"]
