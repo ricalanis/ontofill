@@ -11,6 +11,7 @@ import tempfile
 import unicodedata
 from collections.abc import Callable
 from copy import deepcopy
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from jsonschema import ValidationError
@@ -200,6 +201,14 @@ def _jurisdiction_aliases(jurisdiction: str) -> set[str]:
     return aliases
 
 
+def _kind_token_matches(subject_token: str, kind_token: str) -> bool:
+    """Allow close cross-language cognates only in an explicitly named publisher kind."""
+    return subject_token == kind_token or (
+        min(len(subject_token), len(kind_token)) >= 4
+        and SequenceMatcher(None, subject_token, kind_token).ratio() >= 0.84
+    )
+
+
 def _named_secondary_matches(
     subject_text: str, subject: set[str], publishers: list[dict]
 ) -> list[dict]:
@@ -268,23 +277,27 @@ def _named_secondary_matches(
         longest = max(len(item["kind"]) for item in direct_kinds)
         exact = [item for item in direct_kinds if len(item["kind"]) == longest]
         return exact if len(exact) == 1 else []
-    matches: list[dict] = []
+    owners_by_token: list[list[dict]] = []
     for token in subject:
         owners = [
             item
             for item in publishers
-            if token
-            in _subject_tokens(
-                f"{item['kind']} {item['rationale']} {' '.join(item['domains'])} "
-                f"{item.get('jurisdiction', '')}"
+            if any(
+                _kind_token_matches(token, kind_token)
+                for kind_token in _subject_tokens(item["kind"])
             )
         ]
-        if not owners or (len(owners) > 1 and not jurisdiction_scoped):
+        if not owners:
             return []
-        for item in owners:
-            if item not in matches:
-                matches.append(item)
-    return matches
+        owners_by_token.append(owners)
+    if jurisdiction_scoped:
+        return [item for item in publishers if any(item in owners for owners in owners_by_token)]
+    distinctive = [owners[0] for owners in owners_by_token if len(owners) == 1]
+    if not distinctive or any(
+        not any(item in owners for item in distinctive) for owners in owners_by_token
+    ):
+        return []
+    return [item for item in publishers if item in distinctive]
 
 
 def _claims_primary(rationale: str) -> bool:
@@ -383,6 +396,8 @@ def _ground_criteria(
 def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> None:
     publishers = document["authority_policy"]["trusted_publishers"]
     jurisdiction = document["authority_policy"]["jurisdiction"]
+    case_aliases = _jurisdiction_aliases(jurisdiction)
+    case_tokens = _tokens(jurisdiction) - JURISDICTION_SCOPE_WORDS
     jurisdiction_stems = {
         token[:4] for token in _tokens(jurisdiction) - JURISDICTION_SCOPE_WORDS if len(token) >= 4
     }
@@ -405,8 +420,13 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
                 item["tier"] = "primary"
     for clause in _secondary_clauses(revisions):
         for subject_text, subject in _secondary_subjects(clause):
+            named_codes = {code.casefold() for code in re.findall(r"\b[A-Z]{2,}\b", subject_text)}
+            foreign_scope = bool(named_codes) and not bool(named_codes & case_aliases)
             candidates = [item for item in publishers if item.get("tier") != "secondary"]
             for item in _named_secondary_matches(subject_text, subject, candidates):
+                item_tokens = _tokens(item.get("jurisdiction", "")) - JURISDICTION_SCOPE_WORDS
+                if foreign_scope and item.get("tier") == "primary" and item_tokens & case_tokens:
+                    continue
                 item["tier"] = "secondary"
 
 
@@ -455,7 +475,7 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
                 named_subject = " ".join(subject_text.split())[:160]
                 objections.append(
                     f"Human SECONDARY subject '{named_subject}' needs a SECONDARY-tier publisher "
-                    "whose kind names that subject and whose domains include a specific publisher domain"
+                    "whose kind names that subject and whose domains include a specific domain"
                 )
     return CheckResult(not objections, tuple(objections))
 

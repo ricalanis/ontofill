@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from ontofill.phases.p1_scope.phase import _authority_policy_check, _secondary_clauses
+from ontofill.phases.p1_scope.phase import (
+    _apply_human_authority_revisions,
+    _authority_policy_check,
+    _secondary_clauses,
+)
 
 ENGLISH_REVISION = (
     "DoD must be the case's: >=50 suppliers linked to real public contracts; "
@@ -121,3 +125,14 @@ def test_subjectless_secondary_fragments_do_not_create_objections() -> None:
     )
 
     assert result.passed, "; ".join(result.objections)
+
+
+def test_foreign_secondary_clause_does_not_demote_local_primary_registry() -> None:
+    document = _recorded_prd(_us_secondary_publishers())
+    local = document["authority_policy"]["trusted_publishers"][0]
+    local["kind"] = "Example Republic registros públicos"
+
+    _apply_human_authority_revisions(document, [{"reason": SPANISH_REVISION}])
+
+    assert local["tier"] == "primary"
+    assert _authority_policy_check(document, [{"reason": SPANISH_REVISION}]).passed

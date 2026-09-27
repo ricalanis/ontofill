@@ -1,9 +1,9 @@
 # Work list
 
 ## R26b live PRD authority clauses
-- [ ] Integrate the separately owned exact-text recorded regression.
-- [ ] Preserve abbreviations in secondary clauses and merge marker-only fragments with their subject.
-- [ ] Accept a specific-domain secondary publisher whose kind matches the clause subject; report the missing subject precisely.
+- [x] Integrate the separately owned exact-text recorded regression.
+- [x] Preserve abbreviations in secondary clauses and merge marker-only fragments with their subject.
+- [x] Accept a specific-domain secondary publisher whose kind matches the clause subject; report the missing subject precisely.
 - [ ] Run the full engine gate and Ruff, pre-push scan, push main, fast-forward the control VM, then tell the orchestrator to resume.
 FILES: `src/ontofill/phases/p1_scope/phase.py`, R26b tests and task records. The worker owns tests only; this lane owns the P1 source.
 TASK: make the real PRD authority objection satisfiable without hardcoding a case publisher/domain or changing the live case.
