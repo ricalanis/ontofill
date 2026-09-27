@@ -9,6 +9,7 @@ import pytest
 
 from ontofill import workflow
 from ontofill.lake import FileLake
+from tests.approval_support import bind_approval
 
 
 def _refine_fixture(tmp_path, monkeypatch, *, backend: str):
@@ -17,6 +18,17 @@ def _refine_fixture(tmp_path, monkeypatch, *, backend: str):
     ontology_path.parent.mkdir(parents=True)
     ontology_path.write_text(json.dumps({"shacl_path": "02-ontology/shapes.ttl"}))
     (case_dir / "02-ontology/dod-queries.json").write_text("{}")
+    if backend == "vultr":
+        (case_dir / "02-ontology/APPROVED").write_text(
+            json.dumps(
+                bind_approval(
+                    case_dir,
+                    ["02-ontology/ontology.json"],
+                    {"approver": "Test Reviewer", "date": "2026-09-27", "checkpoint": "ontology"},
+                )
+            ),
+            encoding="utf-8",
+        )
     lake = FileLake(tmp_path / "lake")
     monkeypatch.setattr(workflow, "_scratch_case", lambda _case_dir, _run_id: (case_dir, lake))
     run_id = "mock-r10" if backend == "recorded" else "run-r10"
