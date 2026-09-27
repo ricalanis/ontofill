@@ -31,6 +31,7 @@ def test_lifecycle_calls_and_bearer_token():
     assert sent["limits"] == {"memory_mb": 1024, "cpus": 1, "pids": 256, "timeout_s": 60, "max_steps": 5}
     assert sent["backend"] == "native" and sent["placement"] == "sandbox_vm"
     assert cell["cdp_url"].startswith("ws://127.0.0.1") and cell["isolation"]["egress"] == "allowlist proxy"
+    assert cell["isolation"]["runtime"] == "runsc" and cell["isolation"]["tier"] == 3
     assert p.record_step("cell:abc") == 3
     p.report_task_result("cell:abc", {"outcomes": []}, ok=False)
     assert result.calls[0].request.content and p.status("cell:abc")["state"] == "ready"

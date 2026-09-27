@@ -63,7 +63,10 @@ class OntofillHttpProvider:
         body = {"backend": backend, "allowed_domains": list(allowed_domains), "placement": placement,
                 "limits": SUBSTRATE_DEFAULTS | given}  # the substrate wants the complete mapping
         cell = self._call("POST", "/cells", body)
-        cell.setdefault("isolation", {"provider": self.name, "runtime": cell.get("runtime"),
+        # The substrate refuses to create a cell without gVisor runsc (it fails closed), so a created cell is runsc;
+        # the per-cell proof (host checkpoint) arrives with the teardown job_record.
+        cell.setdefault("isolation", {"provider": self.name, "runtime": cell.get("runtime") or "runsc", "tier": 3,
+                                      "runtime_basis": "required by the substrate at create",
                                       "egress": "allowlist proxy"})
         return cell
 
