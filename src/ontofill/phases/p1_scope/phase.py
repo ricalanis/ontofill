@@ -478,20 +478,31 @@ def draft_prd(
     digest = hashlib.sha256(
         json.dumps([brief, revisions, "prd-steering-v4"], ensure_ascii=False).encode()
     ).hexdigest()
+    # Migrate a cached draft made by the previous fingerprint formula while the
+    # runner still supplies its original budget. This changes only the cache key;
+    # the reviewed PRD bytes and any digest-bound approval stay untouched.
+    legacy_digest = hashlib.sha256(
+        json.dumps([brief, revisions, budget_usd, "prd-steering-v4"], ensure_ascii=False).encode()
+    ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
     if output.exists():
         document = load_json(output)
-        if (
-            document.get("generated_by", {}).get("backend") == decision.backend
-            and fingerprint_path.exists()
-            and fingerprint_path.read_text(encoding="utf-8").strip() == digest
-        ):
+        cached_digest = (
+            fingerprint_path.read_text(encoding="utf-8").strip()
+            if fingerprint_path.exists()
+            else None
+        )
+        if document.get("generated_by", {}).get(
+            "backend"
+        ) == decision.backend and cached_digest in {digest, legacy_digest}:
             try:
                 validate_document("global-prd", document)
             except ValidationError:
                 pass
             else:
                 if _authority_policy_check(document, revisions).passed:
+                    if cached_digest == legacy_digest and cached_digest != digest:
+                        fingerprint_path.write_text(digest + "\n", encoding="utf-8")
                     return document
     prompt = (
         "Draft the global PRD from this brief. Include personas, jobs, "
