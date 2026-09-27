@@ -68,10 +68,10 @@ to gVisor cells that hold no secrets.
 
 ```mermaid
 flowchart TB
-  people["People<br/>judges: password · approvers: SSO"] -->|HTTPS| nb["NetBird reverse proxy<br/>TLS + auth · zero inbound ports"]
+  people["People<br/>judges: password, read-only console<br/>approvers: SSO, approvers group"] -->|HTTPS| nb["NetBird reverse proxy<br/>TLS + auth · zero inbound ports"]
   nb -->|WireGuard| cp
   subgraph cp["VM 1 · control plane (Vultr VX1)"]
-    engine["Engine P1–P5 + runner"]
+    engine["Engine P1–P5<br/>+ runner: self-sustaining runs, pause, kill switch"]
     gw["Inference gateway<br/>only Vultr key · per-session tokens · page-text screening"]
     ctl["Browser controller"]
     ui["Console + product"]
@@ -82,13 +82,14 @@ flowchart TB
     ui --> db
   end
   gw -->|every LLM call| vsi["Vultr Serverless Inference"]
-  ctl -->|dispatch over NetBird · one way| sb
+  ctl -->|browser sessions over NetBird · one way| sb
+  engine -->|capture + parse jobs · one way| sb
   subgraph sb["VM 2 · sandbox host (Vultr VX1) · zero secrets"]
     cell["gVisor runsc cell<br/>Chromium or parse job<br/>mem · CPU · pids · time caps<br/>destroyed after every job"]
-    proxy["Egress allowlist proxy<br/>GET only"]
+    proxy["Egress allowlist proxy<br/>GET only · third parties blocked"]
     cell --> proxy
   end
-  proxy --> web["Public web<br/>allowlisted publisher hosts"]
+  proxy --> web["Public web<br/>approved publishers + their own sibling hosts"]
   engine -->|raw captures| bronze[("Vultr Object Storage<br/>bronze, content-addressed")]
 ```
 
@@ -104,11 +105,14 @@ flowchart LR
   c --> r["4 Revise<br/>answer each objection"]
   r --> k{"5 Check in code<br/>exit criteria pass?<br/>no blocking objection?"}
   k -->|not yet, within budget| c
+  k -->|budget spent| nh["Stop: needs a person<br/>with the reason and the evidence"]
   k -->|yes| h["6 Human gate<br/>approve · bound to the file's sha256"]
   h -->|deny + reason| p
   h -->|approve| next["Next phase"]
   s["Safety screen<br/>page text screened before any model;<br/>flagged pages quarantined"] -.-> p
   s -.-> c
+  t["Typed contract, given to planner and critic<br/>e.g. a rule predicate describes the violation<br/>that raises a flag"] -.-> p
+  t -.-> c
 ```
 
 The same loop drafts the PRD (P1), the ontology (P2), judges sources (P3), writes each per-source plan (P4), and
@@ -124,10 +128,12 @@ flowchart LR
   subgraph cell["Execute in a gVisor cell · zero secrets"]
     d0["D0 download + parse"] --> d1["D1 macro"] --> s1["S1 agent loop<br/>+ Vultr vision verify"] --> s2["S2 Skyvern"]
   end
+  p3cap[("P3 document captures<br/>with six-checkpoint proof")] -.->|adopted, no second fetch| d0
+  s1 -.->|anything beyond a read-only GET| gate["Person approves first<br/>screenshot · intended action · risk tier"]
   cell --> bronze[("Bronze<br/>raw captures")]
   d1 <-->|failing extractor| pa["Pattern A: write → test in a networkless cell<br/>→ stderr fed back → patch → promote to a macro"]
   bronze --> silver[("Silver<br/>observations + evidence<br/>conflicts kept")]
-  silver --> refine["Refine<br/>reconcile · SHACL"] --> gold[("Gold<br/>values with receipts")]
+  silver --> refine["Refine<br/>reconcile · SHACL · rules raise flags"] --> gold[("Gold<br/>values with receipts")]
   gold --> dod{"DoD met?"}
   dod -->|gap| reopen["Reopen P3 sources · P4 plan · P2 ontology (human gate)"]
   reopen -.-> plan
