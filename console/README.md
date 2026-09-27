@@ -46,6 +46,19 @@ Env: `ONTOFILL_CONSOLE_IDENTITY` (`sso-group` | `sso` | `local`), `ONTOFILL_CONS
 `X-NetBird-Groups`), `ONTOFILL_CONSOLE_APPROVER_GROUP` (default `approvers`), `ONTOFILL_CONSOLE_DIRECT_DENY`,
 `ONTOFILL_CONSOLE_IDENTITY_HEADER` (sso mode).
 
+## Cases: a data-driven registry (CONTRACT v1.0.6)
+
+`ONTOFILL_CASES_ROOT` points at the cases root, shared with the runner and deploy. `cases.json` lists every case:
+`{id, title, path, lake, lake_kind, budget_usd, to_phase, created_by, created_at, archived, archived_at, archived_by,
+version, supersedes, superseded_by, brief_sha256}`. Paths are relative to the root for cases created here, or absolute
+for migrated ones (mounted at identical paths). It is written atomically under a lock on `cases.json.lock`, and the
+console picks up changes on the next request. Create a case at `/cases/new`: the question becomes `brief.md` exactly as
+typed. The lake is `lake.template.yaml` with `case_id` set, or a scratch folder. "Start now" hands the case to the
+runner. The brief and budget are editable only until a run exists (or a start is requested); after that, "Revise the
+question" makes a new version and archives the old one. Archive/restore never deletes files. Every write needs the
+approver identity and is logged in the case's `decisions.jsonl`. `ONTOFILL_CONSOLE_CASES` still works as a read-only
+fallback, merged under the registry. `ONTOFILL_CASES_MAX_BUDGET_USD` caps the per-case budget (default 10).
+
 ## Run it
 
 ```bash

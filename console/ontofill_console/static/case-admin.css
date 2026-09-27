@@ -1,0 +1,13 @@
+/* Case CRUD forms (v1.0.6). Tokens only. */
+.case-form { display: grid; gap: var(--space-2xs); max-width: 760px; }
+.case-form label { font-weight: 600; font-size: var(--text-sm); margin-top: var(--space-xs); }
+.case-form input[type="text"], .case-form input[type="number"], .case-form textarea, .case-form select {
+  font: var(--text-base) var(--font-ui); color: var(--fg); background: var(--strip); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); padding: 6px 8px; width: 100%; max-width: 100%; }
+.case-form textarea { font-family: var(--font-ui); line-height: 1.45; resize: vertical; }
+.case-form .hint { color: var(--fg-3); font-size: var(--text-xs); margin: 0; }
+.case-form__row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: var(--space-md); }
+.case-form__lake { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--space-xs) var(--space-sm); display: grid; gap: 4px; }
+.case-form__lake legend { font-weight: 600; font-size: var(--text-sm); }
+.case-form .check { font-weight: 400; display: flex; gap: 6px; align-items: baseline; margin-top: 4px; }
+.case-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin: 0 0 var(--space-md); }
