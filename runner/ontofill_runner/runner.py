@@ -162,7 +162,13 @@ class Runner:
                 self.state.set_status(cid, seen_start_at=start.get("at"))
                 self.state.event(cid, "start_requested", f"by {start.get('by') or '?'}")
             trigger = {"kind": "started", "run_id": "run-" + uuid.uuid4().hex[:12],
-                       "to_phase": int(start.get("to_phase") or self.cfg.to_phase), "handled_start_at": start["at"]}
+                       "to_phase": int(start.get("to_phase") or self.cfg.to_phase),
+                       "handled_start_at": start["at"]}
+        elif (status.get("state") == "killed" and not killed and status.get("run_id") == run_id and run_id
+              and lstatus.get("state") not in ("paused", "done", "completed", "finished")):
+            # this runner stopped the run mid-phase with the kill switch; with the switch lifted, relaunch the SAME run
+            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.cfg.to_phase, "after_kill": True,
+                       "last_trigger": f"after-kill:{run_id}:{status.get('updated_at') or ''}"}
         elif lstatus.get("state") == "paused" and lstatus.get("checkpoint_pending"):
             cp = lstatus["checkpoint_pending"]
             sha = decision_for(spec.case_dir, cp)
@@ -191,7 +197,7 @@ class Runner:
         if paused:
             self._transition(cid, "paused", run_id=trigger["run_id"])
             return
-        if lstatus.get("state") == "running" and trigger["kind"] == "resumed":
+        if lstatus.get("state") == "running" and trigger["kind"] == "resumed" and not trigger.get("after_kill"):
             return  # someone (an operator CLI) is running it right now
         spent = self.case_spent(cid)
         budget = self.case_budget(cid)
@@ -236,7 +242,8 @@ class Runner:
             if trigger.get(key):
                 fields[key] = trigger[key]
         self.state.set_status(cid, state="running", running_since=at, **fields)
-        detail = (f"resumed after the {trigger.get('checkpoint')} decision" if trigger["kind"] == "resumed"
+        detail = ("resumed after the kill switch was lifted" if trigger.get("after_kill")
+                  else f"resumed after the {trigger.get('checkpoint')} decision" if trigger["kind"] == "resumed"
                   else f"new run to phase {trigger['to_phase']}")
         self.state.event(cid, trigger["kind"], detail, run_id=run_id)
         log.info("case %s: %s %s (pid %s)", cid, trigger["kind"], run_id, proc.pid)

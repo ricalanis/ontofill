@@ -227,3 +227,27 @@ def test_a_finished_proof_run_does_not_hide_the_paused_run(setup, monkeypatch):
     run_until_idle(r)
     c = calls(setup)
     assert len(c) == 1 and c[0]["run_id"] == "run-abc"
+
+
+def test_lifting_the_kill_switch_relaunches_the_interrupted_run(setup, monkeypatch):
+    """A run stopped mid-phase by the kill switch (its lake status still says running) is relaunched with the SAME
+    run id once the switch is lifted, not left killed forever."""
+    monkeypatch.setenv("FAKE_MODE", "sleep")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    r.poll_once()
+    assert "c1" in r.children
+    run = setup["lake"] / "runs" / "c1" / "run-abc" / "status.json"
+    run.write_text(json.dumps({"state": "running", "phase": 2}))  # the engine was mid-phase when stopped
+    (setup["cfg"].state_dir / "KILL").write_text("on")
+    run_until_idle(r, timeout=8)
+    assert r.state.status("c1")["state"] == "killed" and not r.children
+    (setup["cfg"].state_dir / "KILL").unlink()
+    r.env["FAKE_MODE"] = "pause:factors"  # the relaunched engine now pauses at the next checkpoint
+    run_until_idle(r, timeout=8)
+    assert calls(setup)[-1]["run_id"] == "run-abc"  # the relaunch is the same run
+    st = r.state.status("c1")
+    assert st["state"] == "waiting_approval" and st["checkpoint"] == "factors" and st["run_id"] == "run-abc"
+    kinds = [e["kind"] for e in events(setup)]
+    assert "killed" in kinds and kinds[-2:] == ["resumed", "paused_at_checkpoint"]
+    assert any(e.get("detail") == "resumed after the kill switch was lifted" for e in events(setup))
