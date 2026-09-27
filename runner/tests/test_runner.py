@@ -262,3 +262,29 @@ def test_budget_arg_is_the_constant_case_cap(setup, monkeypatch):
     r = Runner(setup["cfg"], env=dict(os.environ))
     run_until_idle(r)
     assert [c["budget"] for c in calls(setup)] == ["1.00"]
+
+
+def test_registry_is_reread_each_tick_with_budget_clamp_and_archive(setup, tmp_path, monkeypatch):
+    """CONTRACT v1.0.6: cases.json under ONTOFILL_CASES_ROOT is the registry; new cases appear without a restart,
+    archived ones are skipped, budgets are clamped by the global cap, relative paths can't escape the root."""
+    root = tmp_path / "cases-root"
+    root.mkdir()
+    cfg = setup["cfg"]
+    cfg.cases_root, cfg.env_cases, cfg.global_usd = root, dict(cfg.cases), 5.0
+    r = Runner(cfg, env=dict(os.environ))
+    r.refresh_cases()  # no registry yet: the env cases stay
+    assert set(r.cfg.cases) == {"c1"}
+    new = root / "n1" / "case"
+    new.mkdir(parents=True)
+    (root / "cases.json").write_text(json.dumps({"version": 1, "cases": [
+        {"id": "n1", "path": "n1/case", "budget_usd": 50, "to_phase": 2},
+        {"id": "old", "path": "old/case", "archived": True},
+        {"id": "esc", "path": "../outside/case"},
+        {"id": "c1", "path": str(setup["case"]), "budget_usd": 0.5}]}))
+    r.poll_once()
+    assert set(r.cfg.cases) == {"c1", "n1"}  # archived and escaping entries are ignored
+    assert r.case_budget("n1") == 5.0 and r.case_budget("c1") == 0.5  # clamped by the global cap
+    assert r.case_to_phase("n1") == 2 and r.case_to_phase("c1") == 5
+    (root / "cases.json").write_text("{not json")  # a torn write keeps the last good copy
+    r.refresh_cases()
+    assert set(r.cfg.cases) == {"c1", "n1"}

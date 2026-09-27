@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import Config
+from .config import Config, load_registry
 from .lake import CaseLake, lake_for
 from .state import State, decision_for, now
 
@@ -115,10 +115,40 @@ class Runner:
         return total
 
     def case_budget(self, cid: str) -> float:
-        return self.cfg.budgets.get(cid, self.cfg.default_case_usd)
+        usd = self.cfg.budgets.get(cid, self.cfg.default_case_usd)
+        return min(usd, self.cfg.global_usd) if self.cfg.global_usd is not None else usd
+
+    def case_to_phase(self, cid: str) -> int:
+        return self.cfg.to_phases.get(cid, self.cfg.to_phase)
+
+    def refresh_cases(self) -> None:
+        """Re-read the data-driven registry each tick; env cases are a fallback under it (registry wins). A missing or
+        malformed registry keeps the last good copy; cases that disappear or become archived stop being considered
+        (a running engine for them keeps being policed until it exits)."""
+        if self.cfg.cases_root is None:
+            return
+        try:
+            reg_cases, reg_budgets, reg_phases = load_registry(self.cfg.cases_root)
+        except (OSError, ValueError) as exc:
+            if not getattr(self, "_registry_ok", False):
+                log.warning("case registry unreadable (%s); using the env cases", type(exc).__name__)
+                running = {c: s for c, s in self.cfg.cases.items() if c in self.children}
+                self.cfg.cases = {**self.cfg.env_cases, **running}
+            return
+        self._registry_ok = True
+        merged = {**self.cfg.env_cases, **reg_cases}
+        for cid, spec in merged.items():
+            if cid in self.cfg.cases and self.cfg.cases[cid].case_dir != spec.case_dir:
+                self._lakes.pop(cid, None)
+        for cid in self.children:  # never drop a case whose engine is still running
+            merged.setdefault(cid, self.cfg.cases[cid])
+        self.cfg.cases = merged
+        self.cfg.budgets = {**self.cfg.env_budgets, **reg_budgets}
+        self.cfg.to_phases = reg_phases
 
     # --- loop ---------------------------------------------------------------------------------------------------
     def poll_once(self) -> None:
+        self.refresh_cases()
         killed = self.state.killed
         glob = self.global_spent()
         for cid in self.cfg.cases:
@@ -162,12 +192,12 @@ class Runner:
                 self.state.set_status(cid, seen_start_at=start.get("at"))
                 self.state.event(cid, "start_requested", f"by {start.get('by') or '?'}")
             trigger = {"kind": "started", "run_id": "run-" + uuid.uuid4().hex[:12],
-                       "to_phase": int(start.get("to_phase") or self.cfg.to_phase),
+                       "to_phase": int(start.get("to_phase") or self.case_to_phase(cid)),
                        "handled_start_at": start["at"]}
         elif (status.get("state") == "killed" and not killed and status.get("run_id") == run_id and run_id
               and lstatus.get("state") not in ("paused", "done", "completed", "finished")):
             # this runner stopped the run mid-phase with the kill switch; with the switch lifted, relaunch the SAME run
-            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.cfg.to_phase, "after_kill": True,
+            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.case_to_phase(cid), "after_kill": True,
                        "last_trigger": f"after-kill:{run_id}:{status.get('updated_at') or ''}"}
         elif lstatus.get("state") == "paused" and lstatus.get("checkpoint_pending"):
             cp = lstatus["checkpoint_pending"]
@@ -182,7 +212,7 @@ class Runner:
                 self._transition(cid, "waiting_approval", run_id=run_id, checkpoint=cp,
                                  reason="the engine paused again at this checkpoint after the decision; see the run")
                 return
-            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.cfg.to_phase, "last_trigger": key,
+            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.case_to_phase(cid), "last_trigger": key,
                        "checkpoint": cp}
         elif lstatus.get("state") in ("done", "completed", "finished"):
             self._transition(cid, "done", run_id=run_id, checkpoint=None)
