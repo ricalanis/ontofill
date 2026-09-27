@@ -999,10 +999,9 @@ def run_case(
                 reason = _model_pause_reason(
                     prd_pause_error, getattr(decision, "call_log", [])[prd_call_start:]
                 )
-                validation_exhausted = (
-                    isinstance(prd_pause_error, ModelValidationExhausted)
-                    or prd_pause_error.purpose == "phase1.prd"
-                )
+                validation_exhausted = isinstance(prd_pause_error, ModelValidationExhausted) or (
+                    prd_pause_error.purpose or ""
+                ).startswith("phase1.prd")
                 step = _trace_step(run_id, 1, provenance, "phase1.prd.pause", "01-scope/prd.json")
                 step["evaluated"] = {
                     "status": "needs_human" if validation_exhausted else "paused",

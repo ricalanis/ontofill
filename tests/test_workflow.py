@@ -53,8 +53,9 @@ def test_capture_trace_bridge_publishes_during_capture_and_deduplicates_result()
     assert published_ids == {step["step_id"]}
 
 
+@pytest.mark.parametrize("purpose", ["phase1.prd", "phase1.prd.publisher_patch"])
 def test_exhausted_prd_validation_needs_human_without_empty_approval(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, purpose
 ) -> None:
     case = tmp_path / "tracked-case"
     case.mkdir()
@@ -68,7 +69,7 @@ def test_exhausted_prd_validation_needs_human_without_empty_approval(
     def exhausted(*_args, **_kwargs):
         raise PrdDraftUnavailable(
             f"phase1.prd failed validation after 3 attempts: {objections}",
-            purpose="phase1.prd",
+            purpose=purpose,
             attempts=3,
             reason=objections,
         )
