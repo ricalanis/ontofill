@@ -201,6 +201,32 @@ def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_p
     assert len(result.trace) == 6
 
 
+def test_parse_bronze_returns_profile_from_the_networkless_pod(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"name,value\nExample,1\n", {"content_type": "text/csv"})
+    profile = {"format": "csv", "table_count": 1, "tables": [{"headers": ["name", "value"]}]}
+    output = _output([{"sheet": None, "row_number": 1, "values": ["name", "value"]}])
+    output["profile"] = profile
+
+    result = parse_bronze(lake, key, format="csv", executor=FakeExecutor(output))
+
+    assert result.profile == profile
+
+
+def test_parse_bronze_accepts_zip_profile_without_claiming_table_rows(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"synthetic zip envelope", {"content_type": "application/zip"})
+    profile = {"format": "zip", "table_count": 1, "tables": [{"headers": ["name"]}]}
+    output = _output()
+    output.update({"kind": "zip", "profile": profile})
+
+    result = parse_bronze(lake, key, format="auto", executor=FakeExecutor(output))
+
+    assert result.format == "zip"
+    assert result.rows == ()
+    assert result.profile == profile
+
+
 def test_parse_auto_detects_extensionless_octet_stream_csv_in_pod(tmp_path: Path) -> None:
     from tests.r17_helpers import SyntheticParseExecutor
 

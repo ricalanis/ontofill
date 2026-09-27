@@ -292,3 +292,17 @@ P3 plans descriptive ontology-gap and primary/linking-relation queries with the 
 DONE: managed `r48-query-dispatch / wrap-fallback-variant-string-and-final-verification` passed 47 focused, provider, and genericity tests; Ruff lint/format and `git diff --check` were clean. Coverage includes the five-query cap, ontology/jurisdiction hierarchy prompt, local/English query variants, official-first provider behavior, and fresh fallback angles after tried plans. Per-theme provider recall is not recorded: current provider attempts aggregate a provider's query batch, so reliable attribution needs an additive query/theme result interface.
 
 Constraints: only `discovery_loop.py`, `tests/test_r48_recall.py`, and task notes; no provider code, real case, approval, push, or deploy.
+# Current goal: integrate R54 profiler without losing its typed result
+
+The networkless runsc parse pod must return the bounded document profile to the
+engine caller, with image content hashing covering the profiler package. This
+slice reviews and merges the R54 substrate; PDF-to-gold replay is a separate
+code path and must not be claimed by this gate.
+
+DONE: a caller-level regression that fails on the reviewed R54 commit, a
+passing full pytest/Ruff/diff gate, pre-push scan, public main push, and a
+guarded VM pull plus parse-pod rebuild only while no engine process runs.
+
+FILES: `src/ontofill/sandbox/parse.py`, `tests/test_r54_profiler.py`,
+`sandbox/parse-pod/profiler/extract.py` (only if a proven receipt defect),
+`GOAL.md`, `TODO.md`.

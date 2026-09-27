@@ -25,9 +25,9 @@ from ontofill.sandbox.capture import CaptureError, DockerTimeout, _docker
 from ontofill.sandbox.jobs import validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
-ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "auto"]
+ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"]
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_SUPPORTED_FORMATS = frozenset({"csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "auto"})
+_SUPPORTED_FORMATS = frozenset({"csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"})
 _MAX_INPUT_BYTES = 8 * 1024 * 1024
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_ROWS = 10_000
@@ -444,11 +444,11 @@ class DockerParseExecutor:
             pod_directory = _POD_DIRECTORY
         # Include the profiler sub-package so the tag changes when it changes.
         files = sorted(
-            path for path in pod_directory.rglob("*") if path.is_file() and "__pycache__" not in path.parts
+            path
+            for path in pod_directory.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
         )
-        digest = hashlib.sha256(
-            b"".join(path.read_bytes() for path in files)
-        ).hexdigest()[:12]
+        digest = hashlib.sha256(b"".join(path.read_bytes() for path in files)).hexdigest()[:12]
         image = f"{cls.image_prefix}:{digest}"
         with _IMAGE_LOCK:
             if _docker("image", "inspect", image, check=False).returncode:
@@ -733,7 +733,7 @@ def _result(
     detected_kind = output.get("kind", kind)
     result_format = format
     if format == "auto":
-        if detected_kind not in {"csv", "xls", "xlsx", "xlsm", "json", "pdf"}:
+        if detected_kind not in {"csv", "xls", "xlsx", "xlsm", "json", "pdf", "zip"}:
             task_ok = False
             reason = "parse_pod_returned_invalid_detected_format"
         else:
@@ -876,6 +876,7 @@ def _result(
         trace=trace,
         job_record=record,
         challenge_detected=result.challenge_detected,
+        profile=result.profile,
     )
 
 

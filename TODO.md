@@ -617,3 +617,10 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r48_recall
 TASK: Make discovery dispatch bounded and ensure each later round can try genuinely new ontology- and jurisdiction-derived query themes.
 DONE: the scoped managed gate in `GOAL.md` passes the synthetic dispatch and rotation checks plus Ruff and diff checks.
 FORMAT: Ruff check/format for the two Python files.
+# R54 integration
+
+- [ ] Add red caller-level test for the profile returned from networkless parse.
+- [ ] Preserve profile on the final ParseResult and fix any proven page-span receipt error.
+- [ ] Run the composed full gate and pre-push scan; push public main.
+- [ ] Deploy and rebuild parse pod only in a fresh zero-engine window.
+- [ ] State the PDF replay limitation and exact no-browse refine command.
