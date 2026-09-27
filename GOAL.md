@@ -1,4 +1,8 @@
 # Goal
+R26: truncated PRD and ontology model decisions retry with a larger output budget; a paused P1 run records bounded validator objections in its CLI output, status reason, and S3 live trace. The case's actual trace location is verified without editing the case.
+DONE: `agent-progress run --task r26-output-diagnostics --paths src/ontofill/inference/decision.py,src/ontofill/workflow.py,tests/test_inference.py,tests/test_r26_diagnostics.py --check full-engine-gate --strategy adaptive-document-budget -- sh -c 'uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox'` passes, followed by a clean pre-push scan and control VM fast-forward.
+
+## Prior R24 goal
 R24: a PRD offered for approval must pass the code-owned authority policy, and an approved cached PRD must be reused byte-for-byte on rerun. If a previously approved PRD fails the current policy, pause without changing its approval or artifacts.
 DONE: `agent-progress run --task r24-prd-policy --paths src/ontofill/phases/p1_scope/phase.py,tests/test_r24_prd_policy.py --check focused-prd-gate --strategy final-policy-checkpoint -- sh -c 'uv run pytest -q tests/test_r24_prd_policy.py tests/test_r22_p1.py tests/test_scope_thresholds.py && uv run ruff check src/ontofill/phases/p1_scope/phase.py tests/test_r24_prd_policy.py && uv run ruff format --check src/ontofill/phases/p1_scope/phase.py tests/test_r24_prd_policy.py'` passes, followed by the full engine gate, clean pre-push scan, and control VM fast-forward.
 

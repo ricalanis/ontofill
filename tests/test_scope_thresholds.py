@@ -106,7 +106,7 @@ def test_prd_uses_planning_model_and_independent_critic(tmp_path) -> None:
     assert (criterion["basis"], criterion["min_ratio"]) == ("brief", 0.8)
     assert document["generated_by"]["model"] == "glm-5.3"
     assert [body["model"] for body in calls] == ["glm-5.3", "glm-5.3", "glm-5.3", "minimax-m3"]
-    assert calls[0]["max_completion_tokens"] == 4096
+    assert calls[0]["max_completion_tokens"] == 8192
     assert [call["usage"]["model"] for call in decision.call_log] == [
         "glm-5.3",
         "glm-5.3",

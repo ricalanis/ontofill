@@ -207,16 +207,39 @@ def test_phase2_structured_decisions_use_qwen_without_reasoning() -> None:
     assert client.complete_json("phase2.schema", "design", SCHEMA) == {"choice": "first"}
     assert client.complete_json("phase2.dod_queries", "compile", SCHEMA) == {"choice": "first"}
     assert [body["model"] for body in bodies] == ["qwen3.8-flash-next"] * 2
-    assert [body["max_completion_tokens"] for body in bodies] == [8192, 4096]
+    assert [body["max_completion_tokens"] for body in bodies] == [8192, 8192]
     assert all(body["reasoning"] == {"enabled": False} for body in bodies)
     assert all(body["parallel_tool_calls"] is False for body in bodies)
 
 
-def test_phase2_schema_length_stops_before_known_bad_fallback() -> None:
+@pytest.mark.parametrize("purpose", ["phase1.prd.section", "phase2.schema", "phase2.dod_queries"])
+def test_document_length_retries_with_larger_output_budget(purpose: str) -> None:
     bodies = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
+        if len(bodies) == 2:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "emit",
+                                            "arguments": '{"choice":"first"}',
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 200, "completion_tokens": 100},
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -232,12 +255,15 @@ def test_phase2_schema_length_stops_before_known_bad_fallback() -> None:
         fallback_model="glm-5.3",
         client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
-    with pytest.raises(TypeError, match="after 1 attempt"):
-        client.complete_json("phase2.schema", "design", SCHEMA)
-    assert len(bodies) == 1
-    assert bodies[0]["model"] == "qwen3.8-flash-next"
+    assert client.complete_json(purpose, "design", SCHEMA) == {"choice": "first"}
+    assert len(bodies) == 2
+    assert bodies[0]["max_completion_tokens"] >= 8192
+    assert bodies[1]["max_completion_tokens"] > bodies[0]["max_completion_tokens"]
+    assert bodies[1]["model"] == bodies[0]["model"]
     assert client.call_log[0]["status"] == "length"
     assert client.call_log[0]["usage"]["output_tokens"] == 8192
+    assert "truncated" in client.call_log[0]["reason"]
+    assert client.call_log[1]["status"] == "ok"
 
 
 def test_truncated_extraction_is_logged_and_escalates_to_stronger_model() -> None:

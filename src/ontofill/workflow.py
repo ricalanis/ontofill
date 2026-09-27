@@ -442,6 +442,8 @@ def _publish_decision_calls(
         step["tdd_path"] = tdd_path or call.get("tdd_path")
         if isinstance(call.get("attempt"), int):
             step["requested"]["attempt"] = call["attempt"]
+        if isinstance(call.get("max_completion_tokens"), int):
+            step["requested"]["max_completion_tokens"] = call["max_completion_tokens"]
         if isinstance(call.get("semantic_attempt"), int):
             step["requested"]["semantic_attempt"] = call["semantic_attempt"]
         if include_usage and call.get("usage") is not None:
@@ -451,6 +453,19 @@ def _publish_decision_calls(
             step["evaluated"]["reason"] = call["reason"]
         _publish_steps(feed, [step])
         trace.append(step)
+
+
+def _model_pause_reason(error: Exception, calls: list[dict]) -> str:
+    """Keep the last bounded model objections visible to the operator."""
+    reasons = [str(call["reason"])[:300] for call in calls if isinstance(call.get("reason"), str)][
+        -3:
+    ]
+    if reasons:
+        summary = " | ".join(
+            f"attempt {index}: {reason}" for index, reason in enumerate(reasons, 1)
+        )
+        return f"{error}; validator errors: {summary}"[:1200]
+    return str(error)[:1200]
 
 
 def _mark_validation_error(decision: object, purpose: str, attempt: int, reason: str) -> None:
@@ -705,6 +720,7 @@ def run_case(
                 trace.append(step)
 
             prd_call_start = len(getattr(decision, "call_log", []))
+            prd_pause_error: PrdDraftUnavailable | ModelValidationExhausted | None = None
             try:
                 prd = draft_prd(
                     case_dir,
@@ -715,16 +731,7 @@ def run_case(
                     mock_preview=mock,
                 )
             except (PrdDraftUnavailable, ModelValidationExhausted) as exc:
-                feed.update_status(
-                    state="paused", phase=1, checkpoint_pending="prd", reason=str(exc)
-                )
-                reason = (
-                    "model validation exhausted"
-                    if isinstance(exc, ModelValidationExhausted) or getattr(exc, "purpose", None)
-                    else "PRD draft budget exhausted"
-                )
-                print(f"state=paused checkpoint_pending=prd reason={reason}")
-                return 3
+                prd_pause_error = exc
             finally:
                 _publish_decision_calls(
                     feed,
@@ -735,6 +742,17 @@ def run_case(
                     1,
                     include_usage=False,
                 )
+            if prd_pause_error is not None:
+                reason = _model_pause_reason(
+                    prd_pause_error, getattr(decision, "call_log", [])[prd_call_start:]
+                )
+                step = _trace_step(run_id, 1, provenance, "phase1.prd.pause", "01-scope/prd.json")
+                step["evaluated"] = {"status": "paused", "reason": reason}
+                _publish_steps(feed, [step])
+                trace.append(step)
+                feed.update_status(state="paused", phase=1, checkpoint_pending="prd", reason=reason)
+                print(f"state=paused checkpoint_pending=prd reason={reason}")
+                return 3
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")
             if from_phase <= 1:
                 _publish_steps(feed, [step])
@@ -763,6 +781,7 @@ def run_case(
             if from_phase <= 2:
                 feed.update_status(state="running", phase=2)
             decision_start = len(getattr(decision, "call_log", []))
+            factors_pause_error: OntologyDraftUnavailable | ModelValidationExhausted | None = None
             try:
                 factors = draft_factors(
                     case_dir,
@@ -773,13 +792,28 @@ def run_case(
                     ),
                 )
             except (OntologyDraftUnavailable, ModelValidationExhausted) as exc:
-                feed.update_status(
-                    state="paused", phase=2, checkpoint_pending="factors", reason=str(exc)
-                )
-                print("state=paused checkpoint_pending=factors reason=model validation exhausted")
-                return 3
+                factors_pause_error = exc
             finally:
                 _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
+            if factors_pause_error is not None:
+                reason = _model_pause_reason(
+                    factors_pause_error, getattr(decision, "call_log", [])[decision_start:]
+                )
+                step = _trace_step(
+                    run_id,
+                    2,
+                    provenance,
+                    "phase2.factors.pause",
+                    "02-ontology/factors/factors.json",
+                )
+                step["evaluated"] = {"status": "paused", "reason": reason}
+                _publish_steps(feed, [step])
+                trace.append(step)
+                feed.update_status(
+                    state="paused", phase=2, checkpoint_pending="factors", reason=reason
+                )
+                print(f"state=paused checkpoint_pending=factors reason={reason}")
+                return 3
             step = _trace_step(
                 run_id, 2, provenance, "phase2.factors", "02-ontology/factors/factors.json"
             )
@@ -800,6 +834,7 @@ def run_case(
                     _report_pause("factors", case_dir / "02-ontology/factors", mock)
                     return 3
             decision_start = len(getattr(decision, "call_log", []))
+            ontology_pause_error: OntologyDraftUnavailable | ModelValidationExhausted | None = None
             try:
                 ontology = draft_ontology(
                     case_dir,
@@ -811,13 +846,24 @@ def run_case(
                     ),
                 )
             except (OntologyDraftUnavailable, ModelValidationExhausted) as exc:
-                feed.update_status(
-                    state="paused", phase=2, checkpoint_pending="ontology", reason=str(exc)
-                )
-                print("state=paused checkpoint_pending=ontology reason=model validation exhausted")
-                return 3
+                ontology_pause_error = exc
             finally:
                 _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
+            if ontology_pause_error is not None:
+                reason = _model_pause_reason(
+                    ontology_pause_error, getattr(decision, "call_log", [])[decision_start:]
+                )
+                step = _trace_step(
+                    run_id, 2, provenance, "phase2.ontology.pause", "02-ontology/ontology.json"
+                )
+                step["evaluated"] = {"status": "paused", "reason": reason}
+                _publish_steps(feed, [step])
+                trace.append(step)
+                feed.update_status(
+                    state="paused", phase=2, checkpoint_pending="ontology", reason=reason
+                )
+                print(f"state=paused checkpoint_pending=ontology reason={reason}")
+                return 3
             step = _trace_step(
                 run_id, 2, provenance, "phase2.ontology", "02-ontology/ontology.json"
             )

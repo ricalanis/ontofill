@@ -1,5 +1,16 @@
 # Work list
 
+## R26 output budget and diagnostics
+- [x] Reproduce a truncated PRD section and ontology response; assert the retry raises the output cap before success.
+- [x] Preserve bounded validator errors for failed typed calls, and show them in P1 pause status, CLI and trace.
+- [x] Verify the reported live trace key exists in the case's S3 lake without editing the case.
+- [ ] Integrate the separately owned approval-cache fix for PRD, factors and ontology.
+- [ ] Run the full managed gate, pre-push scan, push main and fast-forward the control VM.
+FILES: `src/ontofill/inference/decision.py`, `src/ontofill/workflow.py`, focused tests and task records; approval sublane owns P1/P2 phase modules.
+TASK: make R26 pauses recoverable and explainable without changing the real case or its approvals.
+DONE: truncated first answer succeeds at a larger cap; exhausted validation leaves exact bounded errors in status and trace; approved artifacts survive cache-key drift.
+FORMAT: Ruff check and format on edited Python.
+
 ## R24 PRD authority checkpoint
 - [x] Reproduce policy failure before approval and prove a corrected answer receives validator feedback.
 - [x] Preserve an existing approval and artifact bytes if an older approved PRD now fails the policy.

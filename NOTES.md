@@ -242,3 +242,9 @@ objects that cannot accept a trace attribute.
 ## R22 P1 recorded-preview follow-up
 
 The root integration gate passed 406 tests and failed two workflow preview tests because `_preview_decision` intentionally supplies no trusted publisher. Strict PRD semantic retry consumed its single recorded response and paused before it could persist a preview with authority open issues. `draft_prd` now exposes `mock_preview=False`; only a recorded decision may enable it, and it skips only the authority rejection during retry validation. The final phase check still records authority objections as `open_issues`, and the preview fingerprint has a separate `mock-preview` marker so a valid preview draft cannot be reused by strict mode. The managed focused preview and strict-regression tests passed: 25 tests.
+
+## R26 managed check causes
+
+The baseline recorded check failed in the intended five places: PRD/P2 output budgets and retries, plus missing multi-error pause diagnostics. After the implementation, the first focused check exposed an existing extraction contract: a truncated extraction call must escalate from Qwen to GLM. A one-line follow-up accidentally altered the HTTP schema-mode branch instead of the length branch, so the second focused check failed for the same cause. The next strategy targets the length branch explicitly and retains extraction fallback while retrying PRD/P2 on their selected model.
+
+The first full integration run passed 418 tests and failed three existing R22 assertions because my attempted status normalization changed recorded schema failures from `invalid_response` to `validation_failed`. Those are distinct trace statuses: the latter is reserved for semantic validation after a syntactically valid answer. The normalization was reverted, and the new R26 test now asserts the existing `invalid_response` status plus its visible validator reason.

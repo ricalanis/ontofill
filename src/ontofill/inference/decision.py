@@ -288,13 +288,11 @@ class VultrDecisionClient:
                 "use an empty trusted publisher list; never invent evidence."
             )
         if purpose == "phase1.prd.section":
-            max_completion_tokens = 4096
+            max_completion_tokens = 8192
         elif document_request:
             max_completion_tokens = 16384
-        elif purpose == "phase2.schema":
-            max_completion_tokens = 8192
         elif structured_request:
-            max_completion_tokens = 4096
+            max_completion_tokens = 8192
         else:
             max_completion_tokens = 16384
         request = {
@@ -361,6 +359,7 @@ class VultrDecisionClient:
                 "at": datetime.now(UTC).isoformat(),
                 "attempt": attempt + 1,
                 "method": "json_schema" if use_json_schema else "forced_tool",
+                "max_completion_tokens": body["max_completion_tokens"],
                 "usage": _usage(selected, None),
             }
             self.call_log.append(record)
@@ -415,8 +414,12 @@ class VultrDecisionClient:
                 )
                 record["reason"] = _validation_reason(exc)
                 last_error = exc
-                if record["status"] == "length" and structured_request and not document_request:
-                    break
+                if record["status"] == "length":
+                    request["max_completion_tokens"] = min(
+                        16384, int(body["max_completion_tokens"]) * 2
+                    )
+                    if structured_request:
+                        retry_model = selected
             else:
                 record["status"] = "ok"
                 self.decisions_by_backend["vultr"] += 1
