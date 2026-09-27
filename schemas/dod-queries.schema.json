@@ -64,7 +64,7 @@
             "properties": {"measure": {"const": "share"}}
           },
           "then": {
-            "required": ["aggregate", "relation_id"],
+            "required": ["aggregate"],
             "properties": {
               "aggregate": {"const": "entities_meeting_completeness"},
               "target": {"type": "number", "maximum": 1}

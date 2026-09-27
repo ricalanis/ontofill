@@ -562,13 +562,17 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int | float:
             raise ValueError("fractional completeness target requires measure=share")
         if measure == "share" or (measure is None and target < 1):
             relation_id = query.get("_linked_relation_id", query.get("relation_id"))
-            if relation_id is None:
+            if relation_id is None and measure != "share":
                 raise ValueError("completeness share needs its linked primary-class relation_id")
-            linked = [
-                entity
-                for entity in selected
-                if any(link.get("property") == relation_id for link in entity.get("links", []))
-            ]
+            linked = (
+                list(selected)  # an explicit share with no relation measures every primary entity
+                if relation_id is None
+                else [
+                    entity
+                    for entity in selected
+                    if any(link.get("property") == relation_id for link in entity.get("links", []))
+                ]
+            )
             if not linked:
                 return 0.0
             complete = sum(

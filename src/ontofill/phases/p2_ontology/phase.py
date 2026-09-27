@@ -264,9 +264,12 @@ class UnsupportedDoDQuerySemantics(ValueError):
     def __init__(self, unsupported: list[dict]) -> None:
         self.unsupported = unsupported
         descriptions = [
-            f"DoD criterion `{item['criterion_id']}` has approved min_ratio="
-            f"{item['approved_min_ratio']!r}, but aggregate `{item['aggregate']}` cannot "
-            "evaluate per-entity completeness"
+            item.get("why")
+            or (
+                f"DoD criterion `{item['criterion_id']}` has approved min_ratio="
+                f"{item['approved_min_ratio']!r}, but aggregate `{item['aggregate']}` cannot "
+                "evaluate per-entity completeness"
+            )
             for item in unsupported
         ]
         super().__init__("; ".join(descriptions))
@@ -1713,6 +1716,51 @@ def _validate_typed_literal(value: object, datatype: str) -> None:
         raise ValueError(f"equals predicate literal does not match datatype {datatype}")
 
 
+def _is_cross_check(relation_id: str | None, ontology: dict) -> bool:
+    """A relation that links the primary class on one of its measured values (an entity's `address` equal to a
+    record's `street_address`) is a cross-check, not membership: restricting a completeness share to linked entities
+    would measure only the entities whose value already matched. Membership relations link on the domain class's
+    identifier property (declared `identifier_property`) and keep the linked share."""
+    relation = next(
+        (
+            r
+            for r in ontology.get("relations") or []
+            if isinstance(r, dict) and r.get("id") == relation_id
+        ),
+        None,
+    )
+    if relation is None:
+        return False
+    joined_on = (relation.get("match") or {}).get("domain_property")
+    domain = next(
+        (c for c in ontology.get("classes") or [] if c.get("id") == relation.get("domain")), {}
+    )
+    identifier = domain.get("identifier_property")
+    return bool(joined_on) and identifier is not None and joined_on != identifier
+
+
+_ZERO_OPERATORS = {"<=", "<", "=", "=="}
+_ENTITY_COUNTS = {"count_entities", "count_entities_with_relation"}
+
+
+def _counts_primary_to_zero(query: dict, criterion: dict, ontology: dict) -> bool:
+    """A criterion compiled so that it must stay at zero, as an entity count of the primary class or as distinct source
+    classes, is met only when the run finds nothing: e.g. "branches missing from the output <= 0" compiled as
+    `count_entities(branch) <= 0`, or "values from non-public sources <= 0" as `count_distinct_source_classes <= 0`.
+    Value-level counts (count_values_without_evidence <= 0) and counts of other classes are not affected."""
+    target = criterion.get("target")
+    if criterion.get("operator") not in _ZERO_OPERATORS or not isinstance(target, (int, float)):
+        return False
+    if target != 0:
+        return False
+    if query.get("aggregate") == "count_distinct_source_classes":
+        return True  # zero distinct source classes means no value carries evidence at all
+    if query.get("aggregate") not in _ENTITY_COUNTS:
+        return False
+    cls = query.get("class_id") or query.get("class")
+    return cls in (None, ontology.get("primary_class"))
+
+
 def _draft_dod_queries(
     prd: dict,
     ontology: dict,
@@ -1773,6 +1821,12 @@ def _draft_dod_queries(
                 changed_fields.append("target")
             if query["operator"] != before.get("operator"):
                 changed_fields.append("operator")
+            if query.get("aggregate") == "entities_meeting_completeness" and _is_cross_check(
+                query.get("relation_id"), ontology
+            ):
+                query.pop("relation_id")
+                changed_fields.append("relation_id")
+                removed_fields.append("relation_id")
             if query.get("aggregate") == "entities_meeting_completeness":
                 approved_ratio = criterion.get("min_ratio")
                 if approved_ratio is not None:
@@ -1833,6 +1887,30 @@ def _draft_dod_queries(
                         "approved_min_ratio": criterion["min_ratio"],
                         "aggregate": query.get("aggregate", "unknown"),
                         "proposal": safe_proposal,
+                    }
+                )
+            elif _counts_primary_to_zero(query, criterion, ontology):
+                primary = ontology.get("primary_class")
+                unsupported.append(
+                    {
+                        "criterion_id": criterion["id"],
+                        "metric": criterion.get("metric", ""),
+                        "approved_thresholds": {
+                            "target": criterion["target"],
+                            "operator": criterion["operator"],
+                        },
+                        "aggregate": query.get("aggregate", "unknown"),
+                        "proposal": deepcopy(before),
+                        "why": (
+                            f"DoD criterion `{criterion['id']}` was compiled as "
+                            f"`{query.get('aggregate')}` {criterion['operator']} {criterion['target']}"
+                            + (
+                                ", which is met only when no value carries evidence"
+                                if query.get("aggregate") == "count_distinct_source_classes"
+                                else f" of the primary class `{primary}`, which is met only when "
+                                f"there are no `{primary}` entities at all"
+                            )
+                        ),
                     }
                 )
         return unsupported
@@ -1923,9 +2001,16 @@ def _draft_dod_queries(
             excluded_criterion_ids.difference_update(unsupported_by_id)
             return None
         for criterion_id, item in unsupported_by_id.items():
+            cause = (
+                f"{item['why']}."
+                if item.get("why")
+                else (
+                    f"Approved min_ratio={item['approved_min_ratio']!r} for DoD criterion "
+                    f"`{criterion_id}` cannot be evaluated by aggregate `{item['aggregate']}`."
+                )
+            )
             reason = (
-                f"Approved min_ratio={item['approved_min_ratio']!r} for DoD criterion "
-                f"`{criterion_id}` cannot be evaluated by aggregate `{item['aggregate']}`. "
+                f"{cause} "
                 "The query was excluded after three bounded retries; it remains unresolved and "
                 "must not count toward export or gold until a supported query is approved."
             )
@@ -2082,15 +2167,17 @@ def _validate_queries(
                     relation_id = _legacy_completeness_relation_id(
                         query, queries, relations, ontology["primary_class"]
                     )
-                relation = relations.get(relation_id)
-                if relation is None:
-                    raise ValueError(
-                        "completeness share requires a known primary-domain relation_id"
-                    )
-                if relation["domain"] != ontology["primary_class"]:
-                    raise ValueError(
-                        "completeness share relation_id must have the primary class as its domain"
-                    )
+                # an explicit share with no relation measures every primary entity
+                if not (relation_id is None and measure == "share"):
+                    relation = relations.get(relation_id)
+                    if relation is None:
+                        raise ValueError(
+                            "completeness share requires a known primary-domain relation_id"
+                        )
+                    if relation["domain"] != ontology["primary_class"]:
+                        raise ValueError(
+                            "completeness share relation_id must have the primary class as its domain"
+                        )
         class_id = query.get("class_id", query.get("class"))
         if query["aggregate"] == "count_entities_with_relation":
             relation = relations.get(query["relation_id"])
