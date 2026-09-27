@@ -83,9 +83,19 @@ def test_brief_to_reviewed_factors_and_one_level_ontology(tmp_path) -> None:
                                     "id": "company",
                                     "label": "Company",
                                     "level": 1,
-                                    "critic_label": "Good-Exclusive",
                                 }
                             ],
+                        }
+                    ]
+                }
+            ],
+            "critic.phase2.taxonomy_nodes": [
+                {
+                    "labels": [
+                        {
+                            "factor_id": "room_type",
+                            "node_id": "company",
+                            "critic_label": "Good-Exclusive",
                         }
                     ]
                 }

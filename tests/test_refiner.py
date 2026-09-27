@@ -485,6 +485,7 @@ def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None
         dod_queries=queries,
         trace=steps,
         taxonomy_levels={"edition": [["edition:local", "edition:other"]]},
+        taxonomy_classified=True,
         generated_by=RECORDED,
     )
     assert metrics["entities_total"] == {"Book": 1, "Library": 0}
@@ -494,6 +495,16 @@ def test_generic_export_metrics_lineage_and_recorded_dod(tmp_path: Path) -> None
     assert metrics["distinct_source_classes"] == 1
     assert metrics["values_without_evidence"] == 0
     assert metrics["level_ratio_coverage"]["edition"] == [0.5]
+    assert metrics["taxonomy_metrics"] == [
+        {
+            "factor_id": "edition",
+            "nodes": 2,
+            "soundness": 1,
+            "soundness_basis": "critic",
+            "coverage": 0.5,
+            "coverage_basis": "classification",
+        }
+    ]
     assert [(row["actual"], row["met"]) for row in metrics["dod"]] == [(1, False), (1, False)]
     assert metrics["loops"] == [
         {"phase": 1, "iterations": 2, "stop_reason": "checks_passed", "usd": 0.002}

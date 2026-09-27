@@ -61,6 +61,12 @@ class SilverStore(Protocol):
     def list_for_run(self, run_id: str) -> list[Observation]: ...
 
 
+class DecisionClient(Protocol):
+    """The slice of the inference client the refiner needs (one typed decision)."""
+
+    def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict: ...
+
+
 class MemorySilverStore:
     """Deterministic store for synthetic tests and isolated local runs."""
 
@@ -415,6 +421,106 @@ def _shacl_error(observation: Observation, shapes: Graph, datatype: URIRef) -> s
 class Refinement:
     entities: list[dict]
     rejected: list[dict[str, str]]
+    classified: bool = False
+
+
+CLASSIFICATION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["assignments"],
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["entity_id", "node_ids"],
+                "properties": {
+                    "entity_id": {"type": "string", "minLength": 1},
+                    "node_ids": {
+                        "type": "array",
+                        "uniqueItems": True,
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+def _walk_nodes(nodes: list[dict], factor_id: str, per_level: dict[int, list[str]]) -> None:
+    for node in nodes:
+        per_level[node["level"]].append(f"{factor_id}:{node['id']}")
+        _walk_nodes(node.get("children") or [], factor_id, per_level)
+
+
+def taxonomy_levels(ontology: dict) -> dict[str, list[list[str]]]:
+    """{factor_id: [[qualified node_id per level], ...]} over the approved taxonomy trees.
+
+    Node ids are qualified as `<factor_id>:<node_id>` so ids stay unique across factors and match
+    `entity.classified_as`. Levels are 1-based and dense; a missing level yields an empty list.
+    """
+    result: dict[str, list[list[str]]] = {}
+    for taxonomy in ontology.get("taxonomies", []):
+        per_level: dict[int, list[str]] = defaultdict(list)
+        _walk_nodes(taxonomy.get("children") or [], taxonomy["factor_id"], per_level)
+        highest = max(per_level, default=0)
+        result[taxonomy["factor_id"]] = [
+            sorted(per_level.get(level, [])) for level in range(1, highest + 1)
+        ]
+    return result
+
+
+def _classification_input(entity: dict) -> dict:
+    """Only evidenced gold values reach the classifier (no missing, no conflicted values)."""
+    values = {
+        property_id: field["value"]
+        for property_id, field in sorted(entity["properties"].items())
+        if field["status"] == "gold" and field["evidence"]
+    }
+    return {"entity_id": entity["id"], "values": values}
+
+
+def classify_entities(
+    entities: list[dict], levels: dict[str, list[list[str]]], decision: DecisionClient
+) -> dict[str, list[str]]:
+    """One batched typed decision: assign each gold entity to zero or more taxonomy nodes.
+
+    The classifier sees only the entity's evidenced gold values, so an unclassified entity stays
+    unclassified rather than being forced into a node.
+    """
+    nodes = sorted(
+        {
+            node
+            for level_nodes in levels.values()
+            for nodes_in_level in level_nodes
+            for node in nodes_in_level
+        }
+    )
+    if not nodes or not entities:
+        return {}
+    prompt = (
+        "Assign each entity to the taxonomy nodes it demonstrably belongs to, using only its "
+        "evidenced values. Choose zero or more node_id values from the approved nodes; never invent a "
+        "node and never force an entity into a node the values do not support. Return one assignment "
+        "per entity. "
+        f"Approved nodes: {json.dumps(nodes, ensure_ascii=False)}. "
+        f"Entities: {json.dumps([_classification_input(e) for e in entities], ensure_ascii=False)}"
+    )
+    response = decision.complete_json("refine.classify_entities", prompt, CLASSIFICATION_SCHEMA)
+    Draft202012Validator(CLASSIFICATION_SCHEMA).validate(response)
+    known = set(nodes)
+    by_id = {entity["id"]: entity for entity in entities}
+    assignments: dict[str, list[str]] = {}
+    for item in response["assignments"]:
+        if item["entity_id"] not in by_id:
+            raise ValueError("classification assigns an unknown entity")
+        unknown = [node for node in item["node_ids"] if node not in known]
+        if unknown:
+            raise ValueError("classification assigns an unknown taxonomy node")
+        assignments[item["entity_id"]] = sorted(item["node_ids"])
+    return assignments
 
 
 def refine_observations(
@@ -423,8 +529,14 @@ def refine_observations(
     ontology: dict,
     generated_by: dict[str, str],
     shapes_ttl: str | Path | None = None,
+    decision: DecisionClient | None = None,
 ) -> Refinement:
-    """Validate observed values against ontology; preserve missing and conflicts."""
+    """Validate observed values against ontology; preserve missing and conflicts.
+
+    When `decision` is given, one batched typed decision per refine pass classifies every gold
+    entity into the approved taxonomy nodes (or none) using only its evidenced values; without it,
+    entities carry no `classified_as` and coverage stays unknown.
+    """
     run_provenance = validate_generated_by(generated_by)
     classes, properties = _ontology_declarations(ontology)
     relations, rules = _signal_definitions(ontology, classes, properties)
@@ -546,7 +658,14 @@ def refine_observations(
     for entity in entities:
         entity["flags"].sort(key=lambda item: item["rule_id"])
         entity["links"].sort(key=lambda item: (item["property"], item["target"]))
-    return Refinement(entities=entities, rejected=rejected)
+    classified = False
+    if decision is not None:
+        levels = taxonomy_levels(ontology)
+        assignments = classify_entities(entities, levels, decision)
+        for entity in entities:
+            entity["classified_as"] = assignments.get(entity["id"], [])
+        classified = True
+    return Refinement(entities=entities, rejected=rejected, classified=classified)
 
 
 def _missing(generated_by: dict[str, str]) -> dict:

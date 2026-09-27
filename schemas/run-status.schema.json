@@ -56,7 +56,14 @@
         "distinct_source_classes": {"type": "integer", "minimum": 0},
         "values_without_evidence": {"type": "integer", "minimum": 0},
         "level_ratio_coverage": {
-          "type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/ratio"}}
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {"oneOf": [{"$ref": "#/$defs/ratio"}, {"type": "null"}]}
+          }
+        },
+        "taxonomy_metrics": {
+          "type": "array", "items": {"$ref": "metrics.schema.json#/$defs/taxonomy_metric"}
         },
         "mode_counts": {
           "type": "object", "additionalProperties": false,
