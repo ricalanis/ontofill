@@ -115,7 +115,7 @@ def _failed_job_record(
         else {"ok": False, "not_run": True}
     )
     record = {
-        "job_id": job_id or f"job:{uuid.uuid4().hex}",
+        "job_id": job_id or capture_result.get("job_id") or f"job:{uuid.uuid4().hex}",
         "run_id": first["run_id"],
         "step_id": first["step_id"],
         "source_id": first["source_id"],
@@ -174,7 +174,7 @@ def build_job_record(
     secrets = proof["secrets"]
     teardown = proof["teardown"]
     record = {
-        "job_id": job_id or f"job:{uuid.uuid4().hex}",
+        "job_id": job_id or capture_result.get("job_id") or f"job:{uuid.uuid4().hex}",
         "run_id": first["run_id"],
         "step_id": first["step_id"],
         "source_id": first["source_id"],

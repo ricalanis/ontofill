@@ -1,6 +1,10 @@
 # Goal
 Deliver a generic Ontofill engine for any open brief, with evidence-backed export, live Vultr decisions, and real zero-inbound Vultr/NetBird infrastructure.
 
+## Active slice: R15 spiders and site graphs
+Deliver bounded gVisor spider capture with bronze and trace provenance, ontology-labeled site graphs, and P3/P4 consumers.
+DONE: `uv run pytest -q tests/test_spider_policy.py tests/test_site_graph.py tests/test_sandbox_spider.py tests/test_no_case_vocabulary.py`
+
 Current milestone: close each engine row in the coordination gap tracker, have the orchestrator verify it, then run the real case. P4 negotiation and P1 research are cut by the user.
 
 DONE R1+R5: a console-shaped approval marker binds raw artifact bytes for PRD, factors, ontology and actions; a stale digest pauses the live run with the exact reason and leaves case files unchanged. The user-authorized managed gate passed (246 tests, 3 skips, Ruff clean), public main reached `89c5fff`, and the control VM fast-forwarded plus `uv sync --frozen`.

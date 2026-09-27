@@ -197,6 +197,7 @@ class DiscoveryLoop:
         run_id: str,
         provenance: Mapping[str, str],
         budget: LoopBudget | None = None,
+        spider_capture: Callable[..., dict] | None = None,
         max_captures_per_iteration: int = 6,
         max_queries_per_iteration: int = 4,
     ) -> None:
@@ -208,6 +209,7 @@ class DiscoveryLoop:
         self.run_id = run_id
         self.provenance = dict(provenance)
         self.budget = budget or LoopBudget(max_iterations=3, wall_seconds=900)
+        self.spider_capture = spider_capture
         self.max_captures = max_captures_per_iteration
         self.max_queries = max_queries_per_iteration
         self.trace: list[dict] = []
@@ -649,7 +651,7 @@ class DiscoveryLoop:
         ledger = load_json(ledger_path) if ledger_path.exists() else {}
         if previous and ledger.get("request_fingerprint") == request_key:
             validate_document("objectives", previous)
-            return previous
+            return self._site_graphs(case_dir, ontology, decision, previous)
 
         backend = self.provenance.get("backend", decision.backend)
         sources_dir = case_dir / "03-fanout/sources"
@@ -911,7 +913,7 @@ class DiscoveryLoop:
         )
         self.result = result
         draft = result.artifact or {"candidates": {}, "leads": {}}
-        return self._write(
+        document = self._write(
             case_dir,
             ontology,
             decision,
@@ -926,6 +928,32 @@ class DiscoveryLoop:
             coverage=coverage(draft),
             max_sources=max_sources,
         )
+        return self._site_graphs(case_dir, ontology, decision, document)
+
+    def _site_graphs(
+        self,
+        case_dir: Path,
+        ontology: dict,
+        decision: DecisionClient,
+        objectives: dict,
+    ) -> dict:
+        if self.spider_capture is None:
+            return objectives
+        from ontofill.phases.p3_fanout.site_graph import run_confirmed_source_spiders
+
+        result = run_confirmed_source_spiders(
+            case_dir=case_dir,
+            objectives=objectives,
+            ontology=ontology,
+            decision=decision,
+            lake=self.lake,
+            run_id=self.run_id,
+            capture=self.spider_capture,
+            provenance=self.provenance,
+        )
+        self.trace.extend(result["trace"])
+        self.jobs.extend(result["jobs"])
+        return result["objectives"]
 
     # ---------------------------------------------------------------- output
     def _write(

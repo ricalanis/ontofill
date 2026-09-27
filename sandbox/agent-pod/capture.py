@@ -13,10 +13,11 @@ import socket
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
+from spider_policy import CrawlPolicy, crawl_site
 
 _SECRET_ENV = re.compile(
     r"(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE[_-]?KEY|"
@@ -291,9 +292,154 @@ def fetch() -> None:
     write_result(output, result)
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def spider() -> None:
+    """Run the entire bounded read-only crawl in this gVisor cell."""
+    target = os.environ["CAPTURE_URL"]
+    proxy_url = os.environ["PROXY_URL"]
+    output = Path("/out")
+    identity = pod_identity()
+    isolation = isolation_probes(proxy_url)
+    secrets = secret_probes()
+    budget = StepBudget()
+    preflight = {
+        "pod_identity": identity,
+        "isolation_probes": isolation,
+        "secret_probes": secrets,
+    }
+    if (
+        secrets["env_keys_found"]
+        or secrets["files_with_keys"]
+        or "ALLOWED" in (secrets["metadata_ip"], secrets["mesh"])
+    ):
+        write_result(
+            output,
+            {**preflight, "hygiene_failure": True, "steps": 0, "peak_memory_mb": peak_memory_mb()},
+        )
+        return
+
+    config = json.loads(os.environ["SPIDER_CONFIG"])
+    policy = CrawlPolicy(
+        allowed_domain=os.environ["SPIDER_ALLOWED_DOMAIN"],
+        max_depth=config["max_depth"],
+        page_cap=config["page_cap"],
+        delay_seconds=config["delay_seconds"],
+        max_redirects=config["max_redirects"],
+        max_redirects_total=config["max_redirects_total"],
+        max_response_bytes=config["max_response_bytes"],
+    )
+    opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}), _NoRedirect())
+    request_count = 0
+
+    def fetch_one(url: str) -> dict:
+        nonlocal request_count
+        budget.take()
+        request_count += 1
+        request = Request(
+            url,
+            headers={"User-Agent": policy.user_agent, "Accept": "*/*"},
+            method="GET",
+        )
+        try:
+            with opener.open(request, timeout=30) as response:
+                body = response.read(policy.max_response_bytes + 1)
+                return {
+                    "status": response.status,
+                    "final_url": response.geturl(),
+                    "location": response.headers.get("Location"),
+                    "content_type": response.headers.get_content_type(),
+                    "body": body,
+                }
+        except HTTPError as exc:
+            body = exc.read(policy.max_response_bytes + 1)
+            return {
+                "status": exc.code,
+                "final_url": url,
+                "location": exc.headers.get("Location") if exc.headers else None,
+                "content_type": (
+                    exc.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
+                    if exc.headers
+                    else "application/octet-stream"
+                ),
+                "body": body,
+                "too_large": len(body) > policy.max_response_bytes,
+            }
+        except (URLError, TimeoutError, OSError):
+            return {"status": None, "final_url": url, "body": b"", "error": "network_error"}
+
+    try:
+        crawl = crawl_site(target, policy=policy, fetch=fetch_one)
+    except StepLimitReached:
+        write_result(
+            output,
+            {
+                **preflight,
+                "url": target,
+                "redirect_chain": [target],
+                "status": None,
+                "limit_reason": "max_steps",
+                "steps": budget.steps,
+                "peak_memory_mb": peak_memory_mb(),
+            },
+        )
+        return
+
+    for index, robots in enumerate(crawl["robots"]):
+        body = robots.pop("body", b"")
+        filename = (
+            f"robots-{index:04d}.txt"
+            if isinstance(robots.get("http_status"), int) and isinstance(body, bytes)
+            else None
+        )
+        if filename:
+            (output / filename).write_bytes(body)
+        robots["file_name"] = filename
+    for index, page in enumerate(crawl["pages"]):
+        body = page.pop("body", b"")
+        is_html = page["content_type"].casefold().startswith(("text/html", "application/xhtml+xml"))
+        has_response = type(page.get("status")) is int and 100 <= page["status"] <= 599
+        filename = (
+            f"page-{index:04d}.{'html' if is_html else 'bin'}"
+            if isinstance(body, bytes) and has_response
+            else None
+        )
+        if filename:
+            (output / filename).write_bytes(body)
+        page["file_name"] = filename
+    seed_status = crawl["pages"][0].get("status") if crawl["pages"] else None
+    write_result(
+        output,
+        {
+            **preflight,
+            "url": target,
+            "redirect_chain": [target],
+            "status": seed_status if type(seed_status) is int else 0,
+            "crawl": {
+                key: value
+                for key, value in crawl.items()
+                if key not in {"pages", "robots", "edges", "blocked"}
+            },
+            "pages": crawl["pages"],
+            "robots": crawl["robots"],
+            "edges": crawl["edges"],
+            "blocked": crawl["blocked"],
+            "request_count": request_count,
+            "steps": budget.steps,
+            "peak_memory_mb": peak_memory_mb(),
+        },
+    )
+
+
 if __name__ == "__main__":
-    if os.environ.get("CAPTURE_MODE", "page") == "fetch":
+    mode = os.environ.get("CAPTURE_MODE", "page")
+    if mode == "fetch":
         fetch()
+    elif mode == "spider":
+        spider()
     else:
         asyncio.run(capture())
     wait_for_copy_ack()

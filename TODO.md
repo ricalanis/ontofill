@@ -1,5 +1,17 @@
 # Work list
 
+## Active slice: R15 spiders and site graphs (brief 13)
+- [ ] Preserve the bounded gVisor spider pod and enforce same-registrable-domain GETs, robots, politeness, depth 2, configurable 30–50 page cap, and captcha/login hard stops.
+- [ ] Persist one bronze page capture and trace step per fetched page, plus one six-checkpoint job per crawl.
+- [ ] Build a schema-valid bronze/site-map graph with URL-template + DOM-skeleton page types, typed ontology labels, sample property hints, and property coverage.
+- [ ] Rank P3 objectives by graph coverage and pass graph paths into P4; send outer-gap spider-reopen integration proposal to root for post-R2 integration.
+- [ ] Add focused synthetic listing → detail → download, robots, POST-never-submitted, and depth/cap tests.
+FILES: `sandbox/agent-pod/capture.py`, `sandbox/agent-pod/spider_policy.py`, `src/ontofill/sandbox/capture.py`, `src/ontofill/sandbox/jobs.py`, `src/ontofill/phases/p3_fanout/site_graph.py`, `src/ontofill/phases/p3_fanout/discovery_loop.py`, `src/ontofill/phases/p4_local_scoping/phase.py`, `schemas/site-graph.schema.json`, focused spider/site-graph tests.
+TASK: Add a bounded, auditable generic site spider and feed its ontology coverage to P3 and P4.
+DONE: `uv run pytest -q tests/test_spider_policy.py tests/test_site_graph.py tests/test_sandbox_spider.py tests/test_no_case_vocabulary.py`
+FORMAT: `uv run ruff check sandbox/agent-pod src/ontofill/sandbox/capture.py src/ontofill/phases/p3_fanout src/ontofill/phases/p4_local_scoping tests/test_spider_policy.py tests/test_site_graph.py tests/test_sandbox_spider.py && uv run ruff format --check sandbox/agent-pod src/ontofill/sandbox/capture.py src/ontofill/phases/p3_fanout src/ontofill/phases/p4_local_scoping tests/test_spider_policy.py tests/test_site_graph.py tests/test_sandbox_spider.py`
+CHECK: focused managed `agent-progress run` passed 20 tests with strategy `robots-fixture-correction`.
+
 ## Critical path: brief 10d and CONTRACT v0.9.7
 - [x] Make every live P1 revision consume all critic objections and prior failed checks, with deterministic human percent/tier grounding and specific-domain review.
 - [x] Generate and validate a replacement PRD before archiving a denied draft; keep current artifacts and approval intact on inference failure.

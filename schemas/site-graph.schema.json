@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/site-graph.schema.json",
+  "title": "Phase 3 ontology-labeled site graph",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "bronze_key", "generated_by", "graph"],
+  "properties": {
+    "schema_version": {"const": "1.0.3"},
+    "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "graph": {"$ref": "#/$defs/graph"}
+  },
+  "$defs": {
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id", "source_url", "source_fingerprint", "ontology_version", "run_id",
+        "job_ids", "crawl", "types", "instances", "edges", "coverage"
+      ],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "source_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "source_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ontology_version": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "job_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^job:[a-f0-9]{32}$"}
+        },
+        "crawl": {"$ref": "#/$defs/crawl"},
+        "types": {"type": "array", "items": {"$ref": "#/$defs/page_type"}},
+        "instances": {"type": "array", "items": {"$ref": "#/$defs/instance"}},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
+        "coverage": {"$ref": "#/$defs/coverage"}
+      }
+    },
+    "crawl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "same_registrable_domain", "max_depth", "page_cap", "delay_seconds",
+        "attempted_pages", "fetched_pages", "stop_reason", "robots"
+      ],
+      "properties": {
+        "same_registrable_domain": {"const": true},
+        "max_depth": {"type": "integer", "minimum": 0, "maximum": 2},
+        "page_cap": {"type": "integer", "minimum": 1, "maximum": 50},
+        "delay_seconds": {"type": "number", "minimum": 0.25, "maximum": 60},
+        "attempted_pages": {"type": "integer", "minimum": 0, "maximum": 50},
+        "fetched_pages": {"type": "integer", "minimum": 0, "maximum": 50},
+        "stop_reason": {
+          "enum": ["queue_exhausted", "depth_limit", "page_cap", "robots", "login_or_captcha", "network_error"]
+        },
+        "robots": {"type": "array", "items": {"$ref": "#/$defs/robots"}}
+      }
+    },
+    "robots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "url", "http_status", "decision", "crawl_delay_seconds", "bronze_key"],
+      "properties": {
+        "origin": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "http_status": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 599}, {"type": "null"}]},
+        "decision": {"enum": ["allow", "disallow", "conservative_stop"]},
+        "crawl_delay_seconds": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "bronze_key": {"anyOf": [{"$ref": "common.schema.json#/$defs/bronze_key"}, {"type": "null"}]}
+      }
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["listing", "detail", "search", "download", "other"]},
+        "class_id": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "detail"}}, "required": ["kind"]},
+          "then": {"required": ["class_id"]}
+        }
+      ]
+    },
+    "property_hint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["property_id", "sample_instance_id", "evidence_quote"],
+      "properties": {
+        "property_id": {"type": "string", "minLength": 1},
+        "sample_instance_id": {"type": "string", "pattern": "^page-[a-f0-9]{24}$"},
+        "evidence_quote": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "page_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type_id", "url_template", "dom_skeleton_hash", "label", "sample_instance_ids", "property_hints"],
+      "properties": {
+        "type_id": {"type": "string", "pattern": "^type-[a-f0-9]{24}$"},
+        "url_template": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "dom_skeleton_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "label": {"$ref": "#/$defs/label"},
+        "sample_instance_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^page-[a-f0-9]{24}$"}
+        },
+        "property_hints": {"type": "array", "items": {"$ref": "#/$defs/property_hint"}}
+      }
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id", "url", "redirect_chain", "depth", "http_status", "content_type",
+        "link_kind", "parent_instance_id", "type_id", "bronze_key", "trace_step_id", "job_id"
+      ],
+      "properties": {
+        "instance_id": {"type": "string", "pattern": "^page-[a-f0-9]{24}$"},
+        "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "redirect_chain": {
+          "type": "array", "minItems": 1,
+          "items": {"type": "string", "format": "uri", "pattern": "^https?://"}
+        },
+        "depth": {"type": "integer", "minimum": 0, "maximum": 2},
+        "http_status": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 599}, {"type": "null"}]},
+        "content_type": {"type": "string", "minLength": 1},
+        "link_kind": {"enum": ["navigate", "paginate", "search_results", "download"]},
+        "parent_instance_id": {
+          "anyOf": [{"type": "string", "pattern": "^page-[a-f0-9]{24}$"}, {"type": "null"}]
+        },
+        "type_id": {"type": "string", "pattern": "^type-[a-f0-9]{24}$"},
+        "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "trace_step_id": {"type": "string", "pattern": "^step:[a-f0-9]{32}$"},
+        "job_id": {"type": "string", "pattern": "^job:[a-f0-9]{32}$"}
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from_instance_id", "to_url", "to_instance_id", "kind", "method", "risk_tier", "followed", "reason"],
+      "properties": {
+        "from_instance_id": {"type": "string", "pattern": "^page-[a-f0-9]{24}$"},
+        "to_url": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "to_instance_id": {
+          "anyOf": [{"type": "string", "pattern": "^page-[a-f0-9]{24}$"}, {"type": "null"}]
+        },
+        "kind": {"enum": ["navigate", "paginate", "search_results", "download"]},
+        "method": {"const": "GET"},
+        "risk_tier": {"enum": ["SAFE", "LOW"]},
+        "followed": {"type": "boolean"},
+        "reason": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_property_ids", "hinted_property_ids", "uncovered_property_ids"],
+      "properties": {
+        "target_property_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "hinted_property_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "uncovered_property_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}
