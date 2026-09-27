@@ -39,7 +39,8 @@ which also states where each case stands.
 - **Building in the open.** A simpler second case (San Francisco library branches) surfaced four engine defects
   that the hard case had hidden, each fixed the same day with tests: city-level jurisdictions in P1, invalid
   ontology rules set aside with deterministic salvage in P2, core PRD fields bound to a property with a repair
-  receipt, and exhausted phases reported as needs-human instead of a crash.
+  receipt, and exhausted phases reported as needs-human instead of a crash. A fifth (an ontology rule whose label
+  does not match its predicate) stopped its rerun at the ontology step; the fix is queued.
 
 ## How it works
 
