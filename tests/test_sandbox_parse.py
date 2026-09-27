@@ -213,6 +213,62 @@ def test_parse_bronze_returns_profile_from_the_networkless_pod(tmp_path: Path) -
     assert result.profile == profile
 
 
+def test_parse_bronze_accepts_pdf_over_8_mib_and_keeps_six_checkpoints(tmp_path: Path) -> None:
+    from tests.profiler_helpers import make_pdf
+
+    lake = FileLake(tmp_path / "lake")
+    pdf = make_pdf([["Record ID          Name", "SYN-01             Example One"]])
+    payload = pdf + b"% synthetic padding\n" + b" " * (9 * 1024 * 1024)
+    key = lake.put_bytes(payload, {"content_type": "application/pdf"})
+    profile = {
+        "format": "pdf",
+        "table_count": 1,
+        "row_receipts": 1,
+        "row_receipts_truncated": False,
+        "tables": [
+            {
+                "rows": [
+                    {
+                        "page": 1,
+                        "row_number": 2,
+                        "values": {"Record ID": "SYN-01", "Name": "Example One"},
+                    }
+                ]
+            }
+        ],
+    }
+    output = _output([{"page_number": 1, "text": "Record ID Name\nSYN-01 Example One"}])
+    output.update({"kind": "pdf", "profile": profile})
+    executor = FakeExecutor(output)
+
+    result = parse_bronze(lake, key, format="pdf", executor=executor)
+
+    assert executor.file_calls[0]["max_bytes"] == 32 * 1024 * 1024
+    assert result.profile == profile
+    assert result.profile["tables"][0]["rows"][0]["page"] == 1
+    assert result.profile["tables"][0]["rows"][0]["row_number"] == 2
+    assert len(result.trace) == 6
+    assert len(result.job_record["checkpoints"]) == 6
+
+
+def test_profile_limit_failure_keeps_six_checkpoints_and_no_partial_rows(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"Name,Value\nExample,1\n")
+    executor = FakeExecutor(
+        _output(error={"code": "max_profile_rows_exceeded"}),
+        error="max_profile_rows_exceeded",
+    )
+
+    with pytest.raises(SandboxParseError, match="max_profile_rows_exceeded") as raised:
+        parse_bronze(lake, key, format="csv", executor=executor)
+
+    checkpoints = raised.value.job_record["checkpoints"]
+    assert len(checkpoints) == 6
+    assert checkpoints["task"]["ok"] is False
+    assert checkpoints["task"]["result"]["reason"] == "max_profile_rows_exceeded"
+    assert checkpoints["task"]["result"]["row_count"] == 0
+
+
 def test_parse_bronze_accepts_zip_profile_without_claiming_table_rows(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     key = lake.put_bytes(b"synthetic zip envelope", {"content_type": "application/zip"})

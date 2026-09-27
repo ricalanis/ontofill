@@ -1,5 +1,10 @@
 # Current goal: make exhausted PRD validation decidable
 
+## R54 PDF profiler bounds
+Allow networkless runsc parsing of PDFs up to 32 MiB and fail clearly when a page, table, row, or output bound would make a profile incomplete.
+DONE: `uv run pytest -q tests/test_sandbox_parse.py tests/test_r54_profiler.py && uv run ruff check src/ontofill/sandbox/parse.py sandbox/parse-pod/runner.py sandbox/parse-pod/profiler/extract.py sandbox/parse-pod/profiler/profiler.py tests/test_sandbox_parse.py tests/test_r54_profiler.py && uv run ruff format --check src/ontofill/sandbox/parse.py sandbox/parse-pod/runner.py sandbox/parse-pod/profiler/extract.py sandbox/parse-pod/profiler/profiler.py tests/test_sandbox_parse.py tests/test_r54_profiler.py && git diff --check`.
+Constraints: preserve networkless runsc, all six checkpoints, and logical PDF row receipts; do not edit case data or push/deploy.
+
 When P1 cannot validate a PRD after its bounded model attempts, the run must
 pause as `needs_human` with the validator objections and no empty PRD approval
 checkpoint. The distinct budget-before-draft path retains its budget marker.

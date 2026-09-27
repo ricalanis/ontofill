@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from profiler import extract as extract_module
 from profiler import profile_bytes
+from profiler import profiler as profiler_module
 from profiler.extract import ProfileFailure, detect_format
 from profiler.patterns import match_patterns
 from profiler.profiler import detect_header_row, entity_rows, profile_table
@@ -27,6 +29,38 @@ def _load_pod_runner():
         sys.path.insert(0, str(_POD))
     spec.loader.exec_module(module)
     return module
+
+
+def _patch_runner_proof(monkeypatch, runner) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_proof",
+        lambda: {
+            "pod": {"hostname": "synthetic-parse-pod"},
+            "isolation": {"probes": [], "work_write_allowed": True},
+            "secrets": {
+                "ok": True,
+                "env_keys_found": 0,
+                "files_with_keys": 0,
+                "metadata_ip": "BLOCKED",
+                "mesh": "BLOCKED",
+            },
+        },
+    )
+
+
+def _run_pod(runner, tmp_path: Path, payload: bytes, *, kind: str = "auto") -> dict:
+    envelope = {
+        "kind": kind,
+        "max_rows": 100,
+        "base_url": "",
+        "payload": base64.b64encode(payload).decode("ascii"),
+    }
+    source = tmp_path / "input.json"
+    output = tmp_path / "output.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+    runner.run(source, output)
+    return json.loads(output.read_text(encoding="utf-8"))
 
 
 def test_multi_page_pdf_table_merges_and_profiles_rfc() -> None:
@@ -56,6 +90,124 @@ def test_multi_page_pdf_table_merges_and_profiles_rfc() -> None:
     assert columns["IMPORTE"]["dominant_pattern"] in {"decimal", "amount"}
     assert table["granularity"] == "entity"
     assert profile["structure"]["page_span"][table["sheet"]] == [1, 2]
+
+
+def test_pdf_profile_keeps_pages_after_page_40_and_logical_row_receipts() -> None:
+    pages = [
+        ["Record ID          Name", f"SYN-{number:02d}             Example {number:02d}"]
+        for number in range(1, 42)
+    ]
+
+    profile = profile_bytes(make_pdf(pages))
+    entity = entity_rows(profile)
+
+    assert profile["structure"]["pages"] == 41
+    assert profile["table_count"] == 1
+    assert profile["row_receipts"] == 41
+    assert entity[-1]["Record ID"] == "SYN-41"
+    assert entity[-1]["receipt"]["page"] == 41
+    assert entity[-1]["receipt"]["row_number"] == 42
+
+
+def test_pdf_profile_accepts_input_over_8_mib_in_pod_runner(tmp_path: Path, monkeypatch) -> None:
+    runner = _load_pod_runner()
+    _patch_runner_proof(monkeypatch, runner)
+    pdf = make_pdf([["Record ID          Name", "SYN-01             Example One"]])
+    payload = pdf + b"% synthetic padding\n" + b" " * (9 * 1024 * 1024)
+
+    document = _run_pod(runner, tmp_path, payload, kind="pdf")
+
+    assert document["ok"] is True
+    assert document["kind"] == "pdf"
+    assert document["profile"]["row_receipts"] == 1
+    receipt = document["profile"]["tables"][0]["rows"][0]
+    assert receipt["page"] == 1
+    assert receipt["row_number"] == 2
+    assert receipt["values"] == {"Record ID": "SYN-01", "Name": "Example One"}
+
+
+def test_non_pdf_profile_keeps_the_8_mib_limit() -> None:
+    payload = b"Name,Value\nExample,1\n" + b" " * (9 * 1024 * 1024)
+
+    with pytest.raises(ProfileFailure, match="input_too_large"):
+        profile_bytes(payload)
+
+
+def test_pdf_page_limit_fails_instead_of_returning_a_partial_profile(monkeypatch) -> None:
+    monkeypatch.setattr(extract_module, "MAX_PDF_PAGES", 2, raising=False)
+    pdf = make_pdf([["Record ID", f"SYN-{number}"] for number in range(1, 4)])
+
+    with pytest.raises(ProfileFailure, match="max_pdf_pages_exceeded"):
+        profile_bytes(pdf)
+
+
+def test_table_limit_fails_instead_of_returning_a_partial_profile(monkeypatch) -> None:
+    monkeypatch.setattr(extract_module, "MAX_TABLES", 1)
+    html = b"<table><tr><th>Name</th></tr><tr><td>First</td></tr></table>" * 2
+
+    with pytest.raises(ProfileFailure, match="max_tables_exceeded"):
+        profile_bytes(html)
+
+
+def test_profile_row_limit_fails_instead_of_slicing_receipts(monkeypatch) -> None:
+    monkeypatch.setattr(profiler_module, "MAX_PROFILE_ROWS", 2)
+    csv_data = b"Name,Value\nOne,1\nTwo,2\nThree,3\n"
+
+    with pytest.raises(ProfileFailure, match="max_profile_rows_exceeded"):
+        profile_bytes(csv_data)
+
+
+def test_extract_row_limit_fails_instead_of_slicing_csv(monkeypatch) -> None:
+    monkeypatch.setattr(extract_module, "MAX_ROWS", 2)
+
+    with pytest.raises(ProfileFailure, match="max_rows_exceeded"):
+        profile_bytes(b"Name,Value\nOne,1\nTwo,2\nThree,3\n")
+
+
+def test_profile_document_row_limit_fails_instead_of_slicing_receipts(monkeypatch) -> None:
+    monkeypatch.setattr(profiler_module, "MAX_PROFILE_ROWS", 3)
+    monkeypatch.setattr(profiler_module, "MAX_PROFILE_TOTAL_ROWS", 5)
+    html = b"""<table>
+<tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr>
+<tr><td>B</td><td>2</td></tr><tr><td>C</td><td>3</td></tr></table>
+<table><tr><th>Name</th><th>Value</th></tr><tr><td>D</td><td>4</td></tr>
+<tr><td>E</td><td>5</td></tr><tr><td>F</td><td>6</td></tr></table>"""
+
+    with pytest.raises(ProfileFailure, match="max_profile_total_rows_exceeded"):
+        profile_bytes(html)
+
+
+def test_pod_runner_surfaces_profile_limit_without_partial_rows_or_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = _load_pod_runner()
+    _patch_runner_proof(monkeypatch, runner)
+    monkeypatch.setattr(profiler_module, "MAX_PROFILE_ROWS", 1)
+    payload = b"Name,Value\nOne,1\nTwo,2\n"
+
+    document = _run_pod(runner, tmp_path, payload, kind="csv")
+
+    assert document["ok"] is False
+    assert document["error"]["code"] == "max_profile_rows_exceeded"
+    assert document["rows"] == []
+    assert document["profile"] == {}
+
+
+def test_pod_output_limit_fails_with_no_partial_rows_or_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = _load_pod_runner()
+    _patch_runner_proof(monkeypatch, runner)
+    monkeypatch.setattr(runner, "MAX_OUTPUT_BYTES", 256)
+    payload = b"Name,Value\nOne,1\nTwo,2\n"
+
+    document = _run_pod(runner, tmp_path, payload, kind="csv")
+
+    assert document["ok"] is False
+    assert document["error"]["code"] == "output_too_large"
+    assert document["rows"] == []
+    assert document["profile"] == {}
+    assert document["proof"]["secrets"]["ok"] is True
 
 
 def test_xlsx_title_row_two_sheets_and_aggregate_verdict() -> None:

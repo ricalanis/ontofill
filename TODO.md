@@ -1,3 +1,15 @@
+# R54 PDF bounds and profiler completeness
+- [x] Add synthetic regressions for a >8 MiB PDF, a PDF beyond 40 pages, and explicit page/table/row/output limit failures with no partial profile.
+- [x] Raise the safe parse envelope to 32 MiB for PDF while retaining the 8 MiB non-PDF bound; remove silent profiler slices and return typed failures.
+- [x] Preserve six job checkpoints and page plus logical row receipts on successful profiles.
+- [x] Run the focused managed pytest/Ruff/format/diff gate, review the exact diff, and commit the isolated branch.
+FILES: `src/ontofill/sandbox/parse.py`, `sandbox/parse-pod/runner.py`, `sandbox/parse-pod/profiler/extract.py`, `sandbox/parse-pod/profiler/profiler.py`, `tests/test_sandbox_parse.py`, `tests/test_r54_profiler.py`, `GOAL.md`, `TODO.md`.
+TASK: Accept bounded large PDFs in the networkless parse pod and reject incomplete profiles explicitly.
+DONE: The R54 command in `GOAL.md` passes; synthetic tests cover the 32 MiB PDF envelope, pages past 40, and page/table/row/output cap failures without returning partial rows.
+FORMAT: Ruff check and format for all listed Python paths, plus `git diff --check`.
+PLAN: Keep input bytes opaque outside runsc; cap PDFs at 32 MiB and other formats at 8 MiB. Replace page/table/row profile slices with `ProfileFailure` codes that the runner promotes to parse failures, preserving checkpoint and receipt construction.
+CHECK: Post-rebase `agent-progress run` passed: 54 passed, 2 skipped; Ruff clean; all 6 Python files formatted; `git diff --check` clean.
+
 # Urgent P1 validation-exhausted state
 
 FILES: `src/ontofill/workflow.py`, `tests/test_workflow.py`, GOAL/TODO/status.

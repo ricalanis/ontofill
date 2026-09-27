@@ -19,8 +19,10 @@ from openpyxl import load_workbook
 from pypdf import PdfReader
 
 MAX_INPUT_BYTES = 8 * 1024 * 1024
+MAX_PDF_INPUT_BYTES = 32 * 1024 * 1024
 MAX_ROWS = 10_000
 MAX_TABLES = 40
+MAX_PDF_PAGES = 500
 MAX_ZIP_ENTRIES = 64
 _OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
@@ -28,14 +30,24 @@ _OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 class ProfileFailure(ValueError):
     """A format the profiler cannot read; the caller keeps its own fallbacks."""
 
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class ProfileLimitFailure(ProfileFailure):
+    """A bounded extraction cannot include every page, table, or logical row."""
+
 
 def detect_format(data: bytes) -> str:
     """Return one of csv/xlsx/xlsm/xls/pdf/zip/json/xml/html/unknown."""
-    if len(data) > MAX_INPUT_BYTES:
-        raise ProfileFailure("input_too_large")
     prefix = data[:65536]
     if prefix.startswith(b"%PDF-"):
+        if len(data) > MAX_PDF_INPUT_BYTES:
+            raise ProfileLimitFailure("input_too_large")
         return "pdf"
+    if len(data) > MAX_INPUT_BYTES:
+        raise ProfileLimitFailure("input_too_large")
     if prefix.startswith(_OLE):
         return "xls"
     if prefix.startswith(b"PK\x03\x04"):
@@ -73,7 +85,11 @@ def _csv_table(data: bytes) -> tuple[list[tuple], dict]:
         dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
     except csv.Error:
         dialect = csv.excel
-    rows = [list(row) for row in csv.reader(io.StringIO(text), dialect)][:MAX_ROWS]
+    rows = []
+    for row in csv.reader(io.StringIO(text), dialect):
+        if len(rows) >= MAX_ROWS:
+            raise ProfileLimitFailure("max_rows_exceeded")
+        rows.append(list(row))
     return [(None, None, rows)], {"delimiter": getattr(dialect, "delimiter", ",")}
 
 
@@ -81,31 +97,40 @@ def _xlsx_tables(data: bytes) -> tuple[list[tuple], dict]:
     workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     tables = []
     sheets = []
-    for name in workbook.sheetnames[:MAX_TABLES]:
-        sheet = workbook[name]
-        rows = []
-        for row in sheet.iter_rows(values_only=True):
-            rows.append(list(row))
-            if len(rows) >= MAX_ROWS:
-                break
-        tables.append((name, None, rows))
-        sheets.append(name)
-    workbook.close()
+    try:
+        if len(workbook.sheetnames) > MAX_TABLES:
+            raise ProfileLimitFailure("max_tables_exceeded")
+        for name in workbook.sheetnames:
+            sheet = workbook[name]
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                if len(rows) >= MAX_ROWS:
+                    raise ProfileLimitFailure("max_rows_exceeded")
+                rows.append(list(row))
+            tables.append((name, None, rows))
+            sheets.append(name)
+    finally:
+        workbook.close()
     return tables, {"sheets": sheets}
 
 
 def _pdf_tables(data: bytes) -> tuple[list[tuple], dict]:
     reader = PdfReader(io.BytesIO(data), strict=False)
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise ProfileLimitFailure("max_pdf_pages_exceeded")
     per_page: list[tuple[int, list[list[str]]]] = []
     pages_with_text = 0
+    total_rows = 0
     for number, page in enumerate(reader.pages, start=1):
         text = page.extract_text() or ""
         if not text.strip():
             continue
         pages_with_text += 1
-        per_page.append((number, _text_rows(text)))
-        if number >= MAX_TABLES:
-            break
+        rows = _text_rows(text)
+        total_rows += len(rows)
+        if total_rows > MAX_ROWS:
+            raise ProfileLimitFailure("max_rows_exceeded")
+        per_page.append((number, rows))
     tables: list[tuple] = []
     page_spans: dict[str, list[int]] = {}
     header: list[str] | None = None
@@ -115,6 +140,8 @@ def _pdf_tables(data: bytes) -> tuple[list[tuple], dict]:
 
     def flush() -> None:
         if merged_rows:
+            if len(tables) >= MAX_TABLES:
+                raise ProfileLimitFailure("max_tables_exceeded")
             name = f"pages_{merged_pages[0]}"
             tables.append((name, merged_pages[0], merged_rows, merged_row_pages))
             page_spans[name] = merged_pages.copy()
@@ -161,13 +188,10 @@ def _zip_tables(data: bytes) -> tuple[list[tuple], dict]:
     members = []
     bytes_read = 0
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        for index, name in enumerate(archive.namelist()):
-            if (
-                index >= MAX_ZIP_ENTRIES
-                or len(tables) >= MAX_TABLES
-                or bytes_read >= MAX_INPUT_BYTES
-            ):
-                break
+        names = archive.namelist()
+        if len(names) > MAX_ZIP_ENTRIES:
+            raise ProfileLimitFailure("max_zip_entries_exceeded")
+        for name in names:
             if name.endswith("/"):
                 continue
             members.append(name)
@@ -177,7 +201,7 @@ def _zip_tables(data: bytes) -> tuple[list[tuple], dict]:
             except (OSError, RuntimeError, zipfile.BadZipFile):
                 continue
             if len(inner) > MAX_INPUT_BYTES - bytes_read:
-                continue
+                raise ProfileLimitFailure("archive_expansion_limit_exceeded")
             bytes_read += len(inner)
             try:
                 fmt = detect_format(inner)
@@ -185,9 +209,13 @@ def _zip_tables(data: bytes) -> tuple[list[tuple], dict]:
                 continue
             if fmt != "csv":
                 continue
-            rows = [list(row) for row in csv.reader(io.StringIO(inner.decode("utf-8-sig")))][
-                :MAX_ROWS
-            ]
+            rows = []
+            for row in csv.reader(io.StringIO(inner.decode("utf-8-sig"))):
+                if len(rows) >= MAX_ROWS:
+                    raise ProfileLimitFailure("max_rows_exceeded")
+                rows.append(list(row))
+            if len(tables) >= MAX_TABLES:
+                raise ProfileLimitFailure("max_tables_exceeded")
             tables.append((name, None, rows))
     tables = [table for table in tables if table[2]]
     return tables, {"members": members[:MAX_ZIP_ENTRIES]}
@@ -196,7 +224,9 @@ def _zip_tables(data: bytes) -> tuple[list[tuple], dict]:
 def _json_tables(data: bytes) -> tuple[list[tuple], dict]:
     document = json.loads(data.decode("utf-8-sig"))
     records = document if isinstance(document, list) else _records_from_json(document)
-    records = [row for row in records if isinstance(row, dict)][:MAX_ROWS]
+    records = [row for row in records if isinstance(row, dict)]
+    if len(records) > MAX_ROWS:
+        raise ProfileLimitFailure("max_rows_exceeded")
     if not records:
         return [], {"json_records": 0}
     headers = tuple(dict.fromkeys(key for row in records for key in row))
@@ -223,11 +253,16 @@ def _records_from_json(document: Any, depth: int = 0) -> list[dict]:
 def _html_tables(data: bytes) -> tuple[list[tuple], dict]:
     soup = BeautifulSoup(data.decode("utf-8-sig", errors="replace"), "html.parser")
     tables = []
-    for index, table in enumerate(soup.select("table")[:MAX_TABLES], start=1):
+    source_tables = soup.select("table")
+    if len(source_tables) > MAX_TABLES:
+        raise ProfileLimitFailure("max_tables_exceeded")
+    for index, table in enumerate(source_tables, start=1):
         rows = []
         for tr in table.select("tr"):
             cells = [cell.get_text(" ", strip=True) for cell in tr.select("td, th")]
             if cells:
+                if len(rows) >= MAX_ROWS:
+                    raise ProfileLimitFailure("max_rows_exceeded")
                 rows.append(cells)
         if rows:
             tables.append((f"table_{index}", None, rows))
@@ -249,8 +284,8 @@ def _xml_tables(data: bytes) -> tuple[list[tuple], dict]:
         }
         if values:
             records.append(values)
-        if len(records) >= MAX_ROWS:
-            break
+        if len(records) > MAX_ROWS:
+            raise ProfileLimitFailure("max_rows_exceeded")
     if not records:
         return [], {"xml_records": 0}
     headers = tuple(dict.fromkeys(key for row in records for key in row))

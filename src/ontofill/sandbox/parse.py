@@ -28,7 +28,9 @@ from ontofill.sandbox.limits import SandboxLimits
 ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"]
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SUPPORTED_FORMATS = frozenset({"csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"})
-_MAX_INPUT_BYTES = 8 * 1024 * 1024
+_MAX_NON_PDF_INPUT_BYTES = 8 * 1024 * 1024
+_MAX_PDF_INPUT_BYTES = 32 * 1024 * 1024
+_MAX_INPUT_BYTES = _MAX_PDF_INPUT_BYTES
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_ROWS = 10_000
 _MAX_DOCUMENT_ITEMS = 100_000
@@ -641,7 +643,7 @@ def parse_bronze_json(
     lake: FileLake | S3Lake,
     bronze_key: str,
     *,
-    max_bytes: int = _MAX_INPUT_BYTES,
+    max_bytes: int = _MAX_NON_PDF_INPUT_BYTES,
     limits: SandboxLimits | Mapping[str, object] | None = None,
     run_id: str | None = None,
     source_id: str = "source:bronze-json",

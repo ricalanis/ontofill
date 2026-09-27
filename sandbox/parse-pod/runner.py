@@ -26,7 +26,9 @@ from bs4 import BeautifulSoup
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-MAX_INPUT_BYTES = 8 * 1024 * 1024
+MAX_NON_PDF_INPUT_BYTES = 8 * 1024 * 1024
+MAX_PDF_INPUT_BYTES = 32 * 1024 * 1024
+MAX_INPUT_BYTES = MAX_PDF_INPUT_BYTES
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 10_000
 MAX_DOCUMENT_ITEMS = 100_000
@@ -469,11 +471,13 @@ def _parse_pdf(data: bytes, max_rows: int) -> list[dict[str, Any]]:
 
 def _detect_document_format(data: bytes) -> str:
     """Infer a bounded supported format from document bytes inside the parse pod."""
-    if len(data) > MAX_INPUT_BYTES:
-        raise ParseFailure("input_too_large")
     prefix = data[:MAX_FORMAT_SNIFF_BYTES]
     if prefix.startswith(b"%PDF-"):
+        if len(data) > MAX_PDF_INPUT_BYTES:
+            raise ParseFailure("input_too_large")
         return "pdf"
+    if len(data) > MAX_NON_PDF_INPUT_BYTES:
+        raise ParseFailure("input_too_large")
     if prefix.startswith(_OLE_COMPOUND_SIGNATURE):
         try:
             _xlrd, workbook = _open_xls(data)
@@ -523,7 +527,7 @@ def _parse_document(data: bytes) -> dict[str, Any]:
 def _parse(
     data: bytes, kind: str, max_rows: int, base_url: str
 ) -> tuple[list[dict[str, Any]], str, str, list[dict[str, str]], str | None, bool]:
-    if len(data) > MAX_INPUT_BYTES:
+    if len(data) > MAX_PDF_INPUT_BYTES or (kind != "pdf" and len(data) > MAX_NON_PDF_INPUT_BYTES):
         raise ParseFailure("input_too_large")
     if kind == "csv":
         return _parse_csv(data, max_rows), "", "", [], None, False
@@ -656,10 +660,10 @@ def _peak_memory_mb() -> float:
 
 
 def _safe_profile(data: bytes, kind: str, envelope: Mapping[str, Any]) -> dict[str, Any]:
-    """Profile the document without letting an unreadable format fail the parse.
+    """Profile readable formats while making resource-limit failures explicit.
 
-    The profiler is a meta-tool: on any failure it returns an empty profile so the
-    existing per-kind parse result stays the contract.
+    Unsupported or unreadable formats keep the parse fallback. A limit failure
+    aborts the parse so a partial profile cannot be mistaken for complete output.
     """
     jurisdictions = envelope.get("jurisdictions")
     allowed = ()
@@ -667,10 +671,13 @@ def _safe_profile(data: bytes, kind: str, envelope: Mapping[str, Any]) -> dict[s
         allowed = tuple(str(item) for item in jurisdictions if isinstance(item, str))
     try:
         from profiler import ProfileFailure, profile_bytes
+        from profiler.extract import ProfileLimitFailure
     except ImportError:  # pragma: no cover - the pod always ships the profiler
         return {}
     try:
         result = profile_bytes(data, jurisdictions=allowed, patterns=envelope.get("patterns"))
+    except ProfileLimitFailure as exc:
+        raise ParseFailure(exc.code) from None
     except (ProfileFailure, ValueError, OSError, KeyError, TypeError, IndexError, RecursionError):
         return {}
     if kind and kind not in {result.get("format"), "html", "json_document"}:

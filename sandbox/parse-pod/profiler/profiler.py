@@ -13,6 +13,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from profiler.extract import ProfileLimitFailure
 from profiler.patterns import match_patterns
 
 MAX_SAMPLE_ROWS = 5
@@ -208,6 +209,11 @@ def profile_table(
     if any(_EMPTY.fullmatch(_norm(value)) for value in rows[0][header_row + 1 : header_row + 2]):
         notes.append("the first data row has an empty leading cell; merged headers are likely")
     header_names = [header or f"column_{position + 1}" for position, header in enumerate(headers)]
+    receipt_rows = [
+        (index, row) for index, row in enumerate(cleaned) if any(_norm(value) for value in row)
+    ]
+    if len(receipt_rows) > MAX_PROFILE_ROWS:
+        raise ProfileLimitFailure("max_profile_rows_exceeded")
     receipts = [
         {
             "row_number": header_row + 1 + index + 1,
@@ -217,8 +223,7 @@ def profile_table(
                 for position, value in enumerate(row[: len(headers)])
             },
         }
-        for index, row in enumerate(cleaned[:MAX_PROFILE_ROWS])
-        if any(_norm(value) for value in row)
+        for index, row in receipt_rows
     ]
     return TableProfile(
         sheet=sheet,
@@ -246,8 +251,9 @@ def profile_document(
     """Profile every table found in a document, capped and fingerprinted."""
     profiles = []
     total_rows = 0
-    truncated = False
-    for table in tables[:MAX_TABLES]:
+    if len(tables) > MAX_TABLES:
+        raise ProfileLimitFailure("max_tables_exceeded")
+    for table in tables:
         sheet, page, rows = table[:3]
         row_pages = table[3] if len(table) > 3 else None
         profile = profile_table(
@@ -257,17 +263,14 @@ def profile_document(
             continue
         if page_spans and sheet in page_spans:
             profile.notes.append(f"table spans pages {page_spans[sheet]}")
-        budget = max(0, MAX_PROFILE_TOTAL_ROWS - total_rows)
-        if len(profile.rows) > budget:
-            profile.rows = profile.rows[:budget]
-            profile.notes.append("row receipts truncated to the profile budget")
-            truncated = True
+        if len(profile.rows) > MAX_PROFILE_TOTAL_ROWS - total_rows:
+            raise ProfileLimitFailure("max_profile_total_rows_exceeded")
         total_rows += len(profile.rows)
         profiles.append(profile.as_dict())
     return {
         "table_count": len(profiles),
         "row_receipts": total_rows,
-        "row_receipts_truncated": truncated,
+        "row_receipts_truncated": False,
         "tables": profiles,
     }
 
