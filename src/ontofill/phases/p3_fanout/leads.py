@@ -11,7 +11,9 @@ domains) comes from case artifacts; providers only know their public APIs.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import math
 import os
 import re
 import time
@@ -43,7 +45,28 @@ PROVIDER_ERRORS = (
     ToolFailure,
     httpx.HTTPError,
 )
-_CATALOG_KIND = re.compile(r"catalog|catalogue|data portal|open data|dataset", re.IGNORECASE)
+_CATALOG_KIND = re.compile(
+    r"catalog(?:ue)?|data[\s_-]*portal|open[\s_-]*data|dataset|ckan", re.IGNORECASE
+)
+_OPEN_DATA_CUES = (
+    "open data",
+    "data portal",
+    "dataset",
+    "data catalog",
+    "data catalogue",
+    "catalogo de datos",
+    "catalogo de dados",
+    "datos abiertos",
+    "dados abertos",
+    "donnees ouvertes",
+    "catalogue de donnees",
+    "ckan",
+)
+_P3_BASE_ITERATIONS = 3
+_P3_MAX_ITERATIONS = 12
+_P3_EXTRA_ITERATION_RESERVE_USD = 0.05
+_P3_QUERIES_PER_ITERATION = 4
+_TAVILY_CREDITS_PER_QUERY = 1
 
 
 @dataclass(frozen=True)
@@ -90,6 +113,7 @@ class LeadContext:
     iteration: int
     publisher_names: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)
     tried: set[str] = field(default_factory=set)
+    open_data_portals: tuple[str, ...] = ()
 
 
 def public_url(url: str) -> bool:
@@ -158,6 +182,101 @@ class ProviderUnavailable(RuntimeError):
 def _plain(text: str) -> str:
     value = unicodedata.normalize("NFKD", text.casefold())
     return " ".join("".join(c for c in value if not unicodedata.combining(c)).split())
+
+
+def _open_data_text(value: object) -> str:
+    if isinstance(value, str):
+        return _plain(value.replace("_", " ").replace("-", " "))
+    if isinstance(value, Mapping):
+        return " ".join(_open_data_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_open_data_text(item) for item in value)
+    return ""
+
+
+def is_open_data_portal(lead: Mapping, ontology: Mapping) -> bool:
+    """Recognize generic open-data portal signals from a lead and its class labels.
+
+    This is only a routing hint for trying the keyless CKAN endpoint. It does
+    not approve the host or make a lead evidence; P3 still applies its normal
+    capture and authority checks.
+    """
+    lead_text = _open_data_text(
+        {
+            key: lead.get(key)
+            for key in (
+                "channel",
+                "channel_type",
+                "kind",
+                "resource_type",
+                "source_class",
+                "source_class_label",
+                "title",
+                "snippet",
+                "query",
+                "publisher",
+            )
+        }
+    )
+    class_id = lead.get("source_class_id") or lead.get("channel_id")
+    classes = ontology.get("source_classes", ontology.get("source_channels", []))
+    if isinstance(classes, Mapping):
+        classes = list(classes.values())
+    if class_id is not None and isinstance(classes, (list, tuple)):
+        for source_class in classes:
+            if not isinstance(source_class, Mapping):
+                continue
+            if source_class.get("id") == class_id:
+                lead_text += " " + _open_data_text(source_class)
+    return any(cue in lead_text for cue in _OPEN_DATA_CUES)
+
+
+def _public_portal_domain(value: str) -> str | None:
+    """Extract a safe public host from a discovered portal URL or host string."""
+    raw = value.strip()
+    if not raw:
+        return None
+    candidate = raw if re.match(r"^https?://", raw, flags=re.IGNORECASE) else f"https://{raw}"
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or not public_url(f"https://{host}")
+    ):
+        return None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return None
+    return host
+
+
+def tavily_credit_cap_for_budget(remaining_budget_usd: float | None) -> int:
+    """Budget basic Tavily queries for the P3 rounds available in this run.
+
+    P3 reserves $0.05 per extra iteration above its three-round floor and caps
+    at twelve iterations. One basic Tavily credit is reserved per bounded P3
+    query, matching DiscoveryLoop's four-query-per-iteration default.
+    """
+    if (
+        not isinstance(remaining_budget_usd, (int, float))
+        or not math.isfinite(float(remaining_budget_usd))
+        or remaining_budget_usd <= 0
+    ):
+        iterations = _P3_BASE_ITERATIONS
+    else:
+        extra = int(float(remaining_budget_usd) / _P3_EXTRA_ITERATION_RESERVE_USD)
+        iterations = min(_P3_MAX_ITERATIONS, _P3_BASE_ITERATIONS + extra)
+    return iterations * _P3_QUERIES_PER_ITERATION * _TAVILY_CREDITS_PER_QUERY
 
 
 class WikidataClient:
@@ -483,7 +602,7 @@ class CkanLeadProvider(LeadProvider):
         fetch_json: Callable[[str, str], Mapping] | None = None,
         cache: JsonCache | None = None,
         rows: int = 5,
-        max_calls: int = 6,
+        max_calls: int = 48,
     ) -> None:
         super().__init__()
         self.fetch_json = fetch_json
@@ -500,7 +619,7 @@ class CkanLeadProvider(LeadProvider):
     def catalog_domains(policy: Mapping) -> list[str]:
         found = []
         for publisher in policy.get("trusted_publishers", []):
-            if _CATALOG_KIND.search(publisher.get("kind", "")):
+            if _CATALOG_KIND.search(str(publisher.get("kind") or "")):
                 for raw_domain in publisher.get("domains", []):
                     if not isinstance(raw_domain, str):
                         continue
@@ -523,6 +642,18 @@ class CkanLeadProvider(LeadProvider):
                     found.append(domain)
         return list(dict.fromkeys(found))
 
+    @classmethod
+    def portal_domains(cls, policy: Mapping, open_data_portals: Sequence[str] = ()) -> list[str]:
+        """Return trusted catalog hosts plus discovered open-data portal hosts."""
+        found = cls.catalog_domains(policy)
+        for value in open_data_portals:
+            if not isinstance(value, str):
+                continue
+            domain = _public_portal_domain(value)
+            if domain:
+                found.append(domain)
+        return list(dict.fromkeys(found))
+
     def _search(self, domain: str, query: str) -> dict:
         request = {"domain": domain, "q": query, "rows": self.rows}
         key = JsonCache.fingerprint("ckan", request)
@@ -532,7 +663,7 @@ class CkanLeadProvider(LeadProvider):
         if cached is not None:
             self.cache_hits += 1
             return cached
-        if self.calls >= self.max_calls:
+        if self.max_calls is not None and self.calls >= self.max_calls:
             raise ProviderUnavailable("catalog call budget spent")
         self.calls += 1
         url = (
@@ -554,22 +685,38 @@ class CkanLeadProvider(LeadProvider):
         return payload
 
     def leads(self, context: LeadContext) -> list[Lead]:
+        queries = tuple(dict.fromkeys(context.queries))
         if self.fetch_json is None:
-            for query in context.queries:
+            for query in queries:
                 self._attempt(
                     query.text,
                     "unavailable: sandbox fetch_json callback is not configured",
                     0,
                 )
             return []
-        domains = [d for d in self.catalog_domains(context.policy) if d not in self._unsupported]
+        domains = [
+            domain
+            for domain in self.portal_domains(context.policy, context.open_data_portals)
+            if domain not in self._unsupported
+        ]
         found: list[Lead] = []
-        for domain in domains:
-            for query in context.queries:
+        for domain_index, domain in enumerate(domains):
+            for query_index, query in enumerate(queries):
                 try:
                     payload = self._search(domain, query.text)
                 except ProviderUnavailable:
-                    self._attempt(query.text, "budget", 0, domain=domain)
+                    pending = (len(domains) - domain_index - 1) * len(queries) + (
+                        len(queries) - query_index
+                    )
+                    self._attempt(
+                        query.text,
+                        "cap_reached",
+                        0,
+                        domain=domain,
+                        max_calls=self.max_calls,
+                        calls=self.calls,
+                        pending_queries=pending,
+                    )
                     return found
                 except PROVIDER_ERRORS as exc:
                     self._unsupported.add(domain)
@@ -714,10 +861,24 @@ class TavilyLeadProvider(LeadProvider):
             try:
                 payload = self._post(body)
             except ProviderUnavailable as exc:
-                self._attempt(query.text, str(exc), 0)
+                self._attempt(
+                    query.text,
+                    str(exc),
+                    0,
+                    credits=self.credits - credits_before,
+                    credits_used=self.credits,
+                    credit_cap=self.max_credits,
+                )
                 continue
             except (httpx.HTTPError, ValueError) as exc:
-                self._attempt(query.text, f"error: {type(exc).__name__}", 0)
+                self._attempt(
+                    query.text,
+                    f"error: {type(exc).__name__}",
+                    0,
+                    credits=self.credits - credits_before,
+                    credits_used=self.credits,
+                    credit_cap=self.max_credits,
+                )
                 continue
             leads = parse_tavily(payload, query)
             found.extend(leads)
@@ -726,6 +887,8 @@ class TavilyLeadProvider(LeadProvider):
                 "ok" if leads else "empty",
                 len(leads),
                 credits=self.credits - credits_before,
+                credits_used=self.credits,
+                credit_cap=self.max_credits,
                 cached=bool(payload.get("_cached")),
                 include_domains_mode=body.get("include_domains_mode"),
                 country=body.get("country"),
@@ -800,6 +963,7 @@ def default_lead_providers(
     *,
     cache_root: Path | None = DEFAULT_CACHE,
     tavily_max_credits: int | None = None,
+    remaining_budget_usd: float | None = None,
     search_client: object | None = None,
     fetch_json: Callable[[str, str], Mapping] | None = None,
 ) -> list[LeadProvider]:
@@ -813,7 +977,8 @@ def default_lead_providers(
     providers.append(CkanLeadProvider(fetch_json=fetch_json, cache=cache))
     credits = tavily_max_credits
     if credits is None:
-        credits = int(os.environ.get("ONTOFILL_TAVILY_MAX_CREDITS", "10"))
+        override = os.environ.get("ONTOFILL_TAVILY_MAX_CREDITS", "").strip()
+        credits = int(override) if override else tavily_credit_cap_for_budget(remaining_budget_usd)
     tavily = TavilyLeadProvider(
         cache=cache, max_credits=credits, country_resolver=wikidata.country_name
     )

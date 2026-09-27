@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 import yaml
 from ontofill_scrape import SearchResult
@@ -15,6 +17,16 @@ from ontofill.case.checkpoints import require_approval
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
 from ontofill.phases.p3_fanout.authority import authority_result
+from ontofill.phases.p3_fanout.leads import (
+    CkanLeadProvider,
+    JsonCache,
+    LeadContext,
+    LeadQuery,
+    TavilyLeadProvider,
+    default_lead_providers,
+    is_open_data_portal,
+    tavily_credit_cap_for_budget,
+)
 from ontofill.phases.p3_fanout.phase import discover_objectives
 from ontofill.phases.p3_fanout.search import (
     ProviderSearchClient,
@@ -269,3 +281,160 @@ def test_gap_query_is_not_truncated_or_served_from_stale_cache(tmp_path) -> None
     )
     assert len(search.queries) == 2
     assert "Opening hours" in search.queries[-1]
+
+
+def test_ckan_queries_each_gap_at_trusted_and_discovered_open_data_portals() -> None:
+    calls = []
+
+    def fetch_json(url: str, domain: str):
+        calls.append((domain, parse_qs(urlsplit(url).query)["q"][0]))
+        return {"success": True, "result": {"results": []}}
+
+    provider = CkanLeadProvider(fetch_json=fetch_json)
+    context = LeadContext(
+        brief="",
+        ontology={},
+        policy={
+            "trusted_publishers": [
+                {
+                    "kind": "official open_data portal",
+                    "domains": ["trusted-data.example.test"],
+                },
+                {"kind": "government agency", "domains": ["agency.example.test"]},
+            ]
+        },
+        queries=(
+            LeadQuery("supplier_name", "public suppliers"),
+            LeadQuery("supplier_name", "public suppliers"),
+            LeadQuery("supplier_id", "supplier registration number"),
+        ),
+        iteration=1,
+        open_data_portals=(
+            "https://discovered-data.example.test/catalog/",
+            "trusted-data.example.test",
+            "https://user:password@ignored.example.test/",
+            "http://localhost/",
+            "https://192.168.1.4/",
+        ),
+    )
+
+    assert provider.leads(context) == []
+    assert calls == [
+        ("trusted-data.example.test", "public suppliers"),
+        ("trusted-data.example.test", "supplier registration number"),
+        ("discovered-data.example.test", "public suppliers"),
+        ("discovered-data.example.test", "supplier registration number"),
+    ]
+    assert [(attempt["domain"], attempt["query"]) for attempt in provider.attempts] == calls
+    assert provider.calls == len(calls)
+
+
+def test_ckan_records_the_call_cap_and_deduplicates_queries_and_hosts() -> None:
+    calls = []
+
+    def fetch_json(url: str, domain: str):
+        calls.append(domain)
+        return {"success": True, "result": {"results": []}}
+
+    provider = CkanLeadProvider(fetch_json=fetch_json, max_calls=1)
+    context = LeadContext(
+        brief="",
+        ontology={},
+        policy={
+            "trusted_publishers": [
+                {"kind": "open data catalog", "domains": ["first.example.test"]},
+                {"kind": "data portal", "domains": ["second.example.test"]},
+            ]
+        },
+        queries=(
+            LeadQuery("supplier_name", "public suppliers"),
+            LeadQuery("supplier_name", "public suppliers"),
+            LeadQuery("supplier_id", "supplier registration number"),
+        ),
+        iteration=1,
+    )
+
+    provider.leads(context)
+
+    assert calls == ["first.example.test"]
+    assert [attempt["outcome"] for attempt in provider.attempts] == ["empty", "cap_reached"]
+    assert provider.attempts[-1] == {
+        "provider": "ckan",
+        "query": "supplier registration number",
+        "outcome": "cap_reached",
+        "result_count": 0,
+        "domain": "first.example.test",
+        "max_calls": 1,
+        "calls": 1,
+        "pending_queries": 3,
+    }
+
+
+def test_open_data_portal_classifier_uses_generic_lead_and_source_class_labels() -> None:
+    assert is_open_data_portal({"title": "Portal de datos abiertos"}, {})
+    assert is_open_data_portal(
+        {"title": "Procurement information", "source_class_id": "data-catalog"},
+        {"source_classes": [{"id": "data-catalog", "label": "Public dataset catalog"}]},
+    )
+    assert not is_open_data_portal({"title": "Public supplier registry"}, {})
+
+
+def test_tavily_default_credit_cap_tracks_remaining_p3_budget(monkeypatch) -> None:
+    class VultrDecision:
+        backend = "vultr"
+
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-test-key")
+    monkeypatch.delenv("ONTOFILL_TAVILY_MAX_CREDITS", raising=False)
+    assert tavily_credit_cap_for_budget(None) == 12
+    assert tavily_credit_cap_for_budget(0.10) == 20
+    assert tavily_credit_cap_for_budget(1.00) == 48
+    providers = default_lead_providers(VultrDecision(), cache_root=None, remaining_budget_usd=0.10)
+    tavily = next(provider for provider in providers if provider.name == "tavily")
+    assert tavily.max_credits == 20
+
+    monkeypatch.setenv("ONTOFILL_TAVILY_MAX_CREDITS", "7")
+    overridden = default_lead_providers(VultrDecision(), cache_root=None, remaining_budget_usd=1.00)
+    assert next(provider for provider in overridden if provider.name == "tavily").max_credits == 7
+    explicit = default_lead_providers(
+        VultrDecision(),
+        cache_root=None,
+        tavily_max_credits=3,
+        remaining_budget_usd=1.00,
+    )
+    assert next(provider for provider in explicit if provider.name == "tavily").max_credits == 3
+
+
+def test_tavily_attempts_include_credit_used_and_cap() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"credits": 1},
+                "results": [
+                    {
+                        "url": "https://agency.example.test/suppliers",
+                        "title": "Supplier list",
+                        "content": "Public supplier records",
+                    }
+                ],
+            },
+        )
+
+    provider = TavilyLeadProvider(
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+        cache=JsonCache(None),
+        max_credits=1,
+        api_key="synthetic-test-key",
+    )
+    context = LeadContext(
+        brief="",
+        ontology={},
+        policy={},
+        queries=(LeadQuery("supplier_name", "public suppliers"),),
+        iteration=1,
+    )
+
+    assert len(provider.leads(context)) == 1
+    assert provider.attempts[0]["credits"] == 1
+    assert provider.attempts[0]["credits_used"] == 1
+    assert provider.attempts[0]["credit_cap"] == 1
