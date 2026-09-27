@@ -1,0 +1,11 @@
+{# One piece of evidence: where it was read, how, when, and the captures. Expects `ev`. #}
+<div class="ev">
+  <dl class="kv">
+    <dt>URL</dt><dd>{% if ev.url %}<a href="{{ ev.url }}" rel="noopener noreferrer nofollow" target="_blank">{{ ev.host }}<span>{{ ev.path }}</span></a>{% else %}{{ ev.host or "—" }}{% endif %}</dd>
+    <dt>Selector</dt><dd>{{ ev.selector or "—" }}</dd>
+    <dt>Captured</dt><dd>{{ ev.captured_at or "—" }}</dd>
+    <dt>Source</dt><dd>{{ ev.source_id or "—" }}{% if ev.source_type %} · {{ ev.source_type }}{% endif %}{% if ev.format %} · {{ ev.format }}{% endif %}</dd>
+    <dt>Raw capture</dt><dd>{% if ev.raw_href %}<a href="{{ ev.raw_href }}">{{ ev.bronze_key|brief(28) }}</a>{% if ev.raw_content_type %} · {{ ev.raw_content_type }}{% endif %}{% else %}—{% endif %}</dd>
+  </dl>
+  {% if ev.screenshot_href %}<a href="{{ ev.screenshot_href }}" title="Open the screenshot"><img src="{{ ev.screenshot_href }}" alt="Screenshot of {{ ev.host }}{{ ev.path }} at capture time" loading="lazy"></a>{% else %}<span class="note">No screenshot</span>{% endif %}
+</div>

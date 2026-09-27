@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Lineage · {{ m.value.label }} · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-output.css">{% endblock %}
+{% block main %}
+{% set val = m.value %}
+{{ v.head("Why is this value here?", val.label ~ " of " ~ val.entity_title ~ ", traced from the value back to the question that asked for it.", "entities.jsonl · trace.jsonl · 04-local/*/tdd.md · 03-fanout/objectives.yaml · ontology.json · dod-queries.json · 01-scope/prd.json · brief.md") }}
+<p class="runpick"><a href="{{ val.entity_href }}">← {{ val.entity_title }}</a><span>run {{ m.run_id }}</span><span>{{ val.value_id }}</span></p>
+
+<ol class="chain">
+  <li id="value">
+    <div class="step-h">Value <small>{{ val.status }}{% if val.confidence is not none %} · confidence {{ "%.2f"|format(val.confidence) }}{% endif %}{% if val.backend %} · {{ val.backend }}{% endif %}</small></div>
+    <p class="val">{% if val.value is not none %}{{ val.value }}{% else %}<span class="note">no value</span>{% endif %}</p>
+  </li>
+
+  <li id="evidence">
+    <div class="step-h">Evidence <small>{{ m.evidence|length }} capture{{ "s" if m.evidence|length != 1 }}</small></div>
+    {% for ev in m.evidence %}{% include "viz/_output_evidence.html" %}{% else %}<p class="note">No evidence: a gold value without evidence would fail the DoD.</p>{% endfor %}
+  </li>
+
+  <li id="steps">
+    <div class="step-h">Steps <small>{% if m.steps_from %}from {{ m.steps_from }} · produced by {{ m.step_ids|join(", ") }}{% endif %}</small></div>
+    {% if m.chains %}
+    {% for chain in m.chains %}
+    {% for s in chain %}
+    <div class="panel">
+      <div class="step-h">{% if s.href %}<a href="{{ s.href }}" class="mono">{{ s.step_id }}</a>{% else %}<span class="mono">{{ s.step_id }}</span>{% endif %}
+        <small>{% if loop.first %}produced the value · {% else %}parent · {% endif %}phase {{ s.phase }} {{ s.phase_name }}{% if s.mode %} · {{ s.mode }} {{ s.mode_name }}{% endif %}{% if s.source_id %} · {{ s.source_id }}{% endif %}{% if s.ts %} · {{ s.ts }}{% endif %}</small></div>
+      <dl class="oree">
+        <dt>observed</dt><dd>{{ s.observed|brief }}</dd>
+        <dt>requested</dt><dd>{{ s.requested|brief }}</dd>
+        <dt>executed</dt><dd>{{ s.executed|brief }}</dd>
+        <dt>evaluated</dt><dd>{{ s.evaluated|brief }}</dd>
+      </dl>
+    </div>
+    {% endfor %}
+    {% endfor %}
+    {% else %}{{ v.empty(m.empty_steps, "No step names this value") }}{% endif %}
+  </li>
+
+  <li id="plan">
+    <div class="step-h">Plan <small>local technical definition (TDD)</small></div>
+    {% for p in m.plans %}
+    <p><a href="{{ p.href }}" class="mono">{{ p.path }}</a> <small class="note">{{ p.matched_by }}{% if not p.exists %} · file not in the case package{% endif %}</small></p>
+    {% if p.excerpt %}<pre class="diff">{{ p.excerpt }}</pre>{% endif %}
+    {% else %}{{ v.empty(m.empty_plan, "No plan found") }}{% endfor %}
+  </li>
+
+  <li id="objective">
+    <div class="step-h">Objective <small>Phase 3 fan-out</small></div>
+    {% if m.objectives %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Objective</th><th>Source</th><th>Target properties</th><th class="num">Priority</th><th class="num">Expected</th><th>Authority</th></tr></thead>
+      <tbody>{% for o in m.objectives %}<tr><td class="mono">{{ o.id }}<br><small class="note">{{ o.matched_by }}</small></td><td>{{ o.source_id }}<br><small class="mono">{{ host_of(o.source_url or "") }}</small></td><td>{{ o.target_fields|join(", ") }}</td><td class="num">{{ o.priority }}</td><td class="num">{{ o.expected_contribution }}</td><td>{{ o.authority_tier or "—" }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}{{ v.empty(m.empty_objective, "No objective found" if m.objectives_file else "No objectives.yaml yet") }}{% endif %}
+  </li>
+
+  <li id="ontology">
+    {% set o = m.ontology %}
+    <div class="step-h">Ontology <small>{% if o.href %}<a href="{{ o.href }}">02-ontology/ontology.json</a>{% else %}run ontology.json{% endif %}{% if o.inferred %} · inferred from the entities{% endif %}</small></div>
+    <dl class="kv">
+      <dt>Class</dt><dd>{{ o.class_label }} <span class="mono">({{ o.class }})</span>{% if o.class_description %} · {{ o.class_description }}{% endif %}</dd>
+      <dt>Property</dt><dd>{{ o.label }} <span class="mono">({{ o.property }}{% if o.datatype %}, {{ o.datatype }}{% endif %})</span>{% if not o.in_ontology %} · not declared in the ontology{% endif %}</dd>
+      {% if o.description %}<dt>Definition</dt><dd>{{ o.description }}</dd>{% endif %}
+      <dt>In the DoD</dt><dd>{{ "yes" if o.dod else "no" }}</dd>
+      {% if o.aligned_to %}<dt>Aligned to</dt><dd class="mono">{{ o.aligned_to }}</dd>{% endif %}
+    </dl>
+  </li>
+
+  <li id="prd">
+    <div class="step-h">PRD <small>definition-of-done criteria that use this property{% if m.prd.href %} · <a href="{{ m.prd.href }}">01-scope/prd.json</a>{% endif %}</small></div>
+    {% if m.dod_queries %}
+    <ul>{% for qd in m.dod_queries %}<li><b>{{ qd.criterion_id }}</b> <span class="mono">{{ qd.query }}</span> <small class="note">{{ qd.matched_by }}</small></li>{% endfor %}</ul>
+    {% else %}<p class="note">No DoD query uses this property.</p>{% endif %}
+    {% for c in m.prd.linked %}
+    <p><span class="chip st-done">{{ c.matched_by }}</span> <b>{{ c.id }}</b> <span class="mono">{{ c.metric }} {{ c.operator }} {{ c.target }}</span>{% if c.basis %} · basis {{ c.basis }}{% endif %}</p>
+    {% if c.basis_quote %}<p class="quote">{{ c.basis_quote }}</p>{% endif %}
+    {% endfor %}
+    {% if m.prd.exists and not m.prd.linked and m.prd.others %}
+    <p class="note">No PRD criterion names this property or its query; the PRD's definition of done:</p>
+    <ul>{% for c in m.prd.others %}<li><b>{{ c.id }}</b> <span class="mono">{{ c.metric }} {{ c.operator }} {{ c.target }}</span>{% if c.basis_quote %} · “{{ c.basis_quote }}”{% endif %}</li>{% endfor %}</ul>
+    {% elif not m.prd.exists %}<p class="note">No 01-scope/prd.json in the case package.</p>{% endif %}
+  </li>
+
+  <li id="brief">
+    <div class="step-h">Brief <small>{% if m.brief_href %}<a href="{{ m.brief_href }}">brief.md</a>{% endif %} · the only human-written input</small></div>
+    {% if m.brief %}<p class="quote case-q">{{ m.brief }}</p>{% else %}<p class="note">No brief.md.</p>{% endif %}
+  </li>
+</ol>
+{% endblock %}

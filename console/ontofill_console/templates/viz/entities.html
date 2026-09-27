@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Entities · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-output.css">{% endblock %}
+{% block main %}
+{{ v.head("Entities", "Every entity the run produced. Open one to see each value with its evidence, and each value's lineage back to the brief.", "gold/<case>/<run>/entities.jsonl · ontology.json") }}
+{% if m.brief %}<p class="quote case-q">{{ m.brief }}</p>{% endif %}
+{% if m.empty %}
+{{ v.empty(m.empty, "No entities yet") }}
+{% else %}
+{% if m.gold_run_ids|length > 1 %}<p class="runpick">gold run {% for r in m.gold_run_ids[-12:] %}<a href="?run={{ r|urlencode }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% endfor %}</p>{% endif %}
+<form class="filters" method="get" role="search">
+  {% if m.run_id %}<input type="hidden" name="run" value="{{ m.run_id }}">{% endif %}
+  <label>Search<input type="search" name="q" value="{{ m.filters.q }}" placeholder="title, identifier or id" size="24"></label>
+  <label>Class<select name="cls"><option value="">all ({{ m.n_total }})</option>{% for c in m.classes %}<option value="{{ c.id }}" {% if c.id == m.filters.cls %}selected{% endif %}>{{ c.label }} ({{ c.n }}){% if c.primary %} · primary{% endif %}</option>{% endfor %}</select></label>
+  <label>Completeness<select name="completeness">{% for k, label in m.completeness_options.items() %}<option value="{{ k }}" {% if k == m.filters.completeness %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <button type="submit" class="btn btn--quiet">Filter</button>
+</form>
+<p class="note">{{ m.n_rows }} of {{ m.n_total }} entities · run {{ m.run_id }}{% if m.threshold is not none %} · DoD share ≥ {{ (m.threshold * 100)|round|int }}%{% endif %}</p>
+{% if m.rows %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th>Class</th><th>Title</th><th>Identifier</th><th>DoD filled</th><th class="num">Links</th><th class="num">Flags</th></tr></thead>
+  <tbody>
+  {% for r in m.rows %}
+  <tr>
+    <td>{{ r.class_label }}</td>
+    <td><a href="{{ r.href }}">{{ r.title }}</a></td>
+    <td class="mono">{{ r.identifier or "—" }}</td>
+    <td class="mono">{% if r.ratio is not none %}<span class="ratio" style="--v: {{ (r.ratio * 100)|round|int }}%"><span></span></span>{{ r.filled }}/{{ r.n_dod }}{% else %}<span title="this class has no DoD properties">—</span>{% endif %}</td>
+    <td class="num">{{ r.links }}</td><td class="num">{{ r.flags }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% if m.capped %}<p class="heat-more">Showing {{ m.rows|length }} of {{ m.n_rows }}. <a href="?run={{ m.run_id|urlencode }}&amp;q={{ m.filters.q|urlencode }}&amp;cls={{ m.filters.cls|urlencode }}&amp;completeness={{ m.filters.completeness|urlencode }}&amp;all=1">Show all</a></p>{% endif %}
+{% else %}<p class="note">No entity matches these filters.</p>{% endif %}
+{% endif %}
+{% endblock %}

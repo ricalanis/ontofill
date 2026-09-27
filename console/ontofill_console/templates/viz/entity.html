@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}{{ m.title }} · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-output.css">{% endblock %}
+{% block main %}
+{{ v.head(m.title, m.class_label ~ (" · " ~ m.identifier if m.identifier else "") ~ " · " ~ m.entity_id ~ " · run " ~ m.run_id, "gold/<case>/<run>/entities.jsonl · trace.jsonl · bronze/<key>.meta.json") }}
+{% if m.brief %}<p class="quote case-q">{{ m.brief }}</p>{% endif %}
+<p class="runpick"><a href="{{ m.list_href }}">← all entities</a>{% if m.ratio is not none %}<span>{{ m.filled }} of {{ m.n_dod }} DoD properties filled ({{ (m.ratio * 100)|round|int }}%)</span>{% endif %}{% if m.classified_as %}<span>classified as {{ m.classified_as|join(", ") }}</span>{% endif %}{% if m.inferred_ontology %}<span>labels from the inferred ontology (the run's ontology does not describe this class)</span>{% endif %}</p>
+
+<h2 class="section-h">Values · {{ m.props|length }}</h2>
+<p class="legend">{% for k in ["gold", "weak", "conflict", "missing"] %}<span><span class="sw cell--{{ k }}"></span>{{ STATE_LABELS[k] }}</span>{% endfor %}</p>
+<div class="props">
+{% for p in m.props %}
+  <section class="prop s-{{ p.state }}" id="p-{{ p.id }}">
+    <h3>{{ p.label }} <small>{{ p.id }}{% if p.dod %} · DoD{% endif %}{% if not p.in_ontology %} · not in the ontology{% endif %}</small>
+      <span class="chip {% if p.state == 'gold' %}st-done{% elif p.state == 'conflict' %}st-need{% else %}st-none{% endif %}">{{ p.status }}</span>
+      {% if p.confidence is not none %}<small>confidence {{ "%.2f"|format(p.confidence) }}</small>{% endif %}
+      {% if p.backend %}<small>{{ p.backend }}</small>{% endif %}
+    </h3>
+    <p class="val">{% if p.value is not none %}{{ p.value }}{% else %}<span class="note">no value</span>{% endif %}</p>
+    {% if p.lineage_href %}<p class="note"><a href="{{ p.lineage_href }}">Why is this value here?</a>{% if p.step_ids %} · produced by {{ p.step_ids|length }} step{{ "s" if p.step_ids|length != 1 }}: <span class="mono">{{ p.step_ids|join(", ") }}</span>{% endif %}</p>{% endif %}
+    {% for ev in p.evidence %}{% include "viz/_output_evidence.html" %}{% endfor %}
+  </section>
+{% endfor %}
+</div>
+
+<div class="panels">
+  <section class="panel">
+    <h2 class="section-h">Links · {{ m.links|length }}</h2>
+    {% if m.links %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Relation</th><th>Target</th><th>Via value</th></tr></thead>
+      <tbody>{% for l in m.links %}<tr><td>{{ l.label }}</td><td>{% if l.href %}<a href="{{ l.href }}">{{ l.target_title }}</a>{% else %}<span class="mono">{{ l.target }}</span>{% endif %}</td><td class="mono">{% if l.via_href %}<a href="{{ l.via_href }}">{{ l.via_value_id }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="note">No links from this entity.</p>{% endif %}
+    {% if m.backlinks %}
+    <h2 class="section-h">Linked from · {{ m.backlinks|length }}</h2>
+    <ul>{% for b in m.backlinks %}<li><a href="{{ b.href }}">{{ b.title }}</a> <small class="note">{{ b.property }}</small></li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+  <section class="panel">
+    <h2 class="section-h">Flags · {{ m.flags|length }}</h2>
+    {% if m.flags %}
+    <ul class="strips">
+      {% for f in m.flags %}<li>{{ v.strip("need", f.label, f.explanation, f.rule_id) }}
+        <p class="note">Evidence: {% for e in f.evidence %}<a class="mono" href="{{ e.href }}">{{ e.prop or e.value_id }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% if f.verify %} · verify: {{ f.verify|join("; ") }}{% endif %}</p></li>{% endfor %}
+    </ul>
+    <p class="note">Flags are signals that need verification, not conclusions.</p>
+    {% else %}{{ v.empty(m.empty_flags, "No flags on this entity") }}{% endif %}
+  </section>
+</div>
+{% endblock %}
