@@ -1,5 +1,8 @@
 # Current goal: make exhausted PRD validation decidable
 
+## Active P4/P5 nested-record extraction slice
+Consume bounded nested JSON/JSONL records returned by the parse sandbox. Build a reusable ontology/PRD/TDD-bound JSON Pointer mapping that emits identifier-resolved entities and the matching observations needed for declared ontology relations, each with a row/property bronze receipt. DONE: the `generic-nested-record-mapping-evidence-link` managed gate passed 91 tests plus Ruff/schema/diff checks; commit locally for root review. Constraints: generic model-built paths only; no hard-coded case vocabulary or source URLs; no parse-pod or discovery-loop edits; no source page values or credentials in mapping artifacts; no case edits, push or deployment.
+
 ## R54 PDF profiler bounds
 Allow networkless runsc parsing of PDFs up to 32 MiB and fail clearly when a page, table, row, or output bound would make a profile incomplete.
 DONE: `uv run pytest -q tests/test_sandbox_parse.py tests/test_r54_profiler.py && uv run ruff check src/ontofill/sandbox/parse.py sandbox/parse-pod/runner.py sandbox/parse-pod/profiler/extract.py sandbox/parse-pod/profiler/profiler.py tests/test_sandbox_parse.py tests/test_r54_profiler.py && uv run ruff format --check src/ontofill/sandbox/parse.py sandbox/parse-pod/runner.py sandbox/parse-pod/profiler/extract.py sandbox/parse-pod/profiler/profiler.py tests/test_sandbox_parse.py tests/test_r54_profiler.py && git diff --check`.

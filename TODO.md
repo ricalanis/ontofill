@@ -718,3 +718,14 @@ FILES: `src/ontofill/phases/p5_execute/bronze_adoption.py`, P5 phase, refiner re
 2. [x] Add fail-closed provenance, approval and digest checks; append an adoption step with original capture parent.
 3. [x] Make `ontofill refine` recognize that adoption step and replay the same PDF.
 4. [ ] Full managed gate passed (713 passed, 5 skipped, Ruff/diff clean); pre-push scan, public main push, guarded VM deploy and runsc proof remain.
+# P4/P5 generic nested-record extraction
+
+FILES: `src/ontofill/phases/p5_execute/phase.py`, new `src/ontofill/phases/p5_execute/record_mapping.py`, `schemas/record-mapping.schema.json`, `schemas/common.schema.json`, new `tests/test_record_mapping.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: map sandbox-returned nested JSON/JSONL records to ontology classes and properties from model-built JSON Pointer paths, preserving identifier-based entity resolution, same-value ontology relation links, and per-row/property bronze receipts.
+DONE: the managed `generic-nested-record-mapping-evidence-link` gate passed 91 tests, Ruff lint/format, both schema JSON parses, and `git diff --check`.
+FORMAT: Ruff, JSON schema syntax, and `git diff --check`.
+
+1. [x] Add a versioned, provenance-bearing mapping schema and pure path/config extraction helpers.
+2. [x] Integrate full `.records` consumption for generic JSON/JSONL downloads in P5, with new-run traces and no source values in mapping cache.
+3. [x] Test nested entities, relation links, invalid paths/IDs, restart reuse, and full P5 dispatch; the final managed relation/evidence check passed.
+CHECK: `agent-progress run --task ocds-extract --check generic-nested-record-mapping-evidence-link` passed 91 tests plus Ruff, schema and diff checks. The earlier fixture and import-order failures and their exact fixes are recorded in `NOTES.md`.

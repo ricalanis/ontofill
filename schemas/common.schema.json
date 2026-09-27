@@ -97,7 +97,7 @@
         "captured_at": {"type": "string", "format": "date-time"},
         "source_id": {"$ref": "#/$defs/nonempty"},
         "source_type": {"$ref": "#/$defs/nonempty"},
-        "format": {"enum": ["html", "xlsx", "csv", "pdf", "json", "api"]}
+        "format": {"enum": ["html", "xlsx", "csv", "pdf", "json", "jsonl", "api"]}
       }
     },
     "field": {

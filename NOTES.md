@@ -499,3 +499,10 @@ Metadata remains untrusted lead metadata. Deterministic scoring reads only bound
 # P1 city-jurisdiction gate, 2026-09-27
 
 The first full gate reached 710 passed and failed one legacy exact-feedback assertion after the checker gained compared jurisdiction values. My first assertion edit targeted the adjacent schema-feedback test, so the second full gate failed two assertions in that file. The dead strategy was a loose text search for the assertion site. I inspected both named tests, restored the schema-error assertion, changed only the authority-error assertion and its logged-reason expectation, then ran those tests focused (9 passed) before retrying the full gate.
+# Progress guard: nested-record mapping trace order
+
+Dead hypothesis: the mapping replay step is the first P5 trace entry in the helper result. A successful `phase5.map_records` decision trace is correctly emitted first when there is no live RunFeed, so tests must locate the mapping step by its `record.map` tool ID instead of relying on list position. The next managed gate uses the distinct synthetic restart and receipt strategy and checks that exact step.
+
+Managed attempt history for `generic-nested-record-mapping`: attempt one failed because the synthetic TDD omitted `vendor_name` while the mapping correctly rejected it as outside approved targets; the fixture now targets that property. Attempt two failed because the changed-PRD test indexed the model-decision trace as if it were the mapping trace; tests now find the `record.map` step by tool ID. The distinct synthetic restart strategy passed all tests and stopped on a Ruff import-order issue; Ruff sorted that import. Root authorized a transparently named successor gate, which will verify the same cases plus formatting, schema, and diff checks.
+
+`generic-nested-record-mapping-evidence-link` first passed all 91 focused tests and both schema JSON parses, then Ruff found a test import-order issue and a mutable class-level fake job record. Both fixture-only findings are fixed; the managed successor attempt reuses the check and strategy once.
