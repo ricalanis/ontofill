@@ -413,6 +413,34 @@ def test_navigation_failure_details_reach_job_and_trace_without_query_leaks(
         assert job["outcome"]["capture_reason"] == "dns_failed"
 
 
+def test_proxy_413_is_a_failed_document_capture_not_bronze_page(tmp_path, monkeypatch) -> None:
+    target = "http://records.example.test/export"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=target,
+        status=413,
+        navigation_attempts=[{"http_status": 413, "elapsed_ms": 19, "error": None}],
+    )
+    lake = FileLake(tmp_path / "lake")
+    with pytest.raises(CaptureBlocked) as raised:
+        capture_url(
+            target,
+            allowed_domains=["records.example.test"],
+            lake=lake,
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+    assert raised.value.result is not None
+    result = raised.value.result
+    assert result["capture_reason"] == "document_too_large"
+    assert "html_key" not in result
+    assert result["trace"][0]["evaluated"]["capture_reason"] == "document_too_large"
+    assert build_job_record(result)["outcome"]["capture_reason"] == "document_too_large"
+
+
 def test_http_403_is_a_response_outcome_with_timing_and_no_navigation_error(
     tmp_path, monkeypatch
 ) -> None:

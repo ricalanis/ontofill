@@ -37,9 +37,11 @@ _MAX_DOCUMENT_BYTES = 24 * 1024 * 1024
 _CONTENT_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z", re.IGNORECASE)
 _ERROR_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:access[-_]?token|api[-_]?key|secret|password|credential|private[-_]?key|"
-    r"access[-_]?key|authorization|token)\b(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"(?i)(\b(?:access[-_]?token|api[-_]?key|secret|password|credential|private[-_]?key|"
+    r"access[-_]?key|authorization|token)[\"']?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|bearer\s+[^\s,;]+|[^\s,;]+)"
 )
+_BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 
 
 class StepLimitReached(RuntimeError):
@@ -230,6 +232,7 @@ def _safe_error_message(error: Exception) -> str:
     )
     clean = _ERROR_URL.sub(_safe_error_url, clean)
     clean = _SECRET_ASSIGNMENT.sub(r"\1<redacted>", clean)
+    clean = _BEARER_CREDENTIAL.sub("Bearer <redacted>", clean)
     return " ".join(clean.split())[:512] or "Navigation failed"
 
 
@@ -283,6 +286,8 @@ async def _capture_document(
             "capture_reason": "document_redirect_not_followed",
             "redirect_target": urljoin(url, location) if location else None,
         }
+    if status == 413:
+        return {"attempt": attempt, "capture_reason": "document_too_large"}
     if type(status) is not int or not 200 <= status <= 299:
         return {"attempt": attempt, "capture_reason": f"http_{status}"}
     if not _is_document_response(response, download=download):
@@ -506,9 +511,12 @@ async def capture() -> None:
                     )
                     navigation_attempts.append(document_result["attempt"])
                     redirect_target = document_result.get("redirect_target")
-                    if isinstance(redirect_target, str) and redirect_target:
-                        if not navigation_chain or navigation_chain[-1] != redirect_target:
-                            navigation_chain.append(redirect_target)
+                    if (
+                        isinstance(redirect_target, str)
+                        and redirect_target
+                        and (not navigation_chain or navigation_chain[-1] != redirect_target)
+                    ):
+                        navigation_chain.append(redirect_target)
                     document = document_result.get("document")
                     if document is not None:
                         write_result(
@@ -574,9 +582,12 @@ async def capture() -> None:
                 )
                 navigation_attempts = [navigation_attempt, document_result["attempt"]]
                 redirect_target = document_result.get("redirect_target")
-                if isinstance(redirect_target, str) and redirect_target:
-                    if not navigation_chain or navigation_chain[-1] != redirect_target:
-                        navigation_chain.append(redirect_target)
+                if (
+                    isinstance(redirect_target, str)
+                    and redirect_target
+                    and (not navigation_chain or navigation_chain[-1] != redirect_target)
+                ):
+                    navigation_chain.append(redirect_target)
                 document = document_result.get("document")
                 if document is not None:
                     write_result(
@@ -605,6 +616,21 @@ async def capture() -> None:
                 if document_result.get("capture_reason"):
                     failed_result["capture_reason"] = document_result["capture_reason"]
                 write_result(output, failed_result)
+                return
+            if http_status == 413:
+                write_result(
+                    output,
+                    {
+                        "url": page.url,
+                        "redirect_chain": navigation_chain or [target],
+                        "status": 413,
+                        "navigation_attempts": [navigation_attempt],
+                        "capture_reason": "document_too_large",
+                        **preflight,
+                        "steps": budget.steps,
+                        "peak_memory_mb": peak_memory_mb(),
+                    },
+                )
                 return
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()

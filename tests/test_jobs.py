@@ -11,8 +11,28 @@ from referencing import Registry, Resource
 
 from ontofill.lake import FileLake
 from ontofill.sandbox import append_job_record, build_job_record, validate_job_record
+from ontofill.sandbox.jobs import normalize_navigation_attempts
 
 PROVENANCE = {"backend": "recorded", "model": "synthetic-test", "at": "2026-09-26T14:00:00Z"}
+
+
+def test_navigation_receipt_redacts_bearer_and_quoted_json_tokens() -> None:
+    attempts = normalize_navigation_attempts(
+        [
+            {
+                "http_status": None,
+                "elapsed_ms": 3,
+                "error": {
+                    "type": "NetworkError",
+                    "message": 'Authorization: Bearer engine-secret "token":"json-secret"',
+                },
+            }
+        ]
+    )
+    message = attempts[0]["error"]["message"]
+    assert "engine-secret" not in message
+    assert "json-secret" not in message
+    assert "<redacted>" in message
 
 
 def _schemas() -> tuple[dict[str, dict], Registry]:

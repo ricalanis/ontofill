@@ -162,6 +162,16 @@ def test_redirect_location_is_retained_when_navigation_raises_before_target_requ
     assert "second line" not in attempt["error"]["message"]
 
 
+def test_navigation_error_redacts_bearer_and_quoted_json_tokens(monkeypatch):
+    module = _import_capture_module(monkeypatch)
+    message = module._safe_error_message(
+        RuntimeError('Authorization: Bearer pod-secret "token":"json-secret"')
+    )
+    assert "pod-secret" not in message
+    assert "json-secret" not in message
+    assert "<redacted>" in message
+
+
 def test_document_rescue_rejects_403_and_bounds_unknown_length_responses(tmp_path, monkeypatch):
     module = _import_capture_module(monkeypatch)
 
@@ -171,22 +181,25 @@ def test_document_rescue_rejects_403_and_bounds_unknown_length_responses(tmp_pat
 
     class Response:
         status = 403
-        headers = {"content-type": "text/plain"}
+
+        def __init__(self):
+            self.headers = {"content-type": "text/plain"}
 
     assert not module._is_document_response(Response())
 
     class CsvResponse:
         status = 200
-        headers = {"content-type": "text/csv; charset=utf-8"}
+
+        def __init__(self):
+            self.headers = {"content-type": "text/csv; charset=utf-8"}
 
     assert module._is_document_response(CsvResponse())
 
     module._MAX_DOCUMENT_BYTES = 4
 
     class NoLengthResponse:
-        headers = {"content-type": "application/pdf"}
-
         def __init__(self):
+            self.headers = {"content-type": "application/pdf"}
             self.read_limit = None
 
         def getcode(self):

@@ -183,6 +183,8 @@ def _navigation_chain(url: str, chain: object, final_url: object) -> list[str]:
 
 
 def _capture_reason(result: Mapping, events: list[dict], redirect_chain: list[str]) -> str | None:
+    if result.get("status") == 413:
+        return "document_too_large"
     explicit = result.get("capture_reason")
     explicit = (
         explicit
@@ -193,9 +195,12 @@ def _capture_reason(result: Mapping, events: list[dict], redirect_chain: list[st
         return explicit
     hosts = {(urlsplit(item).hostname or "").lower().rstrip(".") for item in redirect_chain}
     for event in reversed(normalize_egress_events(events)):
-        if event["decision"] == "block" and event["host"] in hosts:
-            if event["reason"] in {"dns_failed", "address_rejected", "domain_not_allowed"}:
-                return event["reason"]
+        if (
+            event["decision"] == "block"
+            and event["host"] in hosts
+            and event["reason"] in {"dns_failed", "address_rejected", "domain_not_allowed"}
+        ):
+            return event["reason"]
     if explicit:
         return explicit
     return None

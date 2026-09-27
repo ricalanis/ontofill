@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
 import re
 import threading
 import uuid
@@ -25,9 +25,11 @@ _MAX_EGRESS_EVENTS = 32
 _MAX_DOCUMENT_BYTES = 24 * 1024 * 1024
 _ERROR_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:access[-_]?token|api[-_]?key|secret|password|credential|private[-_]?key|"
-    r"access[-_]?key|authorization|token)\b(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"(?i)(\b(?:access[-_]?token|api[-_]?key|secret|password|credential|private[-_]?key|"
+    r"access[-_]?key|authorization|token)[\"']?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|bearer\s+[^\s,;]+|[^\s,;]+)"
 )
+_BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _EGRESS_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
 _EGRESS_REASON = {
     "domain_allowed",
@@ -121,6 +123,7 @@ def _safe_error_message(value: object) -> str:
     )
     text = _ERROR_URL.sub(_safe_error_url, text)
     text = _SECRET_ASSIGNMENT.sub(r"\1<redacted>", text)
+    text = _BEARER_CREDENTIAL.sub("Bearer <redacted>", text)
     return " ".join(text.split())[:512] or "Navigation failed"
 
 
