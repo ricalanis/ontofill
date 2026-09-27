@@ -2202,6 +2202,19 @@ class DiscoveryLoop:
             reason = (dispatch.get("reason") if isinstance(dispatch, Mapping) else None) or (
                 result.get("reason") if isinstance(result, Mapping) else None
             )
+            if reason == "bot_challenge":
+                candidate.update(
+                    status="inconclusive",
+                    capture_reason="bot_challenge",
+                    capture_error=_capture_error_text(exc),
+                    capture_outcome="blocked",
+                    capture_attempts=1,
+                    alternate_channel_hint=(
+                        "Search for the publisher's open-data portal, published datasets, or "
+                        "documented API; do not retry or bypass the interstitial."
+                    ),
+                )
+                return None
             if reason not in {"http_403", "dns_failed", "navigation_error", "timeout"}:
                 candidate.update(
                     status="capture_failed",

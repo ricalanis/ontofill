@@ -256,12 +256,25 @@ async def _wait_for_render(page) -> bool:
     return True
 
 
-def _is_bot_challenge(title: str, visible_text: str, html: str = "") -> bool:
+def _is_bot_challenge(title: str, visible_text: str, html: str = "", status: object = None) -> bool:
     """Recognize explicit security interstitials without interacting with them."""
     visible = f"{title}\n{visible_text}"[:32_000].casefold()
     if any(marker in visible for marker in _BOT_CHALLENGE_TEXT):
         return True
     markup = html[:100_000].casefold()
+    access_denied = "access denied" in visible
+    edge_status = type(status) is int and status in {403, 429, 503}
+    edge_body_marker = any(
+        marker in visible or marker in markup
+        for marker in (
+            "reference #",
+            "support id",
+            "incident id",
+            "request was blocked",
+            "requested url was rejected",
+            "web application firewall",
+        )
+    )
     provider_marker = any(
         marker in markup
         for marker in (
@@ -272,8 +285,9 @@ def _is_bot_challenge(title: str, visible_text: str, html: str = "") -> bool:
             "incapsula",
         )
     )
-    return provider_marker and any(
-        marker in markup for marker in ("challenge", "verify", "processing", "checking")
+    return (access_denied and (edge_status or edge_body_marker or provider_marker)) or (
+        provider_marker
+        and any(marker in markup for marker in ("challenge", "verify", "processing", "checking"))
     )
 
 
@@ -677,7 +691,7 @@ async def capture() -> None:
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()
             title = await page.title()
-            bot_challenge = _is_bot_challenge(title, accessibility, html)
+            bot_challenge = _is_bot_challenge(title, accessibility, html, http_status)
             budget.take()
             screenshot = await page.screenshot(full_page=True)
             (output / "page.html").write_text(html, encoding="utf-8")

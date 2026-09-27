@@ -203,10 +203,29 @@ def test_bot_protection_interstitial_is_classified_without_matching_regular_page
         "Processing your request. Please wait or resubmit your request.",
         "<html><body>challenge interstitial</body></html>",
     )
+    assert module._is_bot_challenge(
+        "Access Denied",
+        "You don't have permission to access this resource.",
+        "<html><body>Request rejected.</body></html>",
+        status=403,
+    )
+    assert module._is_bot_challenge(
+        "",
+        "Access Denied. Reference #18.1e5f. A request was rejected.",
+        "<html><body>Access Denied</body></html>",
+        status=200,
+    )
+    assert not module._is_bot_challenge(
+        "Access Denied",
+        "The article discusses historical access denied decisions.",
+        "<html><body><article>Public records and legal history.</article></body></html>",
+        status=200,
+    )
     assert not module._is_bot_challenge(
         "Open data registry",
         "Search the public records and download the latest registry.",
         "<html><body><form><input name='query'></form></body></html>",
+        status=200,
     )
 
 
