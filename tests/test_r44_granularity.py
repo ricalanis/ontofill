@@ -164,8 +164,9 @@ def test_deterministic_search_targets_inferred_entity_identifier(tmp_path) -> No
         set(),
     )
 
-    assert len(queries) == 1
-    assert "Record identifier" in queries[0].text
+    assert len(queries) == 2  # global discovery plus one trusted-publisher site search
+    assert all("Record identifier" in query.text for query in queries)
+    assert queries[1].text.startswith("site:registry.synthetic.test ")
 
 
 def test_unrelated_entity_table_cannot_validate_aggregate_download(tmp_path) -> None:

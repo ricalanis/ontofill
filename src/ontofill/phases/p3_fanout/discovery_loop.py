@@ -25,7 +25,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import yaml
 from jsonschema import ValidationError
@@ -89,6 +89,7 @@ _SENSITIVE_HEADER = re.compile(
 _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
+_DISCOVERY_CHANNELS = ("open data", "transparency", "registry", "list", "API", "download")
 _REDIRECT_PREVIEW_LIMITS = SandboxLimits(memory_mb=512, cpus=1, pids=64, timeout_s=30, max_steps=8)
 _GOVERNMENT_PSL_LABELS = frozenset({"gov", "gob", "govt", "government"})
 
@@ -98,6 +99,11 @@ def _summary_text(value: object, limit: int = 180) -> str:
     text = _SUMMARY_SECRET.sub(lambda match: f"{match.group(1)}=<redacted>", text)
     text = _SUMMARY_TOKEN.sub("<redacted>", text)
     return text[:limit]
+
+
+def _capture_error_text(error: Exception) -> str:
+    """Prefer the substrate's bounded, URL-sanitized first failure line."""
+    return _summary_text(getattr(error, "first_line", None) or str(error), 300)
 
 
 def p3_iteration_limit(*, remaining_usd: float | None) -> int:
@@ -484,7 +490,7 @@ def _supporting_quote(text: str, wanted: set[str]) -> str | None:
 
 def _parsed_document_headers(parsed_page: object) -> list[str]:
     """Extract only the first structured row's bounded field names from pod output."""
-    if getattr(parsed_page, "format", None) not in {"csv", "xlsx", "xlsm", "json"}:
+    if getattr(parsed_page, "format", None) not in {"csv", "xls", "xlsx", "xlsm", "json"}:
         return []
     rows = getattr(parsed_page, "rows", ())
     first = next(
@@ -532,6 +538,100 @@ def _matching_publishers(url: str, policy: Mapping) -> list[dict]:
                     }
                 )
     return sorted(matches, key=lambda item: len(item["domain"]), reverse=True)
+
+
+def _publisher_of_record(url: str, page_text: str, policy: Mapping) -> dict | None:
+    """Record an approved publisher and distinguish page provenance from domain policy."""
+    for publisher in policy.get("trusted_publishers", []):
+        if not isinstance(publisher, Mapping):
+            continue
+        kind = str(publisher.get("kind") or "").strip()
+        if len(_tokens(kind)) < 2 or len(kind) < 8:
+            continue
+        quote = next(
+            (
+                sentence.strip()[:500]
+                for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", page_text[:6000])
+                if kind.casefold() in sentence.casefold()
+            ),
+            None,
+        )
+        if quote:
+            domains = publisher.get("domains", [])
+            return {
+                "kind": kind,
+                "tier": publisher.get("tier", "primary"),
+                "basis": "captured_page",
+                "evidence_quote": quote,
+                **({"domain": domains[0]} if domains else {}),
+            }
+    matches = _matching_publishers(url, policy)
+    if matches:
+        first = matches[0]
+        return {
+            "kind": first["kind"],
+            "domain": first["domain"],
+            "tier": first["tier"],
+            "basis": "approved_policy",
+        }
+    return None
+
+
+def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping) -> list[dict]:
+    """Take at most four public links one level below a captured portal/root."""
+    parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
+    parent = urlsplit(parent_url)
+    parent_host = (parent.hostname or "").casefold().rstrip(".")
+    if not parent_host or len(parent.path.strip("/").split("/")) > 1:
+        return []
+    words = _tokens(
+        " ".join(
+            [
+                *(str(item.get("label") or "") for item in ontology.get("source_classes", [])),
+                *(str(item.get("label") or "") for item in ontology.get("classes", [])),
+                *(str(item.get("label") or "") for item in ontology.get("properties", [])),
+                *_DISCOVERY_CHANNELS,
+            ]
+        )
+    )
+    ranked: list[tuple[int, int, dict]] = []
+    seen: set[str] = set()
+    for index, link in enumerate(context.get("links", [])[:80]):
+        if not isinstance(link, Mapping):
+            continue
+        raw_url = str(link.get("url") or "").strip()
+        child_url = urljoin(parent_url, raw_url)
+        parsed = urlsplit(child_url)
+        child_url = parsed._replace(fragment="").geturl()
+        host = (parsed.hostname or "").casefold().rstrip(".")
+        if (
+            child_url == parent_url
+            or child_url in seen
+            or not public_url(child_url)
+            or not _public_dns_host(host)
+        ):
+            continue
+        seen.add(child_url)
+        label = " ".join(str(link.get(key) or "") for key in ("text", "title", "context")).strip()
+        relevance = len(_tokens(label + " " + parsed.path) & words)
+        # An unrelated external link must not become a source lead from a portal card.
+        if host != parent_host and relevance == 0:
+            continue
+        ranked.append(
+            (
+                10 * int(host == parent_host) + relevance,
+                -index,
+                {
+                    "url": child_url,
+                    "title": str(link.get("text") or link.get("title") or host)[:200],
+                    "snippet": label[:400] or "Public link on a captured publisher page.",
+                    "parent_url": parent_url,
+                    "parent_capture_key": candidate.get("capture_key"),
+                },
+            )
+        )
+    ranked.sort(reverse=True)
+    return [item for _, _, item in ranked[:4]]
 
 
 def _publisher_kind_tier_suggestion(
@@ -617,6 +717,20 @@ def _source_decision(
 def _source_approved(case_dir: Path, directory: Path, fingerprint: str, backend: str) -> bool:
     """Accept source approval only for the exact, still-current candidate bytes."""
     return _source_decision(case_dir, directory, fingerprint, backend) == "approved"
+
+
+def _source_review_cache_keys(sources_dir: Path) -> list[tuple[str, str | None, str]]:
+    """Invalidate P3's cache when a reviewed packet or decision changes."""
+    keys = []
+    for marker in sorted(sources_dir.glob("*/APPROVED")):
+        packet = marker.with_name("candidate.json")
+        candidate_hash = (
+            hashlib.sha256(packet.read_bytes()).hexdigest() if packet.is_file() else None
+        )
+        keys.append(
+            (marker.parent.name, candidate_hash, hashlib.sha256(marker.read_bytes()).hexdigest())
+        )
+    return keys
 
 
 class DiscoveryLoop:
@@ -749,6 +863,7 @@ class DiscoveryLoop:
         properties = {item["id"]: item for item in ontology["properties"]}
         classes = {item["id"]: item for item in ontology["classes"]}
         jurisdiction = str(policy.get("jurisdiction") or "").strip()
+        channel = _DISCOVERY_CHANNELS[(iteration - 1) % len(_DISCOVERY_CHANNELS)]
         subject = " ".join(
             " ".join(
                 line.strip()
@@ -794,8 +909,10 @@ class DiscoveryLoop:
             prompt = (
                 "Write one short web search query per gap that would find the public "
                 "publisher of that property for the brief's jurisdiction, in the brief's "
-                "language. For primary-entity DoD properties, seek individual record lists, "
-                "registries, contracts or row-level datasets with the ontology identifier/title "
+                "language. This round target the local-language equivalent of the source channel "
+                f"{channel!r}; across rounds search open data, transparency obligations, registries, "
+                "lists, APIs and downloadable datasets. For primary-entity DoD properties, seek "
+                "individual record lists or row-level datasets with the ontology identifier/title "
                 "field; exclude aggregate statistics, totals and dashboards. Do not include URLs. "
                 "Do not repeat a tried query. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
@@ -839,9 +956,9 @@ class DiscoveryLoop:
                 queries.append(LeadQuery(gap, planned_by_gap[gap]))
                 continue
             variants = [
-                f"{prop['label']} {plural} {identity_label} {jurisdiction}",
-                f"{prop['label']} {title_label} {subject}",
-                f"{prop['label']} {plural} {identity_label} {jurisdiction} {subject}",
+                f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
+                f"{prop['label']} {title_label} {channel} {subject}",
+                f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction} {subject}",
             ]
             for variant in variants[iteration - 1 :] + variants[: iteration - 1]:
                 text = " ".join(variant.split())
@@ -849,8 +966,9 @@ class DiscoveryLoop:
                     queries.append(LeadQuery(gap, text))
                     break
         sites = _policy_domains(policy)
+        global_queries = [query for query in queries if query.text not in tried]
         if not sites:
-            return [query for query in queries if query.text not in tried]
+            return global_queries
         restricted: list[LeadQuery] = []
         for index, query in enumerate(queries):
             for offset in range(len(sites)):
@@ -859,14 +977,21 @@ class DiscoveryLoop:
                 if text not in tried:
                     restricted.append(LeadQuery(query.property_id, text))
                     break
-        return restricted
+        return [*global_queries, *restricted]
 
     # --------------------------------------------------------------- propose
     def _rank_lead(self, lead: dict, policy: Mapping) -> float:
         trusted, _ = authority_result(lead["url"], policy=dict(policy))
         tier = authority_tier(lead["url"], policy)
         score = 100.0 if trusted else (40.0 if tier in {"secondary", "review"} else 0.0)
-        return score + 10.0 * (len(lead["providers"]) - 1) + 5.0 * float(lead.get("score", 0))
+        priority = 200.0 if "approved_source" in lead["providers"] else 0.0
+        priority += 40.0 if "portal_link" in lead["providers"] else 0.0
+        return (
+            priority
+            + score
+            + 10.0 * (len(lead["providers"]) - 1)
+            + 5.0 * float(lead.get("score", 0))
+        )
 
     @staticmethod
     def _redirect_chain_from_error(error: Exception, requested_url: str) -> list[str] | None:
@@ -1443,10 +1568,11 @@ class DiscoveryLoop:
             reason = (dispatch.get("reason") if isinstance(dispatch, Mapping) else None) or (
                 result.get("reason") if isinstance(result, Mapping) else None
             )
-            if reason != "http_403":
+            if reason not in {"http_403", "dns_failed", "navigation_error", "timeout"}:
                 candidate.update(
                     status="capture_failed",
                     capture_reason=reason or type(exc).__name__,
+                    capture_error=_capture_error_text(exc),
                     capture_outcome="blocked" if isinstance(exc, CaptureBlocked) else "failed",
                     capture_attempts=1,
                 )
@@ -1475,6 +1601,7 @@ class DiscoveryLoop:
                 candidate.update(
                     status="capture_failed",
                     capture_reason=retry_reason or f"http_403_retry_{type(retry_exc).__name__}",
+                    capture_error=_capture_error_text(retry_exc),
                     capture_outcome="blocked"
                     if isinstance(retry_exc, CaptureBlocked)
                     else "failed",
@@ -1509,6 +1636,7 @@ class DiscoveryLoop:
                         else "http_403_retry_blocked"
                     ),
                     capture_outcome="blocked",
+                    capture_error=_capture_error_text(exc),
                     capture_attempts=2,
                 )
                 return self._redirect_lead_from_error(
@@ -1566,6 +1694,7 @@ class DiscoveryLoop:
             candidate.update(
                 status="capture_failed",
                 capture_reason="sandbox_parse_failed",
+                capture_error=_capture_error_text(exc),
                 capture_outcome="failed",
                 capture_key=key,
             )
@@ -1574,9 +1703,9 @@ class DiscoveryLoop:
         self.trace.extend(parsed_page.trace)
         self._annotate_source_steps(self.trace[trace_start:])
         self.jobs.append(parsed_page.job_record)
-        if parsed_page.challenge_detected:
+        if parsed_page.challenge_detected or captured.get("capture_reason") == "bot_challenge":
             candidate.update(
-                status="capture_failed",
+                status="inconclusive",
                 capture_reason="bot_challenge",
                 capture_outcome="blocked",
                 capture_key=key,
@@ -1594,9 +1723,9 @@ class DiscoveryLoop:
             )
         ):
             candidate.update(
-                status="capture_failed",
-                capture_reason="empty_captured_source",
-                capture_outcome="failed",
+                status="inconclusive",
+                capture_reason="empty_render",
+                capture_outcome="inconclusive",
                 capture_key=key,
             )
             return
@@ -1604,6 +1733,7 @@ class DiscoveryLoop:
         landing_url = captured.get("url") or url
         trusted, reason = authority_result(landing_url, policy=dict(policy))
         matched_publishers = _matching_publishers(landing_url, policy)
+        publisher_of_record = _publisher_of_record(landing_url, text, policy)
         listing_row_count = sum(
             str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows
         )
@@ -1650,6 +1780,7 @@ class DiscoveryLoop:
             landing_url=landing_url,
             redirect_chain=captured.get("redirect_chain", [url, landing_url]),
             matched_publishers=matched_publishers,
+            **({"publisher_of_record": publisher_of_record} if publisher_of_record else {}),
             excerpt=excerpt[:700],
             source_type=source_class(
                 candidate["title"],
@@ -1657,7 +1788,11 @@ class DiscoveryLoop:
                 ontology["source_classes"],
             ),
             authority="auto" if trusted else "review",
-            authority_tier=authority_tier(landing_url, policy),
+            authority_tier=(
+                publisher_of_record["tier"]
+                if publisher_of_record is not None
+                else authority_tier(landing_url, policy)
+            ),
             authority_reason=reason,
         )
         self._page_texts[url] = text
@@ -2251,6 +2386,7 @@ class DiscoveryLoop:
         high = high_stakes_properties(ontology, dod_queries)
         required = {target: 2 if target in high else 1 for target in targets}
         objectives_path = case_dir / "03-fanout/objectives.json"
+        sources_dir = case_dir / "03-fanout/sources"
         ledger_path = objectives_path.parent / "surface-map/discovery.json"
         request_key = hashlib.sha256(
             json.dumps(
@@ -2259,9 +2395,10 @@ class DiscoveryLoop:
                     ontology,
                     policy,
                     sorted(targets),
+                    _source_review_cache_keys(sources_dir),
                     [provider.name for provider in self.providers],
                     decision.backend,
-                    "p3-discovery-loop-v3-entity-granularity",
+                    "p3-discovery-loop-v4-approved-source-reuse",
                 ],
                 sort_keys=True,
                 ensure_ascii=False,
@@ -2303,9 +2440,9 @@ class DiscoveryLoop:
                 validate_document("objectives", previous)
                 return self._site_graphs(case_dir, ontology, decision, previous)
 
-        sources_dir = case_dir / "03-fanout/sources"
         self._redirect_frontier = {}
         saved_redirect_leads: dict[str, dict] = {}
+        approved_packet_leads: dict[str, dict] = {}
         saved_candidate_urls: set[str] = set()
         leads_path = case_dir / "03-fanout/surface-map/leads.json"
         try:
@@ -2348,6 +2485,41 @@ class DiscoveryLoop:
             source_directory = sources_dir / source_id
             if (source_directory / "APPROVED").exists():
                 _source_decision(case_dir, source_directory, fingerprint, backend)
+        # A human-approved linked document belongs to the case, not to the run
+        # that discovered its parent page. Verify the exact reviewed packet
+        # before using its URL as a lead; its parent capture is never document
+        # evidence. The new sandbox capture and parse supply that evidence.
+        for candidate_path in sorted(sources_dir.glob("*/candidate.json")):
+            directory = candidate_path.parent
+            if not (directory / "APPROVED").exists():
+                continue
+            try:
+                packet = load_json(candidate_path)
+                validate_document("source-candidate", packet)
+                fingerprint = str(packet["fingerprint"])
+            except (OSError, ValueError, KeyError, ValidationError) as exc:
+                raise ApprovalArtifactMismatch("source") from exc
+            if _source_decision(case_dir, directory, fingerprint, backend) != "approved":
+                continue
+            url = str(packet.get("url") or "")
+            if not public_url(url):
+                raise ApprovalArtifactMismatch("source")
+            approved_packet_leads[url] = {
+                **Lead(
+                    url=url,
+                    title=str(packet.get("title") or url)[:200],
+                    snippet=str(packet.get("snippet") or "Approved source review packet")[:400],
+                    discovered_by="approved_source",
+                    query="digest-verified source approval from an earlier run",
+                    property_ids=targets,
+                ).as_dict(),
+                "providers": ["approved_source"],
+                "iteration": 0,
+                "source_review_required": True,
+                "review_source_id": str(packet["source_id"]),
+                "review_fingerprint": fingerprint,
+                "parent_capture_key": packet.get("capture_key"),
+            }
         if isinstance(saved_leads, list):
             for lead in saved_leads:
                 if not isinstance(lead, dict) or not lead.get("redirect_review_required"):
@@ -2411,6 +2583,8 @@ class DiscoveryLoop:
             for item in (previous or {}).get("objectives", [])
             if isinstance(item.get("access_path"), Mapping) and item["access_path"]
         } | saved_candidate_urls
+        # A previous failed capture cannot orphan a later human-approved packet.
+        known_urls.difference_update(approved_packet_leads)
         self._page_texts = {}
         self._page_access_contexts = {}
         self._page_access_paths = {}
@@ -2464,7 +2638,7 @@ class DiscoveryLoop:
         def propose(context: dict, iteration: int) -> dict:
             draft = deepcopy(context["previous"]) or {
                 "candidates": {},
-                "leads": deepcopy(saved_redirect_leads),
+                "leads": deepcopy({**saved_redirect_leads, **approved_packet_leads}),
             }
             queries = tuple(LeadQuery(pid, text) for pid, text in context["queries"])
             if not queries:
@@ -2553,7 +2727,7 @@ class DiscoveryLoop:
                 and url not in known_urls
                 and open_now & set(lead["property_ids"])
                 and (
-                    not lead.get("redirect_review_required")
+                    not (lead.get("redirect_review_required") or lead.get("source_review_required"))
                     or _source_decision(
                         case_dir,
                         sources_dir / str(lead.get("review_source_id") or ""),
@@ -2587,6 +2761,28 @@ class DiscoveryLoop:
                     progressed = True
                 if not progressed:
                     break
+            if iteration > 1 and self.max_captures > 1:
+                # Keep the first search/approved result, while guaranteeing that
+                # two policy roots receive capture slots each later round.
+                roots = [
+                    item
+                    for item in pool
+                    if "authority_policy" in item["providers"] and item not in chosen
+                ][:2]
+                for root in roots:
+                    if len(chosen) < self.max_captures:
+                        chosen.append(root)
+                    else:
+                        replace = next(
+                            (
+                                index
+                                for index in range(len(chosen) - 1, 0, -1)
+                                if "authority_policy" not in chosen[index]["providers"]
+                            ),
+                            None,
+                        )
+                        if replace is not None:
+                            chosen[replace] = root
             for lead in chosen:
                 candidate = {
                     "url": lead["url"],
@@ -2602,6 +2798,7 @@ class DiscoveryLoop:
                     **(
                         {"source_id": lead["review_source_id"]}
                         if lead.get("redirect_review_required")
+                        or lead.get("source_review_required")
                         else {}
                     ),
                     **(
@@ -2615,11 +2812,34 @@ class DiscoveryLoop:
                             "source_review_fingerprint": lead["review_fingerprint"],
                         }
                         if lead.get("redirect_review_required")
+                        or lead.get("source_review_required")
                         else {}
                     ),
                 }
                 redirect_lead = self._capture_lead(candidate, policy, ontology, decision, case_dir)
                 draft["candidates"][lead["url"]] = candidate
+                if candidate.get("status") == "captured" and lead.get("exploration_depth", 0) == 0:
+                    for child in _portal_child_leads(
+                        candidate, self._page_access_contexts.get(lead["url"], {}), ontology
+                    ):
+                        if child["url"] in draft["leads"] or child["url"] in draft["candidates"]:
+                            continue
+                        portal_lead = Lead(
+                            url=child["url"],
+                            title=child["title"],
+                            snippet=child["snippet"],
+                            discovered_by="portal_link",
+                            query=f"captured portal link from {lead['url']}",
+                            property_ids=tuple(lead["property_ids"]),
+                        )
+                        draft["leads"][child["url"]] = {
+                            **portal_lead.as_dict(),
+                            "providers": ["portal_link"],
+                            "iteration": iteration,
+                            "exploration_depth": 1,
+                            "parent_url": child["parent_url"],
+                            "parent_capture_key": child["parent_capture_key"],
+                        }
                 if redirect_lead is not None:
                     existing = draft["leads"].get(redirect_lead["url"])
                     if existing is None:
@@ -2632,6 +2852,10 @@ class DiscoveryLoop:
                                 review_source_id=redirect_lead["review_source_id"],
                                 review_fingerprint=redirect_lead["review_fingerprint"],
                             )
+                if str(candidate.get("capture_reason") or "").startswith("redirect_"):
+                    # A redirect is its own authority boundary. Process its new
+                    # lead/review before dispatching more candidates this round.
+                    break
             return draft
 
         def critique(draft: dict, _context: dict, _iteration: int) -> dict:
@@ -2911,6 +3135,11 @@ class DiscoveryLoop:
                     len(set(candidate["covers"]) & set(dod)) / max(1, len(dod)), 3
                 ),
                 "authority_tier": candidate["authority_tier"],
+                **(
+                    {"publisher_of_record": candidate["publisher_of_record"]}
+                    if candidate.get("publisher_of_record")
+                    else {}
+                ),
                 "confirmed_bronze_key": candidate["capture_key"],
                 "access_path": candidate.get("access_path", {}),
                 **(
@@ -2935,6 +3164,11 @@ class DiscoveryLoop:
                 "authority": candidate["authority"],
                 "authority_tier": candidate["authority_tier"],
                 "authority_reason": candidate["authority_reason"],
+                **(
+                    {"publisher_of_record": candidate["publisher_of_record"]}
+                    if candidate.get("publisher_of_record")
+                    else {}
+                ),
                 "fingerprint": candidate["fingerprint"],
                 "covers": candidate["covers"],
                 "landing_url": candidate.get("landing_url", candidate["url"]),
@@ -3029,6 +3263,26 @@ class DiscoveryLoop:
                     if candidate["authority"] == "auto":
                         bucket["sources"] += 1
 
+        class_recall = {
+            item["id"]: {"leads": 0, "captured": 0, "confirmed": 0}
+            for item in ontology["source_classes"]
+        }
+        for lead in draft["leads"].values():
+            source_type = source_class(
+                str(lead.get("title") or ""),
+                str(lead.get("snippet") or ""),
+                ontology["source_classes"],
+            )
+            class_recall[source_type]["leads"] += 1
+        for candidate in draft["candidates"].values():
+            source_type = candidate.get("source_type")
+            if source_type not in class_recall:
+                continue
+            if candidate["status"] in {"captured", "confirmed", "rejected"}:
+                class_recall[source_type]["captured"] += 1
+            if candidate["status"] == "confirmed":
+                class_recall[source_type]["confirmed"] += 1
+
         surface = case_dir / "03-fanout/surface-map"
         write_json(
             surface / "leads.json",
@@ -3060,6 +3314,7 @@ class DiscoveryLoop:
                 "objections": list(result.objections),
                 "queries": sorted({a["query"] for a in self.attempts}),
                 "provider_yield": yield_by,
+                "class_recall": class_recall,
                 "attempts": self.attempts,
                 "selected_source_ids": [c["source_id"] for c in confirmed],
                 "candidate_count": len(draft["candidates"]),

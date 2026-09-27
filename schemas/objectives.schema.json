@@ -30,6 +30,7 @@
         "priority": {"type": "integer", "minimum": 1},
         "expected_contribution": {"type": "number", "minimum": 0, "maximum": 1},
         "authority_tier": {"enum": ["primary", "secondary", "review", "unknown"]},
+        "publisher_of_record": {"$ref": "#/$defs/publisher_of_record"},
         "confirmed_bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
         "document_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
         "access_path": {
@@ -55,7 +56,7 @@
               "link_index": {"type": "integer", "minimum": 0, "maximum": 299},
               "content_type": {"type": "string", "minLength": 1, "maxLength": 200},
               "size_bytes": {"type": ["integer", "null"], "minimum": 0},
-              "document_format": {"enum": ["csv", "xlsx", "xlsm", "json", "pdf"]}
+              "document_format": {"enum": ["csv", "xls", "xlsx", "xlsm", "json", "pdf"]}
             },
             "allOf": [
               {
@@ -65,6 +66,17 @@
             ]
           }
         }
+      }
+    },
+    "publisher_of_record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "tier", "basis"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1},
+        "tier": {"enum": ["primary", "secondary", "review"]},
+        "basis": {"enum": ["approved_policy", "captured_page"]},
+        "evidence_quote": {"type": "string", "minLength": 1, "maxLength": 500}
       }
     },
     "discovered_by": {

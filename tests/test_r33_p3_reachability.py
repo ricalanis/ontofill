@@ -92,8 +92,8 @@ def test_property_queries_are_site_restricted_and_empty_search_seeds_policy_root
         set(),
     )
 
-    assert len(queries) == 1
-    assert queries[0].text.startswith("site:records.example.test ")
+    assert len(queries) == 2
+    assert queries[1].text.startswith("site:records.example.test ")
     with pytest.raises(NoConfirmedSources):
         loop.discover_sources(tmp_path, ontology, decision)
     assert calls == [(root_url, ["records.example.test"])]
@@ -156,7 +156,7 @@ def test_policy_roots_reject_local_ip_internal_and_malformed_hosts(tmp_path: Pat
         1,
         set(),
     )
-    assert queries[0].text.startswith("site:records.example.test ")
+    assert queries[1].text.startswith("site:records.example.test ")
 
     with pytest.raises(NoConfirmedSources):
         loop.discover_sources(tmp_path, ontology, decision)

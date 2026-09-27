@@ -1,3 +1,12 @@
+# R48 broad source recall
+
+- [x] Add red synthetic regressions for parsed documents, approved packet reuse, priority, one-level portal links, inconclusive empty pages and capture receipts; the capture worker owns its bot-challenge fixture.
+- [x] Widen P3 query planning and entity-level document capability; record publisher of record and recall by class.
+- [ ] Integrate CKAN/provider and bounded render changes from separate worktrees; run focused and full managed gates.
+- [ ] Pre-push scan, fast-forward public main, then guarded VM pull/image rebuild; report READY FOR VERIFY and console relaunch.
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r48_recall.py`, reviewed provider/capture worker commits and task notes. TASK: implement R48 with containment intact. DONE: GOAL.md gate plus full pytest/Ruff and bounded VM proof. FORMAT: Ruff and JSON schema parsing if changed.
+
 # R44 P3 granularity
 
 The first composed gate passed 570 tests/5 skips and failed seven recorded legacy SearchClient fixtures that carry no P3 access-path metadata. The live P4 invariant remains strict. A narrowly scoped recorded-only compatibility path now allows missing metadata solely in mock previews; explicit aggregate/unknown mock paths still fail. A new live missing-path regression and the seven formerly failing cases passed together (26 focused tests, Ruff clean). The managed composed successor gate passed **578 tests, 5 skips**, Ruff lint/format, both JSON schema syntax checks, and diff checks.

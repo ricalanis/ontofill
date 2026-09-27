@@ -1,4 +1,12 @@
-# Current goal: R44 per-entity source granularity
+# Current goal: R48 broad source recall
+
+P3 must reach sandbox-confirmed entity-level official source routes across open data, transparency, registries, lists, datasets, APIs and documents, without treating empty portals or bot challenges as negative capability evidence. Prioritize trusted roots, explore one level of portal links, and retain visible capture failures. Unknown publishers keep the human source gate.
+
+DONE: `uv run pytest -q tests/test_r48_recall.py tests/test_discovery_loop.py tests/test_discovery_providers.py && uv run ruff check src/ontofill/phases/p3_fanout tests/test_r48_recall.py && uv run ruff format --check src/ontofill/phases/p3_fanout tests/test_r48_recall.py && git diff --check` (initially fails because `tests/test_r48_recall.py` does not exist).
+
+Constraints: synthetic tests only; no real case, approvals, credentials or PA-owned code. Public push after full gate and pre-push scan; VM deploy only after a fresh zero-engine check.
+
+# Prior goal: R44 per-entity source granularity
 
 P4 independently refuses aggregate, unknown or missing primary-class DoD granularity before inference or TDD cache reuse. Its model prompt and validation rule specify one row/page per entity. A stale local TDD is invalidated when cited granularity evidence changes.
 

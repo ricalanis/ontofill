@@ -646,7 +646,10 @@ def test_critic_rejects_page_that_does_not_publish_the_property(tmp_path) -> Non
     critique = next(s for s in loop.trace if s.get("loop", {}).get("role") == "critique")
     assert critique["loop"]["verdict"] == "rejected"
     leads = json.loads((tmp_path / "03-fanout/surface-map/leads.json").read_text())
-    assert leads["candidates"][0]["status"] == "rejected"
+    assert (
+        next(candidate for candidate in leads["candidates"] if candidate["url"] == url)["status"]
+        == "rejected"
+    )
 
 
 def test_model_critic_requires_cited_access_path_and_screens_captured_text(tmp_path) -> None:

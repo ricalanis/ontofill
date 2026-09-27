@@ -46,6 +46,17 @@
     "source_type": {"type": ["string", "null"]},
     "authority": {"enum": ["auto", "review"]},
     "authority_tier": {"enum": ["primary", "secondary", "review", "unknown"]},
+    "publisher_of_record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "tier", "basis"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1},
+        "tier": {"enum": ["primary", "secondary", "review"]},
+        "basis": {"enum": ["approved_policy", "captured_page"]},
+        "evidence_quote": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
     "authority_reason": {"type": "string", "minLength": 1},
     "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "covers": {
