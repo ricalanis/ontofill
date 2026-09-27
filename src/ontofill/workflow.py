@@ -811,7 +811,7 @@ def run_case(
                 ontology=ontology,
                 generated_by=provenance,
                 shapes_ttl=shapes,
-                decision=decision,
+                decision=decision if provenance["backend"] == "vultr" else None,
             )
             _publish_decision_calls(feed, trace, decision, classification_start, run_id, 5)
             dod_queries = load_json(case_dir / "02-ontology/dod-queries.json")
