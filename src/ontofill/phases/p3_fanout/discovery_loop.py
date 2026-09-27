@@ -487,6 +487,8 @@ class DiscoveryLoop:
                         if prop in prior_cover:
                             prior_cover[prop].add(host)
 
+        # Sources confirmed in earlier rounds are never re-captured as new leads.
+        known_urls = {item["source_url"] for item in (previous or {}).get("objectives", [])}
         self._page_tokens = {}
         tried_queries: set[str] = set()
         tried_publishers: set[str] = set()
@@ -594,7 +596,9 @@ class DiscoveryLoop:
             pool = [
                 lead
                 for url, lead in draft["leads"].items()
-                if url not in draft["candidates"] and open_now & set(lead["property_ids"])
+                if url not in draft["candidates"]
+                and url not in known_urls
+                and open_now & set(lead["property_ids"])
             ]
             pool.sort(key=lambda lead: self._rank_lead(lead, policy), reverse=True)
             chosen: list[dict] = []

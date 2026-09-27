@@ -541,3 +541,56 @@ def test_high_stakes_and_tier_helpers_are_generic() -> None:
     assert authority_tier("https://x.libraries.example.test/a", POLICY) == "primary"
     assert authority_tier("https://region.example.test/", POLICY) == "secondary"
     assert authority_tier("https://elsewhere.example.test/", POLICY) == "unknown"
+
+
+def test_workflow_publishes_loop_and_outer_reopen_skips_known_sources(tmp_path) -> None:
+    from collections import deque
+
+    from ontofill.workflow import _scratch_case, run_case
+    from tests.genericity.test_library_workflow import _capture
+
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "brief.md").write_text(BRIEF.read_text(encoding="utf-8"), encoding="utf-8")
+    run_id = f"mock-{uuid.uuid4().hex[:16]}"
+    decision = library_decisions()
+    decision.responses["phase1.prd"][0]["definition_of_done"][0]["target"] = 2
+    decision.responses["phase2.dod_queries"][0]["queries"][0]["target"] = 2
+    decision.responses["outer.gap_decision"] = deque(
+        [
+            {"reopen": 3, "reason": "Find another captured public source"},
+            {"reopen": None, "reason": "Stop after one extra discovery round"},
+        ]
+    )
+    url = "https://libraries.example.test/branches"
+    provider = StaticProvider("synthetic", _all_urls(("name", "free_internet", "opening_hours")))
+    loop, capture = _loop(tmp_path, [provider], {url: PAGE.format(title="Branches")})
+    loop.run_id = run_id
+    code = run_case(
+        case,
+        run_id=run_id,
+        decision=decision,
+        preview_past_checkpoints=True,
+        search_client=loop,
+        capture=_capture,
+    )
+    assert code == 3
+    assert capture.calls == [url]  # the reopened round never re-captures a known source
+    scratch, lake = _scratch_case(case, run_id)
+    trace = [
+        json.loads(line)
+        for line in lake.read_key(f"runs/{case.name}/{run_id}/trace.live.jsonl").splitlines()
+    ]
+    p3_stops = [
+        step["loop"]["stop_reason"]
+        for step in trace
+        if step.get("loop", {}).get("phase") == 3 and "stop_reason" in step["loop"]
+    ]
+    assert len(p3_stops) == 2
+    metrics = json.loads(lake.read_key(f"gold/{case.name}/{run_id}/metrics.json"))
+    assert [row["phase"] for row in metrics["loops"]].count(3) == 2
+    objectives = json.loads((scratch / "03-fanout/objectives.json").read_text())
+    assert [item["source_url"] for item in objectives["objectives"]] == [url]
+    assert objectives["objectives"][0]["discovered_by"]["provider"] == "synthetic"
+    ledger = json.loads((scratch / "03-fanout/surface-map/discovery.json").read_text())
+    assert [round_["mode"] for round_ in ledger["rounds"]] == ["loop", "loop"]
