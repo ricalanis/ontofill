@@ -67,10 +67,27 @@ kept; where a fact changed, the text carries an "Updated HH:MM" note. The runnin
 
 | When (PT) | Commit | What changed |
 |-----------|--------|--------------|
+| Sun 12:46 | [lessons below](#what-the-sf-case-taught-the-engine-added-1246) | Five engine lessons from the SF case, each with its status. |
+| Sun 11:55–12:35 | [`da8d8e9`](https://github.com/ricalanis/ontofill/commit/da8d8e9), [`5af4ec2`](https://github.com/ricalanis/ontofill/commit/5af4ec2), [`9500cf8`](https://github.com/ricalanis/ontofill/commit/9500cf8), [`c326ec6`](https://github.com/ricalanis/ontofill/commit/c326ec6) | Pushed to main: official open-contracting (OCDS) discovery and parsing, for Proveedor Abierto's next attempt at gold. Deploy and verification not yet reported. |
+| Sun 11:58–12:30 | [`491d35e`](https://github.com/ricalanis/ontofill/commit/491d35e), [`06ed252`](https://github.com/ricalanis/ontofill/commit/06ed252), [`da92d1c`](https://github.com/ricalanis/ontofill/commit/da92d1c), [`ca7e256`](https://github.com/ricalanis/ontofill/commit/ca7e256) | Pushed to main: listings laid out as repeated blocks parse as one row per entity; the source critic asks only for the corroboration the approved PRD requires (R66); discovery resumes from a durable checkpoint. Deploy and verification not yet reported. |
 | Sun 11:54 | deployed VM HEAD [`7eb528c`](https://github.com/ricalanis/ontofill/commit/7eb528c) (engine code through [`52235c5`](https://github.com/ricalanis/ontofill/commit/52235c5): R64/R64b) | The engine on the control VM now carries the R64/R64b definition-of-done fixes: zero-only criteria are set aside, each criterion compiles to its own query, and completeness counts all entities. It also adds a parser preview for large datasets and clean source-link labels. Verification is pending until the SF case runs on it. |
 | Sun 11:52 | [run `run-09ed86537750`](https://ontofill-console-judges.eu1.netbird.services/cases/sf-library-branches/runs/run-09ed86537750) | The SF case stopped at P3 discovery. The source critic rejected sfpl.org's branch pages ("no tabular listing") and asked for a second independent publisher, which the PRD does not require. Logged as R66; fix in progress. |
 | Sun 11:49 | [`0b81af0`](https://github.com/ricalanis/ontofill/commit/0b81af0) | The status bullets above now match the submitted claims. They still read "six defects, five fixed" and "the run continues". |
 | Sun 11:44–11:48 | [`e226669`](https://github.com/ricalanis/ontofill/commit/e226669), [`52235c5`](https://github.com/ricalanis/ontofill/commit/52235c5) | R64/R64b definition-of-done fixes: "≤ 0" criteria and explicit completeness shares no longer compile to counts that can never be met. Awaiting deploy at the SF case's next checkpoint. |
+
+
+### What the SF case taught the engine (added 12:46)
+
+The simpler SF case exposed five general gaps in the engine, not SF-specific patches. Evidence is in each run's
+trace on the judges console.
+
+| Lesson | Seen in the SF and Mexico runs | Status |
+|--------|---------------|--------|
+| 1. Never stop before judging | One run spent its phase-3 time budget on sandbox captures and stopped before the critic ran, then reported "no source" | next |
+| 2. Reuse what is already captured | sfpl.org/locations was captured and parsed again in four runs; captures should be reused across runs by URL and content hash | after the event |
+| 3. Model publishers, not hostnames | data.sfgov.org moved to data.sf.gov, and CompraNet to ComprasMX; a publisher's move should go to a person's review, not a hard block | after the event |
+| 4. Don't spend budget on non-content | Stylesheets and favicons were followed and captured in sandbox jobs | next |
+| 5. Critics judge against the approved contract, never built-in defaults | The same bug four times: the rule convention, a second-publisher demand, re-authored DoD thresholds, and a deny reason that never reached the DoD compiler | partly fixed (`829559e`, `da92d1c`, R63, R64) |
 
 ## How it works
 
