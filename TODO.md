@@ -1,3 +1,19 @@
+# R30 P2 factor grounding
+
+- `FILES`: `src/ontofill/phases/p2_ontology/phase.py`, `schemas/factors.schema.json`, `tests/test_r30_factors.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+- `TASK`: validate grounded factors against published PRD records, give exact retry feedback, and recast unsupported factors conceptual only after bounded retries.
+- `DONE`: the managed gate defined in `GOAL.md` passes with recorded grounding regressions, compatibility coverage, Ruff, schema parsing, and `git diff --check`.
+- `FORMAT`: `uv run ruff format` for changed Python files; `python3 -m json.tool schemas/factors.schema.json`.
+
+1. [x] Add recorded tests for a grounded factor with no evidence and for an exact PRD citation; prove invalid output is retried with factor-specific feedback.
+   - `DONE`: managed red baseline attempt 1 failed both new tests on current P2 behavior and passed 11 compatibility tests; empty evidence was accepted and the citation shape was rejected by the old schema.
+2. [x] Add schema support for PRD record citations, strict factor-level evidence validation, and a bounded conceptual fallback that drops unsupported evidence.
+   - `DONE`: recorded retry keeps an exact PRD citation grounded; after three unsupported proposals, only the unsupported factor becomes conceptual and its invented URL is removed.
+3. [x] Run the focused managed compatibility/Ruff/schema gate; record the result and commit the isolated branch.
+   - `DONE`: 94 selected tests, Ruff lint/format, schema parsing, and diff checks passed; the isolated commit contains only assigned paths.
+4. [x] Review the cache path against the R30 invariant and run the full integration gate.
+   - `DONE`: a cached grounded factor without a supported citation is redrafted; the managed full engine gate passed 470 tests, five skipped, with Ruff clean.
+
 # R31 P2 schema salvage
 
 - `FILES`: `src/ontofill/phases/p2_ontology/phase.py`, `src/ontofill/phases/p2_ontology/README.md`, `schemas/ontology-recommendations.schema.json`, `schemas/README.md`, `tests/test_r31_ontology_salvage.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.

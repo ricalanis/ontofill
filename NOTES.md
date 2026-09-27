@@ -1,3 +1,21 @@
+# R30 P2 factor grounding plan (2026-09-27)
+
+Root integration review after the worker commit found that the cached-factor fast path validated only JSON Schema and would reuse a grounded factor with `evidence: []`. This is distinct from the model-output retry check. I moved the published-record lookup before the cache branch, applied the same citation validator there, and added a synthetic cache-reuse regression. The focused managed gate passed 13 tests; the rebased branch's first managed full gate passed **470 tests, 5 skipped**, Ruff lint/format clean on 170 files, and whitespace clean. No real case or approval artifact was edited.
+
+Read the repo instructions, required engine definition/plan, the R30 gap row, and contract §16. This revision does not implement the P1 research ledger; the only published records P2 can currently receive are the PRD records. The selected citation shape keeps the existing readable `description` and adds a typed source object `{type: "case_file", path: "01-scope/prd.json", record_id, quote}`. Record IDs are namespaced (for example, `requirement:<id>` and `definition_of_done:<id>`); the exact quote must occur in that record. Legacy URL/bronze-key evidence remains schema-valid.
+
+The P2 validator will reject grounded factors with no supported record citation and feed a factor-specific correction into the existing three-attempt loop. If the last structurally valid response still contains unsupported grounded factors, exhaustion recovery will remove unsupported evidence and mark only those factors conceptual. It will never manufacture a URL, quote, or capture key. Synthetic recorded tests use generic IDs and do not read or edit the real case or approval artifacts.
+
+## Execution record
+
+- Initial state: worktree created from `origin/main` at `ce2f704`; parent checkout local modifications remain untouched.
+- Managed red baseline attempt 1: 11 compatibility tests passed and both new R30 tests failed. The current draft accepted a grounded factor with an empty evidence list; the new citation fixture was rejected because the factors schema had no typed PRD source shape.
+- First managed strategy attempts 1 and 2: attempt 1 established the red baseline; attempt 2 passed 93 selected tests and failed one wording assertion. Dead hypothesis: backticked schema-token wording `exact `quote`` also satisfies a test and model-facing requirement for the plain phrase “exact quote.”
+- Successor strategy: write repair guidance as “exact quote in `quote`,” keep the factor/source checks unchanged, and verify with a new managed strategy/hypothesis. This changes the model-facing repair phrasing for clarity rather than renaming the check.
+- Successor managed gate passed: 94 focused P2 and schema tests; Ruff lint/format, factors-schema JSON parsing, and `git diff --check` also passed.
+- The factor review UI reads `description` and `url`; the new PRD evidence keeps a readable description and optional URL absent, so no console parser change is required. Its structured path/record/quote remains in the artifact.
+- Committed the six assigned files on the isolated branch; no push, deploy, or real-case artifact edit occurred.
+
 # R31 P2 schema salvage plan (2026-09-27)
 
 The first root integration gate on current public main passed 463 tests but failed two pre-existing R22 assertions. One required the old exact generic rule error, while R31 deliberately names the offending rule and allowed forms; the other required three cross-class rules to pause without artifacts, which is the R31 defect being fixed. The recorded R22 test now checks the precise feedback and uses a separate invalid core class property to preserve the fail-closed invariant. This is a changed-spec test correction, not a production change. Re-run the full gate once under the standing distinct-cause authorization.

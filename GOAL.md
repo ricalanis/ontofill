@@ -1,4 +1,14 @@
-# Current goal: R26d PRD open issues
+# Current goal: R30 P2 factor grounding
+
+Every factor labeled grounded cites an existing PRD record by record ID and exact quote; unsupported factors are retried and then recast conceptual without fabricated evidence.
+
+DONE: `agent-progress run --task r30-factor-evidence --paths src/ontofill/phases/p2_ontology/phase.py,schemas/factors.schema.json,tests/test_r30_factors.py --check prd-grounded-evidence-focused --strategy plain-language-record-correction-with-conceptual-fallback --hypothesis 'Retry feedback should state the exact PRD path, record ID, and exact quote in plain wording; after bounded retries preserve supported citations and recast unsupported factors conceptual.' -- sh -c 'uv run pytest -q tests/test_r30_factors.py tests/test_r22_p2.py tests/test_definition_phases.py tests/test_schemas.py && uv run ruff check src/ontofill/phases/p2_ontology/phase.py tests/test_r30_factors.py && uv run ruff format --check src/ontofill/phases/p2_ontology/phase.py tests/test_r30_factors.py && python3 -m json.tool schemas/factors.schema.json >/dev/null && git diff --check'` passes with the recorded P2 regression, focused compatibility tests, Ruff, schema JSON parsing, and whitespace checks.
+
+Integration DONE: the cache-reuse regression passes, and the managed full engine gate passes 470 tests with five skips, Ruff lint/format clean, and whitespace clean on the rebased branch.
+
+Constraints: own only P2 factor grounding, the factor schema, synthetic recorded tests, and these task notes; do not edit P1, console, browser-agent, coordination files, the real case, approvals, push, or deploy.
+
+## Prior R26d goal
 
 When P1 revises a PRD, persist only open issues from the current draft's critic and code checks; remove issues inherited from an earlier draft when the current review resolves them.
 

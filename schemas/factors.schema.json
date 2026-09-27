@@ -26,12 +26,24 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "description"],
+      "required": ["description"],
       "properties": {
         "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
         "description": {"type": "string", "minLength": 1},
-        "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"}
-      }
+        "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path", "record_id", "quote"],
+          "properties": {
+            "type": {"const": "case_file"},
+            "path": {"const": "01-scope/prd.json"},
+            "record_id": {"type": "string", "minLength": 1},
+            "quote": {"type": "string", "minLength": 1}
+          }
+        }
+      },
+      "anyOf": [{"required": ["url"]}, {"required": ["source"]}]
     }
   }
 }

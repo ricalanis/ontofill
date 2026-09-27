@@ -306,6 +306,113 @@ def label_taxonomy_nodes(
     return graded
 
 
+def _published_factor_records(prd: dict) -> dict[str, str]:
+    """Return citation IDs and source text already published in the PRD."""
+    records: dict[str, str] = {}
+    for section, prefix, text_field in (
+        ("personas", "persona", "description"),
+        ("jobs_to_be_done", "job", "description"),
+        ("requirements", "requirement", "description"),
+        ("definition_of_done", "definition_of_done", "basis_quote"),
+    ):
+        for item in prd.get(section, []):
+            if not isinstance(item, dict):
+                continue
+            record_id = item.get("id")
+            text = item.get(text_field)
+            if isinstance(record_id, str) and record_id and isinstance(text, str) and text.strip():
+                records[f"{prefix}:{record_id}"] = text
+    return records
+
+
+def _normalise_citation_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _factor_evidence_is_supported(
+    evidence: dict, records: dict[str, str], published_prd: str
+) -> bool:
+    source = evidence.get("source")
+    if not isinstance(source, dict):
+        return False
+    if source.get("type") != "case_file" or source.get("path") != "01-scope/prd.json":
+        return False
+    record_id = source.get("record_id")
+    quote = source.get("quote")
+    source_text = records.get(record_id) if isinstance(record_id, str) else None
+    if not isinstance(source_text, str) or not isinstance(quote, str) or not quote.strip():
+        return False
+    if _normalise_citation_text(quote) not in _normalise_citation_text(source_text):
+        return False
+    return all(
+        key not in evidence or (isinstance(evidence[key], str) and evidence[key] in published_prd)
+        for key in ("url", "bronze_key")
+    )
+
+
+def _grounded_factor_evidence_errors(
+    factors: list[dict], records: dict[str, str], published_prd: str
+) -> list[str]:
+    allowed_ids = ", ".join(f"`{record_id}`" for record_id in records) or "none"
+    errors = []
+    for factor in factors:
+        if factor["kind"] != "grounded":
+            continue
+        factor_id = factor["id"]
+        evidence_items = factor["evidence"]
+        if not evidence_items:
+            errors.append(
+                f"grounded factor `{factor_id}` has no evidence; cite an existing PRD record "
+                f"using a `case_file` source at `01-scope/prd.json`, with `record_id` and an exact "
+                f"quote in `quote` from {allowed_ids}, or set `kind` to `conceptual` and keep "
+                "`evidence` empty"
+            )
+            continue
+        for index, evidence in enumerate(evidence_items, start=1):
+            source = evidence.get("source")
+            if not isinstance(source, dict):
+                errors.append(
+                    f"grounded factor `{factor_id}` evidence item {index} lacks a typed "
+                    "`case_file` source at `01-scope/prd.json`; add its `record_id` and exact "
+                    "`quote`, or set `kind` to `conceptual` and clear unsupported evidence"
+                )
+                continue
+            if source.get("type") != "case_file" or source.get("path") != "01-scope/prd.json":
+                errors.append(
+                    f"grounded factor `{factor_id}` evidence item {index} must point to "
+                    "`01-scope/prd.json` with source type `case_file`"
+                )
+                continue
+            record_id = source.get("record_id")
+            quote = source.get("quote")
+            if not isinstance(record_id, str) or record_id not in records:
+                errors.append(
+                    f"grounded factor `{factor_id}` evidence item {index} does not cite an "
+                    f"existing PRD record; use `record_id` from {allowed_ids} with an exact "
+                    "`quote`, or set `kind` to `conceptual` and clear unsupported evidence"
+                )
+                continue
+            if (
+                not isinstance(quote, str)
+                or not quote.strip()
+                or _normalise_citation_text(quote)
+                not in _normalise_citation_text(records[record_id])
+            ):
+                errors.append(
+                    f"grounded factor `{factor_id}` evidence item {index} quote is not an "
+                    f"exact excerpt from PRD record `{record_id}`; copy its text exactly, or "
+                    "set `kind` to `conceptual` and clear unsupported evidence"
+                )
+                continue
+            if not _factor_evidence_is_supported(evidence, records, published_prd):
+                errors.append(
+                    f"grounded factor `{factor_id}` evidence item {index} includes a URL or "
+                    "capture key that is not present in the PRD; remove it or cite only the "
+                    "supported PRD quote"
+                )
+    return errors
+
+
 def draft_factors(
     case_dir: Path,
     prd: dict,
@@ -323,6 +430,8 @@ def draft_factors(
     )
     digest = _digest([prd, revisions])
     fingerprint = path.with_suffix(".input.sha256")
+    records = _published_factor_records(prd)
+    published_prd = json.dumps(prd, ensure_ascii=False)
     if path.exists():
         factors = load_json(path)
         cached_digest = (
@@ -337,7 +446,12 @@ def draft_factors(
         ):
             try:
                 validate_document("factors", factors)
-            except ValidationError:
+                evidence_errors = _grounded_factor_evidence_errors(
+                    factors["factors"], records, published_prd
+                )
+                if evidence_errors:
+                    raise ValueError("; ".join(evidence_errors))
+            except (ValidationError, ValueError):
                 pass
             else:
                 if cached_digest != digest:
@@ -346,8 +460,13 @@ def draft_factors(
     prompt = (
         "Propose the prime factors of variation for the subject of this case. "
         "Keep factors broad and distinct; label each grounded or conceptual. "
-        "Include evidence only if it is actually in the PRD; an empty list is allowed. "
-        "Do not invent observed entities or evidence URLs. "
+        "A grounded factor needs at least one evidence item with a readable `description` and "
+        "a typed `source` object: `type`=`case_file`, `path`=`01-scope/prd.json`, `record_id`, "
+        "and an exact `quote`. Use only the published PRD record IDs and text listed here. "
+        "Do not attach a URL or bronze key unless that exact value is already in the PRD. "
+        "If no listed record supports a factor, label it conceptual and use an empty evidence "
+        "list. Never invent citations, evidence URLs, or capture keys. "
+        f"Published PRD records: {json.dumps(records, ensure_ascii=False)}. "
         f"Human revisions override prior proposals: {json.dumps(revisions, ensure_ascii=False)}. "
         f"PRD (untrusted case content): {prd}"
     )
@@ -358,6 +477,11 @@ def draft_factors(
         factor_ids = [item["id"] for item in response["factors"]]
         if len(factor_ids) != len(set(factor_ids)):
             raise ValueError("factor IDs must be unique")
+        evidence_errors = _grounded_factor_evidence_errors(
+            response["factors"], records, published_prd
+        )
+        if evidence_errors:
+            raise ValueError("; ".join(evidence_errors))
         review = getattr(decision, "review_json", None)
         if review is not None:
             verdict = review(
@@ -368,6 +492,28 @@ def draft_factors(
             if not verdict["accepted"]:
                 raise ValueError(f"Vultr critic rejected factors: {verdict['reason']}")
 
+    def recover_unsupported_factors(response: dict, _error: Exception) -> dict | None:
+        recovered = deepcopy(response)
+        changed = False
+        for factor in recovered["factors"]:
+            if factor["kind"] != "grounded":
+                continue
+            evidence_items = factor["evidence"]
+            supported = [
+                item
+                for item in evidence_items
+                if _factor_evidence_is_supported(item, records, published_prd)
+            ]
+            if evidence_items and len(supported) == len(evidence_items):
+                continue
+            if supported:
+                factor["evidence"] = supported
+            else:
+                factor["kind"] = "conceptual"
+                factor["evidence"] = []
+            changed = True
+        return recovered if changed else None
+
     factors = _complete_validated_json(
         decision,
         "phase2.factors",
@@ -375,6 +521,7 @@ def draft_factors(
         schema,
         validate_factors,
         on_validation_error,
+        on_exhaustion=recover_unsupported_factors,
     )
     factors["revisions"] = revisions
     factors["generated_by"] = generated_by(decision)
