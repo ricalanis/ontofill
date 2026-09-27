@@ -39,10 +39,14 @@ What the sign-in proxy actually proves, and what it does not:
   TCP peer address is in `ONTOFILL_CONSOLE_DIRECT_DENY` (our peers' IPs or CIDRs; forwarded-for headers are never
   trusted) get 403 "decisions must come through the NetBird proxy".
 - `sso` mode (a per-user header) remains for proxies that forward one; `local` (typed name) is development only.
+- **`readonly` is a public viewing instance** (e.g. a second NetBird service with a shared password): every page
+  renders, and every non-GET request is refused with 403 before any route runs, whatever headers arrive, so no
+  forwarded or forged header can make a viewer an approver. Deploy it as a separate container with
+  `CONSOLE_WRITE_MODE=ro`, so its case, registry and runner mounts are read-only as well.
 - `/whoami` shows header names, whether the groups header is present and contains the approver group, and whether the
   request came from a denied direct address; never a header value or an address.
 
-Env: `ONTOFILL_CONSOLE_IDENTITY` (`sso-group` | `sso` | `local`), `ONTOFILL_CONSOLE_GROUPS_HEADER` (default
+Env: `ONTOFILL_CONSOLE_IDENTITY` (`sso-group` | `sso` | `readonly` | `local`), `ONTOFILL_CONSOLE_GROUPS_HEADER` (default
 `X-NetBird-Groups`), `ONTOFILL_CONSOLE_APPROVER_GROUP` (default `approvers`), `ONTOFILL_CONSOLE_DIRECT_DENY`,
 `ONTOFILL_CONSOLE_IDENTITY_HEADER` (sso mode).
 

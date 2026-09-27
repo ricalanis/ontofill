@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -68,10 +68,14 @@ class Case:
             return False
 
 
+IDENTITY_MODES = ("sso", "sso-group", "readonly", "local")
+READ_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
 @dataclass
 class Settings:
     cases: dict[str, Case] = field(default_factory=dict)
-    identity_mode: str = "sso"  # sso | sso-group | local (dev only, explicit)
+    identity_mode: str = "sso"  # sso | sso-group | readonly (public viewing: no decision at all) | local (dev only)
     identity_headers: tuple[str, ...] = DEFAULT_IDENTITY_HEADERS
     groups_header: str = "X-NetBird-Groups"  # sso-group: the proxy's verified group membership
     approver_group: str = "approvers"
@@ -84,8 +88,9 @@ class Settings:
     _registry_stamp: tuple | None = None
 
     def __post_init__(self) -> None:
-        if self.identity_mode not in ("sso", "sso-group", "local"):
-            raise ValueError(f"ONTOFILL_CONSOLE_IDENTITY must be sso, sso-group or local, got {self.identity_mode!r}")
+        if self.identity_mode not in IDENTITY_MODES:
+            raise ValueError(f"ONTOFILL_CONSOLE_IDENTITY must be one of {', '.join(IDENTITY_MODES)}, "
+                             f"got {self.identity_mode!r}")
 
 
 def parse_cases(spec: str, env: dict[str, str] | None = None) -> dict[str, Case]:
@@ -207,6 +212,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
 
     @app.middleware("http")
+    async def readonly_refuses_writes(request: Request, call_next):
+        """readonly mode (a public viewing instance): every write is refused before any route runs, whatever headers
+        arrive, so no forwarded or forged header can turn a viewer into an approver."""
+        if settings.identity_mode == "readonly" and request.method not in READ_METHODS:
+            return PlainTextResponse("this console is read-only: decisions, case edits and runner actions are "
+                                     "made only on the approvers' console", status_code=403)
+        return await call_next(request)
+
+    @app.middleware("http")
     async def pick_up_registry_changes(request: Request, call_next):
         sync_registry(settings)  # new, archived or revised cases appear without a restart (cheap: stat unless changed)
         return await call_next(request)
@@ -289,6 +303,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def authorize(request: Request, form: dict) -> tuple[str, str, dict | None]:
         """Who is deciding, under the console's identity mode: (approver, identity_source, extra) or HTTP 403/400."""
+        if settings.identity_mode == "readonly":  # the middleware already refused; kept so no route can bypass it
+            raise HTTPException(403, "this console is read-only")
         if settings.identity_mode == "sso":
             who = identity(request)
             if not who:
