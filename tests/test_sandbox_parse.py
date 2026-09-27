@@ -1244,7 +1244,10 @@ def test_json_full_mode_preserves_nested_records_and_pointer_lineage(
     document = {
         "releaseCollection": {
             "releases": [
-                {"ocid": "ocds-synthetic-01", "parties": [{"id": "SUP-1"}]},
+                {
+                    "ocid": "ocds-synthetic-01",
+                    "parties": [{"id": "SUP-1"}, {"id": "SUP-2"}, {"id": "SUP-3"}],
+                },
                 {"ocid": "ocds-synthetic-02", "parties": [{"id": "SUP-2"}]},
             ]
         }

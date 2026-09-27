@@ -123,7 +123,7 @@ def _json_pointer(parts: tuple[str | int, ...]) -> str:
 
 
 def _select_json_records(document: Any) -> tuple[list[dict[str, Any]], str]:
-    """Select a generic largest array of objects, or the root object as one record."""
+    """Select the shallowest object array, or the root object as one record."""
     candidates: list[tuple[int, int, str, list[dict[str, Any]]]] = []
     pending = [(document, (), 0)]
     while pending:
@@ -138,9 +138,10 @@ def _select_json_records(document: Any) -> tuple[list[dict[str, Any]], str]:
                 if isinstance(child, (Mapping, list)):
                     pending.append((child, (*path, index), depth + 1))
     if candidates:
-        # Prefer cardinality, then the shallowest location, then a stable path.
+        # A release can contain many parties or awards. Prefer the outer collection
+        # so nested entity arrays do not silently replace source records.
         _count, _depth, path, records = min(
-            candidates, key=lambda item: (-item[0], item[1], item[2])
+            candidates, key=lambda item: (item[1], -item[0], item[2])
         )
         return records, path
     if isinstance(document, dict):
