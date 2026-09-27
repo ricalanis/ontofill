@@ -32,7 +32,8 @@ five-phase run were added in dated local commits. The Git history records each b
 ## Try a second brief through the ontology checkpoint
 
 This uses the unrelated public-library brief in `tests/genericity`. Run these commands
-from the Ontofill repo root with a live `VULTR_INFERENCE_API_KEY` in the ignored `.env`.
+from the Ontofill repo root with `ONTOFILL_GATEWAY_TOKEN` and the gateway's
+`VULTR_INFERENCE_BASE_URL` in the ignored `.env`.
 The explicit `run-` ID rejects a recorded fallback. All case files and lake objects go
 under a new ignored `.cache/` directory; this does not touch the reference case.
 
@@ -50,15 +51,37 @@ run_library() {
 run_library
 ```
 
-The first call stops at `01-scope/APPROVAL_PENDING.md` with exit code 3. A human reviews
-`01-scope/prd.json`, including each DoD criterion's basis, then writes `01-scope/APPROVED`
-only if they accept it. Re-run `run_library`; review and approve
-`02-ontology/factors/APPROVAL_PENDING.md`, then run `run_library` once more. It stops at
-`02-ontology/APPROVAL_PENDING.md` with the live `ontology.json` ready for human review.
-Use the same `demo_root` and `demo_run` values for every call. A denial with a reason
-regenerates the rejected artifact on the next call; it never skips the checkpoint.
-An accepted marker is JSON with `approver`, `date` (YYYY-MM-DD), and `checkpoint`
-(`prd` or `factors`); see [the approval schema](schemas/approved.schema.json).
+The first call stops at `01-scope/APPROVAL_PENDING.md` with exit code 3. After a human
+reviews and accepts `prd.json` and its DoD basis, this scratch-only helper writes an
+approval bound to the exact file bytes:
+
+```sh
+approve_reviewed() {
+  uv run python - "$demo_root/case" "$1" "$2" "$demo_run" <<'PY'
+import hashlib, json, sys
+from datetime import UTC, datetime
+from pathlib import Path
+root, relative, checkpoint = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+artifact = root / relative
+marker = {
+    "approver": "Local reviewer", "date": datetime.now(UTC).date().isoformat(),
+    "checkpoint": checkpoint, "identity_source": "local", "run_id": sys.argv[4],
+    "artifact_sha256": {relative: hashlib.sha256(artifact.read_bytes()).hexdigest()},
+}
+(artifact.parent / "APPROVED").write_text(json.dumps(marker) + "\n", encoding="utf-8")
+PY
+}
+approve_reviewed 01-scope/prd.json prd
+run_library
+# Review factors.json before continuing:
+approve_reviewed 02-ontology/factors/factors.json factors
+run_library
+```
+
+The final call stops at `02-ontology/APPROVAL_PENDING.md` with a live
+`ontology.json` ready for review. Keep the same `demo_root` and `demo_run` values.
+A denial with a reason regenerates the rejected artifact on the next call; it never
+skips a checkpoint. See [the approval schema](schemas/approved.schema.json).
 
 ## Run the reference case
 
@@ -72,8 +95,9 @@ It generates a `mock-` run in `.cache/case-mock/`, returns exit code 3 for outst
 checkpoints, and never advances the case's latest pointers. Source URLs are discovered at
 runtime from the case brief; values are emitted only from observed public cells.
 
-With `VULTR_INFERENCE_API_KEY` set in the ignored `.env`, the engine selects a live Vultr
-model, regenerates recorded artifacts, pauses for PRD, factors, and ontology approvals,
+With `ONTOFILL_GATEWAY_TOKEN` and `VULTR_INFERENCE_BASE_URL` set in the ignored
+`.env`, the engine selects a live Vultr model through the screened gateway,
+regenerates recorded artifacts, pauses for PRD, factors, and ontology approvals,
 and resumes on the next `run`. The application owns its case directory and approval
 markers. `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` enable Vultr Object Storage
 through the S3 lake adapter.

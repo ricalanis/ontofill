@@ -498,7 +498,7 @@ def run_case(
     if budget_usd is not None and budget_usd < 0:
         raise ValueError("budget_usd must be nonnegative")
     if decision is None:
-        if os.getenv("VULTR_INFERENCE_API_KEY"):
+        if os.getenv("ONTOFILL_GATEWAY_TOKEN") or os.getenv("VULTR_INFERENCE_API_KEY"):
             decision = VultrDecisionClient.from_env()
         else:
             decision = _preview_decision((original / "brief.md").read_text(encoding="utf-8"))

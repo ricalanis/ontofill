@@ -343,7 +343,37 @@ def test_prd_invalid_attempts_fail_closed_and_keep_cost_records() -> None:
 
 
 def test_missing_vultr_credentials_fail_closed(monkeypatch) -> None:
+    monkeypatch.delenv("ONTOFILL_GATEWAY_TOKEN", raising=False)
     monkeypatch.delenv("VULTR_INFERENCE_API_KEY", raising=False)
     monkeypatch.delenv("VULTR_INFERENCE_MODEL", raising=False)
     with pytest.raises(RuntimeError):
         VultrDecisionClient.from_env()
+
+
+def test_gateway_token_precedes_legacy_key(monkeypatch) -> None:
+    seen = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["Authorization"])
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": model}
+                    for model in ("glm-5.3-flash", "qwen3.8-flash-next", "minimax-m3", "glm-5.3")
+                ]
+            },
+        )
+
+    monkeypatch.setenv("ONTOFILL_GATEWAY_TOKEN", "synthetic-gateway")
+    monkeypatch.setenv("VULTR_INFERENCE_API_KEY", "synthetic-legacy")
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "https://gateway.example.test/v1")
+    VultrDecisionClient.from_env(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    assert seen == ["Bearer synthetic-gateway"]
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
+    with pytest.raises(RuntimeError, match="screened gateway"):
+        VultrDecisionClient.from_env(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    monkeypatch.setenv("VULTR_INFERENCE_BASE_URL", "https://gateway.example.test/v1")
+    monkeypatch.delenv("ONTOFILL_GATEWAY_TOKEN")
+    VultrDecisionClient.from_env(client=httpx.Client(transport=httpx.MockTransport(handle)))
+    assert seen[-1] == "Bearer synthetic-legacy"

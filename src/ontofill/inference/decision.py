@@ -148,10 +148,13 @@ class VultrDecisionClient:
 
     @classmethod
     def from_env(cls, *, client: httpx.Client | None = None) -> VultrDecisionClient:
-        key = os.environ.get("VULTR_INFERENCE_API_KEY", "")
+        gateway_token = os.environ.get("ONTOFILL_GATEWAY_TOKEN")
+        key = gateway_token or os.environ.get("VULTR_INFERENCE_API_KEY", "")
         if not key:
-            raise RuntimeError("set VULTR_INFERENCE_API_KEY")
+            raise RuntimeError("set ONTOFILL_GATEWAY_TOKEN or VULTR_INFERENCE_API_KEY")
         base_url = os.environ.get("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
+        if gateway_token and base_url.rstrip("/") == "https://api.vultrinference.com/v1":
+            raise RuntimeError("set VULTR_INFERENCE_BASE_URL to the screened gateway")
         transport = client or httpx.Client(timeout=120)
         response = transport.get(
             f"{base_url.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}
