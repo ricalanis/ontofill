@@ -302,7 +302,10 @@ def run_hostile_page(
     append_job_record(lake, case_id, build_job_record(result))
 
     capture_step_id = result["trace"][0]["step_id"]
-    screened = gateway.screen_page(result["html"], step_id=step_id())
+    # Allocate the quarantine step id before the call and reuse it when emitting, so the
+    # gateway log's X-BA-Step-Id joins this trace step (browser-agent 756ded5).
+    quarantine_id = step_id()
+    screened = gateway.screen_page(result["html"], step_id=quarantine_id)
     blocked = sorted(
         {
             event["host"]
@@ -321,6 +324,7 @@ def run_hostile_page(
         probe_blocked=[host for host in blocked if host not in page_hosts],
         screened=screened,
         provenance=provenance,
+        step=quarantine_id,
     )
     feed.append_step(step)
     return {"quarantine": step["step_id"], "blocked": page_blocked}

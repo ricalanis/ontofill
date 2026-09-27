@@ -342,6 +342,36 @@ def test_run_hostile_page_appends_only(tmp_path):
     assert result["blocked"] == ["169.254.169.254", "blocked.invalid"]
 
 
+def test_gateway_call_carries_the_emitted_quarantine_step_id(tmp_path):
+    """R8b: the X-BA-Step-Id sent to the gateway is the quarantine step id, so the Inference view joins."""
+    lake = FileLake(tmp_path / "lake")
+    feed = RunFeed(lake, "case", RUN_ID, PROV, start_heartbeat=False)
+    feed.update_status(state="running", phase=5)
+    run_dir = lake.root / "runs/case" / RUN_ID
+    gateway = FakeGateway()
+
+    from ontofill_containment import main as main_mod
+
+    main_mod.run_hostile_page(
+        lake=lake,
+        feed=feed,
+        case_id="case",
+        run_id=RUN_ID,
+        provenance=PROV,
+        gateway=gateway,
+        capture=lambda *a, **k: _capture_result(lake, RUN_ID),
+        server_factory=FakeServer,
+    )
+    feed.update_status(state="done", phase=5)
+    feed.close()
+
+    rows = [json.loads(line) for line in (run_dir / "trace.live.jsonl").read_text().splitlines()]
+    quarantined = [row for row in rows if row.get("event") == "quarantine"]
+    assert len(quarantined) == 1
+    # exactly one gateway call, attributed to the step that is actually in the trace
+    assert gateway.calls == [quarantined[0]["step_id"]]
+
+
 def test_run_destructive_loop_appends_limit_kill_and_six_checkpoints(tmp_path):
     lake = FileLake(tmp_path / "lake")
     feed = RunFeed(lake, "case", RUN_ID, PROV, start_heartbeat=False)
