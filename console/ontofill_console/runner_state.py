@@ -113,11 +113,12 @@ def line(root: Path, case_id: str) -> dict:
     elif ctl.get("paused"):
         text = "Runner paused by an operator"
     elif state == "running":
-        since = _hhmm(st.get("last_resumed_at") or st.get("running_since"))
+        started = st.get("running_since")
+        since = _hhmm(started or st.get("last_resumed_at"))  # a resume from an earlier run is not this run's start
         text = (
             (
                 f"Resumed automatically at {since}"
-                if st.get("last_resumed_at") and st.get("last_resumed_at") == st.get("running_since")
+                if started and st.get("last_resumed_at") == started
                 else f"Running since {since}"
             )
             if since
@@ -125,8 +126,9 @@ def line(root: Path, case_id: str) -> dict:
         )
     elif state == "waiting_approval":
         text = f"Waiting for the {st.get('checkpoint') or 'checkpoint'} decision; resumes by itself after it"
-        if st.get("last_resumed_at"):
-            text += f" (last resumed automatically at {_hhmm(st['last_resumed_at'])})"
+        resumed = st.get("last_resumed_at")
+        if resumed and (not st.get("running_since") or resumed >= st["running_since"]):
+            text += f" (last resumed automatically at {_hhmm(resumed)})"
     elif state == "budget_stop":
         text = "Stopped: budget"
     elif state == "failed":

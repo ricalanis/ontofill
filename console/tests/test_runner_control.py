@@ -121,6 +121,28 @@ def test_runner_line_texts(tmp_path):
     assert runner_state.line(root, "a")["text"].startswith("Waiting for the prd decision")
     (root / "cases" / "a" / "status.json").write_text(json.dumps({"state": "budget_stop"}))
     assert runner_state.line(root, "a")["text"] == "Stopped: budget"
+    # a resume left over from an earlier run never stands in for the current run's start
+    (root / "cases" / "a" / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "running_since": "2026-09-27T17:29:15+00:00",
+                "last_resumed_at": "2026-09-27T16:46:02+00:00",
+            }
+        )
+    )
+    assert runner_state.line(root, "a")["text"] == "Running since 17:29 UTC"
+    (root / "cases" / "a" / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "waiting_approval",
+                "checkpoint": "source",
+                "running_since": "2026-09-27T17:29:15+00:00",
+                "last_resumed_at": "2026-09-27T16:46:02+00:00",
+            }
+        )
+    )
+    assert "last resumed" not in runner_state.line(root, "a")["text"]
     (root / "KILL").write_text("on")
     assert runner_state.line(root, "a")["text"] == "Runner off (kill switch)"
 
