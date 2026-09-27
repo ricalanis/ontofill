@@ -966,6 +966,7 @@ def draft_prd(
                 or not _authority_policy_check(document, revisions).passed
             ):
                 raise PrdDraftUnavailable("revised PRD still fails code-owned checks")
+    document.pop("open_issues", None)
     if result.stop_reason != "checks_passed":
         document["open_issues"] = list(result.objections) or [
             f"PRD review stopped on {result.stop_reason} before all checks passed."

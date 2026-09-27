@@ -14,6 +14,15 @@
 
 # Prior task work
 
+## R26d current slice
+- [x] Add a recorded PRD loop regression: a fixed earlier critic objection disappears, while a current unresolved objection remains.
+- [x] Recompute persisted `open_issues` from the final loop result, dropping inherited entries after a successful current review.
+- [x] Run the focused managed pytest/Ruff gate, commit the isolated branch, and report its SHA to root.
+FILES: `src/ontofill/phases/p1_scope/phase.py`, `tests/test_r26d_open_issues.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Keep PRD `open_issues` aligned with the current draft's checks and critic.
+DONE: the recorded resolved/unresolved objections pass through the P1 persistence path, and the managed focused tests plus Ruff check/format pass.
+FORMAT: `uv run ruff check src/ontofill/phases/p1_scope/phase.py tests/test_r26d_open_issues.py && uv run ruff format --check src/ontofill/phases/p1_scope/phase.py tests/test_r26d_open_issues.py`.
+
 ## R29 current slice
 - [x] Review and integrate independent inference-header and sandbox-outcome lanes.
 - [x] Wire workflow run_id before model catalog request and reuse each inference call's step_id in its trace row, including standalone refine.

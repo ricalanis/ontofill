@@ -1,4 +1,12 @@
-# Current goal: R31 P2 schema salvage
+# Current goal: R26d PRD open issues
+
+When P1 revises a PRD, persist only open issues from the current draft's critic and code checks; remove issues inherited from an earlier draft when the current review resolves them.
+
+DONE: `agent-progress run --task r26d-open-issues --paths src/ontofill/phases/p1_scope/phase.py,tests/test_r26d_open_issues.py --check prd-open-issues-focused --strategy current-result-wins --hypothesis 'The narrow PRD patch inherits old issues; make the current loop result authoritative at persistence.' -- sh -c 'uv run pytest -q tests/test_r26d_open_issues.py tests/test_r26c_prd_patch.py tests/test_r22_p1.py tests/test_scope_thresholds.py && uv run ruff check src/ontofill/phases/p1_scope/phase.py tests/test_r26d_open_issues.py && uv run ruff format --check src/ontofill/phases/p1_scope/phase.py tests/test_r26d_open_issues.py'` passes; changes are committed and the SHA is reported to root.
+
+Constraints: own only P1 PRD open-issue handling, synthetic tests, and these task notes; no P2, console, browser-agent, coordination, real case, approvals, push, or deploy.
+
+## Prior R31 goal
 
 Give phase 2 actionable per-rule and per-relation validation feedback, and after three semantically invalid rule/relation proposals save a schema-valid ontology plus unresolved recommendations.
 

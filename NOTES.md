@@ -24,6 +24,14 @@ The explicit-condition successor passed the focused behavior, Ruff lint/format, 
 
 ## Prior strategy and assumptions
 
+## R26d PRD open issues (2026-09-27)
+- Read the engine contract and R26d gap: the prior PRD can be copied into a narrow revision candidate, so its `open_issues` must not survive when the current loop passes.
+- Keep the change at P1 finalization. `LoopResult.objections` already contains the current critic and code-check issues on exhaustion; replace the artifact's prior list from that result, and omit the optional property after `checks_passed` because the schema rejects an empty array.
+- Record two synthetic flows through `draft_prd`: an accepted current review removes an inherited issue, and a rejected current review replaces it with the current objection.
+- Use one managed focused pytest/Ruff gate after the intentional red test; no real case, live inference, push, or deployment is in scope.
+- The recorded baseline passed the unresolved-objection case and failed the resolved case as intended: the patched PRD retained the inherited `open_issues` entry after the current critic accepted it.
+- Managed gate passed on its first attempt: 31 focused P1 tests passed; Ruff lint passed and both edited Python files were formatted.
+
 ## R29 integration (2026-09-27)
 - Independent inference and sandbox outcome branches were reviewed and cherry-picked on current main. Workflow now assigns a run ID before the gateway model catalog call and binds each decision call's gateway step ID to the same trace step.
 - Review found standalone `refine_case` still created its live gateway client without the existing run ID. A recorded test now intercepts its catalog factory after a digest-bound ontology approval and proves the existing run ID is supplied.
