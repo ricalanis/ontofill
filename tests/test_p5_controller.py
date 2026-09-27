@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ontofill.lake import FileLake
+from ontofill.phases.p5_execute.controller import _safe_url
 from ontofill.refiner import MemorySilverStore
 from ontofill.runfeed import RunFeed
 from ontofill.workflow import _scratch_case, run_case
@@ -17,6 +18,16 @@ from tests.genericity.fixtures.libraries import library_decisions
 
 PAGE_URL = "https://libraries.example.test/branches"
 RECORDED = {"backend": "recorded", "model": "synthetic-replay", "at": "2026-09-26T00:00:00Z"}
+
+
+def test_signed_page_url_is_not_exported_as_evidence() -> None:
+    assert (
+        _safe_url(
+            "https://libraries.example.test/list?X-Amz-Signature=not-a-real-key",
+            ["libraries.example.test"],
+        )
+        is None
+    )
 
 
 class FakeBrowserController:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
@@ -28,6 +29,11 @@ from ontofill.refiner import Observation, SilverStore
 from ontofill.runfeed import RunFeed
 
 Coerce = Callable[[object, str], str | int | float | bool | None]
+_SENSITIVE_QUERY = re.compile(
+    r"(?:^|[-_])(?:token|secret|signature|credential|password|authorization|auth|api[-_]?key|"
+    r"access[-_]?key|key|session|jwt)(?:$|[-_])",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -53,22 +59,13 @@ def _safe_url(value: object, allowed_domains: list[str]) -> str | None:
         return None
     parsed = urlsplit(value)
     host = (parsed.hostname or "").lower().rstrip(".")
-    sensitive_query_names = {
-        "access_token",
-        "api_key",
-        "auth",
-        "key",
-        "password",
-        "secret",
-        "token",
-    }
     if (
         parsed.scheme not in {"http", "https"}
         or not host
         or parsed.username is not None
         or parsed.password is not None
         or parsed.fragment
-        or any(name.casefold() in sensitive_query_names for name, _ in parse_qsl(parsed.query))
+        or any(_SENSITIVE_QUERY.search(name) for name, _ in parse_qsl(parsed.query))
     ):
         return None
     if not any(
