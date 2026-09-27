@@ -15,7 +15,6 @@ from ontofill.phases.p3_fanout.discovery_loop import (
     _dataset_file_suffix,
     _dataset_index_links,
     _download_access_blocker,
-    _subject_specific_standard_terms,
 )
 from ontofill.phases.p3_fanout.leads import Lead, LeadContext, LeadProvider
 from tests.r17_helpers import SyntheticParseExecutor
@@ -97,24 +96,7 @@ def _contract_ontology() -> dict:
     }
 
 
-def test_procurement_vocab_is_subject_derived_and_absent_for_library_subjects():
-    standards = _subject_specific_standard_terms(
-        "Find public procurement award records.", _contract_ontology()
-    )
-    assert standards == ["open contracting", "OCDS", "contrataciones abiertas"]
-    assert (
-        _subject_specific_standard_terms(
-            "Find public library branches.",
-            {
-                "classes": [{"label": "Library branch"}],
-                "properties": [{"label": "Opening hours"}],
-            },
-        )
-        == []
-    )
-
-
-def test_procurement_fallback_query_includes_open_contracting_terms():
+def test_fallback_query_uses_case_ontology_without_a_fixed_subject_standard():
     loop = object.__new__(DiscoveryLoop)
     queries = loop._plan_queries(
         RecordedDecisionClient({}),
@@ -126,8 +108,7 @@ def test_procurement_fallback_query_includes_open_contracting_terms():
         set(),
     )
     assert queries
-    assert "ocds" in queries[0].text.casefold()
-    assert "contrataciones abiertas" in queries[0].text.casefold()
+    assert "contract" in queries[0].text.casefold()
     assert "https://" not in queries[0].text.casefold()
 
 

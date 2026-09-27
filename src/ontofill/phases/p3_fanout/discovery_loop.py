@@ -136,17 +136,6 @@ _NON_DATA_LINK_CUE = re.compile(
     r"\b(?:press|news|release|blog|prensa|comunicado|noticias?|bolet[ií]n)\b",
     re.IGNORECASE,
 )
-_PROCUREMENT_SUBJECT_CUE = re.compile(
-    r"\b(?:procurement|public procurement|contract award(?:s)?|contracting|tenders?|purchas(?:e|ing)|"
-    r"procura(?:mento)?|contrataci[oó]n(?:es)?|licitaci[oó]n(?:es)?|compras? p[uú]blicas|"
-    r"adquisiciones?|contratos? p[uú]blicos)\b",
-    re.IGNORECASE,
-)
-_OPEN_CONTRACTING_CUE = re.compile(
-    r"\b(?:ocds|open[ -]contracting(?:[ -]data[ -]standard)?|"
-    r"contrataciones abiertas|contrataci[oó]n abierta|contrata[cç][oõ]es abertas)\b",
-    re.IGNORECASE,
-)
 _POST_TOKEN_REQUIREMENT_CUE = re.compile(
     r"\bpost\b.*\b(?:anti[ -]?bot|captcha|challenge)\b.*\btoken\b|"
     r"\b(?:anti[ -]?bot|captcha|challenge)\b.*\btoken\b.*\bpost\b",
@@ -1235,24 +1224,6 @@ def _captured_access_links(context: Mapping) -> list[dict]:
     return [*page_links, *({**item, "network_observed": True} for item in requests)]
 
 
-def _subject_specific_standard_terms(brief: str, ontology: Mapping) -> list[str]:
-    """Return generic standards vocabulary only when the case subject supports it."""
-    labels = [
-        str(value)
-        for section in ("classes", "properties", "source_classes")
-        for item in ontology.get(section, [])
-        if isinstance(item, Mapping)
-        for key, value in item.items()
-        if key in {"label", "label_plural", "description"} and isinstance(value, str)
-    ]
-    subject_text = " ".join([brief[:6000], *labels])
-    if not _PROCUREMENT_SUBJECT_CUE.search(subject_text):
-        return []
-    # The standard's human name, acronym, and local-language name improve recall
-    # without embedding a publisher URL or a case-specific source into the query.
-    return ["open contracting", "OCDS", "contrataciones abiertas"]
-
-
 def _parent_metadata_gets(context: Mapping) -> list[dict]:
     """Keep a few sanitized successful JSON GETs as evidence for a dataset child."""
     return [
@@ -1310,10 +1281,6 @@ def _download_access_blocker(candidate: Mapping, status: int) -> dict | None:
         "post_attempted": False,
         "next_action": "seek_an_alternate_public_source",
     }
-
-
-def _is_open_contracting_reference(*values: object) -> bool:
-    return bool(_OPEN_CONTRACTING_CUE.search(" ".join(str(value or "") for value in values)))
 
 
 def _parent_post_token_requirement(context: Mapping) -> bool:
@@ -1965,7 +1932,6 @@ class DiscoveryLoop:
                 if line.strip() and not line.lstrip().startswith("#")
             ).split()[:12]
         )
-        subject_standards = _subject_specific_standard_terms(brief, ontology)
         planned_by_gap: dict[str, list[str]] = {}
         if reuse_theme_pass:
             planned_by_gap = {
@@ -2037,9 +2003,6 @@ class DiscoveryLoop:
                 "standards that fit the brief and ontology. When useful, return their short names "
                 "or acronyms in `standard_terms` and include those terms in the generated query "
                 "phrases; derive them from the current subject rather than using a fixed list. "
-                f"Subject-specific vocabulary identified from this brief and ontology: "
-                f"{json.dumps(subject_standards, ensure_ascii=False)}. Include relevant terms "
-                "while keeping the query within its length limit. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Jurisdiction hierarchy and recall scope: "
                 f"{json.dumps(hierarchy_context, ensure_ascii=False)}. "
@@ -2072,9 +2035,7 @@ class DiscoveryLoop:
                         for term in item.get("standard_terms", [])
                         if isinstance(term, str) and term.strip()
                     ][:3]
-                    standard_phrase = " ".join(
-                        dict.fromkeys([*subject_standards, *standard_terms])
-                    )[:130]
+                    standard_phrase = " ".join(dict.fromkeys(standard_terms))[:130]
 
                     def query_with_standards(query: str, phrase: str = standard_phrase) -> str:
                         if not phrase:
@@ -2159,11 +2120,6 @@ class DiscoveryLoop:
                         f"{prop.get('label', gap)} {title_label} {channel} {subject} {level}",
                     ]
                 )
-                if subject_standards:
-                    variants.insert(
-                        0,
-                        f"{channel} {jurisdiction} {' '.join(subject_standards)} {terms} {subject}",
-                    )
                 for variant in variants:
                     text = " ".join(variant.split())
                     if text and text not in candidates:
@@ -4745,19 +4701,13 @@ class DiscoveryLoop:
                                 lead["property_ids"],
                                 iteration,
                             )
-                            if _is_open_contracting_reference(
-                                child_url,
-                                child.get("title"),
-                                child.get("link_text"),
-                                child.get("context"),
-                            ):
+                            if follow_kind == "dataset":
                                 linked_lead.update(
                                     authority_tier_suggestion="secondary",
                                     source_role="secondary_cross_check",
                                     authority_reason=(
-                                        "Possible Open Contracting mirror linked by an approved "
-                                        "official publisher; this remains a secondary source "
-                                        "review candidate and is never auto-approved."
+                                        "Off-host dataset linked by an approved publisher; "
+                                        "review its origin and tier before use."
                                     ),
                                 )
                             draft["leads"][child_url] = linked_lead
@@ -4782,8 +4732,8 @@ class DiscoveryLoop:
                                 },
                                 {
                                     "outcome": (
-                                        "official-publisher Open Contracting mirror offered as "
-                                        "secondary cross-check; source review required"
+                                        "off-host dataset offered as secondary cross-check; "
+                                        "source review required"
                                         if linked_lead.get("source_role") == "secondary_cross_check"
                                         else "off-host child requires source review"
                                     ),
