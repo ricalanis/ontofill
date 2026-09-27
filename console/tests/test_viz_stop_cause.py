@@ -209,6 +209,6 @@ def test_pages_show_a_document_parse_outcome(client, cases_dir):
     cards = {c["path"]: c for g in m["groups"] for c in g["cards"]}
     assert cards["/list.xls"]["parsed"]["text"] == "xls · sheet Hoja1 · 15 rows parsed of a 300-row sample"
     assert cards["/big.xls"]["parsed"]["capped"] is True
-    assert "300+ rows (sample cap 300 reached; the file has more)" in cards["/big.xls"]["parsed"]["text"]
+    assert "300+ rows (sample cap 300 reached; there may be more)" in cards["/big.xls"]["parsed"]["text"]
     page = client.get(f"/cases/libraries/pages?run={RUN}&all=1").text
     assert "15 rows parsed of a 300-row sample" in page and "pg-parsed--capped" in page

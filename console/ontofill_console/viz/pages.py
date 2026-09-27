@@ -118,7 +118,7 @@ def parse_outcome(step: dict) -> dict | None:
                 fmt,
                 f"sheet {sheet}" if isinstance(sheet, str) else None,
                 (
-                    f"{rows}+ rows (sample cap {cap} reached; the file has more)"
+                    f"{rows}+ rows (sample cap {cap} reached; there may be more)"
                     if capped
                     else f"{rows} row{'s' if rows != 1 else ''} parsed"
                 )
