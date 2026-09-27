@@ -251,3 +251,14 @@ def test_lifting_the_kill_switch_relaunches_the_interrupted_run(setup, monkeypat
     kinds = [e["kind"] for e in events(setup)]
     assert "killed" in kinds and kinds[-2:] == ["resumed", "paused_at_checkpoint"]
     assert any(e.get("detail") == "resumed after the kill switch was lifted" for e in events(setup))
+
+
+def test_budget_arg_is_the_constant_case_cap(setup, monkeypatch):
+    """The engine fingerprints its checkpoint inputs with --budget-usd; passing the remaining amount would change it
+    between runs and invalidate decided artifacts. The runner passes the constant cap (1.00 here) every time."""
+    monkeypatch.setenv("FAKE_MODE", "pause:factors")
+    monkeypatch.setenv("FAKE_USD", "0.3")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    assert [c["budget"] for c in calls(setup)] == ["1.00"]

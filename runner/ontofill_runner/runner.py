@@ -211,6 +211,10 @@ class Runner:
         self._launch(cid, trigger, remaining=budget - spent, spent=spent, glob=glob)
 
     def _launch(self, cid: str, trigger: dict, remaining: float, spent: float, glob: float | None) -> None:
+        # --budget-usd is the case's CONSTANT cap, not the remaining amount: the engine folds it into its checkpoint
+        # input fingerprints (e.g. the PRD's), so a value that changes between runs would regenerate an artifact the
+        # approver already decided and the digest check would refuse the decision. The runner still stops the engine
+        # when cumulative case spend reaches the cap (_police).
         spec = self.cfg.cases[cid]
         cdir = self.state.case_dir(cid)
         cdir.mkdir(parents=True, exist_ok=True)
@@ -225,7 +229,7 @@ class Runner:
         run_id = trigger["run_id"]
         cmd = shlex.split(self.cfg.engine_cmd.format(case_dir=shlex.quote(str(spec.case_dir)),
                                                      to_phase=trigger["to_phase"], run_id=run_id,
-                                                     budget=f"{max(remaining, 0.01):.2f}"))
+                                                     budget=f"{self.case_budget(cid):.2f}"))
         env = dict(self.env) | load_env_file(self.cfg.engine_env_file)
         log_path = cdir / f"engine-{run_id}.log"
         fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
