@@ -17,10 +17,10 @@ from fastapi.responses import HTMLResponse
 
 from .. import evidence, live
 from ..gold import backend_of
-from . import compare, cost, definition, discovery, entities, failures, inbox, learning, output, pages, sites
+from . import compare, cost, definition, discovery, entities, failures, inbox, inference, learning, output, pages, sites
 from . import health_common as hc
 from .core import SAFE_ERRORS, Artifacts, VizContext, gap
-from .operation import decided_by, is_live, last_activity
+from .operation import is_live, last_activity
 from .output_common import q
 from .output_common import resolve_run as gold_run
 
@@ -220,8 +220,9 @@ def steps_model(settings, domain_of, case, rid: str | None, now: datetime) -> li
     out.append(_step(8, "What did it cost, and where did the money go?",
                      "Spend is split by phase, model, mode and source, and divided by the values it produced.",
                      _url(f"{base}/cost", **run_q), "Cost",
-                     "Compare the bars by mode, then read cost per value.",
-                     state, why, g))
+                     "Compare the bars by mode, then read cost per value; Inference lists every model call with its "
+                     "provider, tokens, cost and latency.",
+                     state, why, g, [{"label": "Inference", "href": _url(f"{base}/inference", **run_q)}]))
 
     # Q9 · learning
     m, err = _probe(learning.model, case, rid)
@@ -332,19 +333,27 @@ def track_model(case, rid: str | None) -> list[dict]:
                      "css": STATE_CSS[state], "state_label": STATE_WORDS[state], "why": why,
                      "gap": None if state == "ready" else g})
 
-    # inference on Vultr: who decided each step
-    deciders: dict[str, int] = {}
-    for s in steps:
-        who = decided_by(s)
-        deciders[who] = deciders.get(who, 0) + 1
-    status = a.status(rid) if has_feed else {}
-    backend = backend_of(status.get("metrics"), [*steps, status]) if rid else None
-    n_vultr = deciders.get("vultr", 0)
-    state = "ready" if n_vultr and backend != "recorded" else "partial" if n_vultr or deciders.get("recorded") else "empty"
+    # inference on Vultr: the Inference view's own view-model (gateway call log joined with the trace)
+    im, err = _probe(inference.model, case, rid) if rid else (None, None)
+    if im:
+        n_vultr = im["decider_counts"].get("vultr", 0)
+        un = im["unattributed"]["n"]
+        if im["log"]["mounted"] and im["n_reasoning"] and im["pct_vultr"] == 100 and un == 0 and not im["n_flags"]:
+            state = "ready"
+        else:
+            state = "partial" if n_vultr or im["n_calls"] or im["decider_counts"].get("recorded") else "empty"
+        calls = (f"{im['n_calls']} gateway calls · {im['pct_vultr'] if im['pct_vultr'] is not None else '—'}% of reasoning "
+                 f"on Vultr · {un} unattributed" if im["log"]["mounted"] else "gateway log not mounted")
+        why = (f"{n_vultr} Vultr-decided steps of {im['n_steps']} · {calls} · {im['n_flags']} provenance flags"
+               + (" · run uses recorded (simulated) inference" if im["backend"] == "recorded" else ""))
+    else:
+        state, why = "empty", err or "no run yet"
     row("Agent LLM calls via Vultr Serverless Inference",
-        "Steps decided by a Vultr model, per the trace's generated_by / usage backend", _url(f"{base}/cost", run=rid), "Cost",
-        state, f"{n_vultr} Vultr-decided steps of {len(steps)}" + (" · run uses recorded (simulated) inference" if backend == "recorded" else ""),
-        gap(None, "Model steps carrying generated_by.backend or usage.backend.", "trace.live.jsonl"))
+        "Every model call from the gateway log joined to its step: provider, purpose, tokens, cost; share on Vultr, "
+        "unattributed calls (must be 0), non-Vultr artifacts flagged",
+        _url(f"{base}/inference", run=rid), "Inference", state, why,
+        gap(None, "The gateway call log (ONTOFILL_CONSOLE_GATEWAY_LOG) joined with model steps; gap R19.",
+            "gateway call log · trace.live.jsonl"))
 
     state, why = _cp_row(jobs, ("host", "where", "isolation"))
     row("Sandboxes never in the app process; process isolation",

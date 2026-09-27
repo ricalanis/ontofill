@@ -1,0 +1,26 @@
+/* Inference view (R19). Colours only through tokens.css. */
+
+/* headline: the two numbers that must read at a glance come first and larger */
+.inf-hero { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 1fr)); gap: var(--space-2xs); margin: 0 0 var(--space-sm); }
+.inf-hero div { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-sm); padding: var(--space-xs) var(--space-sm); min-width: 0; }
+.inf-hero div:nth-child(-n+2) dd { font-size: var(--text-xl, var(--text-lg)); }
+.inf-hero dt { font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.inf-hero dd { margin: 0; font: 600 var(--text-lg) var(--font-mono); overflow-wrap: anywhere; }
+.inf-hero dd small { display: block; font: var(--text-xs) var(--font-mono); color: var(--fg-3); }
+.inf-hero .is-good { border-left-color: var(--st-done); }
+.inf-hero .is-good dd { color: var(--st-done); }
+.inf-hero .is-bad { border-left-color: var(--st-block); border-left-width: 6px; }
+.inf-hero .is-bad dd { color: var(--st-block); }
+.inf-hero .is-good dd::before { content: "✓ "; }
+.inf-hero .is-bad dd::before { content: "■ "; }
+
+.inf-calls td, .inf-calls th { white-space: nowrap; }
+.inf-step { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; white-space: normal; }
+.inf-row--un { background: var(--strip); }
+.inf-line { font: 600 var(--text-sm) var(--font-mono); margin: var(--space-xs) 0; }
+.inf-line.is-good { color: var(--st-done); } .inf-line.is-good::before { content: "✓ "; }
+.inf-line.is-bad { color: var(--st-block); } .inf-line.is-bad::before { content: "■ "; }
+.inf-map { margin: var(--space-sm) 0; font-size: var(--text-sm); }
+.inf-map summary { cursor: pointer; color: var(--fg-2); }
+.inf-map .kv { margin-top: var(--space-2xs); }

@@ -9,6 +9,8 @@
   </div>
   <p class="run-state run-state--{{ p.state }}" id="run-state" role="status">{{ p.state }}</p>
   <a href="#proof-h">Sandbox proof</a>
+  {% set inf = inference_summary(case, live_run_id) if inference_summary is defined else none %}
+  {% if inf %}<a href="{{ inf.href }}"{% if inf.unattributed %} class="chip st-block"{% endif %}>{{ inf.text }}</a>{% endif %}
   {% if p.live_view_url and safe_url(p.live_view_url) %}<a class="btn btn--quiet" href="{{ p.live_view_url }}" target="_blank" rel="noopener">Watch the agent's browser</a>{% endif %}
   {% if others|length > 1 %}
   <details class="runpick"><summary>Other runs</summary><ul>{% for r in others|reverse %}<li><a class="mono" href="{{ base }}/runs/{{ r }}">{{ r }}</a></li>{% endfor %}</ul></details>
