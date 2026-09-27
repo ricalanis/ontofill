@@ -60,9 +60,23 @@ export LAKE_ROOT=/srv/demo-library/lake
 tools/containment/bin/ontofill-containment --case /srv/demo-library/case --run-id containment-demo-<fresh-suffix>
 ```
 
-## Tests
+## Install and test (fresh clone)
+
+The tool reuses the engine package from the parent checkout through a uv path
+dependency (`[tool.uv.sources] ontofill = { path = "../..", editable = true }`), so
+it needs no separate engine install. From `tools/containment`:
 
 ```sh
-uv run pytest tools/containment/tests -q
-uv run ruff check tools/containment
+uv sync --extra dev
+uv run --extra dev python -m pytest tests -q
+uv run --extra dev ruff check .
 ```
+
+`uv sync --extra dev` builds the tool's own `.venv` (with the engine editable from
+`../..`); `uv run --extra dev python -m pytest tests -q` is the one documented test
+command. `bin/ontofill-containment` uses that venv when present and otherwise falls
+back to `uv run --project tools/containment --extra dev ontofill-containment`.
+
+Running the engine's own suite from the checkout root is unchanged
+(`uv run pytest -q`); the tool is not an engine workspace member.
+
