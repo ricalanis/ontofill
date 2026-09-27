@@ -2,7 +2,7 @@
 
 - `FILES`: `src/ontofill/phases/p2_ontology/phase.py`, `src/ontofill/refiner/export.py`, `schemas/dod-queries.schema.json`, `tests/test_r31_ontology_salvage.py`, `tests/test_r32_p2_guards.py`, `tests/test_refiner.py`, and task records.
 - `TASK`: measure fractional completeness targets as the share of primary entities linked by the explicit relation ID (or the unique matching relation-count query in a legacy approved artifact) that meet `min_ratio`; retain count behavior and the R32 structural checks.
-- `DONE`: the local patch is committed; the focused gate reached its two-attempt limit before the final static fixture correction, so root will verify with its distinct composed gate after R40/R41. No push/deploy.
+- `DONE`: root composed gate passed 27 tests; full engine gate passed 549 tests/5 skips with Ruff, schema and diff checks. Public push and guarded VM deploy are separate.
 - `FORMAT`: Ruff lint/format for edited engine and test files; parse the DoD query schema.
 
 1. [x] Inspect commits `e1d3633` and `a236b21` plus the dirty approved-cache fixture; preserve the fixture's two schema drafts.

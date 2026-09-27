@@ -606,7 +606,7 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int | float:
     raise ValueError(f"unsupported DoD aggregate: {aggregate}")
 
 
-def _compare(actual: int | float, target: float, operator: str) -> bool:
+def _compare(actual: float, target: float, operator: str) -> bool:
     operations = {
         ">=": actual >= target,
         ">": actual > target,
