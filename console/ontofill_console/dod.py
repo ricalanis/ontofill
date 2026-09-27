@@ -166,6 +166,11 @@ def evaluate_query(query: dict, entities: list[dict], domain: Domain) -> float:
         return sum(share(e) >= ratio - 1e-9 for e in pool)
     if agg == "count_entities":
         return len(pool)
+    if agg == "count_entities_with_relation":  # as the engine's export: entities with a link of that relation
+        rel = query.get("relation_id")
+        return sum(
+            any(isinstance(link, dict) and link.get("property") == rel for link in e.get("links") or []) for e in pool
+        )
     if agg == "count_entities_with_properties":
         return sum(
             all(is_filled((e.get("properties") or {}).get(p)) for p in query.get("properties") or []) for e in pool
@@ -247,9 +252,17 @@ def criteria(
         target = row.get("target")
         declared = by_id.get(str(row.get("criterion_id") or ""))
         key = query.lower() + " " + str(row.get("criterion_id") or "").lower()
+        note = None
         if declared is not None and entities is not None:
-            ours = evaluate_query(declared, entities, domain)
-            met_ours = OPS.get(declared.get("operator", ">="), OPS[">="])(ours, declared.get("target", target))
+            try:
+                ours = evaluate_query(declared, entities, domain)
+            except ValueError as exc:  # an aggregate this console does not know: show the row, never fail the page
+                ours, note = None, f"not computed here ({exc})"
+            met_ours = (
+                OPS.get(declared.get("operator", ">="), OPS[">="])(ours, declared.get("target", target))
+                if ours is not None
+                else None
+            )
         else:
             ours = _resolve(query, recomputed, domain)
             met_ours = _met(key, ours, target)
@@ -274,6 +287,7 @@ def criteria(
                 else abs(float(row["actual"]) - float(ours)) < 1e-6,
                 "mock": mock,
                 "source": source,
+                "note": note,
             }
         )
     return out
