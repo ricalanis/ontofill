@@ -158,8 +158,9 @@ a.strip:hover { background: var(--strip-hover); }
 
 @media (max-width: 900px) {
   .pipe { grid-template-columns: minmax(0, 1fr); }
-  .meters { grid-template-columns: minmax(0, 1fr) auto; }
-  .meters .meter { grid-column: 1 / -1; order: 3; }
+  .meters { grid-template-columns: minmax(0, 1fr) auto; grid-auto-flow: row dense; }
+  .meters .meter { grid-column: 1 / -1; }
+  .meters .num { grid-column: 2; }
 }
 @media (max-width: 640px) {
   main { padding: var(--space-sm); }
