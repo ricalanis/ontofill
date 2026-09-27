@@ -329,3 +329,17 @@ def test_global_spend_falls_back_to_the_sum_of_case_traces():
         watch.case_model, watch.attention = orig, watch_attention
     g = m["global_spend"]
     assert g["global_usd"] == 0.75 and "sum of the cases' traces" in g["global_basis"] and g["global_cap_usd"] == 40.0
+
+
+def test_global_fallback_prefers_the_gateway_log(tmp_path, monkeypatch):
+    import json
+
+    from ontofill_console.viz import watch
+
+    log = tmp_path / "gw"
+    log.mkdir()
+    (log / "gateway-calls.jsonl").write_text("".join(json.dumps({"est_usd": x, "session_id": s}) + "\n"
+                                                     for x, s in ((0.1, "engine"), (0.05, "bas-1"))))
+    monkeypatch.setenv("ONTOFILL_CONSOLE_GATEWAY_LOG", str(log))
+    usd, basis = watch._fallback_global([{"case_usd": 0.01}])
+    assert usd == 0.15 and "gateway call log" in basis

@@ -182,3 +182,6 @@ a.strip:hover { background: var(--strip-hover); }
 .questions b { font-weight: 600; }
 .questions small { color: var(--fg-3); font-size: var(--text-xs); }
 .questions__off { opacity: 0.6; }
+
+/* case record line under the question (not a data source line) */
+.case-meta { font: var(--text-xs) var(--font-mono); color: var(--fg-3); margin: 0 0 var(--space-sm); overflow-wrap: anywhere; }
