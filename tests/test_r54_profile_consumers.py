@@ -54,7 +54,8 @@ def test_pdf_profile_headers_and_samples_reach_p3() -> None:
     preview = _document_sheet_preview(parsed)
 
     assert preview[0]["headers"] == ["Entity ID", "Public name"]
-    assert preview[0]["row_count"] == 2
+    assert preview[0]["sampled_row_count"] == 2
+    assert preview[0]["sampled_only"] is True
     assert [row["values"] for row in preview[0]["sample_rows"]] == [["A-1", "A"], ["B-2", "B"]]
 
 

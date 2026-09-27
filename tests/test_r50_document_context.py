@@ -151,7 +151,7 @@ def test_critic_sees_screened_workbook_rows_and_confirms_name_and_identifier(tmp
             "format": "xls",
             "headers": preview[0]["headers"],
             "sheets": preview,
-            "row_count": 7,
+            "sampled_row_count": 4,
             "text": "",
         },
     }
@@ -239,6 +239,7 @@ def test_critic_sees_screened_workbook_rows_and_confirms_name_and_identifier(tmp
     assert verdicts[url] == {"company_name": None, "rfc": None}
     paths = loop._page_access_paths[url]
     assert all(path["record_granularity"] == "entity_records" for path in paths.values())
-    property_evidence = _captured_property_evidence(candidate, context, paths)
+    property_evidence = _captured_property_evidence(candidate, paths)
     assert property_evidence["rfc"]["quote"] == "RFC"
-    assert property_evidence["company_name"]["document_sheets"] == preview
+    assert "document_sheets" not in property_evidence["company_name"]
+    assert "SYN000000AAA" not in json.dumps(property_evidence)

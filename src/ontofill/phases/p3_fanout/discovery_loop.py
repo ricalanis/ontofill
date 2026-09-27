@@ -151,6 +151,8 @@ _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
 _MAX_DISCOVERY_QUERY_BATCH = 5
+_P3_PARSE_MAX_ROWS = 10_000
+_P3_PREVIEW_ROWS_PER_SHEET = 4
 _DISCOVERY_CHANNELS = ("list", "open data", "transparency", "registry", "API", "download")
 _PORTAL_LINK_CUES = (
     *_DISCOVERY_CHANNELS,
@@ -744,7 +746,7 @@ def _record_granularity(
         headers.extend(value for value in document.get("headers", []) if isinstance(value, str))
     row_count = max(
         int(context.get("listing_row_count") or 0),
-        int(document.get("row_count") or 0) if isinstance(document, Mapping) else 0,
+        int(document.get("sampled_row_count") or 0) if isinstance(document, Mapping) else 0,
     )
     parsed_rows_are_this_route = kind == "listing" or (
         kind in {"dataset", "download"} and type(proposed.get("link_index")) is not int
@@ -842,7 +844,8 @@ def _document_sheet_preview(parsed_page: object) -> list[dict]:
                     "sheet": str(table.get("sheet") or "pdf-table")[:100],
                     "headers": columns,
                     "header_row_number": int(table.get("header_row") or 0),
-                    "row_count": table["row_count"],
+                    "sampled_row_count": min(len(table["rows"]), _P3_PREVIEW_ROWS_PER_SHEET),
+                    "sampled_only": True,
                     "sample_rows": [
                         {
                             "row_number": receipt["row_number"],
@@ -852,7 +855,7 @@ def _document_sheet_preview(parsed_page: object) -> list[dict]:
                                 for header in columns
                             ],
                         }
-                        for receipt in table["rows"][:4]
+                        for receipt in table["rows"][:_P3_PREVIEW_ROWS_PER_SHEET]
                     ],
                 }
             )
@@ -909,14 +912,15 @@ def _document_sheet_preview(parsed_page: object) -> list[dict]:
                     ],
                 }
             )
-            if len(samples) == 4:
+            if len(samples) == _P3_PREVIEW_ROWS_PER_SHEET:
                 break
         preview.append(
             {
                 "sheet": sheet,
                 "headers": [header for _, header in columns],
                 "header_row_number": int(heading.get("row_number") or 0),
-                "row_count": len(sheet_rows),
+                "sampled_row_count": len(samples),
+                "sampled_only": True,
                 "sample_rows": samples,
             }
         )
@@ -934,9 +938,8 @@ def _screen_access_content(value: object) -> object:
     return value
 
 
-def _captured_property_evidence(candidate: Mapping, context: Mapping, paths: Mapping) -> dict:
-    """Keep the critic's exact quote with bounded parsed-document field evidence."""
-    document = context.get("document")
+def _captured_property_evidence(candidate: Mapping, paths: Mapping) -> dict:
+    """Persist exact path evidence without storing sampled document values."""
     return {
         property_id: {
             "quote": str(path.get("property_quote") or path["access_path_quote"])[:500],
@@ -949,13 +952,6 @@ def _captured_property_evidence(candidate: Mapping, context: Mapping, paths: Map
             ],
             "authority_verdict": path["authority_verdict"],
             "critic_reason": str(path["critic_reason"])[:300],
-            **(
-                {"document_sheets": document["sheets"]}
-                if isinstance(document, Mapping)
-                and isinstance(document.get("sheets"), list)
-                and document["sheets"]
-                else {}
-            ),
         }
         for property_id, path in paths.items()
     }
@@ -2146,7 +2142,7 @@ class DiscoveryLoop:
                 self.lake,
                 capture_key,
                 format=parse_format,
-                max_rows=300,
+                max_rows=_P3_PARSE_MAX_ROWS,
                 base_url=landing_url,
                 run_id=self.run_id,
                 source_id=source_id,
@@ -2204,8 +2200,9 @@ class DiscoveryLoop:
 
         document_sheets = _document_sheet_preview(parsed_page) if is_document else []
         document_headers = _parsed_document_headers(parsed_page)
-        listing_row_count = sum(
-            str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows
+        listing_row_count = min(
+            sum(str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows),
+            _P3_PREVIEW_ROWS_PER_SHEET,
         )
         document_size = captured.get("document_size_bytes") if is_document else None
         if type(document_size) is not int or document_size < 0:
@@ -2216,6 +2213,7 @@ class DiscoveryLoop:
             "links": [dict(link) for link in parsed_page.links],
             "table_headers": [list(headers) for headers in parsed_page.table_headers],
             "listing_row_count": listing_row_count,
+            "listing_sampled_only": True,
             "document": {
                 "capture_key": capture_key,
                 "content_type": content_type,
@@ -2223,11 +2221,9 @@ class DiscoveryLoop:
                 "format": parsed_page.format if is_document else None,
                 "headers": document_headers,
                 "sheets": document_sheets,
-                "row_count": (
-                    sum(sheet["row_count"] for sheet in document_sheets)
-                    if parsed_page.format == "pdf"
-                    else len(parsed_page.rows)
-                ),
+                "sampled_row_count": sum(sheet["sampled_row_count"] for sheet in document_sheets),
+                "sampled_only": True,
+                "sample_rows_per_sheet": _P3_PREVIEW_ROWS_PER_SHEET,
                 "text": parsed_page.text[:6000]
                 if is_document and parsed_page.format == "pdf"
                 else "",
@@ -2800,7 +2796,7 @@ class DiscoveryLoop:
                 self.lake,
                 key,
                 format=parse_format,
-                max_rows=300,
+                max_rows=_P3_PARSE_MAX_ROWS,
                 base_url=str(captured.get("url") or url),
                 run_id=self.run_id,
                 source_id=source_id,
@@ -2871,8 +2867,9 @@ class DiscoveryLoop:
                 publisher_of_record = inherited["publisher_of_record"]
                 trusted = publisher_of_record["tier"] == "primary"
                 reason = "approved document link inherits its verified parent publisher"
-        listing_row_count = sum(
-            str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows
+        listing_row_count = min(
+            sum(str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows),
+            _P3_PREVIEW_ROWS_PER_SHEET,
         )
         document_size = captured.get("document_size_bytes") if is_document else None
         if type(document_size) is not int or document_size < 0:
@@ -2884,6 +2881,7 @@ class DiscoveryLoop:
             "links": [dict(link) for link in parsed_page.links],
             "table_headers": [list(headers) for headers in parsed_page.table_headers],
             "listing_row_count": listing_row_count,
+            "listing_sampled_only": True,
             "document": {
                 "capture_key": key,
                 "content_type": content_type,
@@ -2891,11 +2889,9 @@ class DiscoveryLoop:
                 "format": parsed_page.format if is_document else None,
                 "headers": document_headers,
                 "sheets": document_sheets,
-                "row_count": (
-                    sum(sheet["row_count"] for sheet in document_sheets)
-                    if parsed_page.format == "pdf"
-                    else len(parsed_page.rows)
-                ),
+                "sampled_row_count": sum(sheet["sampled_row_count"] for sheet in document_sheets),
+                "sampled_only": True,
+                "sample_rows_per_sheet": _P3_PREVIEW_ROWS_PER_SHEET,
                 "text": parsed_page.text[:6000]
                 if is_document and parsed_page.format == "pdf"
                 else "",
@@ -2983,7 +2979,7 @@ class DiscoveryLoop:
                             ),
                             None,
                         )
-                        if quote and document.get("row_count", 0) > 0:
+                        if quote and document.get("sampled_row_count", 0) > 0:
                             proposed = {
                                 "kind": "dataset",
                                 "access_path_quote": quote,
@@ -3144,7 +3140,7 @@ class DiscoveryLoop:
             elif isinstance(document, Mapping):
                 headers = document.get("headers", [])
                 document_text = str(document.get("text") or "")
-                if document.get("row_count", 0) < 1 or not (headers or document_text):
+                if document.get("sampled_row_count", 0) < 1 or not (headers or document_text):
                     return None, "captured document has no parsed rows, text, or field metadata"
                 if not any(contains(value) for value in headers) and not contains(document_text):
                     return None, "access-path quote is not present in parsed document content"
@@ -3424,7 +3420,8 @@ class DiscoveryLoop:
             "For a parsed spreadsheet, inspect the bounded per-sheet headers and sample rows "
             "inside captured_access_evidence.document.sheets. Use those literal columns to "
             "confirm only properties the sheet can supply; the sample rows show granularity, "
-            "not verified values for gold. "
+            "not verified values for gold. Row counts here are sample counts only; they never "
+            "claim a complete parse or complete source coverage. Do not emit row values. "
             "For a primary-class DoD property, determine record granularity: one row or page per "
             "primary entity, aggregate statistics, or unknown. A table of totals by region or "
             "category is not an entity-level provider even when its header mentions the target "
@@ -3467,7 +3464,13 @@ class DiscoveryLoop:
             for item in result["verdicts"]:
                 path = item["access_path"]
                 if item["provides"] != (path is not None):
-                    raise ValueError("provides verdict must agree with the access_path object")
+                    if item["provides"]:
+                        item["provides"] = False
+                        item["reason"] = "critic positive lacked a concrete access-path object"
+                        item["normalization"] = "positive_without_path_downgraded"
+                    else:
+                        item["access_path"] = None
+                        item["normalization"] = "path_dropped_for_negative_verdict"
                 authority_context = item.get("authority_context")
                 if authority_context is not None and not isinstance(authority_context, Mapping):
                     raise ValueError("authority context must be an object when supplied")
@@ -3598,6 +3601,7 @@ class DiscoveryLoop:
                     else None,
                     "authority_verdict": item["authority_verdict"],
                     "record_granularity": path.get("record_granularity") if path else None,
+                    "normalization": item.get("normalization"),
                     "reason": failure or item["reason"],
                 }
             )
@@ -4384,9 +4388,8 @@ class DiscoveryLoop:
                 candidate["access_path"] = {
                     property_id: access_paths[property_id] for property_id in covers
                 }
-                context = self._page_access_contexts.get(url, {})
                 candidate["property_evidence"] = _captured_property_evidence(
-                    candidate, context, candidate["access_path"]
+                    candidate, candidate["access_path"]
                 )
                 candidate["status"] = "confirmed" if covers else "rejected"
                 if covers:

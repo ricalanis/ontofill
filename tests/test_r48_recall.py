@@ -39,7 +39,7 @@ def test_legacy_workbook_headers_prove_entity_rows_for_only_present_columns() ->
     )
     headers = _parsed_document_headers(parsed)
     assert headers == ["Branch name", "Opening hours"]
-    context = {"document": {"headers": headers, "row_count": 2}}
+    context = {"document": {"headers": headers, "sampled_row_count": 2}}
     granularity, quote, _ = _record_granularity(
         context, {"kind": "dataset"}, {"name", "branch"}, {"branch"}
     )

@@ -800,6 +800,194 @@ def test_model_critic_retries_duplicate_page_property_pairs(tmp_path) -> None:
     assert reason in decision.calls[1][1]
 
 
+def test_model_critic_coerces_capability_path_mismatches_fail_closed(tmp_path) -> None:
+    ontology = _library_case(tmp_path, POLICY)
+    urls = [
+        "https://libraries.example.test/no-path-on-negative",
+        "https://libraries.example.test/no-path-on-positive",
+        "https://blog.example.test/branches",
+        "https://libraries.example.test/aggregate-hours",
+    ]
+    candidates = {
+        url: {
+            "url": url,
+            "landing_url": url,
+            "title": "Synthetic source",
+            "snippet": "Synthetic capture",
+            "capture_key": f"sha256:{index:064x}",
+            "status": "captured",
+            "property_ids": ["opening_hours"],
+            "authority": "auto" if index == 2 else "review",
+            "matched_publishers": (
+                [
+                    {
+                        "kind": "library blog",
+                        "tier": "primary",
+                        "domain": "blog.example.test",
+                    }
+                ]
+                if index == 2
+                else []
+            ),
+        }
+        for index, url in enumerate(urls)
+    }
+    listing_path = {
+        "kind": "listing",
+        "access_path_quote": "Opening hours",
+        "property_quote": "Opening hours",
+    }
+    decision = RecordedDecisionClient(
+        {
+            "critic.phase3.capability": [
+                {
+                    "verdicts": [
+                        {
+                            "index": 0,
+                            "property_id": "opening_hours",
+                            "provides": False,
+                            "authority_verdict": "unknown",
+                            "access_path": listing_path,
+                            "reason": "The critic rejected this page.",
+                        },
+                        {
+                            "index": 1,
+                            "property_id": "opening_hours",
+                            "provides": True,
+                            "authority_verdict": "unknown",
+                            "access_path": None,
+                            "reason": "The critic supplied no route.",
+                        },
+                        {
+                            "index": 2,
+                            "property_id": "opening_hours",
+                            "provides": True,
+                            "authority_verdict": "authoritative",
+                            "access_path": listing_path,
+                            "reason": "A blog claims to list hours.",
+                        },
+                        {
+                            "index": 3,
+                            "property_id": "opening_hours",
+                            "provides": True,
+                            "authority_verdict": "unknown",
+                            "access_path": listing_path,
+                            "reason": "The table is an aggregate.",
+                        },
+                    ]
+                }
+            ]
+        }
+    )
+    loop, _ = _loop(tmp_path, [StaticProvider("synthetic", {})], {})
+    loop._page_texts = {url: "Opening hours" for url in urls}
+    loop._page_access_contexts = {
+        url: {
+            "page_text": "Opening hours",
+            "forms": [],
+            "links": [],
+            "table_headers": (
+                [["Region", "Opening hours"]] if index == 3 else [["Branch name", "Opening hours"]]
+            ),
+            "listing_row_count": 4,
+        }
+        for index, url in enumerate(urls)
+    }
+
+    verdicts = loop._model_verdicts(decision, {"candidates": candidates}, ontology, POLICY)
+
+    assert verdicts[urls[0]]["opening_hours"] == "The critic rejected this page."
+    assert verdicts[urls[1]]["opening_hours"] == (
+        "critic positive lacked a concrete access-path object"
+    )
+    assert "not authoritative" in verdicts[urls[2]]["opening_hours"]
+    assert "granularity" in verdicts[urls[3]]["opening_hours"]
+    assert not loop._page_access_paths
+    assert len(decision.calls) == 1
+    assert decision.call_log[0]["status"] == "ok"
+    decisions = [
+        decision_record
+        for step in loop.trace
+        if step.get("requested", {}).get("tool") == "critic.phase3.capability"
+        for decision_record in step["evaluated"]["decisions"]
+    ]
+    assert [item["normalization"] for item in decisions[:2]] == [
+        "path_dropped_for_negative_verdict",
+        "positive_without_path_downgraded",
+    ]
+
+
+def test_p3_large_listing_uses_bounded_sample_without_emitting_values(tmp_path) -> None:
+    ontology = _library_case(tmp_path)
+    url = "https://libraries.example.test/branches.csv"
+    csv_text = "Branch name,Opening hours\n" + "".join(
+        f"Synthetic Branch {index},Weekdays {index}\n" for index in range(350)
+    )
+    loop, _ = _loop(
+        tmp_path,
+        [StaticProvider("synthetic", {url: ("name", "opening_hours")})],
+        {},
+    )
+
+    class CsvCapture:
+        def __call__(self, capture_url: str, **kwargs) -> dict:
+            assert capture_url == url
+            payload = csv_text.encode()
+            key = loop.lake.put_bytes(payload)
+            row = {
+                "step_id": f"step:{uuid.uuid4().hex}",
+                "run_id": kwargs["run_id"],
+                "phase": 3,
+                "source_id": kwargs["source_id"],
+                "objective_id": None,
+                "tdd_path": kwargs["tdd_path"],
+                "mode": "S1",
+                "observed": {"url": capture_url},
+                "requested": {"url": capture_url},
+                "executed": {"bronze_key": key},
+                "evaluated": {"status": "captured"},
+                "parent_step_id": None,
+                "value_ids": [],
+                "ts": datetime.now(UTC).isoformat(),
+                "generated_by": kwargs["generated_by"],
+            }
+            return {
+                "url": capture_url,
+                "redirect_chain": [capture_url],
+                "status": 200,
+                "document_key": key,
+                "document_content_type": "text/csv",
+                "document_size_bytes": len(payload),
+                "screenshot_key": loop.lake.put_bytes(b"synthetic screenshot"),
+                "trace": [row],
+            }
+
+    loop.capture = CsvCapture()
+
+    result = loop.discover_sources(tmp_path, ontology, RecordedDecisionClient({}))
+
+    parse_step = next(
+        step for step in loop.trace if step.get("requested", {}).get("tool") == "file.parse"
+    )
+    assert parse_step["requested"]["max_rows"] == 10_000
+    context = loop._page_access_contexts[url]
+    assert context["document"]["sampled_row_count"] == 4
+    assert context["document"]["sampled_only"] is True
+    assert context["document"]["sample_rows_per_sheet"] == 4
+    assert len(context["document"]["sheets"][0]["sample_rows"]) == 4
+    assert not any(
+        step.get("requested", {}).get("tool") == "emit.observation" for step in loop.trace
+    )
+    assert "Synthetic Branch 0" not in json.dumps(result)
+    assert "Weekdays 0" not in json.dumps(result)
+    source_id = result["objectives"][0]["source_id"]
+    manifest = json.loads(
+        (tmp_path / "03-fanout/sources" / source_id / "candidate.json").read_text()
+    )
+    assert "Synthetic Branch 0" not in json.dumps(manifest)
+    assert "Weekdays 0" not in json.dumps(manifest)
+
+
 def test_model_positive_cannot_override_code_no_sign_or_social_authority(tmp_path) -> None:
     ontology = _library_case(tmp_path, POLICY)
     no_sign_url = "https://libraries.example.test/news"
