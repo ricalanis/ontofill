@@ -6,7 +6,7 @@ On TLS, a further redirect, parser failure, or critic failure, record the reason
 the trace and leave the target unconfirmed without a human checkpoint.
 Preserve digest-bound legacy approval packets unchanged.
 
-DONE (initially failing): `agent-progress run --task r33b-thin-fix --paths src/ontofill/phases/p3_fanout/discovery_loop.py,tests/test_r33b_redirect_preview.py --check r33b-thin-focused --strategy require-captured-capability-before-review --hypothesis 'A failed preview produces no thin source checkpoint and emits a reason' -- sh -c 'uv run pytest -q tests/test_r33b_redirect_preview.py && uv run ruff check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r33b_redirect_preview.py && uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r33b_redirect_preview.py && git diff --check'`.
+DONE: The focused gate passed 6 tests after its red baseline. The first composed R33b+R39 integration gate failed on R39's capability-free synthetic page; after a factual fixture correction, its managed retry passed 566 tests, 5 skips, Ruff lint/format and diff check. The earlier exact R33b full check stopped after two distinct failures; no third run of that check was made.
 
 Constraints: no real case or APPROVED edits, no VM deploy while a run is active, no
 PA-owned service changes, no credentials or internal identifiers in public commits.

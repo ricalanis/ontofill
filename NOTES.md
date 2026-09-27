@@ -441,3 +441,9 @@ trusted source and the preview run reported its earlier recorded PRD checkpoint.
 The fixture now gives only the redirect target the directory and the trusted root a
 generic page. This exact full check has had two failures; the next gate is the first
 combined integration with R39, not a retry of that check.
+
+The first R33b+R39 combined gate reached 565 passes, 5 skips. R39's same-country
+fixture still used a capability-free paragraph but expected source review; it now
+has a real search form for the ontology property. This is a distinct fixture mismatch,
+not a weakened production guard.
+The combined managed retry passed 566 tests, 5 skips and Ruff lint/format/diff.

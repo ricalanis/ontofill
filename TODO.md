@@ -7,7 +7,7 @@ FORMAT: Ruff lint and format for edited Python files.
 
 1. [x] Record failing further-redirect and TLS-preview regressions.
 2. [x] Gate new source review packet creation on complete preview and record failure reason.
-3. [ ] The focused gate passed 6 tests and Ruff. Two full-gate attempts exposed a trace-null defect and then an old fixture whose trusted root wrongly became capable; both static corrections are in the tree. Stop that exact full check under the two-attempt guard. Integrate with the independent R39 slice and run its first combined gate, then commit, scan and push. Hold VM deploy until a no-engine window.
+3. [x] The focused gate passed 6 tests and Ruff. Two full-gate attempts exposed a trace-null defect and then an old fixture whose trusted root wrongly became capable; that exact check stopped under the two-attempt guard. The R33b+R39 combined gate passed 566 tests, 5 skips, Ruff lint/format and diff check. Hold VM deploy until a no-engine window.
 
 # Prior goal: R38 robots unavailable policy
 
