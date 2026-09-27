@@ -1,9 +1,11 @@
 # R33b redirect review preview
 
+Integrated on current public main plus the exact-host sandbox guard: 524 tests passed, 5 skipped, Ruff lint/format, schema parse and diff checks clean. The first combined run passed pytest but found three unused/import-order issues in the new synthetic test; the second managed run passed after that static cleanup. Public push and VM deploy remain separate, with deploy only in a no-engine window.
+
 - [ ] Add a recorded synthetic redirect fixture proving one bounded preview uses only the target host, and that preview-derived source fields and critic-supported access paths appear before the review checkpoint.
 - [ ] Keep follow-on redirects unapproved; prove preview denial skips the target and digest-approved bytes remain unchanged.
 - [ ] Add only any additive candidate fields required by R33b/R35, preserving thin legacy packets.
-- [ ] Run the managed focused test/Ruff/schema/diff DONE gate and record each attempt.
+- [x] Run the composed managed full test/Ruff/schema/diff DONE gate and record each attempt.
 - [ ] Commit the isolated worktree and report the SHA to root; do not push or deploy.
 
 FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, optional `schemas/source-candidate.schema.json`, focused synthetic tests, `GOAL.md`, `TODO.md`, `NOTES.md`.
