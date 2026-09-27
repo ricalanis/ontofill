@@ -323,6 +323,7 @@ class NoConfirmedSources(ValueError):
         review_source_ids: Sequence[str] = (),
         review_source_hosts: Sequence[str] = (),
         jurisdiction_rejections: Sequence[Mapping] = (),
+        dispatch_diagnostic: str | None = None,
     ) -> None:
         gap_ids = [_summary_text(gap, 80) for gap in gaps]
         reason_gaps = ", ".join(gap_ids[:5])
@@ -355,7 +356,9 @@ class NoConfirmedSources(ValueError):
                 f"publisher(s){host_detail}; "
             )
         self.reason = _summary_text(
-            f"{prefix}{review_prefix}no authoritative source found for {reason_gaps}", 300
+            dispatch_diagnostic
+            or f"{prefix}{review_prefix}no authoritative source found for {reason_gaps}",
+            300,
         )
         self.summary = {
             "gaps": gap_ids[:12],
@@ -3298,6 +3301,24 @@ class DiscoveryLoop:
             }
             queries = tuple(LeadQuery(pid, text) for pid, text in context["queries"])
             if not queries:
+                if context["gaps"]:
+                    diagnostic = (
+                        "no provider call dispatched: query planner exhausted new queries "
+                        f"with {len(context['gaps'])} discovery gap(s) still open"
+                    )
+                    self._step(
+                        {"tool": "source.discover.dispatch", "iteration": iteration},
+                        {"status": "blocked", "provider_calls": 0},
+                        {"reason": diagnostic, "stop_reason": "no_provider_dispatch"},
+                    )
+                    raise NoConfirmedSources(
+                        context["gaps"],
+                        [attempt["query"] for attempt in self.attempts],
+                        [diagnostic],
+                        iterations=iteration,
+                        stop_reason="no_provider_dispatch",
+                        dispatch_diagnostic=diagnostic,
+                    )
                 return draft
             portal_limit = max(1, self.max_queries)
             portal_urls: list[str] = []
@@ -3322,6 +3343,8 @@ class DiscoveryLoop:
                 tried=tried_publishers,
                 open_data_portals=tuple(portal_urls),
             )
+            dispatch_attempts = 0
+            leads_found = 0
             for provider in self.providers:
                 attempts_before = len(provider.attempts)
                 trace_before = len(getattr(provider, "trace", []))
@@ -3341,6 +3364,7 @@ class DiscoveryLoop:
                 self.trace.extend(getattr(provider, "trace", [])[trace_before:])
                 self.jobs.extend(getattr(provider, "jobs", [])[jobs_before:])
                 for attempt in provider.attempts[attempts_before:]:
+                    dispatch_attempts += 1
                     record = {**attempt, "iteration": iteration}
                     self.attempts.append(record)
                     self._step(
@@ -3354,6 +3378,7 @@ class DiscoveryLoop:
                         mode="D1" if provider.name == "model" else "D0",
                     )
                 for lead in found:
+                    leads_found += 1
                     if (
                         public_url(lead.url)
                         and is_open_data_portal(lead.as_dict(), ontology)
@@ -3376,6 +3401,24 @@ class DiscoveryLoop:
                     entry["score"] = max(entry.get("score", 0), lead.score)
                     if lead.publisher:
                         tried_publishers.add(lead.publisher)
+            if dispatch_attempts == 0 and leads_found == 0:
+                diagnostic = (
+                    "no provider call dispatched: configured providers returned "
+                    "without an attempt or lead"
+                )
+                self._step(
+                    {"tool": "source.discover.dispatch", "iteration": iteration},
+                    {"status": "blocked", "provider_calls": 0},
+                    {"reason": diagnostic, "stop_reason": "no_provider_dispatch"},
+                )
+                raise NoConfirmedSources(
+                    context["gaps"],
+                    [attempt["query"] for attempt in self.attempts],
+                    [diagnostic],
+                    iterations=iteration,
+                    stop_reason="no_provider_dispatch",
+                    dispatch_diagnostic=diagnostic,
+                )
             for name, _, _ in lead_context.publisher_names:
                 tried_publishers.add(name)
 

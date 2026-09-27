@@ -1,4 +1,12 @@
-# Current goal: R48 primary-entity discovery anchor
+# Current goal: stop idle P3 dispatch and ship R48 primary-entity discovery anchor
+
+The stopped live run repeated P3 decisions without a provider call. P3 must pause
+with a specific reason on the first iteration that cannot dispatch a provider,
+while the ontology-derived anchor and CKAN resource search broaden actual calls.
+DONE: a recorded no-dispatch regression, full pytest/Ruff/schema/diff gate,
+pre-push scan, public push, and guarded zero-engine VM fast-forward.
+
+# Prior goal: R48 primary-entity discovery anchor
 
 Before broad search, use the inferred ontology to seek row-level datasets for the primary class or a linking relation. Search every trusted/discovered open-data portal through sandboxed CKAN, rank resource metadata by entity granularity, then require normal sandbox capture and authority checks. DONE: synthetic anchor, CKAN and aggregate-ranking tests plus full pytest, Ruff, schema/diff checks; public push only after scan; no VM deploy while the active run exists.
 

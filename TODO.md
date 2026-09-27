@@ -1,3 +1,15 @@
+# Urgent P3 no-provider stall with R48 anchor integration
+
+FILES: `src/ontofill/phases/p3_fanout/{discovery_loop,leads}.py`, synthetic P3 tests, GOAL/TODO/status.
+TASK: stop an idle P3 iteration immediately with a visible reason; compose entity anchor and CKAN metadata ranking.
+DONE: recorded no-dispatch test, full pytest/Ruff/schema/diff check, pre-push scan, public push, guarded zero-engine VM pull.
+FORMAT: Ruff and clean diff.
+
+1. [x] Reproduce the no-query early return as a failing recorded test.
+2. [x] Stop before another critic cycle and publish a dispatch failure reason.
+3. [ ] Integrate scoped anchor and CKAN commits; review their diffs.
+4. [ ] Run full gate, pre-push scan, push, then guarded VM pull.
+
 # R48 primary-entity anchor integration
 
 FILES: `src/ontofill/phases/p3_fanout/{discovery_loop,leads}.py`, focused tests, GOAL/TODO/status.
