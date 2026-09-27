@@ -4,9 +4,10 @@
 - [x] Push the runsc cell relay, preflight diagnostics, control-VM SSH bootstrap and repair-pod stdin transport; deploy the cell service on the control VM.
 - [x] Prove the destructive loop stays inside a capped runsc pod and that the repair path emits a limit stop.
 - [ ] Complete native cell create → CDP browser action → six checkpoints → destroy on the live sandbox VM; the full check is paused under the two-attempt progress guard.
-- [ ] Close three independent-review PRD regressions: human secondary publisher must not auto-trust, revised policy must invalidate old auto authority, and denied/percent numbers must not become human-grounded counts.
-- [ ] Rerun brief 10b combined tests and scratch live denial, then push the PRD fix for the user's rerun.
-- [ ] Complete the narrow brain-to-gateway live probes (CONTRACT v0.9.4), then resume brief 11 outer/P3/P2/P4 loops in order.
+- [x] Close three independent-review PRD regressions: human secondary publisher cannot auto-trust, revised policy invalidates old auto authority, and denied/percent numbers cannot become human-grounded counts.
+- [x] Rerun brief 10b combined tests and scratch live denial, push the PRD fix, and fast-forward the control VM for the user's rerun.
+- [x] Prove the narrow brain-to-gateway rule live: gateway ALLOWED, control SSH BLOCKED, hands-to-gateway BLOCKED; clean up disposable containers/networks.
+- [ ] Complete brief 11 outer/P3/P2/P4 loops in order after P1; an outer-loop worker owns the first slice.
 FILES: `src/ontofill/sandbox/`, `sandbox/`, `infra/vultr/`, `src/ontofill/phases/p1_scope/`, `src/ontofill/phases/p3_fanout/`, `src/ontofill/workflow.py`, `schemas/`, `tests/`.
 TASK: Make the live browser substrate and user-steered PRD safe and reviewable before widening phase loops.
 DONE: `uv run pytest -q` and Ruff gates pass, a scratch Vultr denial writes an approvable revised PRD with human-grounded DoD, and the live native cell records its six checkpoints and teardown.
