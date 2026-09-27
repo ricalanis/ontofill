@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Archived cases{% endblock %}
+{% block main %}
+{{ v.head("Archived cases", "Hidden from the case list; every file is kept. Open one to read it or restore it.", "cases.json (archived: true)") }}
+{% if rows %}
+<ul class="strips">{% for c in rows %}<li>{{ v.strip("pause", c.title, (c.brief or "No brief.md") ~ ((" · revised as " ~ c.meta.superseded_by) if c.meta and c.meta.superseded_by else ""), (c.meta.archived_at or "")[:10] if c.meta else "", "/cases/" ~ c.id ~ "/manage") }}</li>{% endfor %}</ul>
+{% else %}<div class="empty"><b>No archived cases</b><span>{% if not registry_on %}The case registry is not configured.{% else %}Archived cases appear here and can be restored.{% endif %}</span></div>{% endif %}
+<p><a href="/">Back to the cases</a></p>
+{% endblock %}

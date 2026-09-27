@@ -14,6 +14,9 @@ services:
     environment:
       # id=/path/in/container[:/local/lake],… ; a case without :lake reads <case parent>/lake.yaml (mounted below)
       ONTOFILL_CONSOLE_CASES: ${ONTOFILL_CONSOLE_CASES:-}
+      # CONTRACT v1.0.6: the data-driven registry (<root>/cases.json); paths in it are HOST paths, so the root and any
+      # migrated case outside it are mounted at identical paths in the container (the *_CONTAINER_* vars below).
+      ONTOFILL_CASES_ROOT: ${CONSOLE_CASES_ROOT:-}
       ONTOFILL_CONSOLE_IDENTITY: ${ONTOFILL_CONSOLE_IDENTITY:-sso-group}   # NetBird Cloud forwards groups, not the user
       ONTOFILL_CONSOLE_GROUPS_HEADER: ${ONTOFILL_CONSOLE_GROUPS_HEADER:-X-NetBird-Groups}
       ONTOFILL_CONSOLE_APPROVER_GROUP: ${ONTOFILL_CONSOLE_APPROVER_GROUP:-approvers}
@@ -28,10 +31,13 @@ services:
       AWS_REGION: ${AWS_REGION:-}
     volumes:
       # Case packages: read-write, because approvals write APPROVED + decisions.jsonl there (and only there).
-      - ${CONSOLE_CASE_A_HOST_DIR:-../.cache/empty-case}:/cases/a/case:rw
-      - ${CONSOLE_CASE_A_LAKE_YAML:-../.cache/empty-lake.yaml}:/cases/a/lake.yaml:ro
-      - ${CONSOLE_CASE_B_HOST_DIR:-../.cache/empty-case}:/cases/b/case:rw
-      - ${CONSOLE_CASE_B_LAKE_DIR:-../.cache/empty-lake}:/cases/b/lake:ro
+      - ${CONSOLE_CASE_A_HOST_DIR:-../.cache/empty-case}:${CONSOLE_CASE_A_CONTAINER_DIR:-/cases/a/case}:rw
+      - ${CONSOLE_CASE_A_LAKE_YAML:-../.cache/empty-lake.yaml}:${CONSOLE_CASE_A_CONTAINER_LAKE_YAML:-/cases/a/lake.yaml}:ro
+      - ${CONSOLE_CASE_B_HOST_DIR:-../.cache/empty-case}:${CONSOLE_CASE_B_CONTAINER_DIR:-/cases/b/case}:rw
+      - ${CONSOLE_CASE_B_LAKE_DIR:-../.cache/empty-lake}:${CONSOLE_CASE_B_CONTAINER_LAKE_DIR:-/cases/b/lake}:ro
+      - ${CONSOLE_CASE_B_LAKE_YAML:-../.cache/empty-lake.yaml}:${CONSOLE_CASE_B_CONTAINER_LAKE_YAML:-/cases/b/lake.yaml}:ro
+      # the registry root (new cases live here; the console writes cases.json and new case dirs)
+      - ${CONSOLE_CASES_ROOT_HOST:-../.cache/empty-cases-root}:${CONSOLE_CASES_ROOT_CONTAINER:-/cases-root}:rw
       - ${CONSOLE_EVIDENCE_HOST_DIR:-../.cache/empty-evidence}:/evidence:ro
       - ${CONSOLE_RUNNER_STATE_HOST_DIR:-../.cache/empty-runner}:/runner:rw
       - ${CONSOLE_GATEWAY_LOG_HOST_DIR:-../.cache/empty-gateway-log}:/gateway-log:ro

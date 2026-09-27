@@ -20,9 +20,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import approvals as ap
-from . import dod, evidence, live, runner_state
+from . import dod, evidence, live, registry, runner_state
 from .domain import Domain
-from .gold import GoldStore, UnavailableStore, backend_of, sniff_media_type, store_for_case
+from .gold import GoldStore, UnavailableStore, _store_from_lake_yaml, backend_of, sniff_media_type, store_for_case
 
 HERE = Path(__file__).parent
 CASE_ID = re.compile(r"^[a-z0-9-]{1,40}$")
@@ -36,6 +36,7 @@ class Case:
     root: Path
     store: GoldStore | UnavailableStore
     lake_error: str | None = None
+    meta: dict | None = None  # its entry in the case registry (CONTRACT v1.0.6), None for env-registered cases
 
     @property
     def dir(self) -> ap.CaseDir:
@@ -76,6 +77,11 @@ class Settings:
     approver_group: str = "approvers"
     direct_deny: tuple = ()  # ip networks (our own mesh peers) whose direct requests may not decide
     runner_state: Path = runner_state.DEFAULT_STATE  # shared with the ontofill-runner service (R18)
+    cases_root: Path | None = None  # ONTOFILL_CASES_ROOT: the data-driven case registry (v1.0.6); None = env only
+    env_cases: dict[str, Case] = field(default_factory=dict)  # from ONTOFILL_CONSOLE_CASES (read-only fallback)
+    archived: dict[str, Case] = field(default_factory=dict)
+    registry_error: str | None = None
+    _registry_stamp: tuple | None = None
 
     def __post_init__(self) -> None:
         if self.identity_mode not in ("sso", "sso-group", "local"):
@@ -109,13 +115,66 @@ def parse_cases(spec: str, env: dict[str, str] | None = None) -> dict[str, Case]
 def settings_from_env(env: dict[str, str] | None = None) -> Settings:
     env = dict(os.environ if env is None else env)
     headers = tuple(h.strip() for h in env.get("ONTOFILL_CONSOLE_IDENTITY_HEADER", "").split(",") if h.strip())
-    return Settings(cases=parse_cases(env.get("ONTOFILL_CONSOLE_CASES", ""), env),
+    env_cases = parse_cases(env.get("ONTOFILL_CONSOLE_CASES", ""), env)
+    settings = Settings(cases=dict(env_cases), env_cases=env_cases, cases_root=registry.root_from_env(env),
                     identity_mode=env.get("ONTOFILL_CONSOLE_IDENTITY", "sso").strip() or "sso",
                     identity_headers=headers or DEFAULT_IDENTITY_HEADERS,
                     groups_header=env.get("ONTOFILL_CONSOLE_GROUPS_HEADER", "").strip() or "X-NetBird-Groups",
                     approver_group=env.get("ONTOFILL_CONSOLE_APPROVER_GROUP", "").strip() or "approvers",
                     direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")),
                     runner_state=runner_state.state_dir(env))
+    sync_registry(settings, env)
+    return settings
+
+
+def _case_from_entry(root: Path, item: dict, env: dict[str, str] | None) -> Case:
+    case_dir = registry.resolve(root, item["path"])
+    lake_path = registry.resolve(root, item.get("lake") or str(case_dir.parent / "lake.yaml"))
+    try:
+        store: GoldStore | UnavailableStore = _store_from_lake_yaml(lake_path, dict(os.environ if env is None else env))
+        store.case_dir = case_dir
+        error = None
+    except (FileNotFoundError, ValueError, ImportError) as exc:
+        message = str(exc) if isinstance(exc, FileNotFoundError) else f"lake unavailable ({type(exc).__name__})"
+        store, error = UnavailableStore(message), message
+    return Case(item["id"], case_dir, store, error, meta=item)
+
+
+def sync_registry(settings: Settings, env: dict[str, str] | None = None) -> None:
+    """Merge the registry (if any) over the env cases, in place, when cases.json changed; the registry wins on ids.
+    A torn or broken registry keeps the last good set and shows the error."""
+    root = settings.cases_root
+    if root is None:
+        return
+    path = root / registry.REGISTRY
+    try:
+        st = path.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        stamp = None
+    if stamp == settings._registry_stamp and settings._registry_stamp is not None:
+        return
+    try:
+        data = registry.load(root)
+    except registry.RegistryError as exc:
+        settings.registry_error = str(exc)
+        return
+    active, archived, errors = dict(settings.env_cases), {}, []
+    for item in data["cases"]:
+        if not isinstance(item, dict) or not CASE_ID.match(str(item.get("id") or "")):
+            continue
+        try:
+            case = _case_from_entry(root, item, env)
+        except registry.RegistryError as exc:
+            errors.append(f"{item.get('id')}: {exc}")  # an unsafe entry is skipped, never served, and reported
+            continue
+        (archived if item.get("archived") else active)[case.id] = case
+    settings.cases.clear()
+    settings.cases.update(active)
+    settings.archived.clear()
+    settings.archived.update(archived)
+    settings._registry_stamp = stamp
+    settings.registry_error = "; ".join(errors) or None
 
 
 def brief(value, limit: int = 240) -> str:
@@ -146,6 +205,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or settings_from_env()
     app = FastAPI(title="Ontofill Console", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+
+    @app.middleware("http")
+    async def pick_up_registry_changes(request: Request, call_next):
+        sync_registry(settings)  # new, archived or revised cases appear without a restart (cheap: stat unless changed)
+        return await call_next(request)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
@@ -177,7 +241,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # helpers ----------------------------------------------------------------------------------------------------
     def get_case(case_id: str) -> Case:
-        case = settings.cases.get(case_id) if CASE_ID.match(case_id or "") else None
+        case = (settings.cases.get(case_id) or settings.archived.get(case_id)) if CASE_ID.match(case_id or "") else None
         if case is None:
             raise HTTPException(404, "unknown case")
         return case
@@ -272,6 +336,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .viz import VizContext, register
 
     register(VizContext(app=app, render=render, get_case=get_case, case_domain=case_domain, settings=settings, env=env))
+
+    # case CRUD (CONTRACT v1.0.6: Claude Product): approver-only writes, logged in the case's decisions.jsonl
+    from .case_admin import AdminContext
+    from .case_admin import install as install_case_admin
+
+    install_case_admin(AdminContext(app=app, render=render, get_case=get_case, settings=settings, authorize=authorize,
+                                    check_origin=check_origin, read_form=read_form, live_run_id=live_run_id, env=env))
 
     @app.get("/whoami", response_class=HTMLResponse)
     def whoami(request: Request):
