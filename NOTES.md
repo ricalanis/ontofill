@@ -5,6 +5,17 @@
 - Attempt 2, `r17-integration-authorized-fixture-fix-retry`: 82 passed, 2 failed, 3 skipped. Dead hypothesis: a repeated real parser run could preserve byte-identical live trace, and export failure should erase proof that the parser pod ran. The parser generates a new six-checkpoint job each time; `refine_case` retains that proof and rolls back only unexported replay value steps.
 - New strategy: assert one stable replay value lineage and one new six-checkpoint proof per actual parser run; on failed export, assert parser proof persists but unexported replay steps do not. Broaden the architecture guard for P5 bronze reads, socket connections and direct network subprocesses. The two test files were edited and formatted statically; no third integrated check is authorized yet. Use a transparently named successor with this hypothesis only after the orchestrator decides under `coord/briefs/codex-authorizations.md`.
 
+## R9b prompt screening strategy (2026-09-26)
+- Preserve the shared `screened_page_content` encoder: it creates one outer page span and escapes page-supplied opening/closing delimiters.
+- Audit every P3/P5 engine inference prompt that receives captured page data, including legacy P3 source selection, P3 site-graph classification, P5 table/link mapping, and Pattern A repair stderr.
+- Use only synthetic page strings, static recorded/fake decisions, and fake HTTP transports; no live gateway calls or credential values.
+- `ONTOFILL_GATEWAY_TOKEN` must win when both names are set; `VULTR_INFERENCE_API_KEY` remains a compatibility fallback.
+- DONE: `uv run pytest -q tests/test_r9b_prompt_screening.py tests/test_pattern_a.py tests/test_inference.py` plus Ruff checks on edited Python files.
+- Managed check attempt 1: 44 focused tests passed; Ruff reported import order in the new test module. Corrected the import grouping for the one allowed follow-up.
+- Managed check attempt 2: 44 focused tests and Ruff lint passed; Ruff format identified two deterministic wraps in `tests/test_execute_phase.py`. The formatting fix is isolated for its own narrow managed check.
+- The first narrow format check found one remaining wrapped map-sample assertion; corrected before the final attempt for that path/check.
+- The second narrow format attempt showed Ruff requires the long map-sample condition wrapped in a parenthesized assertion. Applied that exact output and stopped this path/check after its two allowed attempts; no semantic code changed after the passing test/lint run.
+
 ## R16 selected strategy (2026-09-26)
 - Both CDP forwarding layers currently return when `select.select(..., 30)` has no readable socket. An idle browser WebSocket therefore closes even while Chromium and the cell container remain alive. Fix both forwarders to continue waiting; add an idle-poll regression test.
 - The substrate currently checks only Docker `State.Running`; it does not test the CDP page target. It also copies `peak_memory_mb` from preflight once and never updates it. Add a target liveness probe before reporting `ready` or accepting a new step, and gather live/peak memory before teardown.

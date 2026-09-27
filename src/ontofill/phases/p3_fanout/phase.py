@@ -14,6 +14,7 @@ from ontofill_scrape import SearchClient, source_discover
 from ontofill.case.checkpoints import load_json, require_approval, write_json
 from ontofill.contracts import validate_document
 from ontofill.inference import DecisionClient, generated_by
+from ontofill.inference.page_content import screened_page_content
 from ontofill.phases.p3_fanout.authority import authority_result, source_class, source_fingerprint
 
 
@@ -164,9 +165,9 @@ def _choose(entries: list[tuple], gaps: tuple[str, ...], decision, max_sources: 
     listing = [
         {
             "index": i,
-            "title": item[0].title,
+            "title": screened_page_content(item[0].title),
             "url": item[0].url,
-            "snippet": item[0].snippet,
+            "snippet": screened_page_content(item[0].snippet),
             "source_type": item[1]["source_type"],
             "authority": item[2]["authority"],
         }
