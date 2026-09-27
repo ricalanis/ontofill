@@ -1,0 +1,13 @@
+{# The case's question (brief.md): shown wherever a person has to judge or read the engine's work. #}
+{% set q_text = case.dir.read("brief.md", 4000) if case else None %}
+{% set q_lines = (q_text or "").splitlines()|reject("none")|list %}
+<section class="question" aria-labelledby="question-h">
+  <h2 id="question-h" class="question__h">The question</h2>
+  {% set body = [] %}{% for ln in q_lines %}{% if ln.strip() and not ln.lstrip().startswith("#") %}{% set _ = body.append(ln.strip()) %}{% endif %}{% endfor %}
+  {% if body %}
+  <blockquote class="question__text">{% for ln in body %}<p>{{ ln }}</p>{% endfor %}</blockquote>
+  <p class="question__src"><a class="mono" href="/cases/{{ case.id }}/files/brief.md">brief.md</a> · the only human-written input; everything the engine produces answers this</p>
+  {% else %}
+  <p class="empty">This case has no <span class="mono">brief.md</span> yet, so there is no question to show.</p>
+  {% endif %}
+</section>

@@ -7,10 +7,10 @@
 </section>
 {% if rows %}
 <table class="ledger cases-table">
-  <thead><tr><th scope="col">Case</th><th scope="col">Latest run</th><th scope="col">State</th><th scope="col" class="num">Waiting for you</th></tr></thead>
+  <thead><tr><th scope="col">Case · the question</th><th scope="col">Latest run</th><th scope="col">State</th><th scope="col" class="num">Waiting for you</th></tr></thead>
   <tbody>{% for c in rows %}
     <tr>
-      <th scope="row"><a href="/cases/{{ c.id }}">{{ c.title }}</a><span class="sub mono">{{ c.id }}</span></th>
+      <th scope="row"><a href="/cases/{{ c.id }}">{{ c.title }}</a><span class="sub mono">{{ c.id }}</span>{% set q = cases[c.id].brief if cases.get(c.id) else None %}<span class="case-question">{{ q or "No brief.md yet" }}</span></th>
       <td>{% if c.run_id %}<a class="mono" href="/cases/{{ c.id }}/runs/{{ c.run_id }}">{{ c.run_id }}</a>{% else %}<span class="muted">no run yet</span>{% endif %}{% if c.lake_error %}<span class="sub muted">{{ c.lake_error }}</span>{% endif %}</td>
       <td>{% if c.state %}<span class="run-state run-state--{{ c.state }}">{{ c.state }}</span>{% if c.checkpoint_pending %}<span class="sub">paused at {{ c.checkpoint_pending }}</span>{% endif %}{% else %}—{% endif %}</td>
       <td class="num">{% if c.pending %}<a href="/cases/{{ c.id }}/approvals">{{ c.pending }}</a>{% else %}0{% endif %}</td>
