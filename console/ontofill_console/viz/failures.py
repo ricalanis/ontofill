@@ -21,6 +21,7 @@ ORDER = 60
 SOURCE = "runs/<case>/<run>/trace.live.jsonl · status.json (sources[].health) · jobs.jsonl"
 
 KINDS = [  # (kind, label, state) in display order
+    ("run_stop", "Run stopped", "block"),
     ("stop", "Captcha, login or injection stops", "block"),
     ("failure", "Failures and errors", "block"),
     ("refusal", "Refused derivations", "block"),
@@ -185,6 +186,16 @@ def classify(s: dict) -> tuple[str, str, str] | None:
     return None
 
 
+def job_failure(job: dict) -> str:
+    """What went wrong in a job, in its own words: failure_reason, else the task checkpoint's real result."""
+    if job.get("failure_reason"):
+        return hc.text_of(job["failure_reason"], 200)
+    task = (job.get("checkpoints") or {}).get("task")
+    if isinstance(task, dict) and task.get("ok") is False:
+        return hc.text_of(task.get("result"), 200)
+    return ""
+
+
 def job_row(job: dict, base: str, rid: str) -> dict:
     cps = []
     for key, label, desc in live.CHECKPOINTS:
@@ -210,6 +221,7 @@ def job_row(job: dict, base: str, rid: str) -> dict:
         "limits": ", ".join(f"{k} {v}" for k, v in limits.items()) or None,
         "usage": ", ".join(f"{k} {v}" for k, v in usage.items()) or None,
         "killed_by": live.job_stop_reason(job),
+        "failure": job_failure(job) or None,
         "teardown": live.checkpoint_state(job, "teardown") == "pass",
     }
 
@@ -222,6 +234,22 @@ def model(case, run: str | None = None) -> dict:
     status = a.status(rid)
     jobs = a.jobs(rid)
     strips: list[dict] = []
+    step_phase = {s.get("step_id"): s.get("phase") for s in steps if s.get("step_id")}
+    cause = hc.stop_cause(steps, status.get("state"), case.id, rid)
+    if cause:
+        strips.append(
+            {
+                "kind": "run_stop",
+                "state": "block",
+                "title": f"Run {status.get('state')}: phase {cause['phase']} loop stopped at the {cause['stop_label']}",
+                "detail": cause["objection"] or cause["text"],
+                "step_id": cause["step_id"],
+                "when": status.get("updated_at"),
+                "phase": cause["phase"],
+                "mode": None,
+                "href": cause["step_href"] or cause["href"],
+            }
+        )
     # a pending gate a later gate step answered (its parent) is resolved: show the answer, not the wait
     answered = {
         s.get("parent_step_id")
@@ -281,7 +309,7 @@ def model(case, run: str | None = None) -> dict:
                     ),
                     "step_id": j.get("step_id"),
                     "when": j.get("ended_at"),
-                    "phase": 5,
+                    "phase": step_phase.get(j.get("step_id")),
                     "mode": None,
                     "href": f"{base}/runs/{rid}#{j.get('step_id') or 'proof-h'}",
                 }
@@ -293,10 +321,10 @@ def model(case, run: str | None = None) -> dict:
                     "kind": "checkpoint_fail",
                     "state": "block",
                     "title": f"Proof checkpoint failed · {j.get('job_id')}",
-                    "detail": ", ".join(failed),
+                    "detail": " · ".join(x for x in (", ".join(failed), job_failure(j)) if x),
                     "step_id": j.get("step_id"),
                     "when": j.get("ended_at"),
-                    "phase": 5,
+                    "phase": step_phase.get(j.get("step_id")),
                     "mode": None,
                     "href": f"{base}/runs/{rid}#{j.get('step_id') or 'proof-h'}",
                 }

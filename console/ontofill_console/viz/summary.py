@@ -111,6 +111,9 @@ def run_section(
         resumes = sum(1 for d in decisions if (d.get("decision") or "approve") == "approve")
         basis = "decisions.jsonl · status.json"
     stop: list[str] = []
+    cause = hc.stop_cause(steps, state, case.id, rid)
+    if cause:
+        stop.append(cause["text"] + (f" · last objection: {cause['objection']}" if cause["objection"] else ""))
     if status.get("reason"):
         stop.append(str(status["reason"]))
     if cp:
@@ -148,6 +151,7 @@ def run_section(
         "n_steps": len(steps),
         "has_feed": has_feed,
         "stop": stop,
+        "cause": cause,
         "pauses": pauses,
         "resumes": resumes,
         "pause_basis": basis,
@@ -570,6 +574,17 @@ def next_section(
         {"state": s["state"], "title": s["title"], "detail": s["detail"] or None, "href": s["href"]}
         for s in pending_strips(a, case.id, (*CP_LABELS, ""))
     ]
+    if run and run.get("cause"):
+        c = run["cause"]
+        items.append(
+            {
+                "state": "block",
+                "title": f"The run {run['state']} in phase {c['phase']} · {c['phase_name']}: "
+                f"its loop stopped at the {c['stop_label']}",
+                "detail": c["objection"] or f"{c['n_objections']} objections",
+                "href": c["href"],
+            }
+        )
     if live_on and run:
         items.append(
             {

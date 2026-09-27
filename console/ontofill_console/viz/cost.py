@@ -160,6 +160,10 @@ def model(case, run: str | None = None) -> dict:
     meeting = sum(v for v in primary.values() if isinstance(v, (int, float))) if primary else None
 
     budget = _budget(status, metrics)
+    budget_basis = "status.json" if budget is not None else None
+    case_budget = (getattr(case, "meta", None) or {}).get("budget_usd")
+    if budget is None and isinstance(case_budget, (int, float)) and case_budget > 0:
+        budget, budget_basis = float(case_budget), "the case's budget (cases.json)"
     spent = total if total is not None else loops_total
     snap = hc.spend_history_latest()
     eng = (snap or {}).get("engine") if isinstance((snap or {}).get("engine"), dict) else {}
@@ -209,6 +213,7 @@ def model(case, run: str | None = None) -> dict:
         if total is not None
         else ("metrics.loops" if loops_total is not None else None),
         "budget_usd": budget,
+        "budget_basis": budget_basis,
         "burn": round(spent / budget, 4) if budget and spent is not None else None,
         "tracker_run_usd": tracker_run,
         "tracker_ts": (snap or {}).get("ts"),

@@ -45,7 +45,7 @@
       <a class="job" role="rowheader" href="{{ r.href }}" title="{{ r.job_id }}">{{ r.job_id }}{% if r.source_id %} · {{ r.source_id }}{% endif %}</a>
       {% for c in r.checkpoints %}<span class="ck ck--{{ c.state }}" role="cell" title="{{ c.label }}: {{ c.word }}" aria-label="{{ c.label }}: {{ c.word }}">{{ c.glyph }}</span>{% endfor %}
       <span class="cellnote" role="cell">{% if r.tier %}{{ r.tier.name }}{% if r.tier.tier %} (tier {{ r.tier.tier }}){% endif %}{% else %}—{% endif %}</span>
-      <span class="cellnote" role="cell">{{ r.limits or "—" }}{% if r.killed_by %} · killed: {{ r.killed_by }}{% endif %}</span>
+      <span class="cellnote" role="cell">{{ r.limits or "—" }}{% if r.killed_by %} · killed: {{ r.killed_by }}{% endif %}{% if r.failure %}<br>failed: {{ r.failure }}{% endif %}</span>
       <span class="cellnote" role="cell">{{ r.usage or "not recorded" }}</span>
     </div>
     {% endfor %}

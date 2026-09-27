@@ -52,9 +52,10 @@
   <dl class="kv wt-kv">
     <dt>Run</dt><dd class="mono">{% if c.run_id %}<a href="{{ c.links.run }}">{{ c.run_id }}</a>{% if c.phase %} · P{{ c.phase }}{% endif %} · {{ c.n_runs }} run{{ "s" if c.n_runs != 1 }}{% else %}no run feed yet{% endif %}</dd>
     <dt>Last step</dt><dd class="mono">{% if lv.last_step_age_s is not none %}{{ age(lv.last_step_age_s) }} ago{% else %}none{% endif %} · status {% if lv.status_age_s is not none %}{{ age(lv.status_age_s) }} ago{% else %}—{% endif %}</dd>
-    <dt>Runner</dt><dd>{% if r.seen %}{{ (r.state or "?")|replace("_", " ") }}{% if r.checkpoint %} · {{ r.checkpoint }}{% endif %}{% if r.running_since and r.state == "running" %} · since <span class="mono">{{ r.running_since[11:16] }} UTC</span>{% endif %}{% if r.reason %} · {{ r.reason }}{% endif %}{% else %}not seen by the runner{% endif %}</dd>
+    <dt>Runner</dt><dd>{% if r.seen %}{{ (r.state or "?")|replace("_", " ") }}{% if r.checkpoint and r.state == "waiting_approval" %} · {{ r.checkpoint }}{% endif %}{% if r.running_since and r.state == "running" %} · since <span class="mono">{{ r.running_since[11:16] }} UTC</span>{% endif %}{% if r.reason %} · {{ r.reason }}{% endif %}{% else %}not seen by the runner{% endif %}</dd>
     <dt>Last resume</dt><dd>{% if r.last_resume %}<span class="mono">{{ (r.last_resume.ts or "")[:16]|replace("T", " ") }}</span> · {{ r.last_resume.detail or "no reason recorded" }}{% else %}none recorded{% endif %}</dd>
     {% if r.last_event and r.last_event.kind != "resumed" %}<dt>Last event</dt><dd><span class="mono">{{ (r.last_event.ts or "")[:16]|replace("T", " ") }}</span> · {{ r.last_event.kind|replace("_", " ") }}{% if r.last_event.detail %}: {{ r.last_event.detail }}{% endif %}</dd>{% endif %}
+    {% if c.stop_cause %}<dt>Why it stopped</dt><dd><a href="{{ c.stop_cause.href }}">{{ c.stop_cause.text }}</a>{% if c.stop_cause.objection %}<br><span class="muted">last objection: {{ c.stop_cause.objection }}</span>{% endif %}</dd>{% endif %}
   </dl>
 
   <div class="panels wt-panels">
@@ -157,6 +158,7 @@
     <dt class="mono">runner</dt><dd>on, killed, state_dir_ok, state_dir, last_write_at, last_write_age_s, n_events</dd>
     <dt class="mono">global_spend</dt><dd>global_usd, global_basis, global_cap_usd, burn_usd_per_h (sum of case burns), projection{remaining_usd, hours, at}</dd>
     <dt class="mono">cases[]</dt><dd>case_id, title, run_id, n_runs, run_state, phase, checkpoint_pending, run_reason, moving, pending_approvals, lake_error, links{case, run, operation, failures, inference, cost, output, approvals, inbox}</dd>
+    <dt class="mono">cases[].stop_cause</dt><dd>null, or why a failed run stopped, from its trace: phase, phase_name, stop_reason, stop_label, iterations, usd, n_objections, objection, step_id, text, href, step_href</dd>
     <dt class="mono">cases[].runner</dt><dd>seen, state (idle | running | waiting_approval | paused | killed | budget_stop | failed | done), run_id, checkpoint, reason, paused, pid, running_since, last_started_at, last_resumed_at, updated_at, spent_usd_case, spent_usd_global, last_trigger, last_resume{ts, kind, run_id, detail}, last_event{…}</dd>
     <dt class="mono">cases[].liveness</dt><dd>last_step_at, last_step_age_s, status_updated_at, status_age_s, runner_age_s, says_running, quiet_s, stale, stale_min</dd>
     <dt class="mono">cases[].throughput</dt><dd>anchor, first_step_at, run_minutes, phases[]{phase, name, n, n_15, n_60, per_min_15, per_min_60, per_min_run}, total{…}, n_cells, n_cells_timed, cells_60, cells_per_h_60, cells_per_h_run</dd>

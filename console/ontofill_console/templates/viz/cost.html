@@ -17,7 +17,7 @@
   <div><dt>Per gold value</dt><dd>{{ usd6.format(m.per_value) if m.per_value is not none else "—" }}<small>{{ m.n_values }} values ({{ m.values_from }})</small></dd></div>
   <div><dt>Per entity meeting DoD</dt><dd>{{ usd6.format(m.per_entity) if m.per_entity is not none else "—" }}<small>{{ m.entities_meeting_dod if m.entities_meeting_dod is not none else "no" }} entities</small></dd></div>
   <div><dt>Tokens in / out</dt><dd>{{ n.format(m.input_tokens) }} / {{ n.format(m.output_tokens) }}<small>{{ m.n_usage }} steps with usage{% if m.n_unpriced %}, {{ m.n_unpriced }} unpriced{% endif %}</small></dd></div>
-  <div><dt>Budget</dt><dd>{{ usd.format(m.budget_usd) if m.budget_usd else "not stated" }}<small>{% if m.burn is not none %}{{ (m.burn * 100)|round(1) }}% burned{% else %}no budget in status.json{% endif %}</small></dd></div>
+  <div><dt>Budget</dt><dd>{{ usd.format(m.budget_usd) if m.budget_usd else "not stated" }}<small>{% if m.burn is not none %}{{ (m.burn * 100)|round(1) }}% burned{% if m.budget_basis and m.budget_basis != "status.json" %} · of {{ m.budget_basis }}{% endif %}{% else %}no budget in status.json or the case record{% endif %}</small></dd></div>
   {% if m.tracker_run_usd is not none %}<div><dt>Spend tracker</dt><dd>{{ usd.format(m.tracker_run_usd) }}<small>this run, snapshot {{ m.tracker_ts }}</small></dd></div>{% endif %}
 </dl>
 {% set inf = inference_summary(case, m.run_id) if inference_summary is defined else none %}

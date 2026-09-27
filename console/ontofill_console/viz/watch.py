@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse
 from .. import dod, live, runner_state
 from ..domain import Domain
 from ..gold import backend_of
+from . import health_common as hc
 from .core import SAFE_ERRORS, Artifacts, VizContext, parse_ts
 from .failures import classify
 from .operation import is_live, live_marker, step_usd
@@ -684,6 +685,7 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
         "phase": status.get("phase"),
         "checkpoint_pending": status.get("checkpoint_pending"),
         "run_reason": status.get("reason"),
+        "stop_cause": hc.stop_cause(steps, status.get("state"), case.id, rid),
         "moving": moving,
         "pending_approvals": case.pending,
         "lake_error": case.lake_error,
@@ -720,6 +722,8 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
             )
         if r["state"] in CRITICAL:
             why = r["reason"] or (r["last_event"] or {}).get("detail") or ""
+            if c["stop_cause"]:
+                why = f"{why} · {c['stop_cause']['text']}" if why else c["stop_cause"]["text"]
             add(
                 1,
                 cid,
@@ -727,7 +731,8 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
                 L["cost"] if r["state"] == "budget_stop" else L["run"] if r["state"] == "failed" else "/inbox",
             )
         elif c["run_state"] == "failed":
-            add(1, cid, "Run failed" + (f": {c['run_reason']}" if c["run_reason"] else ""), L["run"])
+            why = c["run_reason"] or (c["stop_cause"] or {}).get("text")
+            add(1, cid, "Run failed" + (f": {why}" if why else ""), L["run"])
         if c["lake_error"]:
             add(1, cid, f"Lake unreachable: {c['lake_error']}", L["case"])
         if r["state"] == "waiting_approval" or (c["run_state"] == "paused" and c["checkpoint_pending"]):

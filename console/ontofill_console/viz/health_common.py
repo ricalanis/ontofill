@@ -182,3 +182,44 @@ def text_of(value, limit: int = 160) -> str:
     else:
         text = str(value)
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+STOPPED_STATES = ("failed", "stopped", "budget_stop")
+PHASE_VIEWS = {1: "definition", 2: "definition", 3: "discovery", 4: "discovery", 5: "operation"}
+
+
+def stop_cause(steps: list[dict], state: str | None, case_id: str, rid: str | None) -> dict | None:
+    """Why a failed or stopped run stopped, read from its own trace: the run's last phase loop, when it ended without
+    passing its checks (e.g. the iteration cap with every candidate rejected). None while the run is healthy, or when
+    the trace does not say."""
+    if state not in STOPPED_STATES or not steps:
+        return None
+    threads = [t for t in live.loop_threads(steps) if t["phase"] != "outer"]
+    if not threads:
+        return None
+    t = max(threads, key=lambda x: x["last"])
+    if not t.get("stop_reason") or t["stop_reason"] == "checks_passed":
+        return None
+    objections = [o for it in t["iterations"] for s in it["steps"] for o in s["detail"]["objections"]]
+    phase = t["phase"]
+    last_step = t["step_ids"][-1] if t["step_ids"] else None
+    text = (
+        f"Phase {phase} · {live.phase_name(phase)}: its loop stopped at the {t['stop_label']} after "
+        f"{len(t['iterations'])} iteration{'s' if len(t['iterations']) != 1 else ''} without passing its checks"
+    )
+    view = PHASE_VIEWS.get(phase)
+    q = f"?run={rid}" if rid else ""
+    return {
+        "phase": phase,
+        "phase_name": live.phase_name(phase),
+        "stop_reason": t["stop_reason"],
+        "stop_label": t["stop_label"],
+        "iterations": len(t["iterations"]),
+        "usd": t["usd"],
+        "n_objections": len(objections),
+        "objection": text_of(objections[-1], 240) if objections else None,
+        "step_id": last_step,
+        "text": text,
+        "href": f"/cases/{case_id}/{view}{q}" if view else f"/cases/{case_id}/runs/{rid}#{last_step}",
+        "step_href": f"/cases/{case_id}/runs/{rid}#{last_step}" if rid and last_step else None,
+    }
