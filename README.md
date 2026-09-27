@@ -33,8 +33,13 @@ which also states where each case stands.
 - **Generic by construction.** The same code runs the Mexican procurement case and an unrelated San Francisco
   library case, each from a one-paragraph brief.
 - **Honest gap.** The reference case has **no engine gold yet**: its primary procurement portal needs a data API
-  that the sandbox egress allowlist refused (fix in review), and the source critic accepted none of the other
-  candidates. The console shows every one of those runs, reviews and failures.
+  that the sandbox egress allowlist refused, and the source critic accepted none of the other candidates. The
+  allowlist now admits that portal's own API and CDN hosts (`378a8c0`), and the run resumed on it. The engine run
+  continues after submission; its status is live on the judges console, with every run, review and failure.
+- **Building in the open.** A simpler second case (San Francisco library branches) surfaced four engine defects
+  that the hard case had hidden, each fixed the same day with tests: city-level jurisdictions in P1, invalid
+  ontology rules set aside with deterministic salvage in P2, core PRD fields bound to a property with a repair
+  receipt, and exhausted phases reported as needs-human instead of a crash.
 
 ## How it works
 
