@@ -466,6 +466,7 @@ RUNNER_KINDS = (
     "unpaused",
     "killed",
     "budget_stop",
+    "needs-human",
     "failed",
     "done",
 )

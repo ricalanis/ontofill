@@ -3,7 +3,7 @@
 <section class="panel" aria-labelledby="runner-h">
   <h2 class="section-h" id="runner-h">Runner</h2>
   <p class="signer" data-runner-state="{{ runner.state or 'unknown' }}">{{ runner.text }}{% if runner.run_id %} · <span class="mono">{{ runner.run_id }}</span>{% endif %}</p>
-  {% if runner.reason and runner.state in ("failed", "budget_stop", "waiting_approval") %}<p class="source">{{ runner.reason }}</p>{% endif %}
+  {% if runner.reason and runner.state in ("failed", "budget_stop", "waiting_approval", "needs_human") %}<p class="source">{{ runner.reason }}</p>{% endif %}
   {% if identity_mode == "readonly" %}{% include "_readonly_note.html" %}{% else %}
   <form method="post" action="/cases/{{ case.id }}/runner">
     {% include "_runner_signer.html" %}

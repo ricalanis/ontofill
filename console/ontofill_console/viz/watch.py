@@ -625,7 +625,8 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
     run_ids = a.run_ids()
     rid = (
         runner["run_id"]
-        if runner["run_id"] and runner["state"] in (RUNNING, "waiting_approval", "killed", "budget_stop", "failed")
+        if runner["run_id"]
+        and runner["state"] in (RUNNING, "waiting_approval", "needs_human", "killed", "budget_stop", "failed")
         else None
     )
     rid = rid or a.latest_run_id() or runner["run_id"]
@@ -695,7 +696,9 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
         "phase": status.get("phase"),
         "checkpoint_pending": status.get("checkpoint_pending"),
         "run_reason": status.get("reason"),
-        "stop_cause": hc.stop_cause(steps, status.get("state"), case.id, rid),
+        "stop_cause": hc.stop_cause(
+            steps, status.get("state") if status.get("state") in hc.STOPPED_STATES else runner["state"], case.id, rid
+        ),
         "moving": moving,
         "pending_approvals": case.pending,
         "lake_error": case.lake_error,
@@ -740,6 +743,15 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
                 cid,
                 f"Runner {r['state'].replace('_', ' ')}" + (f": {why}" if why else ""),
                 L["cost"] if r["state"] == "budget_stop" else L["run"] if r["state"] == "failed" else "/inbox",
+            )
+        elif r["state"] == "needs_human":  # R28: P3 found no authoritative source; a person revises, then restarts
+            why = r["reason"] or (c["stop_cause"] or {}).get("text") or "the engine found no authoritative source"
+            why = why if len(why) <= 200 else why[:199] + "…"
+            add(
+                2,
+                cid,
+                f"Needs you: {why}",
+                f"/cases/{cid}/discovery" + (f"?run={quote(c['run_id'])}" if c["run_id"] else ""),
             )
         elif c["run_state"] == "failed":
             why = c["run_reason"] or (c["stop_cause"] or {}).get("text")

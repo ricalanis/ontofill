@@ -184,7 +184,7 @@ def text_of(value, limit: int = 160) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-STOPPED_STATES = ("failed", "stopped", "budget_stop")
+STOPPED_STATES = ("failed", "stopped", "budget_stop", "needs_human")
 PHASE_VIEWS = {1: "definition", 2: "definition", 3: "discovery", 4: "discovery", 5: "operation"}
 
 

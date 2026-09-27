@@ -5,7 +5,7 @@
 {% macro usd(x, d=2) %}{% if x is not none %}{{ ("%." ~ d ~ "f")|format(x) }}{% else %}—{% endif %}{% endmacro %}
 {% macro age(s) %}{% if s is none %}—{% elif s < 90 %}{{ s }} s{% elif s < 5400 %}{{ s // 60 }} min{% elif s < 172800 %}{{ s // 3600 }} h {{ "%02d"|format((s % 3600) // 60) }} min{% else %}{{ s // 86400 }} d{% endif %}{% endmacro %}
 {% macro rate(x) %}{% if x is not none %}{{ x }}{% else %}—{% endif %}{% endmacro %}
-{% set RSTATE = {"running": "run", "waiting_approval": "need", "paused": "pause", "killed": "block", "budget_stop": "block", "failed": "block", "done": "done", "idle": "none"} %}
+{% set RSTATE = {"running": "run", "waiting_approval": "need", "needs_human": "need", "paused": "pause", "killed": "block", "budget_stop": "block", "failed": "block", "done": "done", "idle": "none"} %}
 {% block main %}
 {{ v.head("Watch", "Supervision across every case for unattended runs: whether the runner is on, whether each current run is still moving, how fast, what fails and where, spend against the runner's caps, and how close each case is to done. The ranked list says where to look first; the same numbers are at /api/watch.", sources) }}
 {{ v.live_indicator(m.live, "no case running · static") }}
@@ -160,7 +160,7 @@
     <dt class="mono">global_spend</dt><dd>global_usd, global_basis, global_cap_usd, burn_usd_per_h (sum of case burns), projection{remaining_usd, hours, at}</dd>
     <dt class="mono">cases[]</dt><dd>case_id, title, run_id, n_runs, run_state, phase, checkpoint_pending, run_reason, moving, pending_approvals, lake_error, links{case, run, operation, failures, inference, cost, output, approvals, inbox}</dd>
     <dt class="mono">cases[].stop_cause</dt><dd>null, or why a failed run stopped, from its trace: phase, phase_name, stop_reason, stop_label, iterations, usd, n_objections, objection, step_id, text, href, step_href</dd>
-    <dt class="mono">cases[].runner</dt><dd>seen, state (idle | running | waiting_approval | paused | killed | budget_stop | failed | done), run_id, checkpoint, reason, paused, pid, running_since, last_started_at, last_resumed_at, updated_at, spent_usd_case, spent_usd_global, last_trigger, resumed_from_checkpoint, engine_stop{exit_code, at, state, phase, checkpoint_pending, reason}, last_resume{ts, kind, run_id, detail}, last_event{…}</dd>
+    <dt class="mono">cases[].runner</dt><dd>seen, state (idle | running | waiting_approval | needs_human | paused | killed | budget_stop | failed | done), run_id, checkpoint, reason, paused, pid, running_since, last_started_at, last_resumed_at, updated_at, spent_usd_case, spent_usd_global, last_trigger, resumed_from_checkpoint, engine_stop{exit_code, at, state, phase, checkpoint_pending, reason}, last_resume{ts, kind, run_id, detail}, last_event{…}</dd>
     <dt class="mono">cases[].liveness</dt><dd>last_step_at, last_step_age_s, status_updated_at, status_age_s, runner_age_s, says_running, quiet_s, stale, stale_min</dd>
     <dt class="mono">cases[].throughput</dt><dd>anchor, first_step_at, run_minutes, phases[]{phase, name, n, n_15, n_60, per_min_15, per_min_60, per_min_run}, total{…}, n_cells, n_cells_timed, cells_60, cells_per_h_60, cells_per_h_run</dd>
     <dt class="mono">cases[].failures</dt><dd>n_steps, n_failures, rate_per_100, steps_15, failures_15, rate_per_100_15, rising, hard_stops, by_kind[]{kind, label, n}, sources[]{source_id, steps, failures, hard_stops, by_kind{…}, rate_per_100, only_failures, top}, only_failures[]</dd>

@@ -598,3 +598,23 @@ def test_a_pause_with_nothing_to_decide_is_stuck_not_waiting(cases_dir, tmp_path
     mine = [a for a in m["attention"] if a["case_id"] == "libraries"]
     assert any(a["text"].startswith("Stuck at the prd checkpoint") and "failed validation" in a["text"] for a in mine)
     assert not any(a["text"].startswith("Waiting for a person") for a in mine)
+
+
+def test_needs_human_is_a_need_not_a_failure(cases_dir, tmp_path):
+    """Runner 85c01ee / R28: P3 found no authoritative source, so the runner waits on a person (revise the brief or
+    the authority policy, then start a new run). /watch shows it as a need with its reason, never as a crash."""
+    root = tmp_path / "runner"
+    why = "the engine found no authoritative source for library_name, opening_hours"
+    runner_case(root, "libraries", state="needs_human", run_id=LIVE_RID, reason=why)
+    events(root, [{"ts": ago(1), "case_id": "libraries", "kind": "needs-human", "detail": why, "run_id": LIVE_RID}])
+    live_run(cases_dir, [step(i, 10 - i, src="ok-src") for i in range(3)])
+    m = watch.model(settings(cases_dir, root), now=NOW)
+    mine = [a for a in m["attention"] if a["case_id"] == "libraries"]
+    need = next(a for a in mine if a["text"].startswith("Needs you:"))
+    assert need["severity"] == 2 and why in need["text"] and "/discovery" in need["href"]
+    assert not any(a["text"].startswith(("Runner failed", "Run failed")) for a in mine)
+    assert case_of(m)["run_id"] == LIVE_RID
+    client = TestClient(create_app(settings(cases_dir, root)))
+    assert 'chip st-need">runner needs human' in client.get("/watch").text
+    hub = client.get("/cases/libraries").text
+    assert "Needs you: the engine found no authoritative source" in hub and why in hub
