@@ -9,7 +9,7 @@ import pytest
 
 from ontofill.case.checkpoints import write_json
 from ontofill.contracts import validate_document
-from ontofill.inference import RecordedDecisionClient, generated_by
+from ontofill.inference import ModelValidationExhausted, RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p2_ontology.phase import (
     OntologyDraftUnavailable,
@@ -168,7 +168,10 @@ def _candidate() -> dict:
 
 
 def _decision(
-    candidates: list[dict], *, rule_semantics: list[dict] | None = None
+    candidates: list[dict],
+    *,
+    rule_semantics: list[dict] | None = None,
+    core_field_bindings: list[dict] | None = None,
 ) -> RecordedDecisionClient:
     return RecordedDecisionClient(
         {
@@ -220,6 +223,7 @@ def _decision(
                     ]
                 }
             ],
+            "critic.phase2.core_field_bindings": core_field_bindings or [],
             "phase2.schema": candidates,
             "phase2.dod_queries": [
                 {
@@ -372,6 +376,238 @@ def test_semantically_invalid_presence_rule_is_set_aside_after_three_attempts(tm
     assert unresolved["proposal"] == candidate["rules"][0]
     assert "tautological" in unresolved["reason"]
     validate_document("ontology", ontology)
+
+
+def _sf_shaped_repair_inputs() -> tuple[dict, list[dict], list[dict], list[dict]]:
+    prd = _prd()
+    prd["requirements"][0]["description"] = (
+        "List every office's address, weekly opening hours, and free Wi-Fi yes/no."
+    )
+    prd["definition_of_done"][0]["min_ratio"] = 0.95
+
+    candidate = _candidate()
+    candidate["relations"] = []
+    extra_properties = [
+        ("address", "Address", "string", True),
+        ("has_free_wifi", "Free Wi-Fi", "boolean", True),
+        ("address_source", "Address source", "string", False),
+        ("wifi_source", "Wi-Fi source", "string", False),
+        ("hours_source", "Hours source", "string", True),
+    ]
+    candidate["properties"].extend(
+        {
+            "id": property_id,
+            "label": label,
+            "domain": "record",
+            "datatype": datatype,
+            "dod": dod,
+            "order": len(candidate["properties"]) + index,
+            "description": f"Synthetic {label.lower()} value",
+            "aligned_to": None,
+        }
+        for index, (property_id, label, datatype, dod) in enumerate(extra_properties)
+    )
+
+    cross_class = deepcopy(candidate)
+    cross_class["rules"] = [
+        {
+            "id": "address_cited",
+            "label": "Address cited",
+            "checks": "The address is linked to a source record",
+            "verify": ["Check its source"],
+            "predicate": {
+                "all": [
+                    {
+                        "op": "same_value",
+                        "left_property": "address_source",
+                        "right_property": "event_code",
+                    }
+                ]
+            },
+        }
+    ]
+
+    wrong_boolean_literal = deepcopy(candidate)
+    wrong_boolean_literal["rules"] = [
+        {
+            "id": "wifi_present",
+            "label": "Wi-Fi is available",
+            "checks": "The branch offers free Wi-Fi",
+            "verify": ["Check the availability value"],
+            "predicate": {"all": [{"op": "equals", "property": "has_free_wifi", "value": "true"}]},
+        }
+    ]
+
+    final_candidate = deepcopy(candidate)
+    final_candidate["rules"] = [
+        {
+            "id": rule_id,
+            "label": label,
+            "checks": checks,
+            "verify": [checks],
+            "predicate": {
+                "all": [
+                    {
+                        "op": "same_value",
+                        "left_property": property_id,
+                        "right_property": property_id,
+                    }
+                ]
+            },
+        }
+        for rule_id, label, checks, property_id in (
+            (
+                "address_present",
+                "Address present",
+                "The address has a non-empty value",
+                "address",
+            ),
+            (
+                "wifi_present",
+                "Wi-Fi present",
+                "The Wi-Fi availability value is stated",
+                "has_free_wifi",
+            ),
+            (
+                "address_cited",
+                "Address cited",
+                "The address has a source citation",
+                "address_source",
+            ),
+            (
+                "wifi_cited",
+                "Wi-Fi cited",
+                "The Wi-Fi value has a source citation",
+                "wifi_source",
+            ),
+        )
+    ]
+    core_review = {
+        "requirements": [
+            {
+                "requirement_id": "trace",
+                "core_fields": [{"field": "weekly opening hours", "property_id": None}],
+                "non_core_reason": None,
+            }
+        ]
+    }
+    rule_review = {
+        "assessments": [
+            {
+                "rule_id": rule["id"],
+                "matches": False,
+                "reason": "Self-comparison is tautological and does not establish presence or citation.",
+            }
+            for rule in final_candidate["rules"]
+        ]
+    }
+    return (
+        prd,
+        [cross_class, wrong_boolean_literal, final_candidate],
+        [core_review],
+        [rule_review],
+    )
+
+
+def _completeness_query() -> dict:
+    return {
+        "queries": [
+            {
+                "criterion_id": "record_count",
+                "aggregate": "entities_meeting_completeness",
+                "class": "record",
+                "properties": "dod",
+                "min_ratio": 0.95,
+                "target": 1,
+                "operator": ">=",
+            }
+        ]
+    }
+
+
+def _assert_generic_core_repair(tmp_path, ontology: dict) -> None:
+    repaired = next(item for item in ontology["properties"] if item["id"] == "weekly_opening_hours")
+    assert repaired["label"] == "weekly opening hours"
+    assert repaired["domain"] == "record"
+    assert repaired["datatype"] == "string"
+    assert repaired["dod"] is True
+    validate_document("ontology", ontology)
+
+    recommendations = json.loads(
+        (tmp_path / "02-ontology/recommendations/unresolved.json").read_text(encoding="utf-8")
+    )
+    validate_document("ontology-recommendations", recommendations)
+    assert {item["id"] for item in recommendations["unresolved"]} == {
+        "address_present",
+        "wifi_present",
+        "address_cited",
+        "wifi_cited",
+    }
+    assert all(item["kind"] == "rule" for item in recommendations["unresolved"])
+    assert all(item["id"] == item["proposal"]["id"] for item in recommendations["unresolved"])
+    assert recommendations["repairs"] == [
+        {
+            "kind": "primary_dod_property",
+            "id": "weekly_opening_hours",
+            "requirement_id": "trace",
+            "field": "weekly opening hours",
+            "reason": recommendations["repairs"][0]["reason"],
+            "property": repaired,
+        }
+    ]
+    assert "human review" in recommendations["repairs"][0]["reason"]
+
+
+def test_core_field_and_invalid_rules_are_salvaged_after_three_drafts(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Inspect generic public offices.", encoding="utf-8")
+    prd, candidates, core_reviews, rule_reviews = _sf_shaped_repair_inputs()
+    decision = _decision(
+        candidates,
+        core_field_bindings=core_reviews,
+        rule_semantics=rule_reviews,
+    )
+    decision.responses["phase2.dod_queries"].clear()
+    decision.responses["phase2.dod_queries"].append(_completeness_query())
+
+    ontology = draft_ontology(tmp_path, prd, _factors(), decision)
+
+    _assert_generic_core_repair(tmp_path, ontology)
+    assert len([item for item in decision.calls if item[0] == "phase2.schema"]) == 3
+    assert not any(rule["id"] in {"address_present", "wifi_present"} for rule in ontology["rules"])
+
+
+def test_final_malformed_draft_salvages_latest_structurally_valid_candidate(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Inspect generic public offices.", encoding="utf-8")
+    prd, candidates, core_reviews, rule_reviews = _sf_shaped_repair_inputs()
+    salvageable_candidate = candidates[-1]
+    decision = _decision(
+        [salvageable_candidate, salvageable_candidate, salvageable_candidate],
+        core_field_bindings=core_reviews * 3,
+        rule_semantics=rule_reviews * 3,
+    )
+    decision.responses["phase2.dod_queries"].clear()
+    decision.responses["phase2.dod_queries"].append(_completeness_query())
+    complete_json = decision.complete_json
+    schema_attempts = 0
+
+    def malformed_final_response(purpose, prompt, schema):
+        nonlocal schema_attempts
+        if purpose == "phase2.schema":
+            schema_attempts += 1
+            if schema_attempts == 3:
+                decision.calls.append((purpose, prompt))
+                raise ModelValidationExhausted(
+                    purpose, "synthetic malformed final schema response", 3
+                )
+        return complete_json(purpose, prompt, schema)
+
+    decision.complete_json = malformed_final_response
+
+    ontology = draft_ontology(tmp_path, prd, _factors(), decision)
+
+    _assert_generic_core_repair(tmp_path, ontology)
+    assert schema_attempts == 3
+    assert len([item for item in decision.calls if item[0] == "phase2.schema"]) == 3
 
 
 def test_core_field_feedback_names_prd_phrase_and_primary_dod_candidates() -> None:

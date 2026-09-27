@@ -12,9 +12,26 @@
     "unresolved": {
       "type": "array",
       "items": {"$ref": "#/$defs/unresolved"}
+    },
+    "repairs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/repair"}
     }
   },
   "$defs": {
+    "repair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "requirement_id", "field", "reason", "property"],
+      "properties": {
+        "kind": {"const": "primary_dod_property"},
+        "id": {"type": "string", "minLength": 1},
+        "requirement_id": {"type": "string", "minLength": 1},
+        "field": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "property": {"$ref": "ontology.schema.json#/$defs/property"}
+      }
+    },
     "unresolved": {
       "type": "object",
       "additionalProperties": false,

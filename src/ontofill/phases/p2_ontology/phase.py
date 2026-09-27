@@ -219,11 +219,22 @@ _ALLOWED_RULE_PREDICATES = (
 
 
 class OntologyProposalErrors(ValueError):
-    """Semantic defects confined to proposed executable rules or relations."""
+    """Recoverable proposal or primary-class core-property defects."""
 
-    def __init__(self, rule_errors: dict[str, str], relation_errors: dict[str, str]) -> None:
+    def __init__(
+        self,
+        rule_errors: dict[str, str],
+        relation_errors: dict[str, str],
+        *,
+        core_fields: list[dict] | None = None,
+        core_errors: list[str] | None = None,
+        core_review: dict | None = None,
+    ) -> None:
         self.rule_errors = rule_errors
         self.relation_errors = relation_errors
+        self.core_fields = core_fields or []
+        self.core_errors = core_errors or []
+        self.core_review = core_review
         messages = []
         if relation_errors:
             messages.extend(
@@ -237,6 +248,7 @@ class OntologyProposalErrors(ValueError):
                 for reason in rule_errors.values()
             )
             messages.append(_ALLOWED_RULE_PREDICATES)
+        messages.extend(core_errors or [])
         super().__init__("; ".join(messages))
 
 
@@ -276,6 +288,23 @@ def _complete_validated_json(
 ) -> dict:
     """Run a P2 model step with bounded JSON Schema and semantic repair feedback."""
     current_prompt = prompt
+    last_salvageable_response = None
+    last_salvageable_error = None
+
+    def recover(candidate: dict, error: Exception) -> dict | None:
+        if on_exhaustion is None:
+            return None
+        recovered = on_exhaustion(candidate, error)
+        if recovered is None:
+            return None
+        try:
+            Draft202012Validator(schema).validate(recovered)
+            validate(recovered)
+        except (ValidationError, ValueError) as exc:
+            reason = _bounded_validation_error(exc)
+            raise OntologyDraftUnavailable(purpose, _VALIDATION_ATTEMPTS, reason) from exc
+        return recovered
+
     for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
         structurally_valid_response = None
         try:
@@ -284,6 +313,14 @@ def _complete_validated_json(
             reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
             if on_validation_error is not None:
                 on_validation_error(exc.purpose, exc.attempts, reason)
+            if (
+                attempt == _VALIDATION_ATTEMPTS
+                and last_salvageable_response is not None
+                and last_salvageable_error is not None
+            ):
+                recovered = recover(last_salvageable_response, last_salvageable_error)
+                if recovered is not None:
+                    return recovered
             raise OntologyDraftUnavailable(exc.purpose, exc.attempts, reason) from exc
         except (ValidationError, ValueError) as exc:
             validation_error: ValidationError | ValueError | None = exc
@@ -302,19 +339,24 @@ def _complete_validated_json(
             else:
                 return response
 
+        if structurally_valid_response is not None and isinstance(
+            validation_error, OntologyProposalErrors
+        ):
+            last_salvageable_response = structurally_valid_response
+            last_salvageable_error = validation_error
         reason = _bounded_validation_error(validation_error)
         if on_validation_error is not None:
             on_validation_error(purpose, attempt, reason)
         if attempt == _VALIDATION_ATTEMPTS:
-            if on_exhaustion is not None and structurally_valid_response is not None:
-                recovered = on_exhaustion(structurally_valid_response, validation_error)
+            if isinstance(validation_error, OntologyProposalErrors):
+                salvage_candidate = structurally_valid_response
+                salvage_error = validation_error
+            else:
+                salvage_candidate = last_salvageable_response
+                salvage_error = last_salvageable_error
+            if salvage_candidate is not None and salvage_error is not None:
+                recovered = recover(salvage_candidate, salvage_error)
                 if recovered is not None:
-                    try:
-                        Draft202012Validator(schema).validate(recovered)
-                        validate(recovered)
-                    except (ValidationError, ValueError) as exc:
-                        reason = _bounded_validation_error(exc)
-                        raise OntologyDraftUnavailable(purpose, attempt, reason) from exc
                     return recovered
             raise OntologyDraftUnavailable(purpose, attempt, reason) from validation_error
         current_prompt += (
@@ -809,13 +851,21 @@ def draft_ontology(
         validate_document("ontology", ontology)
         _validate_ontology(ontology)
         _validate_primary_dod_presence(prd, ontology)
-        relation_counts = _review_ontology_semantics(prd, ontology, decision)
+        relation_counts = _review_ontology_semantics(
+            prd,
+            ontology,
+            decision,
+            core_field_review=schema_reviews.pop("core_field_review_override", None),
+        )
         schema_reviews["relation_counts"] = relation_counts
 
     unresolved: list[dict] = []
+    repairs: list[dict] = []
 
     def salvage_invalid_proposals(candidate: dict, error: Exception) -> dict | None:
         if not isinstance(error, OntologyProposalErrors):
+            return None
+        if error.core_errors and not error.core_fields:
             return None
         recovered = deepcopy(candidate)
         set_aside = []
@@ -838,9 +888,54 @@ def draft_ontology(
                         }
                     )
             recovered[field] = retained
-        if not set_aside:
+        repair_records = []
+        repaired_field_keys = set()
+        primary_class = recovered["primary_class"]
+        for missing in error.core_fields:
+            field_label = missing["field"]
+            if not isinstance(field_label, str) or not field_label.strip():
+                return None
+            field_key = _normalise_words(field_label)
+            if field_key in repaired_field_keys:
+                continue
+            repaired_field_keys.add(field_key)
+            property_id = _stable_property_id(field_label, recovered["properties"])
+            property_order = (
+                max((item["order"] for item in recovered["properties"]), default=-1) + 1
+            )
+            new_property = {
+                "id": property_id,
+                "label": field_label,
+                "domain": primary_class,
+                "datatype": "string",
+                "dod": True,
+                "order": property_order,
+                "description": (
+                    f"Core value named by PRD requirement `{missing['requirement_id']}`: "
+                    f"{missing['requirement_text']}"
+                ),
+                "aligned_to": None,
+            }
+            recovered["properties"].append(new_property)
+            repair_records.append(
+                {
+                    "kind": "primary_dod_property",
+                    "id": property_id,
+                    "requirement_id": missing["requirement_id"],
+                    "field": field_label,
+                    "reason": (
+                        "Added after bounded P2 validation because no exact matching primary-class "
+                        "dod:true value property existed; requires human review."
+                    ),
+                    "property": deepcopy(new_property),
+                }
+            )
+        if not set_aside and not repair_records:
             return None
         unresolved.extend(set_aside)
+        repairs.extend(repair_records)
+        if error.core_review is not None:
+            schema_reviews["core_field_review_override"] = error.core_review
         return recovered
 
     proposed = _complete_validated_json(
@@ -875,10 +970,14 @@ def draft_ontology(
         "ontology_path": "02-ontology/ontology.json",
         "generated_by": ontology["generated_by"],
         "unresolved": unresolved,
+        "repairs": repairs,
     }
     for item in recommendation_document["unresolved"]:
         if item["id"] != item["proposal"]["id"]:
             raise ValueError("unresolved ontology proposal ID must match its original proposal")
+    for item in recommendation_document["repairs"]:
+        if item["id"] != item["property"]["id"]:
+            raise ValueError("ontology repair ID must match its created property")
     validate_document("ontology-recommendations", recommendation_document)
     shapes = _compile_shapes(ontology)
     archived_revisions = checkpoint_revisions(
@@ -985,6 +1084,37 @@ def _normalise_words(value: str) -> str:
     return re.sub(r"[\W_]+", " ", value.casefold(), flags=re.UNICODE).strip()
 
 
+def _core_field_matches_property(field: str, prop: dict) -> bool:
+    field_words = set(_normalise_words(field).split())
+    property_words = set(_normalise_words(f"{prop['label']} {prop['id']}").split())
+    if not field_words or not property_words:
+        return False
+    exact = _normalise_words(field) in {
+        _normalise_words(prop["label"]),
+        _normalise_words(prop["id"]),
+    }
+    if exact:
+        return True
+    provenance_words = {"source", "citation", "evidence", "provenance", "reference"}
+    if (property_words & provenance_words) - field_words:
+        return False
+    return 2 * len(field_words & property_words) >= len(field_words)
+
+
+def _stable_property_id(field_label: str, properties: list[dict]) -> str:
+    """Create a stable, collision-safe property ID from a reviewed PRD field label."""
+    base = re.sub(r"[^a-z0-9]+", "_", field_label.casefold()).strip("_") or "core_field"
+    if not base[0].isalpha():
+        base = f"core_{base}"
+    existing = {item["id"] for item in properties}
+    candidate = base
+    suffix = 2
+    while candidate in existing:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def _class_named_by_criterion(criterion: dict, classes: list[dict]) -> str | None:
     """Resolve an unambiguous ontology class name stated in a PRD criterion."""
     criterion_text = _normalise_words(
@@ -1007,12 +1137,18 @@ def _class_named_by_criterion(criterion: dict, classes: list[dict]) -> str | Non
     return next(iter(matches)) if len(matches) == 1 else None
 
 
-def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionClient) -> None:
+def _review_core_field_bindings(
+    prd: dict,
+    ontology: dict,
+    decision: DecisionClient,
+    *,
+    review_override: dict | None = None,
+) -> dict | None:
     completeness_criteria = [
         item for item in prd.get("definition_of_done", []) if item.get("min_ratio") is not None
     ]
     if not completeness_criteria:
-        return
+        return None
 
     primary_class = ontology["primary_class"]
     primary_dod = [
@@ -1042,7 +1178,7 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
         f"Primary class: {primary_class}. Properties: "
         f"{json.dumps(ontology['properties'], ensure_ascii=False)}"
     )
-    response = _review_model_json(
+    response = review_override or _review_model_json(
         decision, "core_field_bindings", prompt, _CORE_FIELD_REVIEW_SCHEMA
     )
     received_ids = [item["requirement_id"] for item in response["requirements"]]
@@ -1057,6 +1193,8 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
     bindings_seen = set()
     core_fields_seen = 0
     errors = []
+    missing_fields = []
+    missing_field_errors = set()
     for assessment in response["requirements"]:
         requirement_id = assessment["requirement_id"]
         core_fields = assessment["core_fields"]
@@ -1078,19 +1216,47 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
                 continue
             bindings_seen.add(binding_key)
             prop = properties.get(property_id) if isinstance(property_id, str) else None
-            if prop is None:
-                requirement_text = requirements_by_id[requirement_id].get("description", "")
+            exact_matches = [
+                item
+                for item in primary_dod
+                if _normalise_words(field_label)
+                in {_normalise_words(item["label"]), _normalise_words(item["id"])}
+            ]
+            if len(exact_matches) == 1:
+                # A normalized exact label/ID match is sufficient to bind a repaired
+                # property even when the critic repeats its earlier null ID.
+                prop = exact_matches[0]
+            elif len(exact_matches) > 1:
                 errors.append(
+                    f"core PRD field `{field_label}` has multiple exact primary-class "
+                    "`dod: true` property matches"
+                )
+                prop = None
+            else:
+                # Permit a narrow normalized-token synonym such as "readable name" →
+                # "Record name", while rejecting weak overlap like "weekly opening
+                # hours" → "Hours source".
+                prop = (
+                    prop
+                    if prop in primary_dod and _core_field_matches_property(field_label, prop)
+                    else None
+                )
+            if prop is None or prop["domain"] != primary_class or not prop["dod"]:
+                requirement_text = requirements_by_id[requirement_id].get("description", "")
+                message = (
                     f"core PRD field `{field_label}` from requirement `{requirement_id}` has no "
                     f"matching property on primary class `{primary_class}` marked `dod: true`; "
                     f"PRD wording: {requirement_text!r}. Candidate primary-class `dod: true` "
                     f"properties: {candidate_labels or '(none)'}"
                 )
-            elif prop["domain"] != primary_class or not prop["dod"]:
-                errors.append(
-                    f"core PRD field `{field_label}` from requirement `{requirement_id}` maps to "
-                    f"property `{property_id}` on class `{prop['domain']}` with dod={prop['dod']}; "
-                    f"it must be a `dod: true` property owned by primary class `{primary_class}`"
+                errors.append(message)
+                missing_field_errors.add(message)
+                missing_fields.append(
+                    {
+                        "requirement_id": requirement_id,
+                        "field": field_label,
+                        "requirement_text": requirement_text,
+                    }
                 )
     if core_fields_seen == 0:
         errors.append(
@@ -1098,7 +1264,17 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
             f"class `{primary_class}`"
         )
     if errors:
+        unrepairable = [item for item in errors if item not in missing_field_errors]
+        if missing_fields and not unrepairable:
+            raise OntologyProposalErrors(
+                {},
+                {},
+                core_fields=missing_fields,
+                core_errors=errors,
+                core_review=response,
+            )
         raise ValueError("; ".join(errors))
+    return response
 
 
 def _validate_primary_dod_presence(prd: dict, ontology: dict) -> None:
@@ -1217,11 +1393,18 @@ def _review_rule_semantics(ontology: dict, decision: DecisionClient) -> None:
 
 
 def _review_ontology_semantics(
-    prd: dict, ontology: dict, decision: DecisionClient
+    prd: dict,
+    ontology: dict,
+    decision: DecisionClient,
+    *,
+    core_field_review: dict | None = None,
 ) -> dict[str, dict] | None:
     errors = []
+    core_error = None
     try:
-        _review_core_field_bindings(prd, ontology, decision)
+        _review_core_field_bindings(prd, ontology, decision, review_override=core_field_review)
+    except OntologyProposalErrors as exc:
+        core_error = exc
     except (ValidationError, ValueError) as exc:
         errors.append(str(exc))
 
@@ -1244,9 +1427,17 @@ def _review_ontology_semantics(
         # defect is not. Keep every critic result in the retry feedback.
         if rule_error is not None:
             errors.append(str(rule_error))
+        if core_error is not None:
+            errors.append(str(core_error))
         raise ValueError("; ".join(errors))
-    if rule_error is not None:
-        raise rule_error
+    if rule_error is not None or core_error is not None:
+        raise OntologyProposalErrors(
+            rule_error.rule_errors if rule_error is not None else {},
+            rule_error.relation_errors if rule_error is not None else {},
+            core_fields=core_error.core_fields if core_error is not None else None,
+            core_errors=core_error.core_errors if core_error is not None else None,
+            core_review=core_error.core_review if core_error is not None else None,
+        )
     return relation_counts
 
 
