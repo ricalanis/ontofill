@@ -98,6 +98,7 @@ NODE_LABELS_SCHEMA = {
 }
 
 _GOOD_LABELS = {"Good-Overlapping", "Good-Exclusive"}
+_TAXONOMY_ALGORITHM_VERSION = "r10-separate-critic-v1"
 
 
 def _digest(value: object) -> str:
@@ -126,10 +127,16 @@ def label_taxonomy_nodes(decision: DecisionClient, taxonomies: list[dict]) -> li
     )
     response = decision.complete_json("critic.phase2.taxonomy_nodes", prompt, NODE_LABELS_SCHEMA)
     Draft202012Validator(NODE_LABELS_SCHEMA).validate(response)
+    label_keys = [(item["factor_id"], item["node_id"]) for item in response["labels"]]
+    if len(label_keys) != len(set(label_keys)):
+        raise ValueError("the taxonomy critic returned duplicate node labels")
+    expected_keys = [(item["factor_id"], item["node_id"]) for item in nodes]
+    if len(expected_keys) != len(set(expected_keys)):
+        raise ValueError("proposed taxonomy nodes must have unique factor and node IDs")
     labels = {
-        (item["factor_id"], item["node_id"]): item["critic_label"] for item in response["labels"]
+        key: item["critic_label"] for key, item in zip(label_keys, response["labels"], strict=True)
     }
-    expected = {(item["factor_id"], item["node_id"]) for item in nodes}
+    expected = set(expected_keys)
     if set(labels) != expected:
         raise ValueError("the taxonomy critic must label every proposed node exactly once")
     graded = []
@@ -241,7 +248,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         ["ontology.json", "ontology.md", "ontology.input.sha256", "dod-queries.json", "shapes.ttl"],
         case_dir=case_dir,
     )
-    digest = _digest([prd, chosen, revisions])
+    digest = _digest([prd, chosen, revisions, _TAXONOMY_ALGORITHM_VERSION])
     fingerprint = path.with_suffix(".input.sha256")
     if path.exists():
         ontology = load_json(path)

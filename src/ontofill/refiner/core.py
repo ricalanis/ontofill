@@ -511,11 +511,19 @@ def classify_entities(
     response = decision.complete_json("refine.classify_entities", prompt, CLASSIFICATION_SCHEMA)
     Draft202012Validator(CLASSIFICATION_SCHEMA).validate(response)
     known = set(nodes)
+    entity_ids = [entity["id"] for entity in entities]
+    if len(entity_ids) != len(set(entity_ids)):
+        raise ValueError("classification input contains duplicate entity IDs")
     by_id = {entity["id"]: entity for entity in entities}
+    assignment_ids = [item["entity_id"] for item in response["assignments"]]
+    if any(entity_id not in by_id for entity_id in assignment_ids):
+        raise ValueError("classification assigns an unknown entity")
+    if len(assignment_ids) != len(set(assignment_ids)):
+        raise ValueError("classification assigns an entity more than once")
+    if set(assignment_ids) != set(by_id):
+        raise ValueError("classification must assign every entity exactly once")
     assignments: dict[str, list[str]] = {}
     for item in response["assignments"]:
-        if item["entity_id"] not in by_id:
-            raise ValueError("classification assigns an unknown entity")
         unknown = [node for node in item["node_ids"] if node not in known]
         if unknown:
             raise ValueError("classification assigns an unknown taxonomy node")

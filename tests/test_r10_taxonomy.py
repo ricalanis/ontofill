@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -166,6 +167,57 @@ def test_critic_labels_can_differ_from_a_self_assessed_tree(tmp_path) -> None:
     assert labels == {"internet": "Good-Exclusive", "hours": "Good-Overlapping"}
     assert taxonomy["soundness"] == 1.0
     assert taxonomy["coverage"] is None
+
+
+def test_legacy_ontology_cache_is_regenerated_and_critic_regrades_nodes(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Check library access.", encoding="utf-8")
+    prd = _prd()
+    factors = _factors()
+    draft_ontology(tmp_path, prd, factors, _client("Good-Exclusive"))
+
+    ontology_path = tmp_path / "02-ontology/ontology.json"
+    legacy = json.loads(ontology_path.read_text(encoding="utf-8"))
+    for taxonomy in legacy["taxonomies"]:
+        for child in taxonomy["children"]:
+            child["critic_label"] = "Good-Exclusive"
+        taxonomy["soundness"] = 1.0
+    ontology_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    # Before the separate critic existed, the ontology cache used these inputs only.
+    legacy_digest = hashlib.sha256(
+        json.dumps(
+            [prd, factors["factors"], []],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    (tmp_path / "02-ontology/ontology.input.sha256").write_text(
+        f"{legacy_digest}\n", encoding="utf-8"
+    )
+
+    decision = _client("Bad")
+    regenerated = draft_ontology(tmp_path, prd, factors, decision)
+    taxonomy = regenerated["taxonomies"][0]
+    labels = {child["id"]: child["critic_label"] for child in taxonomy["children"]}
+
+    assert labels == {"internet": "Bad", "hours": "Good-Overlapping"}
+    assert taxonomy["soundness"] == 0.5
+    assert "critic.phase2.taxonomy_nodes" in [purpose for purpose, _ in decision.calls]
+
+
+def test_critic_rejects_duplicate_node_labels(tmp_path) -> None:
+    (tmp_path / "brief.md").write_text("Check library access.", encoding="utf-8")
+    decision = _client("Good-Exclusive")
+    decision.responses["critic.phase2.taxonomy_nodes"][0] = {
+        "labels": [
+            {"factor_id": "access", "node_id": "internet", "critic_label": "Bad"},
+            {"factor_id": "access", "node_id": "internet", "critic_label": "Good-Exclusive"},
+        ]
+    }
+
+    with pytest.raises(ValueError, match="duplicate node labels"):
+        draft_ontology(tmp_path, _prd(), _factors(), decision)
 
 
 def _ontology() -> dict:
@@ -381,6 +433,47 @@ def test_classification_rejects_an_unknown_node(tmp_path) -> None:
         }
     )
     with pytest.raises(ValueError, match="unknown taxonomy node"):
+        classify_entities(entities, taxonomy_levels(model), decision)
+
+
+@pytest.mark.parametrize(
+    ("assignments", "message"),
+    [
+        ([{"entity_id": "library:a", "node_ids": []}], "every entity exactly once"),
+        (
+            [
+                {"entity_id": "library:a", "node_ids": []},
+                {"entity_id": "library:a", "node_ids": []},
+                {"entity_id": "library:b", "node_ids": []},
+            ],
+            "more than once",
+        ),
+        (
+            [
+                {"entity_id": "library:a", "node_ids": []},
+                {"entity_id": "library:b", "node_ids": []},
+                {"entity_id": "library:unknown", "node_ids": []},
+            ],
+            "unknown entity",
+        ),
+    ],
+)
+def test_classification_requires_exactly_one_assignment_per_entity(
+    tmp_path, assignments: list[dict], message: str
+) -> None:
+    lake = FileLake(tmp_path / "lake")
+    model = _ontology()
+    entities = refine_observations(
+        [
+            _observation(lake, "library:a", "Alpha"),
+            _observation(lake, "library:b", "Beta"),
+        ],
+        ontology=model,
+        generated_by=RECORDED,
+    ).entities
+    decision = RecordedDecisionClient({"refine.classify_entities": [{"assignments": assignments}]})
+
+    with pytest.raises(ValueError, match=message):
         classify_entities(entities, taxonomy_levels(model), decision)
 
 
