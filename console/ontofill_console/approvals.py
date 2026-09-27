@@ -544,3 +544,104 @@ def decide(
                 f"could not record the decision ({type(exc).__name__}); nothing was written", 500
             ) from exc
         return record
+
+
+REOPENABLE = ("prd", "factors", "ontology")
+
+
+def request_changes(
+    case: CaseDir,
+    case_id: str,
+    phase_dir: str,
+    approver: str,
+    identity_source: str,
+    seen_digests: dict[str, str],
+    reason: str | None,
+    run_id: str | None = None,
+    extra: dict | None = None,
+    today: date | None = None,
+) -> dict:
+    """Reopen an APPROVED prd/factors/ontology checkpoint: its APPROVED becomes a deny in the normal deny shape
+    (reason, digests of the exact artifact bytes reviewed, run_id, identity), so the engine's existing deny path
+    archives the draft and redrafts with the reason as a human revision. The superseded approval is kept beside it
+    (APPROVED.superseded.<ts>) and one decisions.jsonl line records the reopen. 409 if the checkpoint is not an
+    approved reopenable one or the artifact changed since the page was rendered."""
+    if identity_source not in IDENTITY_SOURCES:
+        raise DecisionError("unknown identity source", 400)
+    with _WRITE_LOCK:
+        item = next((a for a in approvals(case) if a.phase_dir == phase_dir), None)
+        if item is None or item.checkpoint not in REOPENABLE:
+            raise DecisionError(f"{phase_dir} is not a PRD, factors or ontology checkpoint", 409)
+        if item.approved is None or item.decision != "approve":
+            raise DecisionError(f"{phase_dir} is not approved; deny it from the review form instead", 409)
+        current = artifact_digests(case, item)
+        if (
+            not current
+            or any(v is None for v in current.values())
+            or any(seen_digests.get(rel) != digest for rel, digest in current.items())
+        ):
+            raise DecisionError(STALE_MESSAGE, 409)
+        reason = " ".join((reason or "").split())
+        if not reason:
+            raise DecisionError("Say what should change: the engine uses your reason to redraft the artifact.")
+        if len(reason) > DENY_REASON_MAX:
+            raise DecisionError(f"Keep the reason under {DENY_REASON_MAX} characters.")
+        approver = " ".join((approver or "").split())[:IDENTITY_MAX]
+        if not approver:
+            raise DecisionError("an approver identity is required", 403)
+        record = {
+            "approver": approver,
+            "date": (today or datetime.now(UTC).date()).isoformat(),
+            "checkpoint": item.checkpoint,
+            "decision": "deny",
+            "reason": reason,
+            "identity_source": identity_source,
+            **(extra or {}),
+            "artifact_sha256": dict(sorted(current.items())),
+        }
+        run_id = run_id or run_id_for(case, item, None)
+        if run_id:
+            record["run_id"] = run_id
+        target = case.path(phase_dir)
+        marker = target / "APPROVED"
+        old = marker.read_bytes()
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        superseded = target / f"APPROVED.superseded.{ts}"
+        tmp = target / f".APPROVED.{os.getpid()}.{threading.get_ident()}.tmp"
+        superseded.write_bytes(old)
+        tmp.write_text(json.dumps(record) + "\n")
+        try:
+            if marker.read_bytes() != old:  # a concurrent decision landed: never overwrite it
+                raise DecisionError(f"{phase_dir} changed while you were deciding; reload", 409)
+            os.replace(tmp, marker)
+        finally:
+            tmp.unlink(missing_ok=True)
+        line = {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "case_id": case_id,
+            "checkpoint": item.checkpoint,
+            "phase_dir": phase_dir,
+            "decision": "deny",
+            "reopened": True,
+            "superseded_approval_sha256": hashlib.sha256(old).hexdigest(),
+            "reason": reason,
+            "approver": approver,
+            "identity_source": identity_source,
+            **(extra or {}),
+            "artifact_sha256": record["artifact_sha256"],
+            **({"run_id": run_id} if run_id else {}),
+        }
+        try:
+            fd = os.open(case.root / "decisions.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                os.write(fd, (json.dumps(line, ensure_ascii=False) + "\n").encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            marker.write_bytes(old)  # both land or neither
+            superseded.unlink(missing_ok=True)
+            raise DecisionError(
+                f"could not record the decision ({type(exc).__name__}); nothing was changed", 500
+            ) from exc
+        return record

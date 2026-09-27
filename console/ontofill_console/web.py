@@ -648,6 +648,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.identity_mode == "local" or bool(who) or group_verified(request)
         )
         log = [d for d in ap.decisions_log(case.dir) if d.get("phase_dir") == item.phase_dir]
+        can_request_changes = (
+            item.approved is not None
+            and item.decision == "approve"
+            and item.checkpoint in ap.REOPENABLE
+            and settings.identity_mode != "readonly"
+            and (settings.identity_mode == "local" or bool(who) or group_verified(request))
+        )
         response = render(
             request,
             "approval.html",
@@ -667,6 +674,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             reason_max=ap.DENY_REASON_MAX,
             digests=ap.artifact_digests(case.dir, item),
             can_decide=can_decide,
+            can_request_changes=can_request_changes,
             log=log,
             set_aside=ap.set_aside(case.dir) if "ontology" in docs else None,
             dod_rows=ap.dod_compiled(case.dir, docs["ontology"]) if "ontology" in docs else [],
@@ -684,6 +692,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not item:
             raise HTTPException(404, f"no approval checkpoint in {phase_dir}")
         return review_page(request, case, item, error)
+
+    @app.post("/cases/{case_id}/approvals/request-changes")
+    async def request_changes(request: Request, case_id: str):
+        """Reopen an approved PRD/factors/ontology: the approval becomes a deny with the reason (the engine redrafts
+        on its next run). Same identity, origin and digest rules as any decision; readonly consoles 403."""
+        case = get_case(case_id)
+        check_origin(request)
+        form = await read_form(request)
+        phase_dir = form.get("phase_dir", "")
+        if settings.identity_mode == "local":
+            who, source, extra = form.get("approver", ""), "local", None
+        else:
+            who, source, extra = authorize(request, form)
+        seen = {k.removeprefix("artifact_sha256."): v for k, v in form.items() if k.startswith("artifact_sha256.")}
+        item = find_item(case, phase_dir)
+        try:
+            ap.request_changes(
+                case.dir, case.id, phase_dir, who, source, seen, form.get("reason"), run_id=None, extra=extra
+            )
+        except ap.DecisionError as exc:
+            if item is None:
+                raise HTTPException(exc.status, str(exc)) from exc
+            return review_page(
+                request, case, item, str(exc), reason=form.get("reason", "")[:5000], status_code=exc.status
+            )
+        return RedirectResponse(f"/cases/{case.id}/approvals?done={quote(phase_dir)}", status_code=303)
 
     @app.post("/cases/{case_id}/approvals")
     async def decide(request: Request, case_id: str):

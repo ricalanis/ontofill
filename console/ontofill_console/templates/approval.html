@@ -19,6 +19,19 @@
 {% endif %}
 {% if a.approved and a.decision == "deny" %}<p class="notice notice--error" role="status">Denied by {% if a.approved.unverified_name %}{{ a.approved.unverified_name }} (self-declared, {{ a.approved.approver }}){% else %}{{ a.approved.approver }}{% endif %}{% if a.approved.date %} on <span class="mono">{{ a.approved.date }}</span>{% endif %}{% if a.approved.reason %}: {{ a.approved.reason }}{% endif %}.</p>
 {% elif a.approved %}<p class="notice" role="status">Approved by {% if a.approved.unverified_name %}{{ a.approved.unverified_name }} (self-declared, {{ a.approved.approver }}){% else %}{{ a.approved.approver }}{% endif %}{% if a.approved.date %} on <span class="mono">{{ a.approved.date }}</span>{% endif %}.{% if a.approved.decisions %} Factor decisions: {% for k, v in a.approved.decisions.items() %}<span class="mono">{{ k }}</span> {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}</p>{% endif %}
+{% if can_request_changes %}
+<details class="block reopen">
+  <summary>Request changes to this approved {{ {"prd": "PRD", "factors": "factor set", "ontology": "ontology"}[a.checkpoint] }}</summary>
+  <form method="post" action="{{ base }}/approvals/request-changes">
+    <input type="hidden" name="phase_dir" value="{{ a.phase_dir }}">
+    {% include "_signer.html" %}
+    <p class="lede">The approval becomes a deny with your reason. On its next run the engine archives this version and redrafts it with your reason as a human revision; later checkpoints are asked again.</p>
+    <label for="reopen_reason">What should change</label>
+    <textarea id="reopen_reason" name="reason" required maxlength="{{ reason_max }}" rows="4">{{ reason }}</textarea>
+    <button type="submit" class="btn--deny">Request changes</button>
+  </form>
+</details>
+{% endif %}
 
 {% if history or drafts %}
 <section class="block revisions" aria-labelledby="revisions-h">
