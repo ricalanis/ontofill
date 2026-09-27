@@ -306,18 +306,45 @@ def test_preview_blocks_a_further_host_without_following_it(tmp_path: Path) -> N
     with pytest.raises(NoConfirmedSources) as stopped:
         loop.discover_sources(tmp_path, ontology, decision, gaps=("opening_hours",))
 
-    assert stopped.value.checkpoint_pending == "source"
+    assert stopped.value.checkpoint_pending is None
     assert calls[0][0] == ORIGIN
     assert calls[1] == (TARGET, [TARGET_HOST], [TARGET_HOST])
     assert len(calls) == 2
-    packet = next((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
-    candidate = load_json(packet)
-    assert candidate["capture_key"] is None
-    assert candidate.get("screenshot_key") is None
-    assert candidate["authority"] == "review"
-    assert candidate["redirect_chain"] == [ORIGIN, TARGET]
-    assert candidate.get("landing_url") is None
-    assert candidate.get("covers", []) == []
+    assert not list((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
+    assert not list((tmp_path / "03-fanout/sources").glob("*/APPROVAL_PENDING.md"))
+    assert any(
+        step["evaluated"].get("reason") == "redirect_preview_incomplete" for step in loop.trace
+    )
+
+
+def test_tls_failed_redirect_preview_never_offers_thin_source_review(tmp_path: Path) -> None:
+    ontology = _library_case(tmp_path, policy=POLICY)
+    decision = CapabilityCritic()
+    lake = FileLake(tmp_path / "lake")
+    calls: list[str] = []
+
+    def capture(url: str, **_kwargs) -> dict:
+        calls.append(url)
+        if url == ORIGIN:
+            raise _chain_block(ORIGIN, TARGET)
+        assert url == TARGET
+        raise CaptureError(
+            "certificate issuer unavailable",
+            [],
+            {"url": url, "status": 0, "proof": {"dispatch_result": {"reason": "tls_aia_failure"}}},
+        )
+
+    loop = _new_loop(lake, capture, decision, run_id="run-r33b-tls-preview")
+    with pytest.raises(NoConfirmedSources) as stopped:
+        loop.discover_sources(tmp_path, ontology, decision, gaps=("opening_hours",))
+
+    assert stopped.value.checkpoint_pending is None
+    assert calls == [ORIGIN, TARGET]
+    assert not list((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
+    assert not list((tmp_path / "03-fanout/sources").glob("*/APPROVAL_PENDING.md"))
+    assert any(
+        step["evaluated"].get("reason") == "redirect_preview_incomplete" for step in loop.trace
+    )
 
 
 def test_denial_after_preview_skips_capture_and_preserves_packet_bytes(tmp_path: Path) -> None:

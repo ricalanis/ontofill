@@ -755,7 +755,18 @@ class DiscoveryLoop:
             result = getattr(exc, "result", None)
             if isinstance(result, dict) and "proof" in result:
                 self.jobs.append(result)
-            return {}
+            dispatch = (
+                result.get("proof", {}).get("dispatch_result", {})
+                if isinstance(result, Mapping) and isinstance(result.get("proof"), Mapping)
+                else {}
+            )
+            reason = dispatch.get("reason") if isinstance(dispatch, Mapping) else None
+            safe_reason = (
+                reason
+                if isinstance(reason, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason)
+                else "capture_failed"
+            )
+            return {"_preview_failure": safe_reason}
 
         trace_start = len(self.trace)
         self.trace.extend(captured.get("trace", []))
@@ -1046,6 +1057,34 @@ class DiscoveryLoop:
                 ontology,
                 decision,
             )
+            required_preview = (
+                "capture_key",
+                "screenshot_key",
+                "landing_url",
+                "source_type",
+                "covers",
+                "access_path",
+            )
+            missing_preview = [name for name in required_preview if not preview.get(name)]
+            if missing_preview:
+                # A host name alone is not enough evidence for a human source decision.
+                # The failed sandbox job remains in the run, but no mutable approval
+                # packet is created for a target we could not inspect.
+                self._step(
+                    {"tool": "source.redirect_preview", "url": destination},
+                    {"status": "incomplete"},
+                    {
+                        "reason": "redirect_preview_incomplete",
+                        "missing_fields": missing_preview,
+                        **(
+                            {"capture_reason": preview["_preview_failure"]}
+                            if isinstance(preview.get("_preview_failure"), str)
+                            else {}
+                        ),
+                    },
+                    source_id=source_id,
+                )
+                return None
             title = str(preview.get("title") or title)
             snippet = str(preview.get("snippet") or snippet)
             suggested_tier = preview.pop("_authority_tier_suggestion", None)

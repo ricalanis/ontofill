@@ -1,4 +1,15 @@
-# R38 robots unavailable policy
+# R33b thin candidate follow-up
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r33b_redirect_preview.py`, task records.
+TASK: Require a captured, screenshot-backed, critic-supported redirect preview before creating a new source review packet.
+DONE: The focused managed check in `GOAL.md` and full engine gate pass; the red baseline rejects old thin-packet behavior.
+FORMAT: Ruff lint and format for edited Python files.
+
+1. [x] Record failing further-redirect and TLS-preview regressions.
+2. [x] Gate new source review packet creation on complete preview and record failure reason.
+3. [ ] The focused gate passed 6 tests and Ruff. Two full-gate attempts exposed a trace-null defect and then an old fixture whose trusted root wrongly became capable; both static corrections are in the tree. Stop that exact full check under the two-attempt guard. Integrate with the independent R39 slice and run its first combined gate, then commit, scan and push. Hold VM deploy until a no-engine window.
+
+# Prior goal: R38 robots unavailable policy
 
 1. [x] Add synthetic status regressions: ordinary robots 4xx allows pages under the page cap; 429, 5xx, timeout and unreachable keep the conservative stop. Baseline failed at the expected policy assertions.
 2. [x] Record normalized robots status through sandbox output and the P3 site-graph schema without changing the existing graph envelope version.

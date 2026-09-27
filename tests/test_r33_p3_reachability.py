@@ -865,6 +865,12 @@ def test_workflow_stops_at_source_review_for_an_unapproved_redirect(
     monkeypatch.setattr("ontofill.workflow._scratch_case", scratch_case)
     decision = library_decisions()
     destination = "https://registry.unknown.test/records"
+    directory = (
+        "<html><body><h1>Public library directory</h1>"
+        "<table><thead><tr><th>Opening hours</th><th>Free internet</th></tr></thead>"
+        "<tbody><tr><td>Weekdays</td><td>Available</td></tr>"
+        "<tr><td>Weekends</td><td>Available</td></tr></tbody></table></body></html>"
+    )
     generic = "<html><body><p>General information about this public website.</p></body></html>"
 
     class RedirectProvider(LeadProvider):
@@ -895,7 +901,7 @@ def test_workflow_stops_at_source_review_for_an_unapproved_redirect(
                     "trace": [],
                 },
             )
-        key = lake.put_bytes(generic.encode())
+        key = lake.put_bytes((directory if url == destination else generic).encode())
         return {
             "url": url,
             "redirect_chain": [url],

@@ -1,4 +1,17 @@
-# Current goal: R38 robots unavailable policy
+# Current goal: R33b never offer a thin redirect source review
+
+Only a one-shot sandbox preview with a capture, screenshot, landing URL, source class,
+and critic-supported DoD capability may produce a new redirect source review packet.
+On TLS, a further redirect, parser failure, or critic failure, record the reason in
+the trace and leave the target unconfirmed without a human checkpoint.
+Preserve digest-bound legacy approval packets unchanged.
+
+DONE (initially failing): `agent-progress run --task r33b-thin-fix --paths src/ontofill/phases/p3_fanout/discovery_loop.py,tests/test_r33b_redirect_preview.py --check r33b-thin-focused --strategy require-captured-capability-before-review --hypothesis 'A failed preview produces no thin source checkpoint and emits a reason' -- sh -c 'uv run pytest -q tests/test_r33b_redirect_preview.py && uv run ruff check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r33b_redirect_preview.py && uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py tests/test_r33b_redirect_preview.py && git diff --check'`.
+
+Constraints: no real case or APPROVED edits, no VM deploy while a run is active, no
+PA-owned service changes, no credentials or internal identifiers in public commits.
+
+# Prior goal: R38 robots unavailable policy
 
 Treat robots.txt HTTP 4xx except 429 as unavailable and allow bounded same-domain reads, while stopping conservatively on 429, 5xx, timeouts, and unreachable responses; persist the robots status in each site graph record.
 

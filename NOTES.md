@@ -424,3 +424,20 @@ Strategy: keep `invalid_xls` as the stable task reason; have the pod emit a fixe
 Assumptions: exception class names come from trusted parser/runtime types and are checked against a short identifier allowlist; malformed synthetic bytes include recognizable secret-looking markers so a leak is detectable; known limit codes such as `max_rows_exceeded` remain unchanged and need no additional detail. Existing `.xls` parsing is already on this branch through ancestor `e76d552`; do not cherry-pick it again.
 
 Diagnostic limit: the receipt identifies the failure stage and exception family (for example, OLE/container open versus workbook or worksheet decode) but intentionally omits `str(exc)`, which may quote bytes from a corrupt workbook. It may not distinguish two details within the same exception family, such as unsupported versus corrupt BIFF. If that distinction is needed, map known safe xlrd phrases to fixed labels and keep the original exception string out of receipts.
+# R33b thin-review follow-up
+
+The live CNBV source packet had no capture, screenshot, landing or coverage because
+the one-shot preview failed TLS certificate validation, with its issuer host blocked
+by egress. The sandbox images on the VM matched the expected content hashes; this
+was not a stale-image problem. Existing digest-reviewed packets remain immutable.
+
+The focused managed baseline failed as intended (two thin-review assertions), then
+passed 6 tests and Ruff after the complete-preview gate. The first full gate reached
+562 passes, 5 skips and found one new trace schema error: `capture_reason: null` in
+the preview-incomplete step. It was omitted when absent. The second full gate again
+reached 562 passes, 5 skips; the existing workflow test's synthetic trusted root
+used the same now-capable directory page as the redirect target, so it confirmed a
+trusted source and the preview run reported its earlier recorded PRD checkpoint.
+The fixture now gives only the redirect target the directory and the trusted root a
+generic page. This exact full check has had two failures; the next gate is the first
+combined integration with R39, not a retry of that check.
