@@ -219,6 +219,18 @@ def brief(value, limit: int = 240) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def unrepeat(text) -> str:
+    """'Listado completo Listado completo Listado completo' -> 'Listado completo': a link text a page repeats (an
+    icon label, a visible label and a screen-reader label joined together)."""
+    words = str(text or "").split()
+    for n in (4, 3, 2):
+        if len(words) % n == 0 and len(words) >= n:
+            k = len(words) // n
+            if all(words[i * k : (i + 1) * k] == words[:k] for i in range(n)):
+                return " ".join(words[:k])
+    return " ".join(words)
+
+
 def host_of(url: str) -> str:
     return urlsplit(url).hostname or url
 
@@ -257,6 +269,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     env.filters["pct"] = lambda x: f"{round((x or 0) * 100)}%"
     env.filters["money"] = lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else (x or "—")
     env.filters["brief"] = brief
+    env.filters["unrepeat"] = unrepeat
 
     # identity ---------------------------------------------------------------------------------------------------
     def identity(request: Request) -> str | None:

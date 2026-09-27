@@ -176,3 +176,36 @@ def test_same_host_redirects_are_not_repeated(cases_dir):
     (d / "candidate.json").write_text(json.dumps(c))
     html = client(cases_dir).get(PAGE, headers=GROUPS).text
     assert 'class="src-chain"' not in html and "same host only" in html
+
+
+def test_a_linked_document_says_its_capture_is_the_linking_page(cases_dir):
+    """Live (run-e2d70e05e3f8): two CSVs linked from a tax authority's open-data page asked for review. Their
+    "Captured page" was the linking page (capture_key == link_provenance.parent_capture_key); the CSVs had not been
+    fetched, so an approver judging them from the capture would be judging the parent page, or the file name."""
+    d = write_source_request(cases_dir)
+    c = json.loads((d / "candidate.json").read_text())
+    parent = "bronze/sha256/" + "c" * 64
+    c.update(
+        url="https://files.example/open-data/full_list.csv",
+        landing_url=None,
+        redirect_chain=[],
+        title="Full list Full list Full list",
+        capture_key=parent,
+        link_provenance={
+            "parent_page_url": "https://www.tax.example/open-data/published.html",
+            "parent_capture_key": parent,
+            "link_text": "Full list Full list Full list",
+            "link_index": 37,
+        },
+    )
+    (d / "candidate.json").write_text(json.dumps(c))
+    html = client(cases_dir).get(PAGE, headers=GROUPS).text
+    assert "The document itself has not been fetched yet." in html and "headers and rows are unseen" in html
+    assert "Captured linking page" in html and "https://www.tax.example/open-data/published.html" in html
+    assert "<b>Full list</b>" in html and "Full list Full list" not in html
+
+
+def test_a_fetched_document_has_no_unseen_warning(cases_dir):
+    write_source_request(cases_dir)
+    html = client(cases_dir).get(PAGE, headers=GROUPS).text
+    assert "has not been fetched yet" not in html and "Captured page" in html
