@@ -299,6 +299,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 onto = {}
             return Domain.from_ontology(onto if isinstance(onto, dict) else {})
 
+    def paused_run_for(case: Case, item, rid: str | None, status: dict) -> str | None:
+        """The run paused at this checkpoint, for the decision record: the latest run when it is the one paused here,
+        else the most recently updated run paused here (a finished proof run can be the latest; same rule as the
+        runner's active_run_id)."""
+        wanted = (item.checkpoint, item.phase_dir)
+        if rid and status.get("checkpoint_pending") in wanted:
+            return rid
+        paused = []
+        try:
+            for other in case.store.live_run_ids():
+                st = case.store.live_status(other) or {}
+                if st.get("state") == "paused" and st.get("checkpoint_pending") in wanted:
+                    paused.append((str(st.get("updated_at") or st.get("started_at") or ""), other))
+        except (LookupError, OSError, ValueError):
+            return None
+        return max(paused)[1] if paused else None
+
     def live_run_id(case: Case) -> str | None:
         try:
             return case.store.live_run_id()
@@ -676,7 +693,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rid = live_run_id(case)
         status = (case.store.live_status(rid) if rid else None) or {}
         item = find_item(case, phase_dir)
-        hint = rid if item and status.get("checkpoint_pending") in (item.checkpoint, item.phase_dir) else None
+        hint = paused_run_for(case, item, rid, status) if item else None
         try:
             ap.decide(
                 case.dir,

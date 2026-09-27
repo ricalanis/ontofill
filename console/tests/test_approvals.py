@@ -171,3 +171,19 @@ def test_concurrent_posts_record_one_decision(client, cases_dir):
     for t in threads:
         t.join()
     assert sorted(codes).count(303) == 1 and len(log_lines(cases_dir)) == 1
+
+
+def test_run_id_is_the_paused_run_when_a_finished_proof_run_is_latest(client, cases_dir):
+    """A separate proof run written after the case paused becomes `latest`; the decision still records the run that
+    is paused at this checkpoint (the runner resumes that one: its active_run_id)."""
+    runs = cases_dir / "libraries" / "lake" / "runs" / "fixture-libraries"
+    (runs / "proof-0002").mkdir()
+    (runs / "proof-0002" / "status.json").write_text(
+        json.dumps({"run_id": "proof-0002", "state": "done", "phase": 5, "checkpoint_pending": None})
+    )
+    (runs / "latest.json").write_text(json.dumps({"run_id": "proof-0002"}))
+    a = form(client, page="/cases/libraries/approvals/05-actions/req-0001", decision="deny", reason="not read-only")
+    assert post(client, a).status_code == 303
+    action = json.loads(case_path(cases_dir, "05-actions", "req-0001", "APPROVED").read_text())
+    assert action["run_id"] == "run-libraries-0001"
+    assert log_lines(cases_dir)[-1]["run_id"] == "run-libraries-0001"
