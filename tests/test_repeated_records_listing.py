@@ -43,3 +43,30 @@ def test_two_blocks_are_not_enough_and_tables_are_unchanged() -> None:
     rows, *_ = _PARSER._parse(table, "html", 1000, "https://library.example/")
     assert [row["sheet"] for row in rows] == ["html-table-1", "html-table-1"]
     assert _PARSER._parse_table_headers(table) == [["Name", "City"]]
+
+
+def test_each_record_carries_its_title_and_link_and_proves_entity_granularity() -> None:
+    """Live (SF run-9bf4751bd268), after the listing was recognised, the critic's next objection was "primary-entity
+    granularity unproven: parsed rows have no primary-entity identifier or title field". Each block carries its own
+    heading and link; the listing's header now says so, and P3 counts that as one record per entity."""
+    from ontofill.phases.p3_fanout.discovery_loop import _record_granularity
+
+    rows, *_ = _PARSER._parse(_page(4), "html", 1000, "https://library.example/")
+    records = [row["values"] for row in rows if row["sheet"] == "html-records-1"]
+    assert [r[0] for r in records] == [f"Branch Ejemplo {i}" for i in range(4)]
+    assert [r[1] for r in records] == [f"/places/p{i}" for i in range(4)]
+    headers = _PARSER._parse_table_headers(_page(4))[-1]
+    assert headers[:2] == ["record title", "record link"] and "Address" in headers
+
+    context = {"table_headers": [headers], "listing_row_count": 4}
+    granularity, quote, reason = _record_granularity(context, {"kind": "listing"}, {"zzz"}, set())
+    assert granularity == "entity_records" and quote == "record title" and "own title" in reason
+
+
+def test_blocks_that_share_one_heading_do_not_prove_entities() -> None:
+    same = "".join(
+        f'<div class="card"><h3>Opening hours</h3><span>Mon</span><span>{i} - 6</span><span>Tue</span></div>'
+        for i in range(5)
+    ).encode()
+    headers = _PARSER._parse_table_headers(same)
+    assert headers and "record title" not in headers[-1]

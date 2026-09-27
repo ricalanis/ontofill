@@ -836,6 +836,9 @@ def _primary_identity_tokens(ontology: Mapping) -> set[str]:
     return set(re.findall(r"[a-z0-9]{2,}", plain)) - class_words - _STOP
 
 
+_RECORD_TITLE = "record title"  # sandbox/parse-pod/runner.py RECORD_TITLE
+
+
 def _granularity_tokens(value: str) -> set[str]:
     plain = unicodedata.normalize("NFKD", value.casefold())
     plain = "".join(char for char in plain if not unicodedata.combining(char))
@@ -874,6 +877,14 @@ def _record_granularity(
         kind in {"dataset", "download"} and type(proposed.get("link_index")) is not int
     )
     if row_count and parsed_rows_are_this_route:
+        if (
+            _RECORD_TITLE in headers
+        ):  # the parse pod found repeated blocks that each carry a distinct heading
+            return (
+                "entity_records",
+                _RECORD_TITLE,
+                "each repeated block carries its own title and link",
+            )
         identity_header = next(
             (header for header in headers if _granularity_tokens(header) & identity_tokens), None
         )

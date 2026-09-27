@@ -639,6 +639,10 @@ def _preview(data: bytes, kind: str) -> dict[str, Any]:
 
 
 MIN_RECORDS = 3  # a repeated block counts as a listing from three records up
+RECORD_TITLE = (
+    "record title"  # header of a repeated-block listing's per-record heading (one entity per row)
+)
+RECORD_LINK = "record link"
 MIN_RECORD_FIELDS = (
     3  # each record carries at least three text fields (a nav menu item carries one)
 )
@@ -673,7 +677,9 @@ def _repeated_records(document: Any) -> tuple[list[tuple[str, ...]], list[str]]:
             if len(fields) < MIN_RECORD_FIELDS:
                 records = []
                 break
-            records.append(fields[:MAX_RECORD_FIELDS])
+            records.append(
+                (_record_title(member), _record_link(member), *fields[:MAX_RECORD_FIELDS])
+            )
         # the richest group wins: a whole card (name, address, hours) over its header block (name, address)
         score = sum(len(record) for record in records)
         if len(records) >= MIN_RECORDS and score > best_score:
@@ -682,14 +688,35 @@ def _repeated_records(document: Any) -> tuple[list[tuple[str, ...]], list[str]]:
         return [], []
     counts: dict[str, int] = {}
     for record in best:
-        for field in record:
+        for field in record[2:]:
             counts[field] = counts.get(field, 0) + 1
     labels = [
         field
         for field, n in counts.items()
         if n >= 0.6 * len(best) and len(field) <= 40 and any(ch.isalpha() for ch in field)
-    ][:MAX_TABLE_HEADERS]
+    ][: MAX_TABLE_HEADERS - 2]
+    titled = sum(bool(record[0]) for record in best)
+    if (
+        titled >= 0.8 * len(best)
+        and len({record[0] for record in best if record[0]}) >= 0.8 * titled
+    ):
+        # every block names its own subject (distinct headings), so each row is one entity
+        labels = [RECORD_TITLE, RECORD_LINK, *labels]
     return best, labels
+
+
+def _record_title(member: Any) -> str:
+    """A block's own name: its first heading, else its first link's text."""
+    for tag in member.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "a"]):
+        text = " ".join(tag.get_text(" ", strip=True).split())
+        if text:
+            return text[:MAX_FORM_TEXT_CHARS]
+    return ""
+
+
+def _record_link(member: Any) -> str:
+    tag = member.find("a", href=True)
+    return str(tag.get("href"))[:2048] if tag is not None else ""
 
 
 def _parse_html(
