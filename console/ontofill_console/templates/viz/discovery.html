@@ -42,7 +42,7 @@
   <thead><tr><th>Round</th><th>Iterations</th><th>Stopped</th><th class="num">USD</th><th class="num">Leads</th><th class="num">Candidates</th><th>Coverage (hosts / required)</th><th>Objections</th></tr></thead>
   <tbody>{% for r in m.rounds %}
     <tr><td class="mono">{{ r.n }}{% if r.at %}<span class="why">{{ r.at[:16]|replace("T", " ") }}</span>{% endif %}</td><td class="num">{{ r.iterations if r.iterations is not none else "—" }}</td>
-      <td>{{ r.stop_label or "—" }}</td><td class="num">{{ r.usd|money }}</td><td class="num">{{ r.n_leads if r.n_leads is not none else "—" }}</td>
+      <td>{{ r.stop_label or "—" }}</td><td class="num">{{ ("%.4f"|format(r.usd)) if r.usd is number else (r.usd or "—") }}</td><td class="num">{{ r.n_leads if r.n_leads is not none else "—" }}</td>
       <td class="num">{{ r.n_candidates if r.n_candidates is not none else "—" }}</td>
       <td class="wrap">{% for c in r.coverage %}<span class="chip st-{{ 'done' if c.met else 'need' }}">{{ c.property }} {{ c.hosts|length }}/{{ c.required }}</span> {% else %}<span class="why">not recorded</span>{% endfor %}</td>
       <td class="wrap">{% for o in r.objections %}<span class="why">{{ o }}</span>{% else %}<span class="why">none</span>{% endfor %}</td></tr>

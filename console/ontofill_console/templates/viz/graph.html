@@ -61,7 +61,7 @@
     {% if s.identifier %}<p class="mono note">{{ s.identifier }}</p>{% endif %}
     <p class="gp-actions"><a class="btn btn--quiet" href="{{ s.href }}">Open entity with evidence</a> <a href="{{ s.focus_href }}">Neighbourhood</a></p>
     {% if s.flags %}<ul class="gp-flags">{% for f in s.flags %}<li><span class="chip st-need">{{ f.label }}</span>{% if f.explanation %} <small class="note">{{ f.explanation }}</small>{% endif %}</li>{% endfor %}</ul><p class="note">Signals need verification; they are not conclusions.</p>{% endif %}
-    <dl class="kv gp-kv">{% for p in s.props %}<dt>{{ p.label }}{% if p.dod %} · DoD{% endif %}</dt><dd>{% if p.value is not none %}{{ p.value }}{% else %}<span class="note">missing</span>{% endif %}{% for ev in p.evidence %} <small class="note">· {% if ev.url %}<a href="{{ ev.url }}" rel="noopener noreferrer nofollow" target="_blank">{{ ev.host }}</a>{% else %}{{ ev.host }}{% endif %}{% if ev.selector %} <span class="mono">{{ ev.selector|brief(24) }}</span>{% endif %}</small>{% endfor %}{% if p.lineage_href %} <a class="gp-why" href="{{ p.lineage_href }}">why?</a>{% endif %}</dd>{% endfor %}</dl>
+    <dl class="kv gp-kv">{% for p in s.props %}<dt>{{ p.label }}{% if p.dod %} · DoD{% endif %}</dt><dd>{% if p.value is not none %}{{ p.value|value_text }}{% else %}<span class="note">missing</span>{% endif %}{% for ev in p.evidence %} <small class="note">· {% if ev.url %}<a href="{{ ev.url }}" rel="noopener noreferrer nofollow" target="_blank">{{ ev.host }}</a>{% else %}{{ ev.host }}{% endif %}{% if ev.selector %} <span class="mono">{{ ev.selector|brief(24) }}</span>{% endif %}</small>{% endfor %}{% if p.lineage_href %} <a class="gp-why" href="{{ p.lineage_href }}">why?</a>{% endif %}</dd>{% endfor %}</dl>
     <h3 class="section-h">Links · {{ s.n_links }}</h3>
     {% if s.links %}<ul class="gp-links">{% for l in s.links %}<li>{{ l.label }} {{ l.direction }} <a href="{{ l.href }}">{{ l.title }}</a> <a class="gp-why" href="{{ l.sel_href }}">evidence</a></li>{% endfor %}</ul>{% else %}<p class="note">No links from or to this entity.</p>{% endif %}
     {% elif s.kind == "edge" %}
@@ -81,7 +81,7 @@
     {% endfor %}
     {% elif s.kind == "cluster" %}
     <h2 class="section-h">Shared value · {{ s.relation_label }}</h2>
-    <p class="gp-title">{{ s.prop_label }}: {{ s.value }}</p>
+    <p class="gp-title">{{ s.prop_label }}: {{ s.value|value_text }}</p>
     <p class="gp-actions"><a class="btn btn--quiet" href="{{ s.toggle_href }}">{{ "Collapse into one hub" if s.expanded else "Expand into its links" }}</a></p>
     <h3 class="section-h">Held by {{ s.members|length }}</h3>
     <ul class="gp-links">{% for x in s.members %}<li><a href="{{ x.href }}">{{ x.title }}</a> <a class="gp-why" href="{{ x.sel_href }}">select</a></li>{% endfor %}</ul>

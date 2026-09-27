@@ -98,7 +98,11 @@ def code_only_share(counts: dict) -> float | None:
 def usage_of(step: dict) -> dict | None:
     """CONTRACT v1.0.5 `usage{model, backend, input_tokens, output_tokens, est_usd}` on model steps."""
     u = step.get("usage")
-    return u if isinstance(u, dict) and u else None
+    if not isinstance(u, dict) or not u:
+        return None
+    if str(u.get("model")) == "none" and not u.get("input_tokens") and not u.get("output_tokens"):
+        return None  # phase_loop: a stage that made no model call (gather, check, decide) reports model "none"
+    return u
 
 
 def usd_of(step: dict) -> float | None:
@@ -153,10 +157,22 @@ def shares(rows: list[dict], key: str, limit: int = 6, colours: dict | None = No
     return out
 
 
+def jsonish(value):
+    """Trace fields are JSON: show booleans as JSON does (true/false), not as Python reprs (True/False)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, dict):
+        return {k: jsonish(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [jsonish(v) for v in value]
+    return value
+
+
 def text_of(value, limit: int = 160) -> str:
     """Readable one-liner for trace fields written as strings or objects."""
     if value is None:
         return ""
+    value = jsonish(value)
     if isinstance(value, dict):
         text = ", ".join(f"{k}: {v}" for k, v in value.items() if v not in (None, "", [], {}))
     elif isinstance(value, list):

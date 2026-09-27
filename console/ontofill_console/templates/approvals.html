@@ -10,6 +10,7 @@
 {% if done %}{% set done_item = items|selectattr("phase_dir", "equalto", done)|first %}<p class="notice" role="status">{% if done_item and done_item.decision == "deny" %}Denied <span class="mono">{{ done }}</span>.{% if done_item.checkpoint != "action" %} The engine regenerates it with your reason on the next <span class="mono">ontofill run</span>.{% else %} The run resumes on the next <span class="mono">ontofill run</span>.{% endif %}{% else %}Approved <span class="mono">{{ done }}</span>. The run resumes on the next <span class="mono">ontofill run</span>.{% endif %}</p>{% endif %}
 {% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}
 {% if items %}
+<div class="table-wrap">
 <table class="ledger ledger--approvals">
   <thead><tr><th scope="col">Checkpoint</th><th scope="col">Phase directory</th><th scope="col">Reason</th><th scope="col">State</th></tr></thead>
   <tbody>
@@ -23,6 +24,7 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <p class="empty">No checkpoints in this case yet.</p>
 {% endif %}

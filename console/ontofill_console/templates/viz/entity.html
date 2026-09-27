@@ -17,7 +17,7 @@
       {% if p.confidence is not none %}<small>confidence {{ "%.2f"|format(p.confidence) }}</small>{% endif %}
       {% if p.backend %}<small>{{ p.backend }}</small>{% endif %}
     </h3>
-    <p class="val">{% if p.value is not none %}{{ p.value }}{% else %}<span class="note">no value</span>{% endif %}</p>
+    <p class="val">{% if p.value is not none %}{{ p.value|value_text }}{% else %}<span class="note">no value</span>{% endif %}</p>
     {% if p.lineage_href %}<p class="note"><a href="{{ p.lineage_href }}">Why is this value here?</a>{% if p.step_ids %} · produced by {{ p.step_ids|length }} step{{ "s" if p.step_ids|length != 1 }}: <span class="mono">{{ p.step_ids|join(", ") }}</span>{% endif %}</p>{% endif %}
     {% for ev in p.evidence %}{% include "viz/_output_evidence.html" %}{% endfor %}
   </section>

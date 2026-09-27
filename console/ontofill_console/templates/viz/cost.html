@@ -20,6 +20,8 @@
   <div><dt>Budget</dt><dd>{{ usd.format(m.budget_usd) if m.budget_usd else "not stated" }}<small>{% if m.burn is not none %}{{ (m.burn * 100)|round(1) }}% burned{% else %}no budget in status.json{% endif %}</small></dd></div>
   {% if m.tracker_run_usd is not none %}<div><dt>Spend tracker</dt><dd>{{ usd.format(m.tracker_run_usd) }}<small>this run, snapshot {{ m.tracker_ts }}</small></dd></div>{% endif %}
 </dl>
+{% set inf = inference_summary(case, m.run_id) if inference_summary is defined else none %}
+{% if inf %}<p class="hv-note"><a href="{{ inf.href }}">{{ inf.text }}</a> · every model call with its provider, purpose, tokens, cost and latency, joined to its step.</p>{% endif %}
 {% if m.budget_usd and m.burn is not none %}
 <div class="hv-mrows" aria-label="Run budget burn"><div class="hv-mrow">
   <span>Budget burn ({{ m.spent_basis }})</span>

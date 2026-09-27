@@ -40,6 +40,7 @@
   <dl class="kv op-kv" data-live-region="kv">
     <dt>Steps</dt><dd class="mono">{{ m.n_steps }}</dd>
     <dt>Updated</dt><dd class="mono">{{ m.updated_at or "—" }}</dd>
+    {% if m.reason %}<dt>Reason</dt><dd>{{ m.reason }}</dd>{% endif %}
     <dt>Estimated cost</dt><dd class="mono">{{ usd(m.usd_total) }}{% if m.usd_total is not none %} over {{ m.priced_steps }} priced step{{ "s" if m.priced_steps != 1 }}{% endif %}</dd>
     <dt>Live view</dt><dd>{% if m.live_view %}{{ m.live_view|length }} link{{ "s" if m.live_view|length != 1 }}{% else %}none published for this run{% endif %}</dd>
   </dl>

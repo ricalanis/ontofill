@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Inference · all cases{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-health.css"><link rel="stylesheet" href="/static/viz-inference.css">{% endblock %}
+{% block main %}
+{% set usd = "${:,.6f}" %}
+{% set n = "{:,}" %}
+{{ v.head("Inference across cases", "Every call in the gateway's log, joined to the run and step that made it, for every registered case. Screening calls are listed but not counted as reasoning.", m.sources) }}
+
+<dl class="inf-hero" aria-label="Headline">
+  <div class="{{ 'is-good' if m.pct_vultr == 100 else ('is-bad' if m.pct_vultr is not none else '') }}"><dt>Reasoning on Vultr</dt>
+    <dd>{{ ("%g" % m.pct_vultr) ~ "%" if m.pct_vultr is not none else "—" }}<small>{% if m.log.mounted %}{{ m.n_reasoning_vultr }} of {{ m.n_reasoning }} joined reasoning calls{% else %}gateway log not mounted{% endif %}</small></dd></div>
+  <div class="{{ 'is-good' if m.n_unattributed == 0 else ('is-bad' if m.n_unattributed else '') }}"><dt>Unattributed</dt>
+    <dd>{{ m.n_unattributed if m.n_unattributed is not none else "—" }}<small>{% if m.n_orphans is not none %}{{ m.n_orphans }} records match no step · the rest are model steps with no record{% else %}needs the gateway log{% endif %}</small></dd></div>
+  <div><dt>Calls in the log</dt><dd>{{ m.n_calls }}<small>{{ m.n_joined }} joined to a step · {{ m.n_cases }} cases</small></dd></div>
+  <div><dt>Cost</dt><dd>{{ usd.format(m.usd_total) if m.usd_total is not none else "—" }}<small>all records in the log</small></dd></div>
+  <div><dt>Tokens in / out</dt><dd>{{ n.format(m.input_tokens) }} / {{ n.format(m.output_tokens) }}<small>all records</small></dd></div>
+</dl>
+
+<ul class="strips">
+{% if not m.log.mounted %}
+  <li>{{ v.strip("pause", "Gateway log not mounted", "Set " ~ m.log.env ~ " to the gateway's call log (file or directory of *.jsonl), read-only. Gap R19.", "0 calls read") }}</li>
+{% elif m.n_unattributed %}
+  <li>{{ v.strip("block", m.n_unattributed ~ " unattributed", "Gateway records that match no step of any case, or model steps with no gateway record. Engine calls carry no step id yet: CONTRACT REQUEST, send X-BA-Step-Id and the run id on every gateway call.", "must be 0", "#orphans") }}</li>
+{% else %}
+  <li>{{ v.strip("done", "0 unattributed", "Every call in the log joins a step, and every live model step has a record.", m.log.n_records ~ " records read") }}</li>
+{% endif %}
+  <li>{{ v.strip("block" if m.n_flags else "done", m.n_flags ~ " provenance flags across runs", "Artifacts, values or steps not generated on Vultr, or model steps with no gateway record.") }}</li>
+  <li>{{ v.strip("block" if m.n_harness else "done", m.n_harness ~ " harness actions inside runs", "Steps whose actor is not the engine, its models or code.") }}</li>
+</ul>
+{% if m.empty %}{{ v.empty(m.empty, "Gateway log not mounted") }}{% endif %}
+
+<h2 class="section-h">Runs</h2>
+{% if m.rows %}
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th scope="col">Case · run</th><th scope="col" class="num">calls</th><th scope="col" class="num">on Vultr</th><th scope="col" class="num">$</th><th scope="col" class="num">unattributed</th><th scope="col" class="num">flags</th><th scope="col" class="num">harness</th><th scope="col">decided by</th></tr></thead>
+  <tbody>{% for r in m.rows %}<tr>
+    <th scope="row"><a href="{{ r.href }}">{{ r.case_id }}</a> <span class="mono muted">{{ r.run_id }}</span></th>
+    <td class="num">{{ r.n_calls }}</td>
+    <td class="num">{{ ("%g" % r.pct_vultr) ~ "%" if r.pct_vultr is not none else "—" }}</td>
+    <td class="num">{{ usd.format(r.usd) if r.usd is not none else "—" }}</td>
+    <td class="num">{% if r.unattributed %}<span class="chip st-block">{{ r.unattributed }}</span>{% else %}{{ r.unattributed if r.unattributed is not none else "—" }}{% endif %}</td>
+    <td class="num">{{ r.n_flags }}</td>
+    <td class="num">{{ r.n_harness }}</td>
+    <td class="mono">{% for k, c in r.deciders|dictsort %}{{ k }} {{ c }}{{ " · " if not loop.last }}{% endfor %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="hv-note">No case has a run yet.</p>{% endif %}
+
+{% if m.orphans %}
+<h2 class="section-h" id="orphans">Records that match no step ({{ m.n_orphans }})</h2>
+<div class="table-wrap"><table class="grid-table">
+  <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Session</th><th scope="col">Model</th><th scope="col">Provider</th><th scope="col">Purpose</th><th scope="col" class="num">$</th><th scope="col">Why</th></tr></thead>
+  <tbody>{% for c in m.orphans %}<tr><td class="mono">{{ c.ts or "—" }}</td><td class="mono">{{ c.session_id or "—" }}</td><td class="mono">{{ c.model }}</td><td>{{ c.provider }}</td><td>{{ c.purpose }}</td><td class="num">{{ usd.format(c.usd) if c.usd is not none else "—" }}</td><td><span class="chip st-block">{{ c.why }}</span></td></tr>{% endfor %}</tbody>
+</table></div>
+{% if m.n_orphans > m.orphans|length %}<p class="hv-note">Showing {{ m.orphans|length }} of {{ m.n_orphans }}.</p>{% endif %}
+{% endif %}
+
+<details class="inf-map"><summary>How purpose is derived</summary>
+  <dl class="kv">{% for r in m.purpose_map %}<dt>{{ r.purpose }}</dt><dd>{{ r.from }}</dd>{% endfor %}</dl>
+</details>
+<p class="hv-req">{{ m.contract_request }}</p>
+{% endblock %}

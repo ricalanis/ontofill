@@ -26,6 +26,7 @@ SOURCES = ("runs/<case>/<run>/trace.live.jsonl · bronze/sha256/<hex>.meta.json 
            "03-fanout/surface-map/<source>/site-graph.json")
 VERDICTS = [  # key, label, state css; most notable first
     ("quarantined", "quarantined", "quar"), ("failed", "failed", "block"), ("killed", "stopped by a limit", "block"),
+    ("stopped", "stopped (hard stop)", "block"),
     ("not_achieved", "not achieved", "block"), ("uncertain", "uncertain", "pause"), ("achieved", "achieved", "done"),
     ("captured", "captured", "none")]
 RANK = {k: i for i, (k, _, _) in enumerate(VERDICTS)}
@@ -53,7 +54,9 @@ def verdict_of(step: dict) -> str:
     if kind == "verify":
         v = (step.get("detail") or {}).get("verdict") or "uncertain"
         return v if v in RANK else "uncertain"
-    if step.get("event") in ("failure", "hard_stop") or live._failed(step):
+    if step.get("event") == "hard_stop":
+        return "stopped"
+    if step.get("event") == "failure" or live._failed(step):
         return "failed"
     return "captured"
 

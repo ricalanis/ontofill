@@ -48,7 +48,7 @@ OPERATION = {"type": "object",
 CARD = {"type": "object",
         "required": ["source_id", "url", "path", "mode", "verdict", "verdicts", "ts", "step_id", "step_href", "img",
                      "screenshot_key", "captures"],
-        "properties": {"verdict": {"enum": ["quarantined", "failed", "killed", "not_achieved", "uncertain",
+        "properties": {"verdict": {"enum": ["quarantined", "failed", "killed", "stopped", "not_achieved", "uncertain",
                                             "achieved", "captured"]},
                        "img": {"type": ["string", "null"], "pattern": "^/cases/[a-z0-9-]+/bronze/"}}}
 PAGES = {"type": "object",

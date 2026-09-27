@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Tour{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-tour.css">{% endblock %}
+{% block main %}
+{{ v.head("Tour", "Ten questions any case must answer, each with the view that answers it for the case and run below, and whether that run has the data yet. Then the track requirements, each with the view that proves it.", m.sources) }}
+
+{% if not m.case_id %}
+{{ v.empty(m.empty, "No case registered") }}
+{% else %}
+<section class="tour-pick" aria-label="Case and run">
+  <div class="tour-pick__row">
+    <span class="tour-pick__k" id="tp-case">Case</span>
+    <ul class="tour-pick__opts" aria-labelledby="tp-case">
+      {% for c in m.cases %}<li><a href="/tour?case={{ c.id|urlencode }}"{% if c.selected %} aria-current="true"{% endif %}>{{ c.id }}{% if not c.has_run %} <small>no run</small>{% endif %}</a></li>{% endfor %}
+    </ul>
+  </div>
+  <div class="tour-pick__row">
+    <span class="tour-pick__k" id="tp-run">Run</span>
+    {% if m.runs %}
+    <ul class="tour-pick__opts" aria-labelledby="tp-run">
+      {% for r in m.runs %}<li><a href="{{ r.href }}"{% if r.selected %} aria-current="true"{% endif %} title="{{ r.state }}{% if r.updated_at %} · last update {{ r.updated_at }}{% endif %}"><span class="mono">{{ r.run_id }}</span> <span class="chip {{ 'st-run' if r.live else 'st-done' }}">{{ r.kind }}</span>{% if r.latest %} <small>latest</small>{% endif %}</a></li>{% endfor %}
+    </ul>
+    {% else %}<span class="tour-pick__none">no run yet</span>{% endif %}
+  </div>
+  {% if m.question %}<p class="quote tour-q">{{ m.question }}</p>{% endif %}
+</section>
+
+<div class="tour-bar">
+  <p class="tour-count" aria-label="Readiness of the ten steps">
+    <span class="chip st-done">ready {{ m.counts.ready }}</span>
+    <span class="chip st-pause">partial {{ m.counts.partial }}</span>
+    <span class="chip st-none">empty {{ m.counts.empty }}</span>
+    <small>of {{ m.steps|length }} steps{% if m.run_id %} · run <span class="mono">{{ m.run_id }}</span>{% endif %}</small>
+  </p>
+  {% if m.start_href %}<a class="btn" href="{{ m.start_href }}">Start the tour: Q1 →</a>{% endif %}
+</div>
+{% if m.empty %}{{ v.empty(m.empty, "No run for this case yet") }}{% endif %}
+
+<h2 class="section-h">Ten questions</h2>
+<ol class="tour-steps">
+  {% for s in m.steps %}
+  <li id="{{ s.id }}">
+    <details class="tour-step st-{{ s.css }}" open>
+      <summary>
+        <span class="tour-step__n">Q{{ s.n }}</span>
+        <span class="tour-step__q">{{ s.question }}</span>
+        <span class="chip st-{{ s.css }}">{{ s.state_label }}</span>
+      </summary>
+      <div class="tour-step__body">
+        <p class="tour-step__proves">{{ s.proves }}</p>
+        <dl class="kv">
+          <dt>Try it</dt><dd>{{ s.hint }}</dd>
+          <dt>This run</dt><dd class="mono tour-why">{{ s.why or "" }}</dd>
+        </dl>
+        <p class="tour-links">
+          <a class="btn" href="{{ s.href }}">Open {{ s.view }} →</a>
+          {% for x in s.also %}<a class="btn btn--quiet" href="{{ x.href }}">{{ x.label }}</a>{% endfor %}
+        </p>
+        {% if s.gap and s.state != "ready" %}{{ v.empty(s.gap, "Still missing" if s.state == "partial" else "Nothing here yet") }}{% endif %}
+      </div>
+    </details>
+  </li>
+  {% endfor %}
+</ol>
+
+<h2 class="section-h" id="track">Track requirements → proof</h2>
+<p class="tour-count" aria-label="Readiness of the track requirements">
+  <span class="chip st-done">ready {{ m.track_counts.ready }}</span>
+  <span class="chip st-pause">partial {{ m.track_counts.partial }}</span>
+  <span class="chip st-none">empty {{ m.track_counts.empty }}</span>
+  <small>of {{ m.track|length }} requirements, from this run's data</small>
+</p>
+<ul class="tour-track">
+  {% for r in m.track %}
+  <li class="tour-req st-{{ r.css }}">
+    <span class="chip st-{{ r.css }}">{{ r.state_label }}</span>
+    <div class="tour-req__main">
+      <b>{{ r.requirement }}</b>
+      <small>{{ r.proof }}</small>
+      <small class="mono tour-why">{{ r.why }}{% if r.gap and r.gap.row %} · gap {{ r.gap.row }}: {{ r.gap.row_desc }}{% endif %}</small>
+    </div>
+    <a class="btn btn--quiet" href="{{ r.href }}">{{ r.view }} →</a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
