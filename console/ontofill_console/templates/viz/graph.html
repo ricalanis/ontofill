@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Entity graph · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-output.css"><link rel="stylesheet" href="/static/viz-graph.css"><script src="/static/viz-graph.js" defer></script>{% endblock %}
+{% macro glyph(path, color, cls="") %}<svg class="gsw {{ cls }}" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"><path class="gshape c{{ color }}" d="{{ path }}"/></svg>{% endmacro %}
+{% block main %}
+{{ v.head("Entity graph", "The run's entities as nodes, coloured and shaped by class, and the links between them labelled by relation. Entities linked through a value they all hold collapse into one cluster. Select a node for the entity and its evidence, an edge for the values the link was read through.", m.source) }}
+{% if m.brief %}<p class="quote case-q">{{ m.brief }}</p>{% endif %}
+{% if m.empty %}
+{{ v.empty(m.empty, "No entities yet") }}
+{% else %}
+{% if m.gold_run_ids|length > 1 %}<p class="runpick">gold run {% for r in m.gold_run_ids[-12:] %}<a href="?run={{ r|urlencode }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% endfor %}</p>{% endif %}
+<form class="filters gfilters" method="get" role="search" aria-label="Filter the graph">
+  {% if m.filters.run %}<input type="hidden" name="run" value="{{ m.filters.run }}">{% endif %}
+  <label>Search<input type="search" name="q" value="{{ m.filters.q }}" placeholder="title, identifier or id" size="20"></label>
+  <label>Class<select name="cls"><option value="">all ({{ m.n_entities }})</option>{% for c in m.classes %}<option value="{{ c.id }}" {% if c.id == m.filters.cls %}selected{% endif %}>{{ c.label }} ({{ c.n }})</option>{% endfor %}</select></label>
+  <label>Relation<select name="rel"><option value="">all</option>{% for r in m.relations %}<option value="{{ r.id }}" {% if r.id == m.filters.rel %}selected{% endif %}>{{ r.label }} ({{ r.n }})</option>{% endfor %}</select></label>
+  <label>Signal<select name="signal"><option value="">any</option>{% for s in m.signals %}<option value="{{ s.id }}" {% if s.id == m.filters.signal %}selected{% endif %}>{{ s.label }} ({{ s.n }})</option>{% endfor %}</select></label>
+  {% if m.filters.focus %}<input type="hidden" name="focus" value="{{ m.filters.focus }}">
+  <label>Depth<select name="depth"><option value="1" {% if m.filters.depth == 1 %}selected{% endif %}>1 step</option><option value="2" {% if m.filters.depth == 2 %}selected{% endif %}>2 steps</option></select></label>{% endif %}
+  <label>Show up to<select name="limit">{% for n in m.limits %}<option value="{{ n }}" {% if n == m.filters.limit %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+  <button type="submit" class="btn btn--quiet">Apply</button>
+  <a class="gclear" href="{{ m.clear_href }}">Clear</a>
+</form>
+{% if m.focus_note %}<p class="note" role="status">{{ m.focus_note }}</p>{% endif %}
+{% if m.filters.focus %}<p class="gfocus">Neighbourhood of <b>{{ m.focus_title }}</b> · {{ m.filters.depth }} step{{ "s" if m.filters.depth == 2 }} · <a href="{{ m.clear_focus_href }}">back to the whole graph</a></p>{% endif %}
+
+<p class="note gcount" id="gcount">Showing <b>{{ m.n_nodes }}</b> of {{ m.n_pool }} entities{% if m.n_pool != m.n_entities %} ({{ m.n_matched }} match{% if m.n_context %}, {{ m.n_context }} linked context{% endif %}, of {{ m.n_entities }} in the run){% endif %} · {{ m.n_edges }} edge{{ "s" if m.n_edges != 1 }} · {{ m.clusters|length }} shared-value cluster{{ "s" if m.clusters|length != 1 }} · run {{ m.run_id }}{% if m.n_dangling %} · {{ m.n_dangling }} link{{ "s" if m.n_dangling != 1 }} to entities not in this export{% endif %}</p>
+{% if m.capped %}<p class="gcap" role="status">Showing {{ m.n_nodes }} of {{ m.n_pool }}: the most linked first. Narrow with search, class, relation or signal, or open one entity's neighbourhood.</p>{% endif %}
+
+{% if m.nodes %}
+<div class="glegend" aria-label="Legend">
+  <p class="legend">{% for c in m.classes if c.n %}<span>{{ glyph(c.path, c.color) }}{{ c.label }} · {{ c.n }}{% if c.primary %} · primary{% elif c.related %} · related{% endif %}</span>{% endfor %}</p>
+  {% if m.relations %}<p class="legend">{% for r in m.relations if r.n %}<span><svg class="gsw gsw--line" width="28" height="10" viewBox="0 0 28 10" aria-hidden="true"><line class="gl{% if r.derived %} gl--derived{% endif %}" x1="1" y1="5" x2="27" y2="5" {% if r.dash %}stroke-dasharray="{{ r.dash }}"{% endif %}/></svg>{{ r.label }} · {{ r.n }}{% if not r.symmetric %} (directed){% endif %}{% if r.rule_text %} · <i>{{ r.rule_text }}</i>{% endif %}</span>{% endfor %}</p>{% endif %}
+  <p class="legend">{% if m.clusters %}<span>{{ glyph("M-10,-7H10V7H-10Z", 0, "gsw--hub") }}shared value (cluster)</span>{% endif %}{% if m.signals|selectattr("n")|list %}<span><svg class="gsw" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"><circle class="gflag" r="7.5"/></svg>has a signal (needs verification)</span>{% endif %}{% if m.n_context %}<span><svg class="gsw" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"><circle class="gshape c0 gctx" r="5"/></svg>linked context</span>{% endif %}</p>
+</div>
+
+<div class="gsplit">
+  <div class="gwrap" tabindex="-1">
+    <svg class="graph ggraph" id="ggraph" viewBox="0 0 {{ m.width }} {{ m.height }}" width="{{ m.width }}" height="{{ m.height }}" role="group" aria-label="Entity graph: {{ m.n_nodes }} entities, {{ m.n_edges }} edges. Tab through the nodes; Space selects, Enter opens the entity, arrow keys move to the nearest node.">
+      <defs><marker id="garrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="garrow" d="M0,0L8,4L0,8Z"/></marker></defs>
+      {% for r in m.grid_rows %}<text class="grow" x="{{ r.x }}" y="{{ r.y }}">{{ r.label }}</text>{% endfor %}
+      <g class="gedges">
+      {% for e in m.edges %}<a class="gedge gedge--{{ e.kind }}{% if e.derived %} gedge--derived{% endif %}{% if m.selected and m.selected.id == e.id %} is-sel{% endif %}" href="{{ e.sel_href }}#graph-panel" data-s="{{ e.source }}" data-t="{{ e.target }}" data-id="{{ e.id }}" tabindex="-1" aria-label="{{ e.aria }}"><title>{{ e.aria }}</title><line class="ghit" x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}"/><line class="gl{% if e.derived %} gl--derived{% endif %}" x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}"{% if e.dash %} stroke-dasharray="{{ e.dash }}"{% endif %}{% if e.kind == "link" and not e.symmetric %} marker-end="url(#garrow)"{% endif %}/>{% if e.label_on %}<text class="gelbl" x="{{ ((e.x1 + e.x2) / 2)|round(1) }}" y="{{ ((e.y1 + e.y2) / 2 - 3)|round(1) }}">{{ e.label }}</text>{% endif %}</a>
+      {% endfor %}
+      </g>
+      <g class="gnodes">
+      {% for n in m.nodes %}<a class="gnode gnode--{{ n.kind }}{% if n.context %} is-ctx{% endif %}{% if n.focus %} is-focus{% endif %}{% if m.selected and m.selected.id == n.id %} is-sel{% endif %}" href="{{ n.href }}{% if n.kind == 'cluster' %}#graph-panel{% endif %}" data-id="{{ n.id }}" data-sel="{{ n.sel_href }}" data-x="{{ n.x }}" data-y="{{ n.y }}" aria-label="{{ n.aria }}"><title>{{ n.title }}{% if n.class_label %} · {{ n.class_label }}{% endif %}</title><g transform="translate({{ n.x }},{{ n.y }})">{% if n.focus %}<circle class="gring" r="13"/>{% endif %}{% if n.flags %}<circle class="gflag" r="11.5"/>{% endif %}<path class="gshape c{{ n.color }}{% if n.kind == 'cluster' %} ghub{% endif %}" d="{{ n.path }}"/><text class="glbl{% if n.label_on %} is-on{% endif %}" x="{{ 14 if n.kind == 'cluster' else 11 }}" y="4">{{ n.short }}</text></g></a>
+      {% endfor %}
+      </g>
+    </svg>
+  </div>
+  <aside class="panel gpanel" id="graph-panel" aria-live="polite" aria-label="Selection">
+    {% set s = m.selected %}
+    {% if not s %}
+    <h2 class="section-h">Selection</h2>
+    <p class="note">Select a node to see the entity, its values with evidence and its links; select an edge to see the values the link was read through. Without a pointer: Tab to a node, Space selects, Enter opens the entity page.</p>
+    {% elif s.kind == "entity" %}
+    <h2 class="section-h">{{ s.class_label }}</h2>
+    <h3 class="gp-title">{{ s.title }}</h3>
+    {% if s.identifier %}<p class="mono note">{{ s.identifier }}</p>{% endif %}
+    <p class="gp-actions"><a class="btn btn--quiet" href="{{ s.href }}">Open entity with evidence</a> <a href="{{ s.focus_href }}">Neighbourhood</a></p>
+    {% if s.flags %}<ul class="gp-flags">{% for f in s.flags %}<li><span class="chip st-need">{{ f.label }}</span>{% if f.explanation %} <small class="note">{{ f.explanation }}</small>{% endif %}</li>{% endfor %}</ul><p class="note">Signals need verification; they are not conclusions.</p>{% endif %}
+    <dl class="kv gp-kv">{% for p in s.props %}<dt>{{ p.label }}{% if p.dod %} · DoD{% endif %}</dt><dd>{% if p.value is not none %}{{ p.value }}{% else %}<span class="note">missing</span>{% endif %}{% for ev in p.evidence %} <small class="note">· {% if ev.url %}<a href="{{ ev.url }}" rel="noopener noreferrer nofollow" target="_blank">{{ ev.host }}</a>{% else %}{{ ev.host }}{% endif %}{% if ev.selector %} <span class="mono">{{ ev.selector|brief(24) }}</span>{% endif %}</small>{% endfor %}{% if p.lineage_href %} <a class="gp-why" href="{{ p.lineage_href }}">why?</a>{% endif %}</dd>{% endfor %}</dl>
+    <h3 class="section-h">Links · {{ s.n_links }}</h3>
+    {% if s.links %}<ul class="gp-links">{% for l in s.links %}<li>{{ l.label }} {{ l.direction }} <a href="{{ l.href }}">{{ l.title }}</a> <a class="gp-why" href="{{ l.sel_href }}">evidence</a></li>{% endfor %}</ul>{% else %}<p class="note">No links from or to this entity.</p>{% endif %}
+    {% elif s.kind == "edge" %}
+    <h2 class="section-h">Link · {{ s.label }}</h2>
+    <p class="gp-title"><a href="{{ s.ends[0].href }}">{{ s.ends[0].title }}</a> {{ "—" if s.symmetric else "→" }} <a href="{{ s.ends[1].href }}">{{ s.ends[1].title }}</a></p>
+    <p class="note">{% if s.symmetric %}Symmetric relation, drawn once{% if s.n_links > 1 %} for {{ s.n_links }} links{% endif %}.{% else %}Directed.{% endif %}{% if s.rule_text %} {{ s.rule_text|capitalize }}.{% endif %}</p>
+    <h3 class="section-h">Read through · {{ s.vias|length }} value{{ "s" if s.vias|length != 1 }}</h3>
+    {% if s.empty_via %}{{ v.empty(s.empty_via, "No via value on this link") }}{% endif %}
+    {% for val in s.vias %}
+    <section class="gp-via">
+      {% if val.found %}
+      <p><b>{{ val.prop_label }}</b> of <a href="{{ val.entity_href }}">{{ val.entity_title }}</a>: {{ val.value if val.value is not none else "—" }} <span class="chip {% if val.state == 'gold' %}st-done{% elif val.state == 'conflict' %}st-need{% else %}st-none{% endif %}">{{ val.status or "missing" }}</span></p>
+      <p class="note"><a href="{{ val.lineage_href }}">Why is this value here?</a> <span class="mono">{{ val.value_id }}</span></p>
+      {% for ev in val.evidence %}{% include "viz/_output_evidence.html" %}{% else %}<p class="note">No evidence recorded for this value.</p>{% endfor %}
+      {% else %}<p class="note">Value <span class="mono">{{ val.value_id }}</span> is not in this run's entities.</p>{% endif %}
+    </section>
+    {% endfor %}
+    {% elif s.kind == "cluster" %}
+    <h2 class="section-h">Shared value · {{ s.relation_label }}</h2>
+    <p class="gp-title">{{ s.prop_label }}: {{ s.value }}</p>
+    <p class="gp-actions"><a class="btn btn--quiet" href="{{ s.toggle_href }}">{{ "Collapse into one hub" if s.expanded else "Expand into its links" }}</a></p>
+    <h3 class="section-h">Held by {{ s.members|length }}</h3>
+    <ul class="gp-links">{% for x in s.members %}<li><a href="{{ x.href }}">{{ x.title }}</a> <a class="gp-why" href="{{ x.sel_href }}">select</a></li>{% endfor %}</ul>
+    <h3 class="section-h">Evidence · {{ s.vias|length }} of {{ s.n_vias }} values</h3>
+    {% for val in s.vias %}{% if val.found %}<p class="note"><a href="{{ val.entity_href }}">{{ val.entity_title }}</a> · <a href="{{ val.lineage_href }}">why?</a>{% for ev in val.evidence[:1] %} · {% if ev.url %}<a href="{{ ev.url }}" rel="noopener noreferrer nofollow" target="_blank">{{ ev.host }}</a>{% else %}{{ ev.host }}{% endif %}{% if ev.screenshot_href %} · <a href="{{ ev.screenshot_href }}">capture</a>{% endif %}{% endfor %}</p>{% endif %}{% endfor %}
+    {% else %}
+    <h2 class="section-h">Selection</h2>
+    <p class="note">Nothing called <span class="mono">{{ s.id }}</span> in this run.</p>
+    {% endif %}
+  </aside>
+</div>
+{% else %}
+<p class="note">No entity matches these filters. <a href="{{ m.clear_href }}">Clear the filters</a>.</p>
+{% endif %}
+
+{% if m.empty_links %}{{ v.empty(m.empty_links, "No links in this run yet") }}{% endif %}
+
+{% if m.groups %}
+<section class="glist" aria-labelledby="glist-h">
+  <h2 class="section-h" id="glist-h">As a list · by class</h2>
+  {% for grp in m.groups %}
+  <details class="glist-grp"{% if grp.rows|length <= 40 %} open{% endif %}>
+    <summary>{{ glyph(grp.path, grp.color) }}{{ grp.label }} · {{ grp.rows|length }}</summary>
+    <ul>
+    {% for r in grp.rows %}
+      <li{% if r.context %} class="is-ctx"{% endif %}><a href="{{ r.href }}">{{ r.title }}</a>{% if r.identifier %} <small class="mono note">{{ r.identifier }}</small>{% endif %} <a class="gp-why" href="{{ r.sel_href }}#graph-panel">select</a>
+        {% if r.links %}<ul class="glist-links">{% for l in r.links %}<li>{{ l.label }} {{ l.direction }} <a href="{{ l.href }}">{{ l.title }}</a> <a class="gp-why" href="{{ l.sel_href }}#graph-panel">evidence</a></li>{% endfor %}{% if r.n_links > r.links|length %}<li class="note">+ {{ r.n_links - r.links|length }} more on the entity page</li>{% endif %}</ul>{% endif %}
+        {% if r.clusters %}<p class="note">in cluster{{ "s" if r.clusters|length != 1 }}: {% for c in r.clusters %}<a href="{{ c.href }}#graph-panel">{{ c.text }}</a>{% if not loop.last %}; {% endif %}{% endfor %}</p>{% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

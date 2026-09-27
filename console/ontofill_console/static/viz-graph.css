@@ -1,0 +1,93 @@
+/* Entity graph view. Everything else comes from tokens.css / tira.css / viz-output.css.
+ * Class colours: three categorical slots validated all-pairs in both themes (CVD and normal-vision separation,
+ * >= 3:1 against --panel); classes past the third are neutral and keep their own shape, so shape always names the
+ * class and colour is never the only cue. Status colours stay reserved: --st-need marks a signal ring only. */
+:root {
+  --gcat-1: #3987e5;   /* blue */
+  --gcat-2: #d95926;   /* orange */
+  --gcat-3: #199e70;   /* aqua */
+  --gcat-0: var(--fg-3);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --gcat-1: #2a78d6; --gcat-2: #d4561f; --gcat-3: #12875d; }
+}
+:root[data-theme="light"] { --gcat-1: #2a78d6; --gcat-2: #d4561f; --gcat-3: #12875d; }
+:root[data-theme="dark"] { --gcat-1: #3987e5; --gcat-2: #d95926; --gcat-3: #199e70; }
+
+.gfilters .gclear { align-self: center; font-size: var(--text-sm); }
+.gfocus { font-size: var(--text-sm); color: var(--fg-2); margin: 0 0 var(--space-2xs); }
+.gcount b { color: var(--fg); }
+.gcap { border-left: var(--edge) solid var(--st-need); background: var(--panel); padding: var(--space-2xs) var(--space-sm);
+  font-size: var(--text-sm); color: var(--fg); margin: var(--space-2xs) 0 var(--space-sm); }
+.gcap::before { content: "◆ "; color: var(--st-need); }
+
+.glegend { margin: var(--space-xs) 0; display: grid; gap: var(--space-2xs); }
+.glegend .legend { margin: 0; }
+.glegend .legend > span { display: inline-block; }
+.glegend .gsw { margin-right: 4px; }
+.glegend i { font-style: normal; color: var(--fg-3); }
+.gsw { flex: none; vertical-align: middle; overflow: visible; }
+.gsw--line .gl { stroke-width: 2; }
+
+.gsplit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: var(--space-md); align-items: start; }
+@media (max-width: 900px) { .gsplit { grid-template-columns: minmax(0, 1fr); } }
+.gwrap { overflow: auto; max-width: 100%; max-height: 78vh; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-md); overscroll-behavior: contain; }
+@media (max-width: 600px) { .gwrap { max-height: 62vh; } }
+svg.ggraph { display: block; width: auto; max-width: none; max-height: none; height: auto; }
+
+/* nodes: shape per class, colour per class slot, a --panel ring keeps overlapping marks apart */
+.ggraph .gshape, .gsw .gshape { stroke: var(--panel); stroke-width: 2; paint-order: stroke; }
+.gshape.c1 { fill: var(--gcat-1); } .gshape.c2 { fill: var(--gcat-2); } .gshape.c3 { fill: var(--gcat-3); }
+.gshape.c0 { fill: var(--gcat-0); }
+.gshape.ghub, .gsw--hub .gshape { fill: var(--panel); stroke: var(--fg-2); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.gflag { fill: none; stroke: var(--st-need); stroke-width: 2; stroke-dasharray: 3 2.5; }
+.gring { fill: none; stroke: var(--focus); stroke-width: 2.5; }
+.gctx { opacity: 0.5; }
+.gnode { cursor: pointer; }
+.gnode.is-ctx { opacity: 0.5; }
+.gnode:focus { outline: none; }
+.gnode:focus-visible .gshape, .gnode.is-sel .gshape { stroke: var(--focus); stroke-width: 3; }
+.ggraph text { font: 11px var(--font-ui); fill: var(--fg); paint-order: stroke; stroke: var(--panel); stroke-width: 3px;
+  stroke-linejoin: round; }
+.ggraph .gelbl, .ggraph .grow { pointer-events: none; }
+.ggraph .glbl { display: none; }
+.ggraph .glbl.is-on, .gnode:hover .glbl, .gnode:focus .glbl, .gnode.is-sel .glbl, .gnode.is-nb .glbl { display: inline; }
+.ggraph .gnode--cluster .glbl { font-family: var(--font-mono); fill: var(--fg-2); }
+.ggraph .grow { font: 600 var(--text-xs) var(--font-mono); fill: var(--fg-2); letter-spacing: 0.04em; }
+
+/* edges: dash pattern per relation (legend), arrowhead when directed, a wide invisible hit line for the pointer */
+.ggraph .gl, .gsw .gl { stroke: var(--line-strong); stroke-width: 1.4; fill: none; }
+.ggraph .gl--derived, .gsw .gl--derived { stroke: var(--fg-3); }
+.ggraph .gedge--spoke .gl { stroke-width: 1; }
+.ggraph .ghit { stroke: transparent; stroke-width: 10; }
+.ggraph .garrow { fill: var(--line-strong); }
+.ggraph .gelbl { font: 10px var(--font-mono); fill: var(--fg-2); text-anchor: middle; }
+.gedge { cursor: pointer; }
+.gedge:hover .gl, .gedge.is-sel .gl, .gedge.is-hl .gl { stroke: var(--fg); stroke-width: 2.2; }
+
+/* hover/focus highlight of a node's neighbourhood (progressive enhancement) */
+.ggraph.hl .gnode:not(.is-nb):not(.is-hot) { opacity: 0.25; }
+.ggraph.hl .gedge:not(.is-hl) { opacity: 0.15; }
+@media (prefers-reduced-motion: no-preference) { .gnode, .gedge { transition: opacity var(--dur-fast) var(--ease-out); } }
+
+.gpanel { position: sticky; top: var(--space-sm); max-height: 86vh; overflow: auto; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .gpanel { position: static; max-height: none; } }
+.gp-title { font-size: var(--text-lg); margin: 0 0 var(--space-2xs); }
+.gp-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); align-items: center; font-size: var(--text-sm); }
+.gp-kv { margin-top: var(--space-xs); }
+.gp-links, .gp-flags { list-style: none; padding: 0; margin: 0; display: grid; gap: 2px; font-size: var(--text-sm); }
+.gp-why { font: var(--text-xs) var(--font-mono); }
+.gp-via { border-top: 1px solid var(--line); padding-top: var(--space-xs); margin-top: var(--space-xs); font-size: var(--text-sm); }
+.gp-via .ev { grid-template-columns: minmax(0, 1fr); }
+.gp-via .ev img { max-width: 100%; }
+
+.glist { margin-top: var(--space-lg); }
+.glist-grp { border-top: 1px solid var(--line); padding: var(--space-2xs) 0; }
+.glist-grp summary { cursor: pointer; display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.glist ul { list-style: none; padding-left: 0; margin: var(--space-2xs) 0; display: grid; gap: var(--space-2xs);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+.glist li { overflow-wrap: anywhere; }
+.glist li.is-ctx > a:first-child { color: var(--fg-2); }
+.glist .glist-links { display: block; padding-left: var(--space-sm); margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
+.glist .glist-links li { margin: 0; }
