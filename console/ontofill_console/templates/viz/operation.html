@@ -11,7 +11,7 @@
 {% endmacro %}
 {% block main %}
 {{ v.head("Operation", "Every run of this case, then for one run: where it is in the five phases, how long and how much each phase took, how its loops argued and stopped, and who decided each step.", m.sources) }}
-{% if m.run_id %}{{ v.live_indicator(m.live, "replayed feed · static" if m.selected and m.selected.replay else "recorded") }}{% endif %}
+{% if m.run_id %}{{ v.live_indicator(m.live, "replayed feed · static" if m.selected and m.selected.replay else "not in motion") }}{% endif %}
 {% if m.question %}<p class="quote op-question">{{ m.question }}</p>{% endif %}
 
 <div data-live-region="runs">

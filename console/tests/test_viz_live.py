@@ -101,7 +101,7 @@ def test_running_run_marks_operation_and_inbox_live(cases_dir, make_client):
 def test_done_run_is_static(cases_dir, make_client):
     set_status(cases_dir, state="done", updated_at=iso(datetime.now(UTC)))
     client = make_client()
-    for url, off in (("/cases/libraries/operation", "recorded"), ("/inbox", "no run in motion")):
+    for url, off in (("/cases/libraries/operation", "not in motion"), ("/inbox", "no run in motion")):
         page = client.get(url).text
         assert LIVE_ATTR.search(page).group(1) == "0", url
         assert "data-live-poll" not in page and "data-live-updated" not in page
