@@ -54,6 +54,10 @@ which also states where each case stands.
   The case is now approved through the ontology and discovering sources. One defect is in progress: criteria
   written as "≤ 0" compile to counts that can never be met.
 
+  *Updated 11:54: nine found (R57, R58, R58b, R59, R60, R63, R64, R64b, R66). Six are verified fixed live. R64 and
+  R64b are deployed (`7eb528c`) and await verification. R66 is in progress: at P3 the source critic rejected the
+  library's own branch pages and asked for a second publisher, contrary to the PRD.*
+
 ## Post-submission updates
 
 The project was submitted on Sun 27 Sep before the 12:00 PT deadline, and the 1-minute video is fixed as of then.
@@ -63,6 +67,8 @@ kept; where a fact changed, the text carries an "Updated HH:MM" note. The runnin
 
 | When (PT) | Commit | What changed |
 |-----------|--------|--------------|
+| Sun 11:54 | [`7eb528c`](https://github.com/ricalanis/ontofill/commit/7eb528c) deployed | The engine on the control VM now carries the R64/R64b definition-of-done fixes: zero-only criteria are set aside, each criterion compiles to its own query, and completeness counts all entities. It also adds a parser preview for large datasets and clean source-link labels. Verification is pending until the SF case runs on it. |
+| Sun 11:52 | [run `run-09ed86537750`](https://ontofill-console-judges.eu1.netbird.services/cases/sf-library-branches/runs/run-09ed86537750) | The SF case stopped at P3 discovery. The source critic rejected sfpl.org's branch pages ("no tabular listing") and asked for a second independent publisher, which the PRD does not require. Logged as R66; fix in progress. |
 | Sun 11:49 | [`0b81af0`](https://github.com/ricalanis/ontofill/commit/0b81af0) | The status bullets above now match the submitted claims. They still read "six defects, five fixed" and "the run continues". |
 | Sun 11:44–11:48 | [`e226669`](https://github.com/ricalanis/ontofill/commit/e226669), [`52235c5`](https://github.com/ricalanis/ontofill/commit/52235c5) | R64/R64b definition-of-done fixes: "≤ 0" criteria and explicit completeness shares no longer compile to counts that can never be met. Awaiting deploy at the SF case's next checkpoint. |
 
