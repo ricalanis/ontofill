@@ -1,6 +1,10 @@
 # Goal
 Deliver a generic Ontofill engine for any open brief, with evidence-backed export, live Vultr decisions, and real zero-inbound Vultr/NetBird infrastructure.
 
+Current milestone: close each engine row in the coordination gap tracker, have the orchestrator verify it, then run the real case. P4 negotiation and P1 research are cut by the user.
+
+DONE R1+R5: a console-shaped approval marker binds raw artifact bytes for PRD, factors, ontology and actions; a stale digest pauses the live run with the exact reason and leaves case files unchanged. The user-authorized managed gate passed (246 tests, 3 skips, Ruff clean), public main reached `89c5fff`, and the control VM fast-forwarded plus `uv sync --frozen`.
+
 DONE G1/G2: `uv run pytest -q tests/genericity tests/test_no_case_vocabulary.py` runs a second unrelated brief from brief-only input through P1→P5 with a non-case primary class, generic entities/ontology/metrics, and no case vocabulary under engine source. `uv run pytest -q` and Ruff checks pass. The v0.7 export change is announced in coord status before schema edits.
 
 DONE local: `uv run pytest -q && uv run ruff check src tests && uv run ruff format --check src tests` plus a `mock-` real-brief run (expected exit 3) followed by `ontofill export --run-id mock-...` (exit 0); no latest pointer moves.

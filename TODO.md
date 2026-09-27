@@ -12,11 +12,12 @@ FORMAT: Ruff check and format across edited files.
 CHECK: user-authorized `agent-progress` R1+R5 full gate after the run-status regression → 246 passed, 3 skipped; Ruff check/format clean.
 
 ## Gap closure order
-- [ ] R1+R5: push the verified checkpoint fix, pull control VM and run `uv sync --frozen`.
+- [x] R1+R5: pushed `89c5fff`, control VM fast-forwarded and `uv sync --frozen` passed; awaiting orchestrator verification.
 - [ ] R7: merge orch/p3-discovery with brief 12 fixes; default providers exclude Bing/DDG.
 - [ ] In parallel after R1: R2 P5 real path, R3 controller S1 bridge, R6 signals/relationships, R15 spiders/site graphs.
 - [ ] After R2: R4 in-run repair macros, R10 taxonomy honesty, R11 bronze re-refine.
-- [ ] R8 repair-side containment command; R9 inference base URL/env verification.
+- [ ] R8 repair-side containment command; R9 gateway routing was verified by the orchestrator.
+- [ ] R9b: gateway-token alias is locally committed; finish screened page-content spans in P3/P5/repair prompts.
 P4 negotiation and P1 research are cut by the user. Mark each shipped row READY FOR VERIFY <sha> in the gap tracker.
 
 ## After 10d and P3: brief 13 spiders and site graphs
