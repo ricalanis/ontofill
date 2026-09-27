@@ -46,8 +46,12 @@ def compute(entities: list[dict], domain: Domain) -> dict:
     totals: dict[str, int] = {}
     for e in entities:
         totals[e.get("class") or "?"] = totals.get(e.get("class") or "?", 0) + 1
-    per_prop = {p.id: (sum(is_filled((e.get("properties") or {}).get(p.id)) for e in primary) / len(primary))
-                if primary else 0.0 for p in domain.dod_props()}
+    per_prop = {
+        p.id: (sum(is_filled((e.get("properties") or {}).get(p.id)) for e in primary) / len(primary))
+        if primary
+        else 0.0
+        for p in domain.dod_props()
+    }
     classes: set[str] = set()
     without_evidence = 0
     for e in entities:
@@ -60,8 +64,9 @@ def compute(entities: list[dict], domain: Domain) -> dict:
     return {
         "primary_class": domain.primary_class,
         "entities_total": totals,
-        "entities_meeting_dod": {domain.primary_class: sum(dod_ratio(e, domain) >= domain.dod_threshold - 1e-9
-                                                            for e in primary)},
+        "entities_meeting_dod": {
+            domain.primary_class: sum(dod_ratio(e, domain) >= domain.dod_threshold - 1e-9 for e in primary)
+        },
         "per_property_completeness": {domain.primary_class: per_prop},
         "distinct_source_classes": len(classes),
         "values_without_evidence": without_evidence,
@@ -71,20 +76,24 @@ def compute(entities: list[dict], domain: Domain) -> dict:
 def _engine_view(engine: dict, domain: Domain) -> dict:
     """The engine's metrics in §11 terms."""
     cls = domain.primary_class
-    return {"entities_total": (engine.get("entities_total") or {}).get(cls),
-            "entities_meeting_dod": (engine.get("entities_meeting_dod") or {}).get(cls),
-            "per_property_completeness": (engine.get("per_property_completeness") or {}).get(cls) or {},
-            "distinct_source_classes": engine.get("distinct_source_classes"),
-            "values_without_evidence": engine.get("values_without_evidence")}
+    return {
+        "entities_total": (engine.get("entities_total") or {}).get(cls),
+        "entities_meeting_dod": (engine.get("entities_meeting_dod") or {}).get(cls),
+        "per_property_completeness": (engine.get("per_property_completeness") or {}).get(cls) or {},
+        "distinct_source_classes": engine.get("distinct_source_classes"),
+        "values_without_evidence": engine.get("values_without_evidence"),
+    }
 
 
 def cross_check(recomputed: dict, engine: dict, domain: Domain, tol: float = 1e-6) -> list[str]:
     """Human-readable mismatches between our recomputation and the engine's metrics.json."""
     cls = domain.primary_class
-    ours = {"entities_total": recomputed["entities_total"].get(cls, 0),
-            "entities_meeting_dod": recomputed["entities_meeting_dod"][cls],
-            "distinct_source_classes": recomputed["distinct_source_classes"],
-            "values_without_evidence": recomputed["values_without_evidence"]}
+    ours = {
+        "entities_total": recomputed["entities_total"].get(cls, 0),
+        "entities_meeting_dod": recomputed["entities_meeting_dod"][cls],
+        "distinct_source_classes": recomputed["distinct_source_classes"],
+        "values_without_evidence": recomputed["values_without_evidence"],
+    }
     theirs = _engine_view(engine, domain)
     problems = []
     for key, value in ours.items():
@@ -120,8 +129,13 @@ def _resolve(query: str, recomputed: dict, domain: Domain) -> float | None:
 
 # Declarative DoD queries (ontofill schemas/dod-queries.schema.json) ------------------------------------------------
 
-OPS = {">=": lambda a, b: a >= b, ">": lambda a, b: a > b, "=": lambda a, b: a == b,
-       "<=": lambda a, b: a <= b, "<": lambda a, b: a < b}
+OPS = {
+    ">=": lambda a, b: a >= b,
+    ">": lambda a, b: a > b,
+    "=": lambda a, b: a == b,
+    "<=": lambda a, b: a <= b,
+    "<": lambda a, b: a < b,
+}
 
 
 def _condition(entity: dict, cond: dict) -> bool:
@@ -153,10 +167,15 @@ def evaluate_query(query: dict, entities: list[dict], domain: Domain) -> float:
     if agg == "count_entities":
         return len(pool)
     if agg == "count_entities_with_properties":
-        return sum(all(is_filled((e.get("properties") or {}).get(p)) for p in query.get("properties") or [])
-                   for e in pool)
-    values = [v for e in pool for v in (e.get("properties") or {}).values()
-              if isinstance(v, dict) and v.get("status") == "gold"]
+        return sum(
+            all(is_filled((e.get("properties") or {}).get(p)) for p in query.get("properties") or []) for e in pool
+        )
+    values = [
+        v
+        for e in pool
+        for v in (e.get("properties") or {}).values()
+        if isinstance(v, dict) and v.get("status") == "gold"
+    ]
     if agg == "count_distinct_source_classes":
         return len({ev["source_type"] for v in values for ev in v.get("evidence") or [] if ev.get("source_type")})
     if agg == "count_values_without_evidence":
@@ -200,8 +219,14 @@ def _met(key: str, actual: float | None, target: float | None) -> bool | None:
     return actual <= target if any(k in key for k in LOWER_IS_BETTER) else actual >= target
 
 
-def criteria(recomputed: dict, engine: dict, domain: Domain, backend: str | None = None,
-             queries: list[dict] | None = None, entities: list[dict] | None = None) -> list[dict]:
+def criteria(
+    recomputed: dict,
+    engine: dict,
+    domain: Domain,
+    backend: str | None = None,
+    queries: list[dict] | None = None,
+    entities: list[dict] | None = None,
+) -> list[dict]:
     """The DoD criteria to show: the engine's `metrics.dod[]` when present, else the case's declarative queries,
     else defaults. Each row carries the engine's actual/met and our recomputation: exact when a declarative query
     for the criterion is available, else when the query names a metric we can recompute. Recorded (simulated)
@@ -210,8 +235,10 @@ def criteria(recomputed: dict, engine: dict, domain: Domain, backend: str | None
     rows = engine.get("dod") if isinstance(engine.get("dod"), list) else None
     source = "engine" if rows else ("queries" if by_id else "default")
     if not rows and by_id:
-        rows_in = [{"criterion_id": q["criterion_id"], "query": query_text(q), "target": q.get("target")}
-                   for q in by_id.values()]
+        rows_in = [
+            {"criterion_id": q["criterion_id"], "query": query_text(q), "target": q.get("target")}
+            for q in by_id.values()
+        ]
     else:
         rows_in = rows or DEFAULT_CRITERIA
     out = []
@@ -228,14 +255,25 @@ def criteria(recomputed: dict, engine: dict, domain: Domain, backend: str | None
             met_ours = _met(key, ours, target)
         met_engine = row.get("met") if rows else None
         mock = backend == "recorded"
-        out.append({"criterion_id": row.get("criterion_id") or query, "query": query, "target": target,
-                    "label": criterion_label(query, str(row.get("criterion_id") or ""), domain),
-                    "lower_is_better": (declared or {}).get("operator") in ("<=", "<", "=") and not target
-                    if declared else any(k in key for k in LOWER_IS_BETTER),
-                    "engine_actual": row.get("actual") if rows else None, "engine_met": met_engine,
-                    "actual": ours, "met": (False if mock else (met_ours if met_ours is not None else met_engine)),
-                    "recomputed": ours is not None,
-                    "agrees": None if ours is None or not rows or row.get("actual") is None
-                    else abs(float(row["actual"]) - float(ours)) < 1e-6,
-                    "mock": mock, "source": source})
+        out.append(
+            {
+                "criterion_id": row.get("criterion_id") or query,
+                "query": query,
+                "target": target,
+                "label": criterion_label(query, str(row.get("criterion_id") or ""), domain),
+                "lower_is_better": (declared or {}).get("operator") in ("<=", "<", "=") and not target
+                if declared
+                else any(k in key for k in LOWER_IS_BETTER),
+                "engine_actual": row.get("actual") if rows else None,
+                "engine_met": met_engine,
+                "actual": ours,
+                "met": (False if mock else (met_ours if met_ours is not None else met_engine)),
+                "recomputed": ours is not None,
+                "agrees": None
+                if ours is None or not rows or row.get("actual") is None
+                else abs(float(row["actual"]) - float(ours)) < 1e-6,
+                "mock": mock,
+                "source": source,
+            }
+        )
     return out

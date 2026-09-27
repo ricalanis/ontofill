@@ -14,33 +14,89 @@ from ontofill_console.viz.graph import DEFAULT_LIMIT, force_layout
 LIB = "/cases/libraries"
 SCALE_RUN = "run-scale-0500"
 
-NODE = {"type": "object", "required": ["id", "kind", "title", "x", "y", "href", "sel_href", "aria", "path", "color"],
-        "properties": {"id": {"type": "string"}, "kind": {"enum": ["entity", "cluster"]},
-                       "x": {"type": "number"}, "y": {"type": "number"}, "color": {"type": "integer"},
-                       "flags": {"type": "array", "items": {"type": "string"}}, "context": {"type": "boolean"}}}
-EDGE = {"type": "object", "required": ["id", "kind", "source", "target", "relation", "label", "symmetric", "derived",
-                                       "via_value_ids", "sel_href"],
-        "properties": {"kind": {"enum": ["link", "spoke"]}, "symmetric": {"type": "boolean"},
-                       "via_value_ids": {"type": "array", "items": {"type": "string"}}}}
+NODE = {
+    "type": "object",
+    "required": ["id", "kind", "title", "x", "y", "href", "sel_href", "aria", "path", "color"],
+    "properties": {
+        "id": {"type": "string"},
+        "kind": {"enum": ["entity", "cluster"]},
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "color": {"type": "integer"},
+        "flags": {"type": "array", "items": {"type": "string"}},
+        "context": {"type": "boolean"},
+    },
+}
+EDGE = {
+    "type": "object",
+    "required": [
+        "id",
+        "kind",
+        "source",
+        "target",
+        "relation",
+        "label",
+        "symmetric",
+        "derived",
+        "via_value_ids",
+        "sel_href",
+    ],
+    "properties": {
+        "kind": {"enum": ["link", "spoke"]},
+        "symmetric": {"type": "boolean"},
+        "via_value_ids": {"type": "array", "items": {"type": "string"}},
+    },
+}
 SCHEMA = {
     "type": "object",
-    "required": ["case_id", "run_id", "filters", "classes", "relations", "signals", "nodes", "edges", "clusters",
-                 "groups", "selected", "n_entities", "n_matched", "n_nodes", "n_edges", "n_links", "capped", "width",
-                 "height", "empty", "empty_links", "source"],
+    "required": [
+        "case_id",
+        "run_id",
+        "filters",
+        "classes",
+        "relations",
+        "signals",
+        "nodes",
+        "edges",
+        "clusters",
+        "groups",
+        "selected",
+        "n_entities",
+        "n_matched",
+        "n_nodes",
+        "n_edges",
+        "n_links",
+        "capped",
+        "width",
+        "height",
+        "empty",
+        "empty_links",
+        "source",
+    ],
     "properties": {
         "filters": {"type": "object", "required": ["cls", "rel", "signal", "q", "focus", "depth", "limit"]},
-        "classes": {"type": "array", "items": {"type": "object", "required": ["id", "label", "n", "primary", "color",
-                                                                              "shape", "path"]}},
-        "relations": {"type": "array", "items": {"type": "object", "required": ["id", "label", "symmetric", "derived",
-                                                                                "n"]}},
+        "classes": {
+            "type": "array",
+            "items": {"type": "object", "required": ["id", "label", "n", "primary", "color", "shape", "path"]},
+        },
+        "relations": {
+            "type": "array",
+            "items": {"type": "object", "required": ["id", "label", "symmetric", "derived", "n"]},
+        },
         "signals": {"type": "array", "items": {"type": "object", "required": ["id", "label", "n"]}},
         "nodes": {"type": "array", "items": NODE},
         "edges": {"type": "array", "items": EDGE},
-        "clusters": {"type": "array", "items": {"type": "object", "required": ["id", "relation", "value", "members",
-                                                                               "n_members", "expanded"]}},
+        "clusters": {
+            "type": "array",
+            "items": {"type": "object", "required": ["id", "relation", "value", "members", "n_members", "expanded"]},
+        },
         "groups": {"type": "array", "items": {"type": "object", "required": ["class", "label", "rows"]}},
-        "n_entities": {"type": "integer"}, "n_nodes": {"type": "integer"}, "n_edges": {"type": "integer"},
-        "capped": {"type": "boolean"}, "width": {"type": "number"}, "height": {"type": "number"},
+        "n_entities": {"type": "integer"},
+        "n_nodes": {"type": "integer"},
+        "n_edges": {"type": "integer"},
+        "capped": {"type": "boolean"},
+        "width": {"type": "number"},
+        "height": {"type": "number"},
         "selected": {"type": ["object", "null"]},
     },
 }
@@ -164,10 +220,16 @@ def _lake_run(cases_dir):
 
 
 def _field(vid, value, url):
-    return {"value_id": vid, "value": value, "confidence": 0.95, "status": "gold",
-            "generated_by": {"backend": "recorded", "model": "synthetic", "at": "2026-09-26T18:00:00+00:00"},
-            "evidence": [{"url": url, "selector": "dd.v", "captured_at": "2026-09-26T18:00:00+00:00",
-                          "source_id": "src-example"}]}
+    return {
+        "value_id": vid,
+        "value": value,
+        "confidence": 0.95,
+        "status": "gold",
+        "generated_by": {"backend": "recorded", "model": "synthetic", "at": "2026-09-26T18:00:00+00:00"},
+        "evidence": [
+            {"url": url, "selector": "dd.v", "captured_at": "2026-09-26T18:00:00+00:00", "source_id": "src-example"}
+        ],
+    }
 
 
 def write_scale_run(cases_dir, n=500, group=4, links=True) -> str:
@@ -176,47 +238,92 @@ def write_scale_run(cases_dir, n=500, group=4, links=True) -> str:
     base = _lake_run(cases_dir)
     run_dir = base / (SCALE_RUN if links else "run-scale-nolinks")
     run_dir.mkdir(parents=True)
-    onto = {"primary_class": "site",
-            "classes": [{"id": "site", "label": "Site", "title_property": "name", "identifier_property": "code"},
-                        {"id": "body", "label": "Body", "title_property": "name"},
-                        {"id": "place", "label": "Place", "title_property": "name"}],
-            "properties": [{"id": "name", "label": "Name", "domain": "site", "datatype": "xsd:string", "dod": True},
-                           {"id": "code", "label": "Code", "domain": "site", "datatype": "xsd:string", "dod": True},
-                           {"id": "address", "label": "Address", "domain": "site", "datatype": "xsd:string",
-                            "dod": True},
-                           {"id": "name", "label": "Name", "domain": "body", "datatype": "xsd:string"},
-                           {"id": "name", "label": "Name", "domain": "place", "datatype": "xsd:string"}],
-            "relations": [{"id": "same_address", "label": "Same address", "domain": "site", "range": "site",
-                           "symmetric": True,
-                           "match": {"op": "same_value", "domain_property": "address", "range_property": "address"}},
-                          {"id": "run_by", "label": "Run by", "domain": "site", "range": "body", "symmetric": False}],
-            "rules": [{"id": "shared_address", "label": "Shares an address", "checks": "x", "verify": ["y"]}]}
+    onto = {
+        "primary_class": "site",
+        "classes": [
+            {"id": "site", "label": "Site", "title_property": "name", "identifier_property": "code"},
+            {"id": "body", "label": "Body", "title_property": "name"},
+            {"id": "place", "label": "Place", "title_property": "name"},
+        ],
+        "properties": [
+            {"id": "name", "label": "Name", "domain": "site", "datatype": "xsd:string", "dod": True},
+            {"id": "code", "label": "Code", "domain": "site", "datatype": "xsd:string", "dod": True},
+            {"id": "address", "label": "Address", "domain": "site", "datatype": "xsd:string", "dod": True},
+            {"id": "name", "label": "Name", "domain": "body", "datatype": "xsd:string"},
+            {"id": "name", "label": "Name", "domain": "place", "datatype": "xsd:string"},
+        ],
+        "relations": [
+            {
+                "id": "same_address",
+                "label": "Same address",
+                "domain": "site",
+                "range": "site",
+                "symmetric": True,
+                "match": {"op": "same_value", "domain_property": "address", "range_property": "address"},
+            },
+            {"id": "run_by", "label": "Run by", "domain": "site", "range": "body", "symmetric": False},
+        ],
+        "rules": [{"id": "shared_address", "label": "Shares an address", "checks": "x", "verify": ["y"]}],
+    }
     n_body, n_place = 20, 20
     n_site = n - n_body - n_place
     ents = []
     for i in range(n_body):
-        ents.append({"id": f"body:b{i:03d}", "class": "body", "classified_as": [], "links": [], "flags": [],
-                     "properties": {"name": _field(f"val:b{i}-name", f"Body {i}", f"https://x.example/b/{i}")}})
+        ents.append(
+            {
+                "id": f"body:b{i:03d}",
+                "class": "body",
+                "classified_as": [],
+                "links": [],
+                "flags": [],
+                "properties": {"name": _field(f"val:b{i}-name", f"Body {i}", f"https://x.example/b/{i}")},
+            }
+        )
     for i in range(n_place):
-        ents.append({"id": f"place:p{i:03d}", "class": "place", "classified_as": [], "links": [], "flags": [],
-                     "properties": {"name": _field(f"val:p{i}-name", f"Place {i}", f"https://x.example/p/{i}")}})
+        ents.append(
+            {
+                "id": f"place:p{i:03d}",
+                "class": "place",
+                "classified_as": [],
+                "links": [],
+                "flags": [],
+                "properties": {"name": _field(f"val:p{i}-name", f"Place {i}", f"https://x.example/p/{i}")},
+            }
+        )
     for i in range(n_site):
         g = i // group
-        props = {"name": _field(f"val:s{i}-name", f"Site {i:03d}", f"https://x.example/s/{i}"),
-                 "code": _field(f"val:s{i}-code", f"ZZ-{i:04d}", f"https://x.example/s/{i}"),
-                 "address": _field(f"val:s{i}-address", f"Street {g}", f"https://x.example/s/{i}")}
+        props = {
+            "name": _field(f"val:s{i}-name", f"Site {i:03d}", f"https://x.example/s/{i}"),
+            "code": _field(f"val:s{i}-code", f"ZZ-{i:04d}", f"https://x.example/s/{i}"),
+            "address": _field(f"val:s{i}-address", f"Street {g}", f"https://x.example/s/{i}"),
+        }
         ln, fl = [], []
         if links:
             ln.append({"property": "run_by", "target": f"body:b{i % n_body:03d}", "via_value_id": f"val:s{i}-name"})
             for j in range(g * group, min(n_site, (g + 1) * group)):
                 if j != i:
-                    ln.append({"property": "same_address", "target": f"site:s{j:03d}",
-                               "via_value_id": f"val:s{i}-address"})
+                    ln.append(
+                        {"property": "same_address", "target": f"site:s{j:03d}", "via_value_id": f"val:s{i}-address"}
+                    )
             if g % 5 == 0:
-                fl.append({"rule_id": "shared_address", "label": "Shares an address", "explanation": "e",
-                           "evidence_value_ids": [f"val:s{i}-address"]})
-        ents.append({"id": f"site:s{i:03d}", "class": "site", "classified_as": [], "properties": props, "links": ln,
-                     "flags": fl})
+                fl.append(
+                    {
+                        "rule_id": "shared_address",
+                        "label": "Shares an address",
+                        "explanation": "e",
+                        "evidence_value_ids": [f"val:s{i}-address"],
+                    }
+                )
+        ents.append(
+            {
+                "id": f"site:s{i:03d}",
+                "class": "site",
+                "classified_as": [],
+                "properties": props,
+                "links": ln,
+                "flags": fl,
+            }
+        )
     (run_dir / "entities.jsonl").write_text("".join(json.dumps(e) + "\n" for e in ents))
     (run_dir / "ontology.json").write_text(json.dumps(onto))
     return run_dir.name
@@ -241,16 +348,20 @@ def test_cap_and_clusters_at_500(cases_dir, make_client):
     assert m["clusters"] and all(c["n_members"] >= 3 for c in m["clusters"])
     hub = m["clusters"][0]
     assert hub["value"].startswith("Street ") and hub["prop"] == "address"
-    assert not any(e["relation"] == "same_address" and e["kind"] == "link" for e in m["edges"]
-                   if e["source"] in hub["members"] and e["target"] in hub["members"])
+    assert not any(
+        e["relation"] == "same_address" and e["kind"] == "link"
+        for e in m["edges"]
+        if e["source"] in hub["members"] and e["target"] in hub["members"]
+    )
     assert any(n["kind"] == "cluster" and n["id"] == hub["id"] for n in m["nodes"])
     # selecting the hub shows the shared value's evidence; expanding restores the pairwise links
     s = client.get(f"{LIB}/api/viz/graph", params={"run": run, "sel": hub["id"]}).json()["selected"]
     assert s["kind"] == "cluster" and len(s["members"]) == hub["n_members"] and s["vias"][0]["evidence"]
     e = client.get(f"{LIB}/api/viz/graph", params={"run": run, "expand": hub["id"]}).json()
     assert next(c for c in e["clusters"] if c["id"] == hub["id"])["expanded"]
-    assert any(x["relation"] == "same_address" and x["kind"] == "link" and x["source"] in hub["members"]
-               for x in e["edges"])
+    assert any(
+        x["relation"] == "same_address" and x["kind"] == "link" and x["source"] in hub["members"] for x in e["edges"]
+    )
     # the full 500 renders when asked, still within budget
     t0 = time.perf_counter()
     full = client.get(f"{LIB}/api/viz/graph", params={"run": run, "limit": 500}).json()

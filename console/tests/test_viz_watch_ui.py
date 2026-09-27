@@ -44,22 +44,48 @@ def running(cases_dir, tmp_path):
     for i in range(12):
         t = now - timedelta(minutes=70 - 4 * i)
         bad = i % 3 == 0
-        steps.append({"step_id": f"step:{rid}:{i}", "ts": t.isoformat(timespec="seconds"), "phase": 5 if i > 3 else 3,
-                      "mode": "D1", "source_id": "bad-src" if bad else "good-src", "requested": {"tool": "page.read"},
-                      "evaluated": {"status": "failed", "reason": "timeout"} if bad else {"status": "ok"},
-                      "usage": {"model": "m", "backend": "vultr", "est_usd": 0.05}})
+        steps.append(
+            {
+                "step_id": f"step:{rid}:{i}",
+                "ts": t.isoformat(timespec="seconds"),
+                "phase": 5 if i > 3 else 3,
+                "mode": "D1",
+                "source_id": "bad-src" if bad else "good-src",
+                "requested": {"tool": "page.read"},
+                "evaluated": {"status": "failed", "reason": "timeout"} if bad else {"status": "ok"},
+                "usage": {"model": "m", "backend": "vultr", "est_usd": 0.05},
+            }
+        )
     (run / "trace.live.jsonl").write_text("".join(json.dumps(s) + "\n" for s in steps))
-    (run / "status.json").write_text(json.dumps({"run_id": rid, "state": "running", "phase": 5,
-                                                 "updated_at": steps[-1]["ts"]}))
+    (run / "status.json").write_text(
+        json.dumps({"run_id": rid, "state": "running", "phase": 5, "updated_at": steps[-1]["ts"]})
+    )
     (run.parent / "latest.json").write_text(json.dumps({"run_id": rid}))
     root = tmp_path / "runner"
     (root / "cases" / "libraries").mkdir(parents=True)
-    (root / "cases" / "libraries" / "status.json").write_text(json.dumps(
-        {"state": "running", "run_id": rid, "running_since": (now - timedelta(minutes=75)).isoformat(),
-         "spent_usd_global": 3.2, "updated_at": now.isoformat()}))
-    (root / "events.jsonl").write_text(json.dumps({"ts": (now - timedelta(minutes=75)).isoformat(), "case_id": "libraries",
-                                                   "kind": "resumed", "detail": "resumed after the ontology decision",
-                                                   "run_id": rid}) + "\n")
+    (root / "cases" / "libraries" / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "run_id": rid,
+                "running_since": (now - timedelta(minutes=75)).isoformat(),
+                "spent_usd_global": 3.2,
+                "updated_at": now.isoformat(),
+            }
+        )
+    )
+    (root / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "ts": (now - timedelta(minutes=75)).isoformat(),
+                "case_id": "libraries",
+                "kind": "resumed",
+                "detail": "resumed after the ontology decision",
+                "run_id": rid,
+            }
+        )
+        + "\n"
+    )
     return root
 
 
@@ -93,8 +119,9 @@ def test_watch_fits_on_the_fixtures(cases_dir):
 def test_watch_fits_with_a_stale_running_case(cases_dir, running, monkeypatch):
     monkeypatch.setenv("ONTOFILL_RUNNER_BUDGETS", "libraries=1.5")
     monkeypatch.setenv("ONTOFILL_RUNNER_GLOBAL_USD", "5")
-    app = create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
-                                        "ONTOFILL_RUNNER_STATE": str(running)}))
+    app = create_app(
+        settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_RUNNER_STATE": str(running)})
+    )
     srv, thread, url = _serve(app)
     try:
         check(url, expect_live=True)

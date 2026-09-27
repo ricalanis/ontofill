@@ -52,23 +52,43 @@ from .core import SAFE_ERRORS, Artifacts, VizContext, gap, parse_ts
 ORDER = 65
 KEY, SLUG, LABEL = "inference", "inference", "Inference"
 LOG_ENV = "ONTOFILL_CONSOLE_GATEWAY_LOG"
-SOURCES = (f"{LOG_ENV} (gateway call log, JSONL) · runs/<case>/<run>/trace.live.jsonl · status.json · "
-           "gold/<case>/<run>/ (generated_by) · case package generated_by · decisions.jsonl")
+SOURCES = (
+    f"{LOG_ENV} (gateway call log, JSONL) · runs/<case>/<run>/trace.live.jsonl · status.json · "
+    "gold/<case>/<run>/ (generated_by) · case package generated_by · decisions.jsonl"
+)
 PROVIDERS = {"vultr": "Vultr Serverless Inference", "jev": "Jev"}
 PURPOSES = ("plan", "critique", "extract", "verify", "screen", "decide")
 LIVE_BACKENDS = ("vultr", "jev")
 SIMULATED = ("recorded", "mock")
-ENGINE_ACTORS = {"", "none", "engine", "ontofill", "runner", "engine runner", "ontofill-runner", "vultr", "jev", "code",
-                 "deterministic", "gateway", "controller", "recorded", "mock", "human"}
+ENGINE_ACTORS = {
+    "",
+    "none",
+    "engine",
+    "ontofill",
+    "runner",
+    "engine runner",
+    "ontofill-runner",
+    "vultr",
+    "jev",
+    "code",
+    "deterministic",
+    "gateway",
+    "controller",
+    "recorded",
+    "mock",
+    "human",
+}
 MAX_ARTIFACT_FILES = 600
 MAX_LISTED = 40
 FLAG_ORDER = ("no-record", "artifact", "run", "values", "step")
 ARTIFACT_SUFFIXES = (".json", ".yaml", ".yml", ".md")
 SKIP_NAMES = {"README.md", "brief.md", "LICENSE", "APPROVED", "APPROVED.md", "decisions.jsonl"}
-CONTRACT_REQUEST = ("CONTRACT REQUEST: every engine model call sends X-BA-Step-Id (the trace step it belongs to) and "
-                    "X-BA-Run-Id, and the gateway log records run_id and the engine purpose (engine_purpose) for "
-                    "service principals too; status.json names the runner that resumed the run (runner{id, host, "
-                    "resumed_at}, R18).")
+CONTRACT_REQUEST = (
+    "CONTRACT REQUEST: every engine model call sends X-BA-Step-Id (the trace step it belongs to) and "
+    "X-BA-Run-Id, and the gateway log records run_id and the engine purpose (engine_purpose) for "
+    "service principals too; status.json names the runner that resumed the run (runner{id, host, "
+    "resumed_at}, R18)."
+)
 R19 = "R19"
 R19_DESC = "inference provenance visible in the console (gateway call log joined with the trace)"
 
@@ -110,8 +130,15 @@ def load_log() -> dict:
             rec = dict(rec)
             rec["_ref"] = f"{path.name}:{i + 1}"
             records.append(rec)
-    return {"env": LOG_ENV, "path": raw, "mounted": bool(paths), "files": [p.name for p in paths],
-            "n_records": len(records), "bad_lines": bad, "records": records}
+    return {
+        "env": LOG_ENV,
+        "path": raw,
+        "mounted": bool(paths),
+        "files": [p.name for p in paths],
+        "n_records": len(records),
+        "bad_lines": bad,
+        "records": records,
+    }
 
 
 def _num(v) -> float | None:
@@ -125,10 +152,13 @@ def _d(v) -> dict:
 
 def expected_backend(s: dict) -> str | None:
     """The backend a step's own fields say made a model call, or None when nothing in the step shows a call."""
-    usage, lp, ver, gate, screen, gen = (_d(s.get(k)) for k in ("usage", "loop", "verify", "gate", "screen",
-                                                                   "generated_by"))
+    usage, lp, ver, gate, screen, gen = (
+        _d(s.get(k)) for k in ("usage", "loop", "verify", "gate", "screen", "generated_by")
+    )
     gen_backend = str(gen.get("backend") or "").lower() or None
-    if usage and (usage.get("model") or usage.get("backend") or usage.get("input_tokens") or usage.get("output_tokens")):
+    if usage and (
+        usage.get("model") or usage.get("backend") or usage.get("input_tokens") or usage.get("output_tokens")
+    ):
         return str(usage.get("backend") or gen_backend or "vultr").lower()
     if lp.get("model"):
         return str(usage.get("backend") or gen_backend or "vultr").lower()
@@ -257,7 +287,9 @@ def artifact_provenance(a: Artifacts) -> list[dict]:
         if not p.is_file() or p.suffix not in ARTIFACT_SUFFIXES or p.name in SKIP_NAMES:
             continue
         rel = str(p.relative_to(a.root))
-        if "revisions" in p.relative_to(a.root).parts or any(part.startswith(".") for part in p.relative_to(a.root).parts):
+        if "revisions" in p.relative_to(a.root).parts or any(
+            part.startswith(".") for part in p.relative_to(a.root).parts
+        ):
             continue
         n += 1
         text = a.text(rel, limit=2_000_000)
@@ -279,42 +311,88 @@ def artifact_provenance(a: Artifacts) -> list[dict]:
         else:
             meta = _front_matter(text)
         gen = _d(meta.get("generated_by"))
-        rows.append({"path": rel, "backend": str(gen.get("backend") or "").lower() or None, "model": gen.get("model"),
-                     "at": gen.get("at"), "href": f"/cases/{a.case.id}/files/{quote(rel)}"})
+        rows.append(
+            {
+                "path": rel,
+                "backend": str(gen.get("backend") or "").lower() or None,
+                "model": gen.get("model"),
+                "at": gen.get("at"),
+                "href": f"/cases/{a.case.id}/files/{quote(rel)}",
+            }
+        )
     return rows
 
 
-def _flag(kind: str, what: str, backend: str | None, detail: str, href: str | None, state: str = "block",
-          n: int = 1) -> dict:
-    return {"kind": kind, "what": what, "backend": backend or "none", "detail": detail, "href": href,
-            "state": state, "n": n}
+def _flag(
+    kind: str, what: str, backend: str | None, detail: str, href: str | None, state: str = "block", n: int = 1
+) -> dict:
+    return {
+        "kind": kind,
+        "what": what,
+        "backend": backend or "none",
+        "detail": detail,
+        "href": href,
+        "state": state,
+        "n": n,
+    }
 
 
-def provenance_flags(case, a: Artifacts, rid: str | None, steps: list[dict], unmatched_steps: list[dict],
-                     artifacts: list[dict]) -> list[dict]:
+def provenance_flags(
+    case, a: Artifacts, rid: str | None, steps: list[dict], unmatched_steps: list[dict], artifacts: list[dict]
+) -> list[dict]:
     flags = []
     cid = case.id
     for r in artifacts:
         if r["backend"] and r["backend"] != "vultr":
-            flags.append(_flag("artifact", r["path"], r["backend"],
-                               f"generated_by.backend {r['backend']}" + (f" · model {r['model']}" if r["model"] else ""),
-                               r["href"]))
+            flags.append(
+                _flag(
+                    "artifact",
+                    r["path"],
+                    r["backend"],
+                    f"generated_by.backend {r['backend']}" + (f" · model {r['model']}" if r["model"] else ""),
+                    r["href"],
+                )
+            )
     if rid:
         if rid.startswith("mock-"):
-            flags.append(_flag("run", rid, "mock", "a mock- run id: written by the recorded double (CONTRACT §7)",
-                               f"/cases/{cid}/runs/{quote(rid)}" if rid in a.run_ids() else None))
+            flags.append(
+                _flag(
+                    "run",
+                    rid,
+                    "mock",
+                    "a mock- run id: written by the recorded double (CONTRACT §7)",
+                    f"/cases/{cid}/runs/{quote(rid)}" if rid in a.run_ids() else None,
+                )
+            )
         status = a.status(rid)
         sgen = str(_d(status.get("generated_by")).get("backend") or "").lower()
         if sgen and sgen != "vultr":
-            flags.append(_flag("run", f"runs/{cid}/{rid}/status.json", sgen, f"status.json generated_by.backend {sgen}",
-                               f"/cases/{cid}/runs/{quote(rid)}" if rid in a.run_ids() else None))
+            flags.append(
+                _flag(
+                    "run",
+                    f"runs/{cid}/{rid}/status.json",
+                    sgen,
+                    f"status.json generated_by.backend {sgen}",
+                    f"/cases/{cid}/runs/{quote(rid)}" if rid in a.run_ids() else None,
+                )
+            )
         gold = hc.gold_run(a, rid)
         if gold is not None:
-            mb = str(_d((gold.metrics or {}).get("generated_by")).get("backend") or (gold.metrics or {}).get("inference_backend")
-                     or "").lower()
+            mb = str(
+                _d((gold.metrics or {}).get("generated_by")).get("backend")
+                or (gold.metrics or {}).get("inference_backend")
+                or ""
+            ).lower()
             if mb and mb != "vultr":
-                flags.append(_flag("run", f"gold/{cid}/{rid}/metrics.json", mb, f"gold metrics generated_by / inference_backend {mb}",
-                                   f"/cases/{cid}/output?run={quote(rid)}"))
+                flags.append(
+                    _flag(
+                        "run",
+                        f"gold/{cid}/{rid}/metrics.json",
+                        mb,
+                        f"gold metrics generated_by / inference_backend {mb}",
+                        f"/cases/{cid}/output?run={quote(rid)}",
+                    )
+                )
             by_backend: dict[str, list] = {}
             for ref in gold.values.values():
                 b = str(_d(ref.data.get("generated_by")).get("backend") or "").lower()
@@ -322,20 +400,40 @@ def provenance_flags(case, a: Artifacts, rid: str | None, steps: list[dict], unm
                     by_backend.setdefault(b, []).append(ref)
             for b, refs in sorted(by_backend.items()):
                 first = refs[0]
-                flags.append(_flag("values", f"{len(refs)} gold values", b,
-                                   f"generated_by.backend {b} · e.g. {first.value_id} ({first.prop})",
-                                   f"/cases/{cid}/lineage/{quote(first.value_id)}?run={quote(rid)}", n=len(refs)))
+                flags.append(
+                    _flag(
+                        "values",
+                        f"{len(refs)} gold values",
+                        b,
+                        f"generated_by.backend {b} · e.g. {first.value_id} ({first.prop})",
+                        f"/cases/{cid}/lineage/{quote(first.value_id)}?run={quote(rid)}",
+                        n=len(refs),
+                    )
+                )
     # steps whose own provenance is not Vultr (recorded/mock double, jev-only, other)
     for s in steps:
         b = str(_d(s.get("generated_by")).get("backend") or "").lower()
         if b and b not in ("vultr", "human", "code"):
-            flags.append(_flag("step", str(s.get("step_id")), b,
-                               f"generated_by.backend {b} · P{s.get('phase')} {s.get('mode') or ''} · {_short(s.get('requested'))}",
-                               _step_href(cid, rid if rid in a.run_ids() else None, s.get("step_id"))))
+            flags.append(
+                _flag(
+                    "step",
+                    str(s.get("step_id")),
+                    b,
+                    f"generated_by.backend {b} · P{s.get('phase')} {s.get('mode') or ''} · {_short(s.get('requested'))}",
+                    _step_href(cid, rid if rid in a.run_ids() else None, s.get("step_id")),
+                )
+            )
     for s in unmatched_steps:
-        flags.append(_flag("no-record", str(s.get("step_id")), s["_expected"],
-                           f"model step with no gateway record · {_short(s.get('requested'))}",
-                           _step_href(cid, rid if rid in a.run_ids() else None, s.get("step_id")), state="block"))
+        flags.append(
+            _flag(
+                "no-record",
+                str(s.get("step_id")),
+                s["_expected"],
+                f"model step with no gateway record · {_short(s.get('requested'))}",
+                _step_href(cid, rid if rid in a.run_ids() else None, s.get("step_id")),
+                state="block",
+            )
+        )
     return flags
 
 
@@ -359,8 +457,18 @@ def _actor_names(s: dict) -> list[str]:
 
 
 RUNNER_LABEL = "ontofill-runner (control plane)"
-RUNNER_KINDS = ("start_requested", "started", "resumed", "paused_at_checkpoint", "paused", "unpaused", "killed",
-                "budget_stop", "failed", "done")
+RUNNER_KINDS = (
+    "start_requested",
+    "started",
+    "resumed",
+    "paused_at_checkpoint",
+    "paused",
+    "unpaused",
+    "killed",
+    "budget_stop",
+    "failed",
+    "done",
+)
 
 
 def _runner_events(case_id: str, rid: str | None) -> list[dict]:
@@ -384,7 +492,9 @@ def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
     status = a.status(rid) if rid else {}
     runner = status.get("runner") or status.get("resumed_by") or status.get("orchestrated_by")
     if isinstance(runner, dict):
-        runner_label = " · ".join(str(runner[k]) for k in ("id", "host", "resumed_at") if runner.get(k)) or "engine runner"
+        runner_label = (
+            " · ".join(str(runner[k]) for k in ("id", "host", "resumed_at") if runner.get(k)) or "engine runner"
+        )
     else:
         runner_label = str(runner) if runner else None
     runner_events = _runner_events(a.case.id, rid)
@@ -395,11 +505,22 @@ def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
         names = _actor_names(s)
         odd = [x for x in names if x.lower() not in ENGINE_ACTORS]
         if odd:
-            harness.append({"step_id": s.get("step_id"), "actor": ", ".join(odd), "requested": _short(s.get("requested")),
-                            "href": _step_href(a.case.id, rid if rid in a.run_ids() else None, s.get("step_id"))})
+            harness.append(
+                {
+                    "step_id": s.get("step_id"),
+                    "actor": ", ".join(odd),
+                    "requested": _short(s.get("requested")),
+                    "href": _step_href(a.case.id, rid if rid in a.run_ids() else None, s.get("step_id")),
+                }
+            )
         elif any(x.lower() == "human" for x in names) or _d(s.get("detail")).get("human"):
-            humans_in_run.append({"step_id": s.get("step_id"), "requested": _short(s.get("requested")),
-                                  "href": _step_href(a.case.id, rid if rid in a.run_ids() else None, s.get("step_id"))})
+            humans_in_run.append(
+                {
+                    "step_id": s.get("step_id"),
+                    "requested": _short(s.get("requested")),
+                    "href": _step_href(a.case.id, rid if rid in a.run_ids() else None, s.get("step_id")),
+                }
+            )
     decisions = []
     for d in a.decisions():
         if not isinstance(d, dict):
@@ -407,21 +528,42 @@ def actors(a: Artifacts, rid: str | None, steps: list[dict]) -> dict:
         if rid and d.get("run_id") and d.get("run_id") != rid:
             continue
         # v1.0.4a: the verified part is the group; a typed name is only self-declared
-        who = (f"{d['unverified_name']} (self-declared) · {d.get('approver') or 'group'}" if d.get("unverified_name")
-               else d.get("approver") or "unknown")
-        decisions.append({"who": who, "when": d.get("ts"),
-                          "checkpoint": d.get("checkpoint"), "decision": d.get("decision") or "approve",
-                          "identity_source": d.get("identity_source"), "run_id": d.get("run_id"),
-                          "phase_dir": d.get("phase_dir")})
+        who = (
+            f"{d['unverified_name']} (self-declared) · {d.get('approver') or 'group'}"
+            if d.get("unverified_name")
+            else d.get("approver") or "unknown"
+        )
+        decisions.append(
+            {
+                "who": who,
+                "when": d.get("ts"),
+                "checkpoint": d.get("checkpoint"),
+                "decision": d.get("decision") or "approve",
+                "identity_source": d.get("identity_source"),
+                "run_id": d.get("run_id"),
+                "phase_dir": d.get("phase_dir"),
+            }
+        )
     n_engine = sum(1 for s in steps if not any(x.lower() not in ENGINE_ACTORS for x in _actor_names(s)))
-    line = (f"0 harness actions inside this run ({len(steps)} steps checked for an actor outside the engine)"
-            if steps and not harness else
-            f"{len(harness)} harness action{'s' if len(harness) != 1 else ''} inside this run" if harness else
-            "No steps to check yet")
-    return {"runner": runner_label, "runner_known": bool(runner_label), "runner_events": runner_events,
-            "engine_label": runner_label or "engine runner (the run does not name its runner yet)",
-            "n_engine_steps": n_engine, "harness": harness, "n_harness": len(harness), "harness_line": line,
-            "humans_in_run": humans_in_run, "decisions": decisions}
+    line = (
+        f"0 harness actions inside this run ({len(steps)} steps checked for an actor outside the engine)"
+        if steps and not harness
+        else f"{len(harness)} harness action{'s' if len(harness) != 1 else ''} inside this run"
+        if harness
+        else "No steps to check yet"
+    )
+    return {
+        "runner": runner_label,
+        "runner_known": bool(runner_label),
+        "runner_events": runner_events,
+        "engine_label": runner_label or "engine runner (the run does not name its runner yet)",
+        "n_engine_steps": n_engine,
+        "harness": harness,
+        "n_harness": len(harness),
+        "harness_line": line,
+        "humans_in_run": humans_in_run,
+        "decisions": decisions,
+    }
 
 
 # the view-model -------------------------------------------------------------------------------------------------
@@ -445,8 +587,12 @@ def _window(steps: list[dict], status: dict):
     return (min(ts), max(ts)) if ts else (None, None)
 
 
-ATTRIBUTION = {"step": "step", "window": "time window (no step id)", "run": "run id only (step not in the trace)",
-               "unknown-step": "time window (step id matches no step)"}
+ATTRIBUTION = {
+    "step": "step",
+    "window": "time window (no step id)",
+    "run": "run id only (step not in the trace)",
+    "unknown-step": "time window (step id matches no step)",
+}
 
 
 def _call_row(rec: dict, step: dict | None, case_id: str, run_id: str | None, how: str = "step") -> dict:
@@ -455,16 +601,32 @@ def _call_row(rec: dict, step: dict | None, case_id: str, run_id: str | None, ho
     status = rec.get("status")
     ok = status == 200 or status == "200"
     gate = _d(rec.get("gate"))
-    return {"ts": rec.get("ts"), "model": rec.get("model") or "unknown", "upstream": upstream,
-            "provider": PROVIDERS.get(upstream, upstream), "phase": step.get("phase") if step else None,
-            "phase_name": live.phase_name(step.get("phase")) if step and step.get("phase") else None,
-            "step_id": rec.get("step_id"), "step_href": _step_href(case_id, run_id, rec.get("step_id")) if step else None,
-            "mode": step.get("mode") if step else None, "purpose": purpose, "purpose_from": basis,
-            "input_tokens": int(_num(rec.get("input_tokens")) or 0), "output_tokens": int(_num(rec.get("output_tokens")) or 0),
-            "est_tokens": bool(rec.get("est_tokens")), "usd": _num(rec.get("est_usd")),
-            "latency_ms": _num(rec.get("latency_ms")), "status": status, "ok": ok,
-            "gate_flagged": bool(gate.get("flagged")), "session_id": rec.get("session_id"), "ref": rec.get("_ref"),
-            "attributed": step is not None, "attribution": how, "attribution_label": ATTRIBUTION.get(how, how)}
+    return {
+        "ts": rec.get("ts"),
+        "model": rec.get("model") or "unknown",
+        "upstream": upstream,
+        "provider": PROVIDERS.get(upstream, upstream),
+        "phase": step.get("phase") if step else None,
+        "phase_name": live.phase_name(step.get("phase")) if step and step.get("phase") else None,
+        "step_id": rec.get("step_id"),
+        "step_href": _step_href(case_id, run_id, rec.get("step_id")) if step else None,
+        "mode": step.get("mode") if step else None,
+        "purpose": purpose,
+        "purpose_from": basis,
+        "input_tokens": int(_num(rec.get("input_tokens")) or 0),
+        "output_tokens": int(_num(rec.get("output_tokens")) or 0),
+        "est_tokens": bool(rec.get("est_tokens")),
+        "usd": _num(rec.get("est_usd")),
+        "latency_ms": _num(rec.get("latency_ms")),
+        "status": status,
+        "ok": ok,
+        "gate_flagged": bool(gate.get("flagged")),
+        "session_id": rec.get("session_id"),
+        "ref": rec.get("_ref"),
+        "attributed": step is not None,
+        "attribution": how,
+        "attribution_label": ATTRIBUTION.get(how, how),
+    }
 
 
 def _pct(n: int, d: int) -> float | None:
@@ -541,54 +703,91 @@ def model(case, run: str | None = None, all_cases=None) -> dict:
         by_purpose[r["purpose"]] = by_purpose.get(r["purpose"], 0) + 1
     by_model: dict[str, dict] = {}
     for r in all_rows:
-        m = by_model.setdefault(f"{r['model']} · {r['provider']}", {"name": f"{r['model']} · {r['provider']}", "calls": 0,
-                                                                     "usd": 0.0, "input_tokens": 0, "output_tokens": 0})
+        m = by_model.setdefault(
+            f"{r['model']} · {r['provider']}",
+            {"name": f"{r['model']} · {r['provider']}", "calls": 0, "usd": 0.0, "input_tokens": 0, "output_tokens": 0},
+        )
         m["calls"] += 1
         m["usd"] = round(m["usd"] + (r["usd"] or 0), 8)
         m["input_tokens"] += r["input_tokens"]
         m["output_tokens"] += r["output_tokens"]
-    decider_rows = [{"name": k, "steps": deciders.get(k, 0)}
-                    for k in ("code", "jev", "vultr", "recorded", "mock", "human", "other") if deciders.get(k)]
+    decider_rows = [
+        {"name": k, "steps": deciders.get(k, 0)}
+        for k in ("code", "jev", "vultr", "recorded", "mock", "human", "other")
+        if deciders.get(k)
+    ]
 
     if rid is None:
         empty = gap(None, "Model calls, providers and costs appear once this case has a run.", SOURCES)
     elif not log["mounted"]:
-        empty = gap(None, f"The gateway call log is not mounted, so calls, costs and latency cannot be joined yet "
-                          f"(gap {R19}: {R19_DESC}). Set {LOG_ENV} to the gateway's calls JSONL (a file or a "
-                          f"directory of *.jsonl), read-only. The decisions, flags and who-acted sections below read "
-                          f"only the trace and the case package.", LOG_ENV)
+        empty = gap(
+            None,
+            f"The gateway call log is not mounted, so calls, costs and latency cannot be joined yet "
+            f"(gap {R19}: {R19_DESC}). Set {LOG_ENV} to the gateway's calls JSONL (a file or a "
+            f"directory of *.jsonl), read-only. The decisions, flags and who-acted sections below read "
+            f"only the trace and the case package.",
+            LOG_ENV,
+        )
     elif not all_rows:
-        empty = gap(None, f"The gateway log is mounted ({log['n_records']} records) but none of them names a step of "
-                          "this run. " + CONTRACT_REQUEST, LOG_ENV)
+        empty = gap(
+            None,
+            f"The gateway log is mounted ({log['n_records']} records) but none of them names a step of "
+            "this run. " + CONTRACT_REQUEST,
+            LOG_ENV,
+        )
     else:
         empty = None
     return {
-        "case_id": case.id, "run_id": rid, "runs": hc.run_ids(a), "has_feed": has_feed,
+        "case_id": case.id,
+        "run_id": rid,
+        "runs": hc.run_ids(a),
+        "has_feed": has_feed,
         "state": status.get("state"),
         "log": {k: v for k, v in log.items() if k != "records"},
-        "calls": all_rows, "n_calls": len(all_rows), "n_reasoning": len(reasoning), "n_reasoning_vultr": n_vultr,
+        "calls": all_rows,
+        "n_calls": len(all_rows),
+        "n_reasoning": len(reasoning),
+        "n_reasoning_vultr": n_vultr,
         "n_screen": len(all_rows) - len(reasoning),
         "pct_vultr": _pct(n_vultr, len(reasoning)),
-        "usd_total": round(sum(priced), 8) if priced else None, "n_priced": len(priced),
-        "input_tokens": sum(r["input_tokens"] for r in all_rows), "output_tokens": sum(r["output_tokens"] for r in all_rows),
+        "usd_total": round(sum(priced), 8) if priced else None,
+        "n_priced": len(priced),
+        "input_tokens": sum(r["input_tokens"] for r in all_rows),
+        "output_tokens": sum(r["output_tokens"] for r in all_rows),
         "latency_ms_median": round(statistics.median(lat), 1) if lat else None,
         "trace_usd": hc.run_step_usd(steps),
-        "n_steps": len(steps), "n_model_steps": len(model_steps),
+        "n_steps": len(steps),
+        "n_model_steps": len(model_steps),
         "deciders": hc.shares(decider_rows, "steps", colours=DECIDER_COLOURS, keep_order=True, limit=8),
         "decider_counts": {r["name"]: r["steps"] for r in decider_rows},
         "by_purpose": [{"name": k, "calls": v} for k, v in by_purpose.items() if v],
         "by_model": sorted(by_model.values(), key=lambda m: -m["calls"]),
-        "unattributed": {"n": unattributed_n, "n_records": len(stray_rows), "n_steps": len(unmatched),
-                         "n_window": sum(1 for r in stray_rows if r["attribution"] != "run"),
-                         "reasons": _unattributed_reasons(stray_rows, unmatched), "records": stray_rows,
-                         "steps": [{"step_id": s.get("step_id"), "expected": s["_expected"],
-                                    "requested": _short(s.get("requested")), "phase": s.get("phase"),
-                                    "href": _step_href(case.id, link_run, s.get("step_id"))} for s in unmatched]},
-        "flags": flags[:MAX_LISTED * 3], "n_flags": len(flags),
+        "unattributed": {
+            "n": unattributed_n,
+            "n_records": len(stray_rows),
+            "n_steps": len(unmatched),
+            "n_window": sum(1 for r in stray_rows if r["attribution"] != "run"),
+            "reasons": _unattributed_reasons(stray_rows, unmatched),
+            "records": stray_rows,
+            "steps": [
+                {
+                    "step_id": s.get("step_id"),
+                    "expected": s["_expected"],
+                    "requested": _short(s.get("requested")),
+                    "phase": s.get("phase"),
+                    "href": _step_href(case.id, link_run, s.get("step_id")),
+                }
+                for s in unmatched
+            ],
+        },
+        "flags": flags[: MAX_LISTED * 3],
+        "n_flags": len(flags),
         "flag_counts": _flag_counts(flags),
-        "artifacts": artifacts, "actors": actors(a, rid, steps),
+        "artifacts": artifacts,
+        "actors": actors(a, rid, steps),
         "purpose_map": PURPOSE_MAP,
-        "empty": empty, "contract_request": CONTRACT_REQUEST,
+        "empty": empty,
+        "contract_request": CONTRACT_REQUEST,
         "backend": backend_of(status.get("metrics"), [*steps, status]) if rid else None,
     }
 
@@ -598,16 +797,22 @@ def _unattributed_reasons(stray_rows: list[dict], unmatched: list[dict]) -> list
     engine = sum(1 for r in stray_rows if str(r.get("session_id") or "") == "engine" and not r.get("step_id"))
     other = len(stray_rows) - engine
     if engine:
-        out.append(f"{engine} engine call{'s' if engine != 1 else ''} (session engine) inside this run's time window "
-                   "carry no step id: engine calls do not send X-BA-Step-Id or a run id yet (CONTRACT REQUEST to the "
-                   "engine owner: send X-BA-Step-Id and the run id on every gateway call).")
+        out.append(
+            f"{engine} engine call{'s' if engine != 1 else ''} (session engine) inside this run's time window "
+            "carry no step id: engine calls do not send X-BA-Step-Id or a run id yet (CONTRACT REQUEST to the "
+            "engine owner: send X-BA-Step-Id and the run id on every gateway call)."
+        )
     if other:
-        out.append(f"{other} gateway record{'s' if other != 1 else ''} name this run or fall in its time window but match "
-                   "no step of its trace.")
+        out.append(
+            f"{other} gateway record{'s' if other != 1 else ''} name this run or fall in its time window but match "
+            "no step of its trace."
+        )
     if unmatched:
-        out.append(f"{len(unmatched)} model step{'s' if len(unmatched) != 1 else ''} in the trace ha"
-                   f"{'ve' if len(unmatched) != 1 else 's'} no gateway record (the call went around the gateway, or the "
-                   "log is incomplete).")
+        out.append(
+            f"{len(unmatched)} model step{'s' if len(unmatched) != 1 else ''} in the trace ha"
+            f"{'ve' if len(unmatched) != 1 else 's'} no gateway record (the call went around the gateway, or the "
+            "log is incomplete)."
+        )
     return out
 
 
@@ -619,15 +824,30 @@ def _flag_counts(flags: list[dict]) -> list[dict]:
     return [{"kind": k, "backend": b, "n": n} for (k, b), n in sorted(out.items())]
 
 
-DECIDER_COLOURS = {"code": "var(--heat-3)", "vultr": "var(--st-run)", "jev": "var(--st-quar)",
-                   "recorded": "var(--st-block)", "mock": "var(--st-block)", "human": "var(--st-need)",
-                   "other": "var(--st-pause)"}
+DECIDER_COLOURS = {
+    "code": "var(--heat-3)",
+    "vultr": "var(--st-run)",
+    "jev": "var(--st-quar)",
+    "recorded": "var(--st-block)",
+    "mock": "var(--st-block)",
+    "human": "var(--st-need)",
+    "other": "var(--st-pause)",
+}
 PURPOSE_MAP = [
     {"purpose": "screen", "from": "gateway purpose screen: Jev + the Vultr content-safety model on page content"},
-    {"purpose": "decide", "from": "gateway purpose decision (Jev); a chat call on an action gate or a loop decide step"},
-    {"purpose": "plan", "from": "a chat call on a loop propose/gather/revise step or an S1/S2 act; engine purpose phase1-4.*, *prd*"},
+    {
+        "purpose": "decide",
+        "from": "gateway purpose decision (Jev); a chat call on an action gate or a loop decide step",
+    },
+    {
+        "purpose": "plan",
+        "from": "a chat call on a loop propose/gather/revise step or an S1/S2 act; engine purpose phase1-4.*, *prd*",
+    },
     {"purpose": "critique", "from": "a chat call on a loop critique step; engine purpose critic.*"},
-    {"purpose": "extract", "from": "a chat call on a step whose tool extracts or that emits value_ids; engine purpose extract.*, phase5.*"},
+    {
+        "purpose": "extract",
+        "from": "a chat call on a step whose tool extracts or that emits value_ids; engine purpose extract.*, phase5.*",
+    },
     {"purpose": "verify", "from": "a chat call on a verify step or a loop check; engine purpose verify*, vision*"},
     {"purpose": "chat", "from": "a chat call that joins no step and names no engine purpose"},
 ]
@@ -647,8 +867,15 @@ def summary(case, run_id: str | None, all_cases=None) -> dict | None:
         text = f"Inference: {m['n_calls']} calls · {pct}"
         if m["unattributed"]["n"]:
             text += f" · {m['unattributed']['n']} unattributed"
-    return {"href": href, "text": text, "unattributed": m["unattributed"]["n"], "pct_vultr": m["pct_vultr"],
-            "n_calls": m["n_calls"], "n_flags": m["n_flags"], "mounted": m["log"]["mounted"]}
+    return {
+        "href": href,
+        "text": text,
+        "unattributed": m["unattributed"]["n"],
+        "pct_vultr": m["pct_vultr"],
+        "n_calls": m["n_calls"],
+        "n_flags": m["n_flags"],
+        "mounted": m["log"]["mounted"],
+    }
 
 
 def global_model(settings) -> dict:
@@ -669,38 +896,68 @@ def global_model(settings) -> dict:
                 m = model(c, rid, cases)
             except SAFE_ERRORS:
                 continue
-            rows.append({"case_id": c.id, "title": c.title, "run_id": rid, "n_calls": m["n_calls"],
-                         "n_reasoning": m["n_reasoning"], "pct_vultr": m["pct_vultr"], "usd": m["usd_total"],
-                         "input_tokens": m["input_tokens"], "output_tokens": m["output_tokens"],
-                         "unattributed": m["unattributed"]["n"], "unmatched_steps": m["unattributed"]["n_steps"],
-                         "n_window": m["unattributed"]["n_window"], "n_flags": m["n_flags"],
-                         "n_harness": m["actors"]["n_harness"], "deciders": m["decider_counts"],
-                         "href": f"/cases/{c.id}/{SLUG}?run={quote(rid)}"})
+            rows.append(
+                {
+                    "case_id": c.id,
+                    "title": c.title,
+                    "run_id": rid,
+                    "n_calls": m["n_calls"],
+                    "n_reasoning": m["n_reasoning"],
+                    "pct_vultr": m["pct_vultr"],
+                    "usd": m["usd_total"],
+                    "input_tokens": m["input_tokens"],
+                    "output_tokens": m["output_tokens"],
+                    "unattributed": m["unattributed"]["n"],
+                    "unmatched_steps": m["unattributed"]["n_steps"],
+                    "n_window": m["unattributed"]["n_window"],
+                    "n_flags": m["n_flags"],
+                    "n_harness": m["actors"]["n_harness"],
+                    "deciders": m["decider_counts"],
+                    "href": f"/cases/{c.id}/{SLUG}?run={quote(rid)}",
+                }
+            )
     orphans = []
     for rec in log["records"]:
         sid = str(rec.get("step_id") or "")
         if not sid or sid not in known:
-            orphans.append(_call_row(rec, None, "", None) | {"run_id": rec.get("run_id"),
-                                                             "why": "no step_id" if not sid else "step_id matches no step"})
+            orphans.append(
+                _call_row(rec, None, "", None)
+                | {"run_id": rec.get("run_id"), "why": "no step_id" if not sid else "step_id matches no step"}
+            )
     joined = [rec for rec in log["records"] if str(rec.get("step_id") or "") in known]
     reasoning = [r for r in joined if str(r.get("purpose") or "").lower() != "screen"]
     n_vultr = sum(1 for r in reasoning if str(r.get("upstream") or "").lower() == "vultr")
     usd = [x for x in (_num(r.get("est_usd")) for r in log["records"]) if x is not None]
     empty = None
     if not log["mounted"]:
-        empty = gap(None, f"The gateway call log is not mounted (gap {R19}: {R19_DESC}). Set {LOG_ENV} to the gateway's "
-                          "calls JSONL, read-only; per-run decisions and flags still show on each case's Inference view.",
-                    LOG_ENV)
-    return {"log": {k: v for k, v in log.items() if k != "records"}, "rows": rows, "n_cases": len(cases),
-            "n_calls": log["n_records"], "n_joined": len(joined), "n_reasoning": len(reasoning),
-            "n_reasoning_vultr": n_vultr, "pct_vultr": _pct(n_vultr, len(reasoning)),
-            "usd_total": round(sum(usd), 8) if usd else None,
-            "input_tokens": sum(int(_num(r.get("input_tokens")) or 0) for r in log["records"]),
-            "output_tokens": sum(int(_num(r.get("output_tokens")) or 0) for r in log["records"]),
-            "orphans": orphans[:200], "n_orphans": len(orphans) if log["mounted"] else None,
-            "n_unattributed": (len(orphans) + sum(r["unmatched_steps"] for r in rows)) if log["mounted"] else None,
-            "n_flags": sum(r["n_flags"] for r in rows), "n_harness": sum(r["n_harness"] for r in rows),
-            "purpose_map": PURPOSE_MAP, "empty": empty, "contract_request": CONTRACT_REQUEST, "sources": SOURCES}
+        empty = gap(
+            None,
+            f"The gateway call log is not mounted (gap {R19}: {R19_DESC}). Set {LOG_ENV} to the gateway's "
+            "calls JSONL, read-only; per-run decisions and flags still show on each case's Inference view.",
+            LOG_ENV,
+        )
+    return {
+        "log": {k: v for k, v in log.items() if k != "records"},
+        "rows": rows,
+        "n_cases": len(cases),
+        "n_calls": log["n_records"],
+        "n_joined": len(joined),
+        "n_reasoning": len(reasoning),
+        "n_reasoning_vultr": n_vultr,
+        "pct_vultr": _pct(n_vultr, len(reasoning)),
+        "usd_total": round(sum(usd), 8) if usd else None,
+        "input_tokens": sum(int(_num(r.get("input_tokens")) or 0) for r in log["records"]),
+        "output_tokens": sum(int(_num(r.get("output_tokens")) or 0) for r in log["records"]),
+        "orphans": orphans[:200],
+        "n_orphans": len(orphans) if log["mounted"] else None,
+        "n_unattributed": (len(orphans) + sum(r["unmatched_steps"] for r in rows)) if log["mounted"] else None,
+        "n_flags": sum(r["n_flags"] for r in rows),
+        "n_harness": sum(r["n_harness"] for r in rows),
+        "purpose_map": PURPOSE_MAP,
+        "empty": empty,
+        "contract_request": CONTRACT_REQUEST,
+        "sources": SOURCES,
+    }
 
 
 def install(ctx: VizContext) -> None:

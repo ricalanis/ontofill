@@ -16,58 +16,200 @@ from ontofill_console.web import create_app, settings_from_env
 BAD = ("built-in method", "Undefined", "Traceback")
 
 EMPTY = {"type": ["object", "null"], "required": ["what", "source", "row", "row_desc"]}
-SHARE = {"type": "array", "items": {"type": "object", "required": ["key", "label", "n", "pct", "usd", "css"],
-                                    "properties": {"n": {"type": "integer", "minimum": 1}, "pct": {"type": "number"},
-                                                   "usd": {"type": ["number", "null"]}}}}
-PHASE = {"type": "object", "required": ["n", "name", "state", "css", "current", "steps", "elapsed_s", "elapsed", "usd",
-                                        "checkpoint", "reopened"],
-         "properties": {"state": {"enum": ["done", "current", "paused", "failed", "pending"]},
-                        "steps": {"type": "integer"}, "reopened": {"type": "integer"},
-                        "usd": {"type": ["number", "null"]}, "elapsed_s": {"type": ["number", "null"]}}}
-CELL = {"type": "object", "required": ["role", "text", "cls"],
-        "properties": {"role": {"enum": ["propose", "critique", "revise", "check"]},
-                       "cls": {"enum": ["ok", "obj", "fail", "none"]}}}
-THREAD = {"type": "object", "required": ["id", "label", "phase", "n_iterations", "n_objections", "stop_label", "usd",
-                                         "iterations"],
-          "properties": {"iterations": {"type": "array", "items": {
-              "type": "object", "required": ["n", "cells", "objections", "stop", "step_id"],
-              "properties": {"cells": {"type": "array", "items": CELL, "minItems": 4, "maxItems": 4},
-                             "objections": {"type": "array", "items": {"type": "object",
-                                                                       "required": ["text", "resolution"]}}}}}}}
-RUN = {"type": "object", "required": ["run_id", "state", "status", "kind", "live", "replay", "recorded", "latest",
-                                      "selected", "detail", "when", "href"],
-       "properties": {"state": {"enum": ["run", "pause", "block", "done", "none"]},
-                      "kind": {"enum": ["live", "replay", "recorded", "run"]}, "href": {"pattern": "^/cases/"}}}
-OPERATION = {"type": "object",
-             "required": ["case_id", "question", "run_id", "runs", "n_runs", "run_href", "pipe", "threads", "reopens",
-                          "deciders", "modes", "live_view", "n_steps", "usd_total", "priced_steps", "empty", "sources"],
-             "properties": {"runs": {"type": "array", "items": RUN}, "pipe": {"type": "array", "items": PHASE},
-                            "threads": {"type": "array", "items": THREAD}, "deciders": SHARE, "modes": SHARE,
-                            "live_view": {"type": "array", "items": {"type": "object", "required": ["label", "url"]}},
-                            "n_steps": {"type": "integer"}, "usd_total": {"type": ["number", "null"]}, "empty": EMPTY}}
-CARD = {"type": "object",
-        "required": ["source_id", "url", "path", "mode", "verdict", "verdicts", "ts", "step_id", "step_href", "img",
-                     "screenshot_key", "captures"],
-        "properties": {"verdict": {"enum": ["quarantined", "failed", "killed", "stopped", "not_achieved", "uncertain",
-                                            "achieved", "captured"]},
-                       "img": {"type": ["string", "null"], "pattern": "^/cases/[a-z0-9-]+/bronze/"}}}
-PAGES = {"type": "object",
-         "required": ["case_id", "run_id", "feed", "groups", "n_pages", "n_shown", "n_sources", "n_images",
-                      "source_filters", "verdict_filters", "n_site_graphs", "empty", "graph_empty", "live_view_url"],
-         "properties": {"groups": {"type": "array", "items": {
-             "type": "object", "required": ["source_id", "n_pages", "cards", "more", "site_graph", "live_view_url"],
-             "properties": {"cards": {"type": "array", "items": CARD}}}},
-             "n_pages": {"type": "integer"}, "empty": EMPTY, "graph_empty": EMPTY}}
+SHARE = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["key", "label", "n", "pct", "usd", "css"],
+        "properties": {
+            "n": {"type": "integer", "minimum": 1},
+            "pct": {"type": "number"},
+            "usd": {"type": ["number", "null"]},
+        },
+    },
+}
+PHASE = {
+    "type": "object",
+    "required": [
+        "n",
+        "name",
+        "state",
+        "css",
+        "current",
+        "steps",
+        "elapsed_s",
+        "elapsed",
+        "usd",
+        "checkpoint",
+        "reopened",
+    ],
+    "properties": {
+        "state": {"enum": ["done", "current", "paused", "failed", "pending"]},
+        "steps": {"type": "integer"},
+        "reopened": {"type": "integer"},
+        "usd": {"type": ["number", "null"]},
+        "elapsed_s": {"type": ["number", "null"]},
+    },
+}
+CELL = {
+    "type": "object",
+    "required": ["role", "text", "cls"],
+    "properties": {
+        "role": {"enum": ["propose", "critique", "revise", "check"]},
+        "cls": {"enum": ["ok", "obj", "fail", "none"]},
+    },
+}
+THREAD = {
+    "type": "object",
+    "required": ["id", "label", "phase", "n_iterations", "n_objections", "stop_label", "usd", "iterations"],
+    "properties": {
+        "iterations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["n", "cells", "objections", "stop", "step_id"],
+                "properties": {
+                    "cells": {"type": "array", "items": CELL, "minItems": 4, "maxItems": 4},
+                    "objections": {"type": "array", "items": {"type": "object", "required": ["text", "resolution"]}},
+                },
+            },
+        }
+    },
+}
+RUN = {
+    "type": "object",
+    "required": [
+        "run_id",
+        "state",
+        "status",
+        "kind",
+        "live",
+        "replay",
+        "recorded",
+        "latest",
+        "selected",
+        "detail",
+        "when",
+        "href",
+    ],
+    "properties": {
+        "state": {"enum": ["run", "pause", "block", "done", "none"]},
+        "kind": {"enum": ["live", "replay", "recorded", "run"]},
+        "href": {"pattern": "^/cases/"},
+    },
+}
+OPERATION = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "question",
+        "run_id",
+        "runs",
+        "n_runs",
+        "run_href",
+        "pipe",
+        "threads",
+        "reopens",
+        "deciders",
+        "modes",
+        "live_view",
+        "n_steps",
+        "usd_total",
+        "priced_steps",
+        "empty",
+        "sources",
+    ],
+    "properties": {
+        "runs": {"type": "array", "items": RUN},
+        "pipe": {"type": "array", "items": PHASE},
+        "threads": {"type": "array", "items": THREAD},
+        "deciders": SHARE,
+        "modes": SHARE,
+        "live_view": {"type": "array", "items": {"type": "object", "required": ["label", "url"]}},
+        "n_steps": {"type": "integer"},
+        "usd_total": {"type": ["number", "null"]},
+        "empty": EMPTY,
+    },
+}
+CARD = {
+    "type": "object",
+    "required": [
+        "source_id",
+        "url",
+        "path",
+        "mode",
+        "verdict",
+        "verdicts",
+        "ts",
+        "step_id",
+        "step_href",
+        "img",
+        "screenshot_key",
+        "captures",
+    ],
+    "properties": {
+        "verdict": {
+            "enum": ["quarantined", "failed", "killed", "stopped", "not_achieved", "uncertain", "achieved", "captured"]
+        },
+        "img": {"type": ["string", "null"], "pattern": "^/cases/[a-z0-9-]+/bronze/"},
+    },
+}
+PAGES = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "run_id",
+        "feed",
+        "groups",
+        "n_pages",
+        "n_shown",
+        "n_sources",
+        "n_images",
+        "source_filters",
+        "verdict_filters",
+        "n_site_graphs",
+        "empty",
+        "graph_empty",
+        "live_view_url",
+    ],
+    "properties": {
+        "groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["source_id", "n_pages", "cards", "more", "site_graph", "live_view_url"],
+                "properties": {"cards": {"type": "array", "items": CARD}},
+            },
+        },
+        "n_pages": {"type": "integer"},
+        "empty": EMPTY,
+        "graph_empty": EMPTY,
+    },
+}
 
 SITE_GRAPH = {  # the proposed CONTRACT v1.0.3 shape (coord/status/codex-ontofill.md), synthetic
-    "schema_version": "1.0.3", "bronze_key": "sha256:" + "0" * 64, "generated_by": {"backend": "recorded"},
+    "schema_version": "1.0.3",
+    "bronze_key": "sha256:" + "0" * 64,
+    "generated_by": {"backend": "recorded"},
     "graph": {
-        "source_id": "registry-example", "source_url": "https://bibliotecas-registro.example/",
-        "crawl": {"attempted_pages": 5, "fetched_pages": 5, "max_depth": 2, "page_cap": 40, "stop_reason": "queue_exhausted"},
+        "source_id": "registry-example",
+        "source_url": "https://bibliotecas-registro.example/",
+        "crawl": {
+            "attempted_pages": 5,
+            "fetched_pages": 5,
+            "max_depth": 2,
+            "page_cap": 40,
+            "stop_reason": "queue_exhausted",
+        },
         "types": [
             {"id": "home", "url_template": "/", "label": "listing", "property_hints": []},
-            {"id": "detail", "url_template": "/ficha/{code}", "label": "detail", "class_id": "library",
-             "property_hints": ["name", "address"]},
+            {
+                "id": "detail",
+                "url_template": "/ficha/{code}",
+                "label": "detail",
+                "class_id": "library",
+                "property_hints": ["name", "address"],
+            },
             {"id": "search", "url_template": "/buscar?q={q}", "label": "search", "property_hints": []},
         ],
         "instances": [
@@ -77,17 +219,39 @@ SITE_GRAPH = {  # the proposed CONTRACT v1.0.3 shape (coord/status/codex-ontofil
             {"url": "https://bibliotecas-registro.example/buscar?q=a", "type_id": "search", "depth": 1},
         ],
         "edges": [
-            {"from_url": "https://bibliotecas-registro.example/", "to_url": "https://bibliotecas-registro.example/ficha/ZZ-LIB-0001",
-             "method": "GET", "risk_tier": "SAFE", "followed": True},
-            {"from_url": "https://bibliotecas-registro.example/", "to_url": "https://bibliotecas-registro.example/ficha/ZZ-LIB-0002",
-             "method": "GET", "risk_tier": "SAFE", "followed": True},
-            {"from_url": "https://bibliotecas-registro.example/", "to_url": "https://bibliotecas-registro.example/buscar?q=a",
-             "method": "GET", "risk_tier": "SAFE", "followed": True},
-            {"from_url": "https://bibliotecas-registro.example/buscar?q=a",
-             "to_url": "https://bibliotecas-registro.example/ficha/ZZ-LIB-0001", "followed": False, "reason": "depth_limit"},
+            {
+                "from_url": "https://bibliotecas-registro.example/",
+                "to_url": "https://bibliotecas-registro.example/ficha/ZZ-LIB-0001",
+                "method": "GET",
+                "risk_tier": "SAFE",
+                "followed": True,
+            },
+            {
+                "from_url": "https://bibliotecas-registro.example/",
+                "to_url": "https://bibliotecas-registro.example/ficha/ZZ-LIB-0002",
+                "method": "GET",
+                "risk_tier": "SAFE",
+                "followed": True,
+            },
+            {
+                "from_url": "https://bibliotecas-registro.example/",
+                "to_url": "https://bibliotecas-registro.example/buscar?q=a",
+                "method": "GET",
+                "risk_tier": "SAFE",
+                "followed": True,
+            },
+            {
+                "from_url": "https://bibliotecas-registro.example/buscar?q=a",
+                "to_url": "https://bibliotecas-registro.example/ficha/ZZ-LIB-0001",
+                "followed": False,
+                "reason": "depth_limit",
+            },
         ],
-        "coverage": {"target": ["name", "address", "opening_hours"], "hinted": ["name", "address"],
-                     "uncovered": ["opening_hours"]},
+        "coverage": {
+            "target": ["name", "address", "opening_hours"],
+            "hinted": ["name", "address"],
+            "uncovered": ["opening_hours"],
+        },
     },
 }
 
@@ -154,8 +318,9 @@ def test_operation_live_replay_and_no_cost(cases_dir, make_client):
     for s in steps:
         s.pop("usage", None)
     (lake / rid / "trace.live.jsonl").write_text("".join(json.dumps(s) + "\n" for s in steps[:10]))
-    (lake / rid / "status.json").write_text(json.dumps({"run_id": rid, "state": "running", "phase": 1,
-                                                       "updated_at": "2026-09-26T19:00:00+00:00"}))
+    (lake / rid / "status.json").write_text(
+        json.dumps({"run_id": rid, "state": "running", "phase": 1, "updated_at": "2026-09-26T19:00:00+00:00"})
+    )
     (lake / "latest.json").write_text(json.dumps({"run_id": rid}))
     c = make_client()
     m = c.get("/cases/libraries/api/viz/operation").json()
@@ -248,7 +413,9 @@ def server(cases_dir):
     d = cases_dir / "libraries" / "case" / "03-fanout" / "surface-map" / "registry-example"
     d.mkdir(parents=True)
     (d / "site-graph.json").write_text(json.dumps(SITE_GRAPH))
-    app = create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local"}))
+    app = create_app(
+        settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local"})
+    )
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8493, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
@@ -262,8 +429,13 @@ def server(cases_dir):
 @pytest.mark.ui
 def test_no_horizontal_scroll(server):
     playwright = pytest.importorskip("playwright.sync_api")
-    urls = ["/cases/libraries/operation", "/cases/parks/operation", "/cases/libraries/pages", "/cases/parks/pages",
-            "/cases/libraries/pages?verdict=quarantined"]
+    urls = [
+        "/cases/libraries/operation",
+        "/cases/parks/operation",
+        "/cases/libraries/pages",
+        "/cases/parks/pages",
+        "/cases/libraries/pages?verdict=quarantined",
+    ]
     with playwright.sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()

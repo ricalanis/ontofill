@@ -26,4 +26,4 @@ def test_question_on_list_overview_and_every_review(client, cases_dir):
 def test_case_without_brief_says_so(client, cases_dir):
     (cases_dir / "parks" / "case" / "brief.md").unlink()
     page = client.get("/cases/parks").text
-    assert "has no <span class=\"mono\">brief.md</span> yet" in page
+    assert 'has no <span class="mono">brief.md</span> yet' in page

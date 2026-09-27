@@ -36,10 +36,25 @@ def iso(dt: datetime) -> str:
 def append_steps(cases_dir, n: int, start: int, when: datetime) -> None:
     with (run_dir(cases_dir) / "trace.live.jsonl").open("a") as f:
         for i in range(n):
-            f.write(json.dumps({"step_id": f"step:{RUN}:live{start + i:04d}", "run_id": RUN, "phase": 5,
-                                "source_id": "registry-example", "objective_id": "profile", "mode": "D1",
-                                "observed": "page loaded", "requested": "extract hours", "executed": "extract",
-                                "evaluated": "ok", "value_ids": [], "ts": iso(when + timedelta(seconds=i))}) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "step_id": f"step:{RUN}:live{start + i:04d}",
+                        "run_id": RUN,
+                        "phase": 5,
+                        "source_id": "registry-example",
+                        "objective_id": "profile",
+                        "mode": "D1",
+                        "observed": "page loaded",
+                        "requested": "extract hours",
+                        "executed": "extract",
+                        "evaluated": "ok",
+                        "value_ids": [],
+                        "ts": iso(when + timedelta(seconds=i)),
+                    }
+                )
+                + "\n"
+            )
 
 
 LIVE_ATTR = re.compile(r'data-live-root data-live="(\d)"')
@@ -55,7 +70,12 @@ def test_is_live_rule():
     assert not op.is_live({"state": "failed", "updated_at": iso(now)}, now)
     assert not op.is_live({}, now)
     m = op.live_marker(True, "2026-09-26T18:40:05+00:00")
-    assert m == {"on": True, "updated_at": "2026-09-26T18:40:05+00:00", "hhmmss": "18:40:05", "poll_ms": op.LIVE_POLL_MS}
+    assert m == {
+        "on": True,
+        "updated_at": "2026-09-26T18:40:05+00:00",
+        "hhmmss": "18:40:05",
+        "poll_ms": op.LIVE_POLL_MS,
+    }
 
 
 # server side: markers for a running run, none for a finished one ------------------------------------------------------
@@ -100,7 +120,9 @@ def test_stale_paused_fixture_and_empty_case_are_static(client):
 # browser: regions update in place while running; a done run makes no requests ---------------------------------------
 @pytest.fixture
 def server(cases_dir):
-    app = create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local"}))
+    app = create_app(
+        settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local"})
+    )
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -147,10 +169,14 @@ def test_operation_and_inbox_stream_in_place(server, cases_dir):
         set_status(cases_dir, state="running", updated_at=iso(t0 + timedelta(seconds=10)))
         page.wait_for_function(
             f"""() => {{ const li = document.querySelector('[data-live-region="pipe"] li[data-k="phase-5"]');
-                        return li && !li.textContent.includes('{before_steps} steps'); }}""", timeout=8000)
+                        return li && !li.textContent.includes('{before_steps} steps'); }}""",
+            timeout=8000,
+        )
         assert p5_steps(page) == before_steps + 3
-        page.wait_for_function(f"() => document.querySelector('[data-live-updated]').textContent.trim() !== {json.dumps(before_time.strip())}",
-                               timeout=8000)
+        page.wait_for_function(
+            f"() => document.querySelector('[data-live-updated]').textContent.trim() !== {json.dumps(before_time.strip())}",
+            timeout=8000,
+        )
         assert page.evaluate("window.__noReload") == 1
         assert updated(page) != before_time
         # The runs region was swapped (its age ticked) and focus stayed on the same link.
@@ -166,12 +192,15 @@ def test_operation_and_inbox_stream_in_place(server, cases_dir):
         pending.mkdir(parents=True)
         (pending / "APPROVAL_PENDING.md").write_text(
             "---\nphase: 5\ncheckpoint: action\nrequested_at: '" + iso(datetime.now(UTC)) + "'\n"
-            "intended_action: submit the live-test search\nreason: live streaming test\n---\n# Approval pending\n")
+            "intended_action: submit the live-test search\nreason: live streaming test\n---\n# Approval pending\n"
+        )
         append_steps(cases_dir, 1, 10, t0 + timedelta(seconds=15))
         set_status(cases_dir, state="running", updated_at=iso(t0 + timedelta(seconds=16)))
         page.wait_for_selector("text=submit the live-test search", timeout=8000)
-        page.wait_for_function(f"() => document.querySelector('[data-live-updated]').textContent.trim() !== {json.dumps(before_time.strip())}",
-                               timeout=8000)
+        page.wait_for_function(
+            f"() => document.querySelector('[data-live-updated]').textContent.trim() !== {json.dumps(before_time.strip())}",
+            timeout=8000,
+        )
         assert page.evaluate("window.__noReload") == 1
         assert int(page.locator('.masthead a[href="/inbox"] .count').inner_text()) == int(count_before) + 1
 
@@ -202,7 +231,10 @@ def test_done_run_makes_no_polling_requests(server, cases_dir):
         page = browser.new_page()
         for path in ("/cases/libraries/operation", "/inbox"):
             hits = []
-            page.on("request", lambda r, hits=hits, path=path: hits.append(r.url) if r.url.split("?")[0].endswith(path) else None)
+            page.on(
+                "request",
+                lambda r, hits=hits, path=path: hits.append(r.url) if r.url.split("?")[0].endswith(path) else None,
+            )
             page.goto(server + path)
             page.wait_for_timeout(5000)
             assert len(hits) == 1, (path, hits)  # the navigation itself, nothing after

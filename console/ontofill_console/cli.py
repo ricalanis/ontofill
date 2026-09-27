@@ -51,7 +51,9 @@ def _serve(args: argparse.Namespace) -> int:
 def _replay(args: argparse.Namespace) -> int:
     scratch = _scratch_copy(Path(args.lake), args.scratch)
     replayer = live.Replayer(scratch, args.run_id, duration=args.duration, new_run_id=args.new_run_id)
-    print(f"replaying {replayer.run.run_id} -> {replayer.new_run_id} in scratch lake {scratch} over {args.duration:.0f}s")
+    print(
+        f"replaying {replayer.run.run_id} -> {replayer.new_run_id} in scratch lake {scratch} over {args.duration:.0f}s"
+    )
     replayer.play()
     return 0
 

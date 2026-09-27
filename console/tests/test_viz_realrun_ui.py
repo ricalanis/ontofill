@@ -18,12 +18,28 @@ from ontofill_console.web import create_app, settings_from_env
 pytestmark = pytest.mark.ui
 playwright = pytest.importorskip("playwright.sync_api")
 
-HEAVY = {"run": f"/cases/{CASE}/runs/{RUN}", "operation": f"/cases/{CASE}/operation",
-         "failures": f"/cases/{CASE}/failures", "graph": f"/cases/{CASE}/graph", "inbox": "/inbox"}
-PAGES = [*HEAVY.values(), f"/cases/{CASE}", f"/cases/{CASE}/runs", f"/cases/{CASE}/definition",
-         f"/cases/{CASE}/discovery", f"/cases/{CASE}/pages", f"/cases/{CASE}/sites", f"/cases/{CASE}/output",
-         f"/cases/{CASE}/entities", f"/cases/{CASE}/entities/{_entity_id('L-103')}", f"/cases/{CASE}/cost",
-         f"/cases/{CASE}/learning", f"/cases/{CASE}/compare"]
+HEAVY = {
+    "run": f"/cases/{CASE}/runs/{RUN}",
+    "operation": f"/cases/{CASE}/operation",
+    "failures": f"/cases/{CASE}/failures",
+    "graph": f"/cases/{CASE}/graph",
+    "inbox": "/inbox",
+}
+PAGES = [
+    *HEAVY.values(),
+    f"/cases/{CASE}",
+    f"/cases/{CASE}/runs",
+    f"/cases/{CASE}/definition",
+    f"/cases/{CASE}/discovery",
+    f"/cases/{CASE}/pages",
+    f"/cases/{CASE}/sites",
+    f"/cases/{CASE}/output",
+    f"/cases/{CASE}/entities",
+    f"/cases/{CASE}/entities/{_entity_id('L-103')}",
+    f"/cases/{CASE}/cost",
+    f"/cases/{CASE}/learning",
+    f"/cases/{CASE}/compare",
+]
 
 
 def free_port() -> int:
@@ -34,8 +50,11 @@ def free_port() -> int:
 
 @pytest.fixture
 def server(cases_dir):
-    app = create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_with_realrun(cases_dir),
-                                        "ONTOFILL_CONSOLE_IDENTITY": "local"}))
+    app = create_app(
+        settings_from_env(
+            {"ONTOFILL_CONSOLE_CASES": spec_with_realrun(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local"}
+        )
+    )
     port = free_port()
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
@@ -52,8 +71,9 @@ def test_real_run_pages_fit(server, width):
     shots = os.environ.get("REALRUN_SHOTS")
     with playwright.sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": width, "height": 900},
-                                color_scheme="dark" if width == 1280 else "light")
+        page = browser.new_page(
+            viewport={"width": width, "height": 900}, color_scheme="dark" if width == 1280 else "light"
+        )
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         for url in PAGES:

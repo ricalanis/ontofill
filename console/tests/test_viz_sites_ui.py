@@ -15,8 +15,12 @@ from ontofill_console.web import create_app, settings_from_env
 pytestmark = pytest.mark.ui
 playwright = pytest.importorskip("playwright.sync_api")
 
-PAGES = ("/cases/libraries/sites", f"/cases/libraries/sites/{SOURCE}", "/cases/parks/sites",
-         "/cases/libraries/sites/empty-example")
+PAGES = (
+    "/cases/libraries/sites",
+    f"/cases/libraries/sites/{SOURCE}",
+    "/cases/parks/sites",
+    "/cases/libraries/sites/empty-example",
+)
 
 
 def free_port() -> int:

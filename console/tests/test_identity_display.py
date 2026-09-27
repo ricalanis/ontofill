@@ -11,8 +11,11 @@ EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)*")
 
 
 def _client(cases_dir, mode):
-    return TestClient(create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
-                                                    "ONTOFILL_CONSOLE_IDENTITY": mode})))
+    return TestClient(
+        create_app(
+            settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": mode})
+        )
+    )
 
 
 def _masthead(html):
@@ -20,8 +23,11 @@ def _masthead(html):
 
 
 def test_masthead_never_shows_an_email(cases_dir):
-    for mode, headers in (("sso", {"X-NetBird-User": "ana@example.org"}), ("sso-group", {"X-NetBird-Groups": "approvers"}),
-                          ("local", {})):
+    for mode, headers in (
+        ("sso", {"X-NetBird-User": "ana@example.org"}),
+        ("sso-group", {"X-NetBird-Groups": "approvers"}),
+        ("local", {}),
+    ):
         head = _masthead(_client(cases_dir, mode).get("/inbox", headers=headers).text)
         assert not EMAIL.search(head), (mode, head)
         assert "ana@" not in head

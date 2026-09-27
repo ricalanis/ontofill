@@ -38,7 +38,7 @@ def log_lines(cases_dir):
 
 def test_page_shows_signer_and_digests(client):
     html = client.get(PRD_PAGE, headers=IDENTITY).text
-    assert "Signing as <strong class=\"mono\">ana@example.org</strong>" in html
+    assert 'Signing as <strong class="mono">ana@example.org</strong>' in html
     assert 'name="approver"' not in html  # no typed name in SSO mode
     d = digests(html)
     assert set(d) == {"artifact_sha256.01-scope/prd.json", "artifact_sha256.01-scope/prd.md"}
@@ -103,8 +103,12 @@ def test_deny_needs_a_reason(client, cases_dir):
 
 
 def test_factors_and_action_shapes(client, cases_dir):
-    f = form(client, page="/cases/libraries/approvals/02-ontology/factors", decision="approve",
-             **{"decision.operator_kind": "accept", "decision.service_level": "reject"})
+    f = form(
+        client,
+        page="/cases/libraries/approvals/02-ontology/factors",
+        decision="approve",
+        **{"decision.operator_kind": "accept", "decision.service_level": "reject"},
+    )
     assert post(client, f).status_code == 303
     marker = json.loads(case_path(cases_dir, "02-ontology", "factors", "APPROVED").read_text())
     assert marker["decisions"] == {"operator_kind": "accept", "service_level": "reject"}

@@ -22,13 +22,20 @@ from .operation import safe_url
 
 ORDER = 40
 KEY, SLUG, LABEL = "pages", "pages", "Pages visited"
-SOURCES = ("runs/<case>/<run>/trace.live.jsonl · bronze/sha256/<hex>.meta.json · jobs.jsonl · "
-           "03-fanout/surface-map/<source>/site-graph.json")
+SOURCES = (
+    "runs/<case>/<run>/trace.live.jsonl · bronze/sha256/<hex>.meta.json · jobs.jsonl · "
+    "03-fanout/surface-map/<source>/site-graph.json"
+)
 VERDICTS = [  # key, label, state css; most notable first
-    ("quarantined", "quarantined", "quar"), ("failed", "failed", "block"), ("killed", "stopped by a limit", "block"),
+    ("quarantined", "quarantined", "quar"),
+    ("failed", "failed", "block"),
+    ("killed", "stopped by a limit", "block"),
     ("stopped", "stopped (hard stop)", "block"),
-    ("not_achieved", "not achieved", "block"), ("uncertain", "uncertain", "pause"), ("achieved", "achieved", "done"),
-    ("captured", "captured", "none")]
+    ("not_achieved", "not achieved", "block"),
+    ("uncertain", "uncertain", "pause"),
+    ("achieved", "achieved", "done"),
+    ("captured", "captured", "none"),
+]
 RANK = {k: i for i, (k, _, _) in enumerate(VERDICTS)}
 VERDICT_CSS = {k: css for k, _, css in VERDICTS}
 VERDICT_LABEL = {k: label for k, label, _ in VERDICTS}
@@ -63,7 +70,9 @@ def verdict_of(step: dict) -> str:
 
 def _captures(step: dict, run) -> list[dict]:
     """(url, screenshot_key, bronze_key) triples this step touched: its own fields, then its values' evidence."""
-    shot = step.get("screenshot_key") or (step.get("detail") or {}).get("screenshot_key") or _field(step, "screenshot_key")
+    shot = (
+        step.get("screenshot_key") or (step.get("detail") or {}).get("screenshot_key") or _field(step, "screenshot_key")
+    )
     bkey = _field(step, "bronze_key") or _field(step, "html_key")
     url = _field(step, "url") or _field(step, "final_url") or _field(step, "requested_url")
     out = []
@@ -72,10 +81,17 @@ def _captures(step: dict, run) -> list[dict]:
     if run is not None:
         for vid in step.get("value_ids") or []:
             ref = run.values.get(vid)
-            for e in ((ref.data.get("evidence") if ref else None) or []):
+            for e in (ref.data.get("evidence") if ref else None) or []:
                 if isinstance(e, dict) and (e.get("url") or e.get("screenshot_key")):
-                    out.append({"url": e.get("url"), "shot": e.get("screenshot_key"), "bronze": e.get("bronze_key"),
-                                "source_id": e.get("source_id"), "at": e.get("captured_at")})
+                    out.append(
+                        {
+                            "url": e.get("url"),
+                            "shot": e.get("screenshot_key"),
+                            "bronze": e.get("bronze_key"),
+                            "source_id": e.get("source_id"),
+                            "at": e.get("captured_at"),
+                        }
+                    )
     return out
 
 
@@ -93,11 +109,23 @@ def collect(a: Artifacts, case_id: str, rid: str, steps: list[dict], run) -> lis
             if p is None:
                 parts = urlsplit(url) if url else None
                 p = pages[key] = {
-                    "source_id": src, "url": safe_url(url), "host": parts.hostname if parts else None,
+                    "source_id": src,
+                    "url": safe_url(url),
+                    "host": parts.hostname if parts else None,
                     "path": ((parts.path or "/") + (f"?{parts.query}" if parts.query else "")) if parts else None,
-                    "mode": s.get("mode"), "verdict": v, "ts": s.get("ts") or c.get("at") or meta.get("captured_at"),
-                    "step_id": s.get("step_id"), "phase": s.get("phase"), "screenshot_key": None, "bronze_key": None,
-                    "content_type": None, "captures": 0, "steps": 0, "_steps": set(), "verdicts": []}
+                    "mode": s.get("mode"),
+                    "verdict": v,
+                    "ts": s.get("ts") or c.get("at") or meta.get("captured_at"),
+                    "step_id": s.get("step_id"),
+                    "phase": s.get("phase"),
+                    "screenshot_key": None,
+                    "bronze_key": None,
+                    "content_type": None,
+                    "captures": 0,
+                    "steps": 0,
+                    "_steps": set(),
+                    "verdicts": [],
+                }
             if c["shot"] and not p["screenshot_key"]:
                 smeta = a.bronze_meta(c["shot"])
                 if str(smeta.get("content_type") or "image/").startswith("image/"):
@@ -110,7 +138,9 @@ def collect(a: Artifacts, case_id: str, rid: str, steps: list[dict], run) -> lis
             if v not in p["verdicts"]:
                 p["verdicts"].append(v)
             if RANK[v] < RANK[p["verdict"]]:  # keep the most notable judgement and point at that step
-                p.update(verdict=v, step_id=s.get("step_id"), mode=s.get("mode") or p["mode"], ts=s.get("ts") or p["ts"])
+                p.update(
+                    verdict=v, step_id=s.get("step_id"), mode=s.get("mode") or p["mode"], ts=s.get("ts") or p["ts"]
+                )
     out = []
     for p in pages.values():
         p["steps"] = len(p.pop("_steps"))
@@ -159,9 +189,16 @@ def site_graph(doc, path: str) -> dict | None:
     types, by_id = [], {}
     for n, t in enumerate(types_raw):
         tid = str(t.get("id") or t.get("type_id") or t.get("url_template") or f"type-{n + 1}")
-        node = {"id": tid, "label": str(t.get("label") or t.get("page_type") or t.get("kind") or tid),
-                "class_id": t.get("class_id"), "template": t.get("url_template") or t.get("template"),
-                "hints": _hints(t), "samples": [], "n": 0, "depth": None}
+        node = {
+            "id": tid,
+            "label": str(t.get("label") or t.get("page_type") or t.get("kind") or tid),
+            "class_id": t.get("class_id"),
+            "template": t.get("url_template") or t.get("template"),
+            "hints": _hints(t),
+            "samples": [],
+            "n": 0,
+            "depth": None,
+        }
         for u in t.get("sample_urls") or t.get("samples") or []:
             u = u.get("url") if isinstance(u, dict) else u
             if isinstance(u, str) and len(node["samples"]) < 3:
@@ -249,13 +286,26 @@ def site_graph(doc, path: str) -> dict | None:
         n["sub"] = _clip(f"{n['template'] or ''}", 22) + f" · {n['n']}"
     crawl = g.get("crawl") if isinstance(g.get("crawl"), dict) else {}
     cov = g.get("coverage") if isinstance(g.get("coverage"), dict) else {}
-    return {"path": path, "source_url": g.get("source_url"), "types": types, "edges": edges,
-            "n_types": len(types), "n_edges": sum(e["n"] for e in edges), "n_instances": len(insts),
-            "width": width, "height": height,
-            "crawl": {k: crawl.get(k) for k in ("attempted_pages", "fetched_pages", "max_depth", "page_cap", "stop_reason")
-                      if crawl.get(k) is not None},
-            "coverage": {k: [str(x) for x in cov.get(k) or []] for k in ("target", "hinted", "uncovered")},
-            "generated_by": (doc.get("generated_by") or {}).get("backend") if isinstance(doc.get("generated_by"), dict) else None}
+    return {
+        "path": path,
+        "source_url": g.get("source_url"),
+        "types": types,
+        "edges": edges,
+        "n_types": len(types),
+        "n_edges": sum(e["n"] for e in edges),
+        "n_instances": len(insts),
+        "width": width,
+        "height": height,
+        "crawl": {
+            k: crawl.get(k)
+            for k in ("attempted_pages", "fetched_pages", "max_depth", "page_cap", "stop_reason")
+            if crawl.get(k) is not None
+        },
+        "coverage": {k: [str(x) for x in cov.get(k) or []] for k in ("target", "hinted", "uncovered")},
+        "generated_by": (doc.get("generated_by") or {}).get("backend")
+        if isinstance(doc.get("generated_by"), dict)
+        else None,
+    }
 
 
 def graphs(a: Artifacts) -> dict[str, dict]:
@@ -281,8 +331,9 @@ def _live_links(status: dict, jobs: list[dict]) -> tuple[str | None, dict[str, s
     return safe_url(status.get("live_view_url")), per
 
 
-def model(case, run_id: str | None = None, source: str | None = None, verdict: str | None = None,
-          show_all: bool = False) -> dict:
+def model(
+    case, run_id: str | None = None, source: str | None = None, verdict: str | None = None, show_all: bool = False
+) -> dict:
     a = Artifacts(case)
     base = f"/cases/{case.id}"
     live_ids, gold_ids = a.run_ids(), a.gold_run_ids()
@@ -321,36 +372,82 @@ def model(case, run_id: str | None = None, source: str | None = None, verdict: s
         if not mine and src not in sg:
             continue
         cards = mine if show_all else mine[:PER_SOURCE]
-        groups.append({"source_id": src, "n_pages": len(mine), "cards": cards, "more": len(mine) - len(cards),
-                       "n_images": sum(1 for p in mine if p["img"]),
-                       "site_graph": sg.get(src), "live_view_url": per_source.get(src)})
-    m = {"case_id": case.id, "question": case.brief, "run_id": rid, "feed": feed if rid else None,
-         "run_href": f"{base}/runs/{quote(rid)}" if rid and rid in live_ids else None,
-         "runs": sorted(set(live_ids) | set(gold_ids), reverse=True), "sources": SOURCES,
-         "backend": backend_of((status or {}).get("metrics") or (run.metrics if run else None), [*steps, status]),
-         "filter": {"source": source, "verdict": verdict, "all": show_all},
-         "source_filters": [{"source_id": s, "n": sum(1 for p in pages if p["source_id"] == s), "href": href(source=s),
-                             "active": s == source} for s in sources],
-         "verdict_filters": [{"verdict": k, "label": VERDICT_LABEL[k], "css": VERDICT_CSS[k], "n": n,
-                              "href": href(verdict=k), "active": k == verdict} for k, n in counts.items() if n],
-         "clear_source": href(source=None), "clear_verdict": href(verdict=None), "all_href": href(all="1"),
-         "n_pages": len(pages), "n_shown": len(shown), "n_sources": len({p["source_id"] for p in pages}),
-         "n_images": sum(1 for p in pages if p["img"]), "groups": groups, "live_view_url": run_live,
-         "n_site_graphs": sum(1 for g in sg.values() if not g.get("invalid")),
-         "empty": None, "graph_empty": None}
+        groups.append(
+            {
+                "source_id": src,
+                "n_pages": len(mine),
+                "cards": cards,
+                "more": len(mine) - len(cards),
+                "n_images": sum(1 for p in mine if p["img"]),
+                "site_graph": sg.get(src),
+                "live_view_url": per_source.get(src),
+            }
+        )
+    m = {
+        "case_id": case.id,
+        "question": case.brief,
+        "run_id": rid,
+        "feed": feed if rid else None,
+        "run_href": f"{base}/runs/{quote(rid)}" if rid and rid in live_ids else None,
+        "runs": sorted(set(live_ids) | set(gold_ids), reverse=True),
+        "sources": SOURCES,
+        "backend": backend_of((status or {}).get("metrics") or (run.metrics if run else None), [*steps, status]),
+        "filter": {"source": source, "verdict": verdict, "all": show_all},
+        "source_filters": [
+            {
+                "source_id": s,
+                "n": sum(1 for p in pages if p["source_id"] == s),
+                "href": href(source=s),
+                "active": s == source,
+            }
+            for s in sources
+        ],
+        "verdict_filters": [
+            {
+                "verdict": k,
+                "label": VERDICT_LABEL[k],
+                "css": VERDICT_CSS[k],
+                "n": n,
+                "href": href(verdict=k),
+                "active": k == verdict,
+            }
+            for k, n in counts.items()
+            if n
+        ],
+        "clear_source": href(source=None),
+        "clear_verdict": href(verdict=None),
+        "all_href": href(all="1"),
+        "n_pages": len(pages),
+        "n_shown": len(shown),
+        "n_sources": len({p["source_id"] for p in pages}),
+        "n_images": sum(1 for p in pages if p["img"]),
+        "groups": groups,
+        "live_view_url": run_live,
+        "n_site_graphs": sum(1 for g in sg.values() if not g.get("invalid")),
+        "empty": None,
+        "graph_empty": None,
+    }
     if not rid:
-        m["empty"] = gap(None, "Pages the engine opened, with their captures, mode and verdict. The engine has not "
-                               f"published a run for this case ({case.lake_error or 'no run feed or gold export yet'}).",
-                         "runs/<case>/<run>/trace.live.jsonl · bronze/sha256/<hex>.meta.json")
+        m["empty"] = gap(
+            None,
+            "Pages the engine opened, with their captures, mode and verdict. The engine has not "
+            f"published a run for this case ({case.lake_error or 'no run feed or gold export yet'}).",
+            "runs/<case>/<run>/trace.live.jsonl · bronze/sha256/<hex>.meta.json",
+        )
     elif not pages:
-        m["empty"] = gap("R3", "No step in this run carries a URL, screenshot or capture key yet. Browser sessions write "
-                               "them per step.", f"runs/<case>/{rid}/trace.live.jsonl")
+        m["empty"] = gap(
+            "R3",
+            "No step in this run carries a URL, screenshot or capture key yet. Browser sessions write them per step.",
+            f"runs/<case>/{rid}/trace.live.jsonl",
+        )
     elif not shown:
         m["empty"] = gap(None, "No page matches these filters.", None)
     if not m["n_site_graphs"]:
-        m["graph_empty"] = gap("R15", "Page types, sample pages and the links between them for each source, "
-                                      "built by a bounded read-only spider.",
-                               "03-fanout/surface-map/<source>/site-graph.json")
+        m["graph_empty"] = gap(
+            "R15",
+            "Page types, sample pages and the links between them for each source, built by a bounded read-only spider.",
+            "03-fanout/surface-map/<source>/site-graph.json",
+        )
     return m
 
 
@@ -359,13 +456,26 @@ def install(ctx: VizContext) -> None:
     ctx.case_view(KEY, SLUG, LABEL, ORDER)
 
     @app.get("/cases/{case_id}/" + SLUG, response_class=HTMLResponse)
-    def pages_view(request: Request, case_id: str, run: str | None = None, source: str | None = None,
-                   verdict: str | None = None, all: str | None = None):  # noqa: A002
+    def pages_view(
+        request: Request,
+        case_id: str,
+        run: str | None = None,
+        source: str | None = None,
+        verdict: str | None = None,
+        all: str | None = None,
+    ):  # noqa: A002
         case = ctx.get_case(case_id)
         m = model(case, run or None, source or None, verdict if verdict in RANK else None, bool(all))
         return render(request, "viz/pages.html", nav=KEY, case=case, m=m, backend=m["backend"])
 
     @app.get("/cases/{case_id}/api/viz/" + SLUG)
-    def pages_api(case_id: str, run: str | None = None, source: str | None = None, verdict: str | None = None,
-                  all: str | None = None) -> dict:  # noqa: A002
-        return model(ctx.get_case(case_id), run or None, source or None, verdict if verdict in RANK else None, bool(all))
+    def pages_api(
+        case_id: str,
+        run: str | None = None,
+        source: str | None = None,
+        verdict: str | None = None,
+        all: str | None = None,
+    ) -> dict:  # noqa: A002
+        return model(
+            ctx.get_case(case_id), run or None, source or None, verdict if verdict in RANK else None, bool(all)
+        )

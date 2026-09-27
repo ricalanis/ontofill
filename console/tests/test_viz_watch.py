@@ -38,9 +38,17 @@ def write_jsonl(path: Path, rows) -> None:
 
 
 def step(i: int, minutes_ago: float, *, src="ok-src", phase=5, usd=None, failed=False, reason=None) -> dict:
-    s = {"step_id": f"step:{LIVE_RID}:{i:04d}", "run_id": LIVE_RID, "ts": ago(minutes_ago), "phase": phase,
-         "mode": "D1", "source_id": src, "requested": {"tool": "page.read"}, "executed": {"ok": not failed},
-         "evaluated": {"status": "failed", "reason": reason or "timeout"} if failed else {"status": "ok"}}
+    s = {
+        "step_id": f"step:{LIVE_RID}:{i:04d}",
+        "run_id": LIVE_RID,
+        "ts": ago(minutes_ago),
+        "phase": phase,
+        "mode": "D1",
+        "source_id": src,
+        "requested": {"tool": "page.read"},
+        "executed": {"ok": not failed},
+        "evaluated": {"status": "failed", "reason": reason or "timeout"} if failed else {"status": "ok"},
+    }
     if usd is not None:
         s["usage"] = {"model": "m", "backend": "vultr", "input_tokens": 10, "output_tokens": 5, "est_usd": usd}
     return s
@@ -48,8 +56,17 @@ def step(i: int, minutes_ago: float, *, src="ok-src", phase=5, usd=None, failed=
 
 def live_run(cases_dir: Path, steps: list[dict], state="running", metrics=None, jobs=()) -> Path:
     run = cases_dir / "libraries" / "lake" / "runs" / STORE / LIVE_RID
-    write_json(run / "status.json", {"run_id": LIVE_RID, "case_id": STORE, "state": state, "phase": 5,
-                                     "updated_at": steps[-1]["ts"] if steps else ago(1), **({"metrics": metrics} if metrics else {})})
+    write_json(
+        run / "status.json",
+        {
+            "run_id": LIVE_RID,
+            "case_id": STORE,
+            "state": state,
+            "phase": 5,
+            "updated_at": steps[-1]["ts"] if steps else ago(1),
+            **({"metrics": metrics} if metrics else {}),
+        },
+    )
     write_jsonl(run / "trace.live.jsonl", steps)
     write_jsonl(run / "jobs.jsonl", list(jobs))
     write_json(cases_dir / "libraries" / "lake" / "runs" / STORE / "latest.json", {"run_id": LIVE_RID})
@@ -65,8 +82,13 @@ def events(root: Path, rows) -> None:
 
 
 def settings(cases_dir: Path, root: Path):
-    return settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local",
-                              "ONTOFILL_RUNNER_STATE": str(root)})
+    return settings_from_env(
+        {
+            "ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
+            "ONTOFILL_CONSOLE_IDENTITY": "local",
+            "ONTOFILL_RUNNER_STATE": str(root),
+        }
+    )
 
 
 def case_of(m: dict, cid: str = "libraries") -> dict:
@@ -78,49 +100,174 @@ NUM = {"type": ["number", "null"]}
 STR = {"type": ["string", "null"]}
 WATCH = {
     "type": "object",
-    "required": ["generated_at", "stale_min", "runner", "global_spend", "cases", "attention", "n_attention", "n_stale",
-                 "n_running", "live"],
+    "required": [
+        "generated_at",
+        "stale_min",
+        "runner",
+        "global_spend",
+        "cases",
+        "attention",
+        "n_attention",
+        "n_stale",
+        "n_running",
+        "live",
+    ],
     "properties": {
         "generated_at": {"type": "string"},
-        "runner": {"type": "object", "required": ["on", "killed", "state_dir_ok", "state_dir", "last_write_at",
-                                                  "last_write_age_s", "n_events"],
-                   "properties": {"on": {"type": "boolean"}, "killed": {"type": "boolean"},
-                                  "state_dir_ok": {"type": "boolean"}}},
-        "global_spend": {"type": "object", "required": ["global_usd", "global_cap_usd", "burn_usd_per_h", "projection"]},
-        "cases": {"type": "array", "items": {
+        "runner": {
             "type": "object",
-            "required": ["case_id", "title", "runner", "run_id", "liveness", "throughput", "failures", "spend", "dod",
-                         "links", "moving"],
+            "required": ["on", "killed", "state_dir_ok", "state_dir", "last_write_at", "last_write_age_s", "n_events"],
             "properties": {
-                "runner": {"type": "object", "required": ["state", "run_id", "checkpoint", "reason", "paused", "pid",
-                                                          "running_since", "last_resumed_at", "updated_at",
-                                                          "spent_usd_case", "spent_usd_global", "last_resume"]},
-                "liveness": {"type": "object", "required": ["last_step_age_s", "status_age_s", "stale", "stale_min"],
-                             "properties": {"stale": {"type": "boolean"}, "last_step_age_s": {"type": ["integer", "null"]},
-                                            "status_age_s": {"type": ["integer", "null"]}}},
-                "throughput": {"type": "object", "required": ["phases", "total", "n_cells", "cells_per_h_60",
-                                                              "cells_per_h_run", "anchor"],
-                               "properties": {"phases": {"type": "array", "items": {
-                                   "type": "object", "required": ["phase", "name", "n", "per_min_15", "per_min_60",
-                                                                  "per_min_run"]}}}},
-                "failures": {"type": "object", "required": ["n_steps", "n_failures", "rate_per_100", "rate_per_100_15",
-                                                            "rising", "by_kind", "sources", "only_failures"],
-                             "properties": {"sources": {"type": "array", "items": {
-                                 "type": "object", "required": ["source_id", "steps", "failures", "rate_per_100",
-                                                                "by_kind", "only_failures"]}}}},
-                "spend": {"type": "object", "required": ["case_usd", "case_cap_usd", "global_usd", "global_cap_usd",
-                                                         "burn_usd_per_h", "projected_cap_hit_at"],
-                          "properties": {"case_usd": NUM, "case_cap_usd": NUM, "global_usd": NUM, "global_cap_usd": NUM,
-                                         "burn_usd_per_h": NUM, "projected_cap_hit_at": STR}},
-                "dod": {"type": "object", "required": ["entities_total", "pct_meeting", "distinct_sources", "criteria",
-                                                       "series", "n_met", "n_criteria"],
-                        "properties": {"criteria": {"type": "array", "items": {
-                            "type": "object", "required": ["criterion_id", "label", "actual", "target", "met"]}}}},
-            }}},
-        "attention": {"type": "array", "items": {
-            "type": "object", "required": ["severity", "level", "state", "case_id", "text", "href"],
-            "properties": {"severity": {"type": "integer", "minimum": 1, "maximum": 5},
-                           "href": {"type": "string", "pattern": "^/"}, "case_id": STR}}},
+                "on": {"type": "boolean"},
+                "killed": {"type": "boolean"},
+                "state_dir_ok": {"type": "boolean"},
+            },
+        },
+        "global_spend": {
+            "type": "object",
+            "required": ["global_usd", "global_cap_usd", "burn_usd_per_h", "projection"],
+        },
+        "cases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "case_id",
+                    "title",
+                    "runner",
+                    "run_id",
+                    "liveness",
+                    "throughput",
+                    "failures",
+                    "spend",
+                    "dod",
+                    "links",
+                    "moving",
+                ],
+                "properties": {
+                    "runner": {
+                        "type": "object",
+                        "required": [
+                            "state",
+                            "run_id",
+                            "checkpoint",
+                            "reason",
+                            "paused",
+                            "pid",
+                            "running_since",
+                            "last_resumed_at",
+                            "updated_at",
+                            "spent_usd_case",
+                            "spent_usd_global",
+                            "last_resume",
+                        ],
+                    },
+                    "liveness": {
+                        "type": "object",
+                        "required": ["last_step_age_s", "status_age_s", "stale", "stale_min"],
+                        "properties": {
+                            "stale": {"type": "boolean"},
+                            "last_step_age_s": {"type": ["integer", "null"]},
+                            "status_age_s": {"type": ["integer", "null"]},
+                        },
+                    },
+                    "throughput": {
+                        "type": "object",
+                        "required": ["phases", "total", "n_cells", "cells_per_h_60", "cells_per_h_run", "anchor"],
+                        "properties": {
+                            "phases": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["phase", "name", "n", "per_min_15", "per_min_60", "per_min_run"],
+                                },
+                            }
+                        },
+                    },
+                    "failures": {
+                        "type": "object",
+                        "required": [
+                            "n_steps",
+                            "n_failures",
+                            "rate_per_100",
+                            "rate_per_100_15",
+                            "rising",
+                            "by_kind",
+                            "sources",
+                            "only_failures",
+                        ],
+                        "properties": {
+                            "sources": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": [
+                                        "source_id",
+                                        "steps",
+                                        "failures",
+                                        "rate_per_100",
+                                        "by_kind",
+                                        "only_failures",
+                                    ],
+                                },
+                            }
+                        },
+                    },
+                    "spend": {
+                        "type": "object",
+                        "required": [
+                            "case_usd",
+                            "case_cap_usd",
+                            "global_usd",
+                            "global_cap_usd",
+                            "burn_usd_per_h",
+                            "projected_cap_hit_at",
+                        ],
+                        "properties": {
+                            "case_usd": NUM,
+                            "case_cap_usd": NUM,
+                            "global_usd": NUM,
+                            "global_cap_usd": NUM,
+                            "burn_usd_per_h": NUM,
+                            "projected_cap_hit_at": STR,
+                        },
+                    },
+                    "dod": {
+                        "type": "object",
+                        "required": [
+                            "entities_total",
+                            "pct_meeting",
+                            "distinct_sources",
+                            "criteria",
+                            "series",
+                            "n_met",
+                            "n_criteria",
+                        ],
+                        "properties": {
+                            "criteria": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["criterion_id", "label", "actual", "target", "met"],
+                                },
+                            }
+                        },
+                    },
+                },
+            },
+        },
+        "attention": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["severity", "level", "state", "case_id", "text", "href"],
+                "properties": {
+                    "severity": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "href": {"type": "string", "pattern": "^/"},
+                    "case_id": STR,
+                },
+            },
+        },
     },
 }
 
@@ -206,8 +353,10 @@ def test_failure_rates_by_source(cases_dir, tmp_path):
 
 
 def test_spend_projection_math():
-    steps = [{"ts": iso(NOW - timedelta(minutes=30)), "usage": {"model": "m", "est_usd": 0.2}},
-             {"ts": iso(NOW - timedelta(minutes=10)), "usage": {"model": "m", "est_usd": 0.3}}]
+    steps = [
+        {"ts": iso(NOW - timedelta(minutes=30)), "usage": {"model": "m", "est_usd": 0.2}},
+        {"ts": iso(NOW - timedelta(minutes=10)), "usage": {"model": "m", "est_usd": 0.3}},
+    ]
     burn, usd, hours = watch.burn_rate(steps, NOW)
     assert usd == 0.5 and hours == 0.5 and burn == 1.0  # the run is 30 min old: 0.50 USD over half an hour
     p = watch.projection(1.5, 2.0, burn, NOW)
@@ -246,18 +395,47 @@ def test_spend_caps_and_projection_in_the_model(cases_dir, tmp_path):
 
 def test_attention_ranking_and_runner_resume(cases_dir, tmp_path):
     root = tmp_path / "runner"
-    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60),
-                last_resumed_at=ago(60))
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60), last_resumed_at=ago(60))
     runner_case(root, "parks", state="waiting_approval", checkpoint="prd")
-    events(root, [{"ts": ago(61), "case_id": "libraries", "kind": "paused_at_checkpoint", "detail": "waiting", "run_id": LIVE_RID},
-                  {"ts": ago(60), "case_id": "libraries", "kind": "resumed",
-                   "detail": "resumed after the ontology decision", "run_id": LIVE_RID}])
+    events(
+        root,
+        [
+            {
+                "ts": ago(61),
+                "case_id": "libraries",
+                "kind": "paused_at_checkpoint",
+                "detail": "waiting",
+                "run_id": LIVE_RID,
+            },
+            {
+                "ts": ago(60),
+                "case_id": "libraries",
+                "kind": "resumed",
+                "detail": "resumed after the ontology decision",
+                "run_id": LIVE_RID,
+            },
+        ],
+    )
     steps = [step(i, 40 - i, src="ok-src", usd=0.01) for i in range(4)]
     steps += [step(10 + i, 20 - i, src="bad-src", failed=True) for i in range(3)]
-    live_run(cases_dir, steps, metrics={"entities_total": {"library": 10}, "entities_meeting_dod": {"library": 2},
-                                        "distinct_source_classes": 1,
-                                        "dod": [{"criterion_id": "libraries_found", "query": "count_entities(library) >= 20",
-                                                 "target": 20, "actual": 10, "met": False}]})
+    live_run(
+        cases_dir,
+        steps,
+        metrics={
+            "entities_total": {"library": 10},
+            "entities_meeting_dod": {"library": 2},
+            "distinct_source_classes": 1,
+            "dod": [
+                {
+                    "criterion_id": "libraries_found",
+                    "query": "count_entities(library) >= 20",
+                    "target": 20,
+                    "actual": 10,
+                    "met": False,
+                }
+            ],
+        },
+    )
     (root / "KILL").write_text("{}")
     m = watch.model(settings(cases_dir, root), now=NOW, env={"ONTOFILL_RUNNER_DEFAULT_CASE_USD": "0.1"})
     jsonschema.validate(m, WATCH)
@@ -268,14 +446,21 @@ def test_attention_ranking_and_runner_resume(cases_dir, tmp_path):
     assert m["runner"]["on"] is False and m["runner"]["killed"] is True
     assert any("STALE" in a["text"] for a in m["attention"] if a["severity"] == 1)
     assert {"person", "failures", "spend", "dod"} <= set(levels)
-    assert levels.index("critical") < levels.index("person") < levels.index("failures") < levels.index("spend") \
+    assert (
+        levels.index("critical")
+        < levels.index("person")
+        < levels.index("failures")
+        < levels.index("spend")
         < levels.index("dod")
+    )
     lib = case_of(m)
     assert lib["runner"]["last_resume"]["detail"] == "resumed after the ontology decision"
     assert lib["dod"]["basis"].startswith("status.json") and lib["dod"]["criteria"][0]["actual"] == 10
     assert lib["dod"]["pct_meeting"] == 20.0 and lib["dod"]["series"][-1]["source"] == "status"
     hrefs = {a["level"]: a["href"] for a in m["attention"] if a["case_id"] == "libraries"}
-    assert hrefs["failures"] == f"/cases/libraries/failures?run={LIVE_RID}" and hrefs["dod"] == "/cases/libraries/output"
+    assert (
+        hrefs["failures"] == f"/cases/libraries/failures?run={LIVE_RID}" and hrefs["dod"] == "/cases/libraries/output"
+    )
     assert next(a for a in m["attention"] if a["case_id"] == "parks" and a["level"] == "person")["href"] == "/inbox"
 
 
@@ -295,8 +480,17 @@ def test_throughput_per_phase_and_cells(cases_dir, tmp_path):
 
 
 def test_unknown_runner_state_and_empty_registry():
-    c = TestClient(create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": "", "ONTOFILL_CONSOLE_IDENTITY": "local",
-                                                 "ONTOFILL_RUNNER_STATE": "/nonexistent/ontofill-runner-test"})))
+    c = TestClient(
+        create_app(
+            settings_from_env(
+                {
+                    "ONTOFILL_CONSOLE_CASES": "",
+                    "ONTOFILL_CONSOLE_IDENTITY": "local",
+                    "ONTOFILL_RUNNER_STATE": "/nonexistent/ontofill-runner-test",
+                }
+            )
+        )
+    )
     m = c.get("/api/watch").json()
     assert m["cases"] == [] and m["runner"]["state_dir_ok"] is False
     assert m["attention"][0]["severity"] == 1 and "Runner state not found" in m["attention"][0]["text"]
@@ -316,13 +510,18 @@ def test_global_spend_falls_back_to_the_sum_of_case_traces():
 
     from ontofill_console.viz import watch
 
-    cases = [{"spend": {"global_usd": None, "case_usd": 0.25, "global_cap_usd": 40.0, "burn_usd_per_h": None}},
-             {"spend": {"global_usd": None, "case_usd": 0.5, "global_cap_usd": None, "burn_usd_per_h": None}}]
+    cases = [
+        {"spend": {"global_usd": None, "case_usd": 0.25, "global_cap_usd": 40.0, "burn_usd_per_h": None}},
+        {"spend": {"global_usd": None, "case_usd": 0.5, "global_cap_usd": None, "burn_usd_per_h": None}},
+    ]
     orig = watch.case_model
     try:
         it = iter(cases)
-        watch.case_model = lambda *a, **k: {**next(it), "liveness": {"last_step_at": None, "status_updated_at": None,
-                                                                       "stale": False}, "moving": False}
+        watch.case_model = lambda *a, **k: {
+            **next(it),
+            "liveness": {"last_step_at": None, "status_updated_at": None, "stale": False},
+            "moving": False,
+        }
         watch_attention, watch.attention = watch.attention, lambda *a, **k: []
         m = watch.model(SimpleNamespace(cases={"a": 1, "b": 2}, runner_state="/nonexistent"))
     finally:
@@ -338,8 +537,9 @@ def test_global_fallback_prefers_the_gateway_log(tmp_path, monkeypatch):
 
     log = tmp_path / "gw"
     log.mkdir()
-    (log / "gateway-calls.jsonl").write_text("".join(json.dumps({"est_usd": x, "session_id": s}) + "\n"
-                                                     for x, s in ((0.1, "engine"), (0.05, "bas-1"))))
+    (log / "gateway-calls.jsonl").write_text(
+        "".join(json.dumps({"est_usd": x, "session_id": s}) + "\n" for x, s in ((0.1, "engine"), (0.05, "bas-1")))
+    )
     monkeypatch.setenv("ONTOFILL_CONSOLE_GATEWAY_LOG", str(log))
     usd, basis = watch._fallback_global([{"case_usd": 0.01}])
     assert usd == 0.15 and "gateway call log" in basis

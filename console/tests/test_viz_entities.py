@@ -8,27 +8,85 @@ import jsonschema
 
 RUN = "run-libraries-0001"
 
-LIST = {"type": "object", "required": ["case_id", "run_id", "classes", "rows", "n_rows", "n_total", "capped", "filters",
-                                       "empty"],
-        "properties": {"rows": {"type": "array", "items": {
-            "type": "object", "required": ["entity_id", "class", "class_label", "title", "identifier", "ratio", "href"],
-            "properties": {"ratio": {"type": ["number", "null"]}, "href": {"type": "string", "pattern": "^/cases/"}}}},
-            "classes": {"type": "array", "items": {"type": "object", "required": ["id", "label", "n", "primary"]}}}}
-EVIDENCE = {"type": "object", "required": ["url", "host", "path", "selector", "captured_at", "source_id", "source_type",
-                                           "screenshot_href", "raw_href"]}
-ENTITY = {"type": "object", "required": ["entity_id", "class", "class_label", "title", "props", "links", "flags",
-                                         "ratio", "run_id"],
-          "properties": {"props": {"type": "array", "items": {
-              "type": "object", "required": ["id", "label", "state", "status", "value", "confidence", "value_id",
-                                             "evidence", "step_ids", "lineage_href"],
-              "properties": {"evidence": {"type": "array", "items": EVIDENCE}}}}}}
+LIST = {
+    "type": "object",
+    "required": ["case_id", "run_id", "classes", "rows", "n_rows", "n_total", "capped", "filters", "empty"],
+    "properties": {
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["entity_id", "class", "class_label", "title", "identifier", "ratio", "href"],
+                "properties": {
+                    "ratio": {"type": ["number", "null"]},
+                    "href": {"type": "string", "pattern": "^/cases/"},
+                },
+            },
+        },
+        "classes": {"type": "array", "items": {"type": "object", "required": ["id", "label", "n", "primary"]}},
+    },
+}
+EVIDENCE = {
+    "type": "object",
+    "required": [
+        "url",
+        "host",
+        "path",
+        "selector",
+        "captured_at",
+        "source_id",
+        "source_type",
+        "screenshot_href",
+        "raw_href",
+    ],
+}
+ENTITY = {
+    "type": "object",
+    "required": ["entity_id", "class", "class_label", "title", "props", "links", "flags", "ratio", "run_id"],
+    "properties": {
+        "props": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "label",
+                    "state",
+                    "status",
+                    "value",
+                    "confidence",
+                    "value_id",
+                    "evidence",
+                    "step_ids",
+                    "lineage_href",
+                ],
+                "properties": {"evidence": {"type": "array", "items": EVIDENCE}},
+            },
+        }
+    },
+}
 STEP = {"type": "object", "required": ["step_id", "phase", "mode", "observed", "requested", "executed", "evaluated"]}
-LINEAGE = {"type": "object", "required": ["value", "evidence", "chains", "step_ids", "plans", "objectives", "ontology",
-                                          "dod_queries", "prd", "brief"],
-           "properties": {"chains": {"type": "array", "items": {"type": "array", "items": STEP}},
-                          "value": {"type": "object", "required": ["value_id", "entity_id", "prop", "label", "value"]},
-                          "ontology": {"type": "object", "required": ["class", "property", "label", "dod"]},
-                          "prd": {"type": "object", "required": ["exists", "linked", "others"]}}}
+LINEAGE = {
+    "type": "object",
+    "required": [
+        "value",
+        "evidence",
+        "chains",
+        "step_ids",
+        "plans",
+        "objectives",
+        "ontology",
+        "dod_queries",
+        "prd",
+        "brief",
+    ],
+    "properties": {
+        "chains": {"type": "array", "items": {"type": "array", "items": STEP}},
+        "value": {"type": "object", "required": ["value_id", "entity_id", "prop", "label", "value"]},
+        "ontology": {"type": "object", "required": ["class", "property", "label", "dod"]},
+        "prd": {"type": "object", "required": ["exists", "linked", "others"]},
+    },
+}
 
 
 def test_list_json_shape_and_html(client):

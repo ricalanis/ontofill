@@ -15,8 +15,10 @@ from . import health_common as hc
 from .core import Artifacts, VizContext, gap
 
 ORDER = 70
-CONTRACT_REQUEST = ("CONTRACT REQUEST: every model call's trace step carries usage{model, backend, input_tokens, "
-                    "output_tokens, est_usd} (v1.0.5 trace bridge), and status.json carries the run's budget_usd.")
+CONTRACT_REQUEST = (
+    "CONTRACT REQUEST: every model call's trace step carries usage{model, backend, input_tokens, "
+    "output_tokens, est_usd} (v1.0.5 trace bridge), and status.json carries the run's budget_usd."
+)
 
 
 def _budget(status: dict, metrics: dict) -> float | None:
@@ -32,8 +34,19 @@ def _group(steps: list[dict], keyf) -> list[dict]:
     rows: dict[str, dict] = {}
     for s in steps:
         name = keyf(s)
-        r = rows.setdefault(name, {"name": name, "usd": 0.0, "priced": 0, "unpriced": 0, "input_tokens": 0,
-                                   "output_tokens": 0, "calls": 0, "steps": 0})
+        r = rows.setdefault(
+            name,
+            {
+                "name": name,
+                "usd": 0.0,
+                "priced": 0,
+                "unpriced": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "calls": 0,
+                "steps": 0,
+            },
+        )
         r["steps"] += 1
         u = hc.usage_of(s)
         if u is None:
@@ -79,31 +92,59 @@ def model(case, run: str | None = None) -> dict:
     has_cost = bool(priced)
 
     dims = {
-        "phase": _group(steps, lambda s: f"P{s.get('phase')} · {live.phase_name(s.get('phase'))}" if s.get("phase") else "no phase"),
+        "phase": _group(
+            steps, lambda s: f"P{s.get('phase')} · {live.phase_name(s.get('phase'))}" if s.get("phase") else "no phase"
+        ),
         "model": _group(steps, lambda s: _model_name(s, bool(with_usage))),
         "mode": _group(steps, lambda s: s.get("mode") or "no mode"),
         "source": _group(steps, lambda s: s.get("source_id") or "no source (case-level steps)"),
         "backend": _group(steps, _backend_name),
     }
     # Engine-reported loop cost per phase (metrics.loops[].usd), shown when the trace has no priced steps.
-    loops = [{"name": ("Gap loop" if r.get("phase") == "outer" else f"P{r.get('phase')} · {live.phase_name(r.get('phase'))}"),
-              "usd": float(r["usd"]), "iterations": r.get("iterations")}
-             for r in metrics.get("loops") or [] if isinstance(r, dict) and isinstance(r.get("usd"), (int, float))]
+    loops = [
+        {
+            "name": (
+                "Gap loop" if r.get("phase") == "outer" else f"P{r.get('phase')} · {live.phase_name(r.get('phase'))}"
+            ),
+            "usd": float(r["usd"]),
+            "iterations": r.get("iterations"),
+        }
+        for r in metrics.get("loops") or []
+        if isinstance(r, dict) and isinstance(r.get("usd"), (int, float))
+    ]
     loops_total = round(sum(r["usd"] for r in loops), 6) if loops else None
 
     bars = []
-    for key, label in (("phase", "By phase"), ("model", "By model"), ("mode", "By execution mode"), ("source", "By source")):
+    for key, label in (
+        ("phase", "By phase"),
+        ("model", "By model"),
+        ("mode", "By execution mode"),
+        ("source", "By source"),
+    ):
         rows = dims[key]
         colours = hc.MODE_COLOURS if key == "mode" else None
         if key == "mode":
             rows = sorted(rows, key=lambda r: hc.MODES.index(r["name"]) if r["name"] in hc.MODES else 9)
         if has_cost:
-            bars.append({"key": key, "label": label, "metric": "usd",
-                         "rows": hc.shares(rows, "usd", colours=colours, keep_order=key == "mode"),
-                         "table": sorted(rows, key=lambda r: -r["usd"])})
+            bars.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "metric": "usd",
+                    "rows": hc.shares(rows, "usd", colours=colours, keep_order=key == "mode"),
+                    "table": sorted(rows, key=lambda r: -r["usd"]),
+                }
+            )
         else:
-            bars.append({"key": key, "label": label, "metric": "steps", "rows": hc.shares(rows, "steps", colours=colours, keep_order=key == "mode"),
-                         "table": sorted(rows, key=lambda r: -r["steps"])})
+            bars.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "metric": "steps",
+                    "rows": hc.shares(rows, "steps", colours=colours, keep_order=key == "mode"),
+                    "table": sorted(rows, key=lambda r: -r["steps"]),
+                }
+            )
 
     # Output: gold values of this run (exact export), else values emitted in the trace.
     gold = hc.gold_run(a, rid)
@@ -113,7 +154,9 @@ def model(case, run: str | None = None) -> dict:
     else:
         n_values = len({vid for s in steps for vid in s.get("value_ids") or []})
         values_from = "value_ids emitted in the trace"
-    primary = (metrics.get("entities_meeting_dod") or {}) if isinstance(metrics.get("entities_meeting_dod"), dict) else {}
+    primary = (
+        (metrics.get("entities_meeting_dod") or {}) if isinstance(metrics.get("entities_meeting_dod"), dict) else {}
+    )
     meeting = sum(v for v in primary.values() if isinstance(v, (int, float))) if primary else None
 
     budget = _budget(status, metrics)
@@ -127,30 +170,54 @@ def model(case, run: str | None = None) -> dict:
     step_models = [{"name": r["name"], "steps": r["steps"]} for r in dims["model"]]
 
     if rid is None:
-        empty = gap(None, "Spend by phase, model, mode and source for this case's runs, and cost per gold value.",
-                    "trace usage, metrics.loops, spend history")
+        empty = gap(
+            None,
+            "Spend by phase, model, mode and source for this case's runs, and cost per gold value.",
+            "trace usage, metrics.loops, spend history",
+        )
     elif not has_cost:
-        empty = gap(None, "Cost per call isn't recorded yet: no step in this run carries usage.est_usd, so the bars below "
-                          "count steps instead of dollars. " + CONTRACT_REQUEST, "trace.live.jsonl usage")
+        empty = gap(
+            None,
+            "Cost per call isn't recorded yet: no step in this run carries usage.est_usd, so the bars below "
+            "count steps instead of dollars. " + CONTRACT_REQUEST,
+            "trace.live.jsonl usage",
+        )
     else:
         empty = None
     return {
-        "case_id": case.id, "run_id": rid, "runs": hc.run_ids(a), "state": status.get("state"),
-        "n_steps": len(steps), "has_cost": has_cost, "usd_total": total, "n_priced": len(priced),
-        "n_usage": len(with_usage), "n_unpriced": len(with_usage) - len(priced),
+        "case_id": case.id,
+        "run_id": rid,
+        "runs": hc.run_ids(a),
+        "state": status.get("state"),
+        "n_steps": len(steps),
+        "has_cost": has_cost,
+        "usd_total": total,
+        "n_priced": len(priced),
+        "n_usage": len(with_usage),
+        "n_unpriced": len(with_usage) - len(priced),
         "input_tokens": sum(int((hc.usage_of(s) or {}).get("input_tokens") or 0) for s in with_usage),
         "output_tokens": sum(int((hc.usage_of(s) or {}).get("output_tokens") or 0) for s in with_usage),
-        "bars": bars, "loops": loops, "loops_total": loops_total,
-        "n_values": n_values, "values_from": values_from, "entities_meeting_dod": meeting,
+        "bars": bars,
+        "loops": loops,
+        "loops_total": loops_total,
+        "n_values": n_values,
+        "values_from": values_from,
+        "entities_meeting_dod": meeting,
         "per_value": spent / n_values if spent is not None and n_values else None,
         "per_entity": spent / meeting if spent is not None and meeting else None,
-        "spent_basis": "priced trace steps" if total is not None else ("metrics.loops" if loops_total is not None else None),
-        "budget_usd": budget, "burn": round(spent / budget, 4) if budget and spent is not None else None,
-        "tracker_run_usd": tracker_run, "tracker_ts": (snap or {}).get("ts"),
+        "spent_basis": "priced trace steps"
+        if total is not None
+        else ("metrics.loops" if loops_total is not None else None),
+        "budget_usd": budget,
+        "burn": round(spent / budget, 4) if budget and spent is not None else None,
+        "tracker_run_usd": tracker_run,
+        "tracker_ts": (snap or {}).get("ts"),
         "tracker_reported": bool(eng.get("reported")),
-        "decisions_by_backend": hc.shares(backend_rows, "calls"), "inference_backend": metrics.get("inference_backend"),
+        "decisions_by_backend": hc.shares(backend_rows, "calls"),
+        "inference_backend": metrics.get("inference_backend"),
         "steps_by_model": hc.shares(step_models, "steps"),
-        "empty": empty, "contract_request": None if has_cost and budget else CONTRACT_REQUEST,
+        "empty": empty,
+        "contract_request": None if has_cost and budget else CONTRACT_REQUEST,
         "backend": backend_of(status.get("metrics"), [*steps, status]) if rid else None,
     }
 

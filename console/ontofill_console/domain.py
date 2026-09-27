@@ -76,39 +76,67 @@ class Domain:
 
     def rule(self, rule_id: str, label: str = "") -> dict:
         r = self.rules.get(rule_id) or {}
-        return {"label": r.get("label") or label or humanize(rule_id), "checks": r.get("checks") or label or rule_id,
-                "verify": list(r.get("verify") or [])}
+        return {
+            "label": r.get("label") or label or humanize(rule_id),
+            "checks": r.get("checks") or label or rule_id,
+            "verify": list(r.get("verify") or []),
+        }
 
     def peer_relations(self) -> list[str]:
         """Relations between two entities of the primary class (drawn in the relationship view)."""
-        return [rid for rid, r in self.relations.items()
-                if (r.get("domain") in (None, self.primary_class)) and (r.get("range") in (None, self.primary_class))]
+        return [
+            rid
+            for rid, r in self.relations.items()
+            if (r.get("domain") in (None, self.primary_class)) and (r.get("range") in (None, self.primary_class))
+        ]
 
     # building ---------------------------------------------------------------------------------------------------
     @classmethod
     def from_ontology(cls, onto: dict, legacy: bool = False) -> Domain:
         classes = {c["id"]: c for c in onto.get("classes") or [] if isinstance(c, dict) and c.get("id")}
-        primary = onto.get("primary_class") or next((cid for cid, c in classes.items() if c.get("primary")), None) \
+        primary = (
+            onto.get("primary_class")
+            or next((cid for cid, c in classes.items() if c.get("primary")), None)
             or next(iter(classes), "entity")
+        )
         props: dict[str, list[Prop]] = {}
         for i, p in enumerate(onto.get("properties") or []):
             if not isinstance(p, dict) or not p.get("id"):
                 continue
             dom = p.get("domain") or primary
-            props.setdefault(dom, []).append(Prop(
-                id=p["id"], label=p.get("label") or humanize(p["id"]), datatype=p.get("datatype") or "",
-                domain=dom, dod=bool(p.get("dod")), order=int(p.get("order", 1000 + i)),
-                description=p.get("description") or "", aligned_to=p.get("aligned_to")))
+            props.setdefault(dom, []).append(
+                Prop(
+                    id=p["id"],
+                    label=p.get("label") or humanize(p["id"]),
+                    datatype=p.get("datatype") or "",
+                    domain=dom,
+                    dod=bool(p.get("dod")),
+                    order=int(p.get("order", 1000 + i)),
+                    description=p.get("description") or "",
+                    aligned_to=p.get("aligned_to"),
+                )
+            )
         for plist in props.values():
             plist.sort(key=lambda p: p.order)
         relations = {r["id"]: r for r in onto.get("relations") or [] if isinstance(r, dict) and r.get("id")}
         rules = {r["id"]: r for r in onto.get("rules") or [] if isinstance(r, dict) and r.get("id")}
-        sources = {s["id"]: s.get("label") or humanize(s["id"]) for s in onto.get("source_classes") or []
-                   if isinstance(s, dict) and s.get("id")}
+        sources = {
+            s["id"]: s.get("label") or humanize(s["id"])
+            for s in onto.get("source_classes") or []
+            if isinstance(s, dict) and s.get("id")
+        }
         threshold = onto.get("dod_threshold")
-        return cls(primary_class=primary, classes=classes, properties=props, relations=relations, rules=rules,
-                   source_classes=sources, dod_threshold=float(threshold) if threshold else DEFAULT_DOD_THRESHOLD,
-                   threshold_stated=threshold is not None, legacy=legacy)
+        return cls(
+            primary_class=primary,
+            classes=classes,
+            properties=props,
+            relations=relations,
+            rules=rules,
+            source_classes=sources,
+            dod_threshold=float(threshold) if threshold else DEFAULT_DOD_THRESHOLD,
+            threshold_stated=threshold is not None,
+            legacy=legacy,
+        )
 
     def usable(self) -> bool:
         return bool(self.props())

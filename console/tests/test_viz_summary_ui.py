@@ -56,7 +56,9 @@ def test_summary_fits_and_prints(server, width):
         page.goto(server + "/cases/libraries/summary")
         page.wait_for_load_state("networkidle")
         # every receipt thumbnail actually loaded from bronze
-        loaded = page.evaluate("[...document.querySelectorAll('.sum-shot img')].map(i => i.complete && i.naturalWidth > 0)")
+        loaded = page.evaluate(
+            "[...document.querySelectorAll('.sum-shot img')].map(i => i.complete && i.naturalWidth > 0)"
+        )
         assert loaded and all(loaded)
         # copy as text opens and shows the plain rendering
         page.locator(".sum-copy summary").click()

@@ -172,8 +172,9 @@ def _lake_yaml(root: Path, cid: str, lake: str) -> str:
         return yaml.safe_dump(doc, sort_keys=False)
     template = root / TEMPLATE
     if not template.is_file():
-        raise RegistryError(f"no default lake configured: {TEMPLATE} is missing from the cases root; choose the scratch lake",
-                            400)
+        raise RegistryError(
+            f"no default lake configured: {TEMPLATE} is missing from the cases root; choose the scratch lake", 400
+        )
     doc = yaml.safe_load(template.read_text()) or {}
     if not isinstance(doc, dict):
         raise RegistryError(f"{TEMPLATE} is not a mapping", 500)
@@ -181,8 +182,18 @@ def _lake_yaml(root: Path, cid: str, lake: str) -> str:
     return yaml.safe_dump(doc, sort_keys=False)
 
 
-def create(root: Path, *, title: str, question: str, notes: str | None = None, budget_usd=None,
-           lake: str = "default", created_by: dict, supersedes: str | None = None, to_phase=None) -> dict:
+def create(
+    root: Path,
+    *,
+    title: str,
+    question: str,
+    notes: str | None = None,
+    budget_usd=None,
+    lake: str = "default",
+    created_by: dict,
+    supersedes: str | None = None,
+    to_phase=None,
+) -> dict:
     """A new case: minimal package (brief.md + lake.yaml), registered and logged. Returns the registry entry."""
     if lake not in ("default", "scratch"):
         raise RegistryError("lake must be default or scratch")
@@ -202,18 +213,45 @@ def create(root: Path, *, title: str, question: str, notes: str | None = None, b
         brief = brief_text(title, question, notes)
         (case_dir / "brief.md").write_text(brief)
         (root / cid / "lake.yaml").write_text(lake_text)
-        item = {"id": cid, "title": title, "path": f"{cid}/case", "lake": f"{cid}/lake.yaml", "lake_kind": lake,
-                "budget_usd": budget, "to_phase": to_phase, "created_by": created_by, "created_at": now_iso(), "archived": False,
-                "archived_at": None, "archived_by": None, "version": 1, "supersedes": supersedes,
-                "superseded_by": None, "brief_sha256": _sha(brief)}
+        item = {
+            "id": cid,
+            "title": title,
+            "path": f"{cid}/case",
+            "lake": f"{cid}/lake.yaml",
+            "lake_kind": lake,
+            "budget_usd": budget,
+            "to_phase": to_phase,
+            "created_by": created_by,
+            "created_at": now_iso(),
+            "archived": False,
+            "archived_at": None,
+            "archived_by": None,
+            "version": 1,
+            "supersedes": supersedes,
+            "superseded_by": None,
+            "brief_sha256": _sha(brief),
+        }
         if supersedes:
             old = entry(data, supersedes)
             item["version"] = int((old or {}).get("version") or 1) + 1
         data["cases"].append(item)
         save(root, data)
-    audit(case_dir, {"ts": item["created_at"], "case_id": cid, "action": "case.create", "checkpoint": "case",
-                     "decision": "create", **_who(created_by), "title": title, "budget_usd": budget, "lake": lake,
-                     "brief_sha256": item["brief_sha256"], **({"supersedes": supersedes} if supersedes else {})})
+    audit(
+        case_dir,
+        {
+            "ts": item["created_at"],
+            "case_id": cid,
+            "action": "case.create",
+            "checkpoint": "case",
+            "decision": "create",
+            **_who(created_by),
+            "title": title,
+            "budget_usd": budget,
+            "lake": lake,
+            "brief_sha256": item["brief_sha256"],
+            **({"supersedes": supersedes} if supersedes else {}),
+        },
+    )
     return item
 
 
@@ -224,8 +262,11 @@ def _sha(text: str) -> str:
 
 
 def _who(by: dict) -> dict:
-    return {"approver": by.get("approver"), "identity_source": by.get("identity_source"),
-            **({"unverified_name": by["unverified_name"]} if by.get("unverified_name") else {})}
+    return {
+        "approver": by.get("approver"),
+        "identity_source": by.get("identity_source"),
+        **({"unverified_name": by["unverified_name"]} if by.get("unverified_name") else {}),
+    }
 
 
 def has_run(case_dir: Path, run_ids: list[str] | None = None) -> bool:
@@ -243,16 +284,28 @@ def update_brief(root: Path, cid: str, *, question: str, notes: str | None, by: 
             raise RegistryError("unknown case", 404)
         case_dir = resolve(root, item["path"])
         if has_run(case_dir, run_ids):
-            raise RegistryError("a run exists: the brief is bound to it; use “Revise the question” for a new version",
-                                409)
+            raise RegistryError(
+                "a run exists: the brief is bound to it; use “Revise the question” for a new version", 409
+            )
         _, question, notes, _ = _validate(item["title"], question, notes, item.get("budget_usd"))
         brief = brief_text(item["title"], question, notes)
         before = item.get("brief_sha256")
         (case_dir / "brief.md").write_text(brief)
         item["brief_sha256"] = _sha(brief)
         save(root, data)
-    audit(case_dir, {"ts": now_iso(), "case_id": cid, "action": "case.update_brief", "checkpoint": "case",
-                     "decision": "update", **_who(by), "brief_sha256_before": before, "brief_sha256": item["brief_sha256"]})
+    audit(
+        case_dir,
+        {
+            "ts": now_iso(),
+            "case_id": cid,
+            "action": "case.update_brief",
+            "checkpoint": "case",
+            "decision": "update",
+            **_who(by),
+            "brief_sha256_before": before,
+            "brief_sha256": item["brief_sha256"],
+        },
+    )
     return item
 
 
@@ -270,14 +323,28 @@ def update_meta(root: Path, cid: str, *, title: str | None, budget_usd, by: dict
             raise RegistryError("the budget must be a number in USD") from exc
         if wants_budget and has_run(resolve(root, item["path"]), run_ids):
             raise RegistryError("the budget is fixed once a run has started (the engine fingerprints it)", 409)
-        new_title, _, _, budget = _validate(title or item["title"], "x" * QUESTION_MIN, "", budget_usd
-                                            if budget_usd not in (None, "") else item.get("budget_usd"))
+        new_title, _, _, budget = _validate(
+            title or item["title"],
+            "x" * QUESTION_MIN,
+            "",
+            budget_usd if budget_usd not in (None, "") else item.get("budget_usd"),
+        )
         changes = {k: [item.get(k), v] for k, v in (("title", new_title), ("budget_usd", budget)) if item.get(k) != v}
         item.update(title=new_title, budget_usd=budget)
         save(root, data)
     if changes:
-        audit(resolve(root, item["path"]), {"ts": now_iso(), "case_id": cid, "action": "case.update",
-                                            "checkpoint": "case", "decision": "update", **_who(by), "changes": changes})
+        audit(
+            resolve(root, item["path"]),
+            {
+                "ts": now_iso(),
+                "case_id": cid,
+                "action": "case.update",
+                "checkpoint": "case",
+                "decision": "update",
+                **_who(by),
+                "changes": changes,
+            },
+        )
     return item
 
 
@@ -289,13 +356,22 @@ def set_archived(root: Path, cid: str, archived: bool, *, by: dict, reason: str 
             raise RegistryError("unknown case", 404)
         if bool(item.get("archived")) == archived:
             raise RegistryError("already archived" if archived else "not archived", 409)
-        item.update(archived=archived, archived_at=now_iso() if archived else None,
-                    archived_by=_who(by) if archived else None)
+        item.update(
+            archived=archived, archived_at=now_iso() if archived else None, archived_by=_who(by) if archived else None
+        )
         save(root, data)
-    audit(resolve(root, item["path"]), {"ts": now_iso(), "case_id": cid, "action": "case.archive" if archived else
-                                        "case.restore", "checkpoint": "case",
-                                        "decision": "archive" if archived else "restore", **_who(by),
-                                        **({"reason": reason[:500]} if reason else {})})
+    audit(
+        resolve(root, item["path"]),
+        {
+            "ts": now_iso(),
+            "case_id": cid,
+            "action": "case.archive" if archived else "case.restore",
+            "checkpoint": "case",
+            "decision": "archive" if archived else "restore",
+            **_who(by),
+            **({"reason": reason[:500]} if reason else {}),
+        },
+    )
     return item
 
 
@@ -307,13 +383,31 @@ def revise(root: Path, cid: str, *, question: str, notes: str | None, by: dict, 
         raise RegistryError("unknown case", 404)
     if old.get("superseded_by"):
         raise RegistryError(f"already revised as {old['superseded_by']}", 409)
-    new = create(root, title=old["title"], question=question, notes=notes, budget_usd=old.get("budget_usd"),
-                 lake=lake or old.get("lake_kind") or "default", created_by=by, supersedes=cid)
+    new = create(
+        root,
+        title=old["title"],
+        question=question,
+        notes=notes,
+        budget_usd=old.get("budget_usd"),
+        lake=lake or old.get("lake_kind") or "default",
+        created_by=by,
+        supersedes=cid,
+    )
     with locked(root):
         data = load(root)
         item = entry(data, cid)
         item.update(superseded_by=new["id"], archived=True, archived_at=now_iso(), archived_by=_who(by))
         save(root, data)
-    audit(resolve(root, item["path"]), {"ts": now_iso(), "case_id": cid, "action": "case.revise", "checkpoint": "case",
-                                        "decision": "revise", **_who(by), "superseded_by": new["id"]})
+    audit(
+        resolve(root, item["path"]),
+        {
+            "ts": now_iso(),
+            "case_id": cid,
+            "action": "case.revise",
+            "checkpoint": "case",
+            "decision": "revise",
+            **_who(by),
+            "superseded_by": new["id"],
+        },
+    )
     return new

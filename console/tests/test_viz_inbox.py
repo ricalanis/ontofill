@@ -2,13 +2,23 @@
 
 import jsonschema
 
-STRIP = {"type": "object", "required": ["state", "case_id", "kind", "title", "detail", "when", "since", "href"],
-         "properties": {"state": {"enum": ["need", "block", "quar", "run", "pause", "done"]},
-                        "href": {"type": "string", "pattern": "^/"}}}
-INBOX = {"type": "object", "required": ["strips", "cases", "needs_you", "empty"],
-         "properties": {"strips": {"type": "array", "items": STRIP},
-                        "cases": {"type": "array", "items": {"type": "object", "required": ["id", "title", "question", "needs_you"]}},
-                        "needs_you": {"type": "integer", "minimum": 0}}}
+STRIP = {
+    "type": "object",
+    "required": ["state", "case_id", "kind", "title", "detail", "when", "since", "href"],
+    "properties": {
+        "state": {"enum": ["need", "block", "quar", "run", "pause", "done"]},
+        "href": {"type": "string", "pattern": "^/"},
+    },
+}
+INBOX = {
+    "type": "object",
+    "required": ["strips", "cases", "needs_you", "empty"],
+    "properties": {
+        "strips": {"type": "array", "items": STRIP},
+        "cases": {"type": "array", "items": {"type": "object", "required": ["id", "title", "question", "needs_you"]}},
+        "needs_you": {"type": "integer", "minimum": 0},
+    },
+}
 
 
 def test_inbox_json_shape_and_order(client):

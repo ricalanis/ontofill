@@ -30,8 +30,13 @@ def test_ontology_review_with_null_coverage(client, null_coverage):
     page = client.get("/cases/libraries/approvals/02-ontology")
     assert page.status_code == 200
     assert "not yet classified" in page.text and "basis: none" in page.text
-    for path in ("/cases/libraries/definition", "/cases/libraries/output", "/cases/libraries/tour",
-                 "/tour?case=libraries", "/cases/libraries/runs/run-libraries-0001"):
+    for path in (
+        "/cases/libraries/definition",
+        "/cases/libraries/output",
+        "/cases/libraries/tour",
+        "/tour?case=libraries",
+        "/cases/libraries/runs/run-libraries-0001",
+    ):
         r = client.get(path)
         assert r.status_code in (200, 404), path  # 404 only for a route that doesn't exist, never a 500
         assert "Traceback" not in r.text

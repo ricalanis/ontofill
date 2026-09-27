@@ -15,9 +15,16 @@ from ontofill_console.web import create_app, settings_from_env
 pytestmark = pytest.mark.ui
 playwright = pytest.importorskip("playwright.sync_api")
 
-PAGES = ["/cases/libraries/inference", "/cases/parks/inference", "/cases/clean/inference", "/cases/dirty/inference",
-         "/inference", f"/cases/libraries/inference?run={LIB_RUN}", f"/cases/libraries/runs/{LIB_RUN}",
-         "/cases/libraries/cost"]
+PAGES = [
+    "/cases/libraries/inference",
+    "/cases/parks/inference",
+    "/cases/clean/inference",
+    "/cases/dirty/inference",
+    "/inference",
+    f"/cases/libraries/inference?run={LIB_RUN}",
+    f"/cases/libraries/runs/{LIB_RUN}",
+    "/cases/libraries/cost",
+]
 
 
 def _free_port() -> int:

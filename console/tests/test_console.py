@@ -28,9 +28,18 @@ def test_cases_list_and_overview(client):
 
 def test_run_view_renders_the_trail(client):
     page = client.get(f"/cases/libraries/runs/{RUN}", params={"limit": 2000}).text
-    for needle in ("Phase 1 loop", "Reopened phase 3", "step--quarantine", "Sandbox proof", "verdict--achieved",
-                   "Code attempt 1", "Approve-before-submit gate", "Watch the agent's browser",
-                   'data-api="/cases/libraries/api/runs/', 'href="/cases/libraries/bronze/sha256'):
+    for needle in (
+        "Phase 1 loop",
+        "Reopened phase 3",
+        "step--quarantine",
+        "Sandbox proof",
+        "verdict--achieved",
+        "Code attempt 1",
+        "Approve-before-submit gate",
+        "Watch the agent's browser",
+        'data-api="/cases/libraries/api/runs/',
+        'href="/cases/libraries/bronze/sha256',
+    ):
         assert needle in page, needle
     api = client.get(f"/cases/libraries/api/runs/{RUN}", params={"after": 0}).json()
     assert api["count"] > 20 and api["state"] == "paused" and "/cases/libraries/bronze/" in api["steps_html"]

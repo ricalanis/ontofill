@@ -89,8 +89,9 @@ class Settings:
 
     def __post_init__(self) -> None:
         if self.identity_mode not in IDENTITY_MODES:
-            raise ValueError(f"ONTOFILL_CONSOLE_IDENTITY must be one of {', '.join(IDENTITY_MODES)}, "
-                             f"got {self.identity_mode!r}")
+            raise ValueError(
+                f"ONTOFILL_CONSOLE_IDENTITY must be one of {', '.join(IDENTITY_MODES)}, got {self.identity_mode!r}"
+            )
 
 
 def parse_cases(spec: str, env: dict[str, str] | None = None) -> dict[str, Case]:
@@ -121,13 +122,17 @@ def settings_from_env(env: dict[str, str] | None = None) -> Settings:
     env = dict(os.environ if env is None else env)
     headers = tuple(h.strip() for h in env.get("ONTOFILL_CONSOLE_IDENTITY_HEADER", "").split(",") if h.strip())
     env_cases = parse_cases(env.get("ONTOFILL_CONSOLE_CASES", ""), env)
-    settings = Settings(cases=dict(env_cases), env_cases=env_cases, cases_root=registry.root_from_env(env),
-                    identity_mode=env.get("ONTOFILL_CONSOLE_IDENTITY", "sso").strip() or "sso",
-                    identity_headers=headers or DEFAULT_IDENTITY_HEADERS,
-                    groups_header=env.get("ONTOFILL_CONSOLE_GROUPS_HEADER", "").strip() or "X-NetBird-Groups",
-                    approver_group=env.get("ONTOFILL_CONSOLE_APPROVER_GROUP", "").strip() or "approvers",
-                    direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")),
-                    runner_state=runner_state.state_dir(env))
+    settings = Settings(
+        cases=dict(env_cases),
+        env_cases=env_cases,
+        cases_root=registry.root_from_env(env),
+        identity_mode=env.get("ONTOFILL_CONSOLE_IDENTITY", "sso").strip() or "sso",
+        identity_headers=headers or DEFAULT_IDENTITY_HEADERS,
+        groups_header=env.get("ONTOFILL_CONSOLE_GROUPS_HEADER", "").strip() or "X-NetBird-Groups",
+        approver_group=env.get("ONTOFILL_CONSOLE_APPROVER_GROUP", "").strip() or "approvers",
+        direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")),
+        runner_state=runner_state.state_dir(env),
+    )
     sync_registry(settings, env)
     return settings
 
@@ -184,6 +189,7 @@ def sync_registry(settings: Settings, env: dict[str, str] | None = None) -> None
 
 def brief(value, limit: int = 240) -> str:
     """Readable one-liner for trace/proof fields, which the engine may write as strings or objects."""
+
     def fmt(v):
         if isinstance(v, dict):
             return ", ".join(f"{k}: {fmt(x)}" for k, x in v.items() if x not in (None, "", [], {}))
@@ -216,14 +222,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """readonly mode (a public viewing instance): every write is refused before any route runs, whatever headers
         arrive, so no forwarded or forged header can turn a viewer into an approver."""
         if settings.identity_mode == "readonly" and request.method not in READ_METHODS:
-            return PlainTextResponse("this console is read-only: decisions, case edits and runner actions are "
-                                     "made only on the approvers' console", status_code=403)
+            return PlainTextResponse(
+                "this console is read-only: decisions, case edits and runner actions are "
+                "made only on the approvers' console",
+                status_code=403,
+            )
         return await call_next(request)
 
     @app.middleware("http")
     async def pick_up_registry_changes(request: Request, call_next):
         sync_registry(settings)  # new, archived or revised cases appear without a restart (cheap: stat unless changed)
         return await call_next(request)
+
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
@@ -250,8 +260,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def group_verified(request: Request) -> bool:
         """sso-group: the proxy-supplied groups header names the approver group, and the request came via the proxy."""
-        return (settings.identity_mode == "sso-group" and not direct_denied(request)
-                and ap.groups_contain(request.headers.get(settings.groups_header), settings.approver_group))
+        return (
+            settings.identity_mode == "sso-group"
+            and not direct_denied(request)
+            and ap.groups_contain(request.headers.get(settings.groups_header), settings.approver_group)
+        )
 
     # helpers ----------------------------------------------------------------------------------------------------
     def get_case(case_id: str) -> Case:
@@ -318,9 +331,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             name = ap.clean_display_name(form.get("display_name"))
             if not name:
                 raise HTTPException(400, "enter your name (self-declared, at most 100 characters)")
-            return (f"group:{settings.approver_group}", "sso-group",
-                    {"unverified_name": name,
-                     "verified": {"group": settings.approver_group, "via": "NetBird SSO (x-netbird-groups)"}})
+            return (
+                f"group:{settings.approver_group}",
+                "sso-group",
+                {
+                    "unverified_name": name,
+                    "verified": {"group": settings.approver_group, "via": "NetBird SSO (x-netbird-groups)"},
+                },
+            )
         who = ap.clean_display_name(form.get("approver"))
         if not who:
             raise HTTPException(400, "enter your name (local mode)")
@@ -336,17 +354,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for name in settings.identity_headers:
             raw = request.headers.get(name)
             usable = ap.clean_identity(raw) is not None
-            candidates.append({"name": name, "present": raw is not None, "non_empty": bool(raw and raw.strip()),
-                               "usable": usable})
+            candidates.append(
+                {"name": name, "present": raw is not None, "non_empty": bool(raw and raw.strip()), "usable": usable}
+            )
             if usable and used is None and settings.identity_mode == "sso":
                 used = name
         groups_raw = request.headers.get(settings.groups_header)
-        return {"identity_mode": settings.identity_mode, "header_names": names, "candidates": candidates,
-                "used_header": used, "identity_detected": used is not None,
-                "groups_header": settings.groups_header, "groups_header_present": groups_raw is not None,
-                "approver_group": settings.approver_group,
-                "in_approver_group": ap.groups_contain(groups_raw, settings.approver_group),
-                "direct_denied": direct_denied(request), "group_verified": group_verified(request)}
+        return {
+            "identity_mode": settings.identity_mode,
+            "header_names": names,
+            "candidates": candidates,
+            "used_header": used,
+            "identity_detected": used is not None,
+            "groups_header": settings.groups_header,
+            "groups_header_present": groups_raw is not None,
+            "approver_group": settings.approver_group,
+            "in_approver_group": ap.groups_contain(groups_raw, settings.approver_group),
+            "direct_denied": direct_denied(request),
+            "group_verified": group_verified(request),
+        }
 
     # read-only visualization views (CONTRACT v1.0.4b: Claude Product); they never write
     from .viz import VizContext, register
@@ -357,8 +383,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .case_admin import AdminContext
     from .case_admin import install as install_case_admin
 
-    install_case_admin(AdminContext(app=app, render=render, get_case=get_case, settings=settings, authorize=authorize,
-                                    check_origin=check_origin, read_form=read_form, live_run_id=live_run_id, env=env))
+    install_case_admin(
+        AdminContext(
+            app=app,
+            render=render,
+            get_case=get_case,
+            settings=settings,
+            authorize=authorize,
+            check_origin=check_origin,
+            read_form=read_form,
+            live_run_id=live_run_id,
+            env=env,
+        )
+    )
 
     @app.get("/whoami", response_class=HTMLResponse)
     def whoami(request: Request):
@@ -379,9 +416,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for c in settings.cases.values():
             rid = live_run_id(c)
             status = (c.store.live_status(rid) if rid else None) or {}
-            rows.append({"id": c.id, "title": c.title, "run_id": rid, "state": status.get("state"),
-                         "checkpoint_pending": status.get("checkpoint_pending"), "pending": c.pending,
-                         "lake_error": c.lake_error})
+            rows.append(
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "run_id": rid,
+                    "state": status.get("state"),
+                    "checkpoint_pending": status.get("checkpoint_pending"),
+                    "pending": c.pending,
+                    "lake_error": c.lake_error,
+                }
+            )
         return render(request, "cases.html", nav="cases", rows=rows)
 
     @app.get("/cases/{case_id}", response_class=HTMLResponse)
@@ -391,10 +436,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         latest = None
         if rid:
             status = case.store.live_status(rid) or {}
-            latest = {"run_id": rid, "state": status.get("state"), "checkpoint_pending": status.get("checkpoint_pending")}
+            latest = {
+                "run_id": rid,
+                "state": status.get("state"),
+                "checkpoint_pending": status.get("checkpoint_pending"),
+            }
         waiting = [a for a in ap.approvals(case.dir) if a.approved is None]
-        return render(request, "case.html", nav="overview", case=case, latest=latest, waiting=waiting,
-                      brief=case.brief, log=ap.decisions_log(case.dir)[:50], lake_error=case.lake_error)
+        return render(
+            request,
+            "case.html",
+            nav="overview",
+            case=case,
+            latest=latest,
+            waiting=waiting,
+            brief=case.brief,
+            log=ap.decisions_log(case.dir)[:50],
+            lake_error=case.lake_error,
+        )
 
     @app.get("/cases/{case_id}/runs", response_class=HTMLResponse)
     def runs(request: Request, case_id: str):
@@ -403,9 +461,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = []
         for rid in reversed(case.store.live_run_ids()):
             status = case.store.live_status(rid) or {}
-            rows.append({"run_id": rid, "latest": rid == latest, "state": status.get("state"),
-                         "checkpoint_pending": status.get("checkpoint_pending"),
-                         "backend": backend_of(status.get("metrics"), [status])})
+            rows.append(
+                {
+                    "run_id": rid,
+                    "latest": rid == latest,
+                    "state": status.get("state"),
+                    "checkpoint_pending": status.get("checkpoint_pending"),
+                    "backend": backend_of(status.get("metrics"), [status]),
+                }
+            )
         return render(request, "runs.html", nav="run", case=case, rows=rows, lake_error=case.lake_error)
 
     def run_view_model(case: Case, run_id: str, after: int = 0) -> dict:
@@ -416,8 +480,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         jobs = case.store.live_jobs(run_id)
         backend = backend_of((status or {}).get("metrics"), [*steps, status or {}])
         panel = live.summarize(steps, status, case_domain(case))
-        return {"run_id": run_id, "steps": steps, "new": steps[after:][::-1], "panel": panel,
-                "threads": live.loop_threads(steps), "proof": live.proof(jobs, steps), "backend": backend}
+        return {
+            "run_id": run_id,
+            "steps": steps,
+            "new": steps[after:][::-1],
+            "panel": panel,
+            "threads": live.loop_threads(steps),
+            "proof": live.proof(jobs, steps),
+            "backend": backend,
+        }
 
     @app.get("/cases/{case_id}/runs/{run_id}", response_class=HTMLResponse)
     def run_view(request: Request, case_id: str, run_id: str, limit: int = 150):
@@ -426,11 +497,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limit = max(1, min(limit, 2000))
         status = case.store.live_status(run_id) or {}
         items, _ = live.stream_items(m["steps"], max(0, len(m["steps"]) - limit), m["threads"])
-        return render(request, "run.html", nav="run", case=case, live_run_id=run_id, m=m, items=items, limit=limit,
-                      backend=m["backend"],
-                      preview=bool(status.get("preview") or (status.get("metrics") or {}).get("preview")),
-                      PHASES=live.PHASES, MODE_NAMES=live.MODE_NAMES, CHECKPOINT_PHASE=live.CHECKPOINT_PHASE,
-                      others=case.store.live_run_ids())
+        return render(
+            request,
+            "run.html",
+            nav="run",
+            case=case,
+            live_run_id=run_id,
+            m=m,
+            items=items,
+            limit=limit,
+            backend=m["backend"],
+            preview=bool(status.get("preview") or (status.get("metrics") or {}).get("preview")),
+            PHASES=live.PHASES,
+            MODE_NAMES=live.MODE_NAMES,
+            CHECKPOINT_PHASE=live.CHECKPOINT_PHASE,
+            others=case.store.live_run_ids(),
+        )
 
     @app.get("/cases/{case_id}/api/runs/{run_id}")
     def run_api(case_id: str, run_id: str, after: int = 0) -> dict:
@@ -442,17 +524,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         items, updated = live.stream_items(m["steps"], start, m["threads"], incremental=after > 0)
         steps_html = env.get_template("_steps.html").render(items=items, MODE_NAMES=live.MODE_NAMES, base=base)
         thread_tpl = env.get_template("_loop_thread.html")
-        threads_html = [{"id": t["id"], "html": thread_tpl.render(t=t, MODE_NAMES=live.MODE_NAMES, base=base)}
-                        for t in updated]
+        threads_html = [
+            {"id": t["id"], "html": thread_tpl.render(t=t, MODE_NAMES=live.MODE_NAMES, base=base)} for t in updated
+        ]
         panel_html = env.get_template("_run_panel.html").render(
-            m=m, PHASES=live.PHASES, CHECKPOINT_PHASE=live.CHECKPOINT_PHASE, MODE_NAMES=live.MODE_NAMES, domain=d,
-            base=base)
+            m=m,
+            PHASES=live.PHASES,
+            CHECKPOINT_PHASE=live.CHECKPOINT_PHASE,
+            MODE_NAMES=live.MODE_NAMES,
+            domain=d,
+            base=base,
+        )
         proof_html = env.get_template("_proof.html").render(m=m, base=base)
         timeline_html = env.get_template("_timeline.html").render(
-            m=m, PHASES=live.PHASES, CHECKPOINT_PHASE=live.CHECKPOINT_PHASE, base=base)
-        return {"count": len(m["steps"]), "state": m["panel"]["state"], "steps_html": steps_html,
-                "threads_html": threads_html, "panel_html": panel_html, "timeline_html": timeline_html,
-                "proof_html": proof_html}
+            m=m, PHASES=live.PHASES, CHECKPOINT_PHASE=live.CHECKPOINT_PHASE, base=base
+        )
+        return {
+            "count": len(m["steps"]),
+            "state": m["panel"]["state"],
+            "steps_html": steps_html,
+            "threads_html": threads_html,
+            "panel_html": panel_html,
+            "timeline_html": timeline_html,
+            "proof_html": proof_html,
+        }
 
     @app.get("/cases/{case_id}/files/{path:path}", response_class=HTMLResponse)
     def case_file(request: Request, case_id: str, path: str):
@@ -470,35 +565,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "bronze object not found")
         declared = str(case.store.bronze_meta(key).get("content_type") or "")
         media_type = declared if declared.startswith(("image/", "application/pdf")) else sniff_media_type(data)
-        return Response(data, media_type=media_type, headers={
-            "Cache-Control": "private, max-age=31536000, immutable",  # content-addressed
-            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-            "X-Content-Type-Options": "nosniff"})
+        return Response(
+            data,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",  # content-addressed
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     # approvals --------------------------------------------------------------------------------------------------
     @app.get("/cases/{case_id}/approvals", response_class=HTMLResponse)
     def approvals(request: Request, case_id: str, done: str = "", error: str = ""):
         case = get_case(case_id)
-        return render(request, "approvals.html", nav="approvals", case=case, items=ap.approvals(case.dir),
-                      done=done, error=error, log=ap.decisions_log(case.dir)[:100])
+        return render(
+            request,
+            "approvals.html",
+            nav="approvals",
+            case=case,
+            items=ap.approvals(case.dir),
+            done=done,
+            error=error,
+            log=ap.decisions_log(case.dir)[:100],
+        )
 
-    def review_page(request: Request, case: Case, item: ap.Approval, error: str = "", reason: str = "",
-                    status_code: int = 200) -> HTMLResponse:
+    def review_page(
+        request: Request, case: Case, item: ap.Approval, error: str = "", reason: str = "", status_code: int = 200
+    ) -> HTMLResponse:
         docs = ap.load_artifacts(case.dir, item)
         paths = [{"path": p, "exists": case.dir.exists(p)} for p in ap.artifact_paths(item)]
-        gen = item.meta.get("generated_by") or next((d.get("generated_by") for d in docs.values()
-                                                    if d.get("generated_by")), None)
+        gen = item.meta.get("generated_by") or next(
+            (d.get("generated_by") for d in docs.values() if d.get("generated_by")), None
+        )
         shot = item.meta.get("screenshot_key") if item.checkpoint == "action" else None
         has_screenshot = bool(shot) and case.store.bronze(str(shot)) is not None
         who = identity(request)
-        can_decide = item.approved is None and (settings.identity_mode == "local" or bool(who)
-                                                or group_verified(request))
+        can_decide = item.approved is None and (
+            settings.identity_mode == "local" or bool(who) or group_verified(request)
+        )
         log = [d for d in ap.decisions_log(case.dir) if d.get("phase_dir") == item.phase_dir]
-        response = render(request, "approval.html", nav="approvals", case=case, a=item, docs=docs, paths=paths,
-                          error=error, gen=gen, backend=(gen or {}).get("backend"), taxonomy_stats=ap.taxonomy_stats,
-                          has_screenshot=has_screenshot, history=ap.revision_history(docs),
-                          drafts=ap.archived_drafts(case.dir, item), reason=reason, reason_max=ap.DENY_REASON_MAX,
-                          digests=ap.artifact_digests(case.dir, item), can_decide=can_decide, log=log)
+        response = render(
+            request,
+            "approval.html",
+            nav="approvals",
+            case=case,
+            a=item,
+            docs=docs,
+            paths=paths,
+            error=error,
+            gen=gen,
+            backend=(gen or {}).get("backend"),
+            taxonomy_stats=ap.taxonomy_stats,
+            has_screenshot=has_screenshot,
+            history=ap.revision_history(docs),
+            drafts=ap.archived_drafts(case.dir, item),
+            reason=reason,
+            reason_max=ap.DENY_REASON_MAX,
+            digests=ap.artifact_digests(case.dir, item),
+            can_decide=can_decide,
+            log=log,
+        )
         response.status_code = status_code
         return response
 
@@ -530,13 +657,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         item = find_item(case, phase_dir)
         hint = rid if item and status.get("checkpoint_pending") in (item.checkpoint, item.phase_dir) else None
         try:
-            ap.decide(case.dir, case.id, phase_dir, who, source, seen, decisions=decisions or None,
-                      decision=form.get("decision"), reason=form.get("reason"), run_id=hint, extra=extra)
+            ap.decide(
+                case.dir,
+                case.id,
+                phase_dir,
+                who,
+                source,
+                seen,
+                decisions=decisions or None,
+                decision=form.get("decision"),
+                reason=form.get("reason"),
+                run_id=hint,
+                extra=extra,
+            )
         except ap.DecisionError as exc:
             if item is None:
                 raise HTTPException(exc.status, str(exc)) from exc
-            return review_page(request, case, item, str(exc), reason=form.get("reason", "")[:5000],
-                               status_code=exc.status)
+            return review_page(
+                request, case, item, str(exc), reason=form.get("reason", "")[:5000], status_code=exc.status
+            )
         return RedirectResponse(f"/cases/{case.id}/approvals?done={quote(phase_dir)}", status_code=303)
 
     # runner control (R18): operator actions, same identity rules as approvals, logged in decisions.jsonl ----------
@@ -555,10 +694,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(400, "to_phase must be 1-5")
             to_phase = int(form["to_phase"])
         runner_state.apply_action(settings.runner_state, case.id, action, who, to_phase)
-        runner_state.append_line(case.dir.root / "decisions.jsonl",
-                                 {"ts": runner_state.now_iso(), "case_id": case.id, "checkpoint": "runner",
-                                  "decision": action, "approver": who, "identity_source": source, **(extra or {}),
-                                  **({"to_phase": to_phase} if to_phase else {})})
+        runner_state.append_line(
+            case.dir.root / "decisions.jsonl",
+            {
+                "ts": runner_state.now_iso(),
+                "case_id": case.id,
+                "checkpoint": "runner",
+                "decision": action,
+                "approver": who,
+                "identity_source": source,
+                **(extra or {}),
+                **({"to_phase": to_phase} if to_phase else {}),
+            },
+        )
         return RedirectResponse(f"/cases/{case.id}?runner={quote(action)}", status_code=303)
 
     @app.post("/runner/kill")
@@ -569,9 +717,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if state not in ("on", "off"):
             raise HTTPException(400, "state must be on or off")
         who, source, extra = authorize(request, form)
-        runner_state.set_kill(settings.runner_state, state == "on",
-                              {"ts": runner_state.now_iso(), "checkpoint": "runner_kill", "decision": state,
-                               "approver": who, "identity_source": source, **(extra or {})})
+        runner_state.set_kill(
+            settings.runner_state,
+            state == "on",
+            {
+                "ts": runner_state.now_iso(),
+                "checkpoint": "runner_kill",
+                "decision": state,
+                "approver": who,
+                "identity_source": source,
+                **(extra or {}),
+            },
+        )
         return RedirectResponse("/?kill=" + state, status_code=303)
 
     # console-wide pages ----------------------------------------------------------------------------------------
@@ -591,7 +748,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         latest = history[-1] if history else None
         rows, prev = [], None
         for s in history[-48:]:
-            dt = (datetime.fromisoformat(s["ts"]) - datetime.fromisoformat(prev["ts"])).total_seconds() / 3600 if prev else 0
+            dt = (
+                (datetime.fromisoformat(s["ts"]) - datetime.fromisoformat(prev["ts"])).total_seconds() / 3600
+                if prev
+                else 0
+            )
             rate = (s["credit_used"] - prev["credit_used"]) / dt if prev and dt > 0 else None
             rows.append({"ts": s["ts"], "used": s["credit_used"], "left": s.get("credit_remaining"), "rate": rate})
             prev = s
@@ -599,13 +760,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=timezone(timedelta(0)))
         hours_left = max(0.0, (deadline - datetime.fromisoformat(latest["ts"])).total_seconds() / 3600) if latest else 0
-        rates = [x["rate"] for x in rows[-1:] if x["rate"] is not None] + [(latest or {}).get("resource_rate_usd_per_hour") or 0]
+        rates = [x["rate"] for x in rows[-1:] if x["rate"] is not None] + [
+            (latest or {}).get("resource_rate_usd_per_hour") or 0
+        ]
         projected = (latest["credit_used"] + max(rates) * hours_left) if latest else None
         if latest:
-            latest = {"by_category": {}, "inference": [], "resources": [], "engine": {}, "credit_total": 0.0,
-                      "credit_remaining": None, **latest}
-        return render(request, "spend.html", nav="spend", latest=latest, rows=rows[::-1], projected=projected,
-                      hours_left=hours_left, per_entity=None, history_path=str(path or "(ONTOFILL_CONSOLE_SPEND_HISTORY unset)"))
+            latest = {
+                "by_category": {},
+                "inference": [],
+                "resources": [],
+                "engine": {},
+                "credit_total": 0.0,
+                "credit_remaining": None,
+                **latest,
+            }
+        return render(
+            request,
+            "spend.html",
+            nav="spend",
+            latest=latest,
+            rows=rows[::-1],
+            projected=projected,
+            hours_left=hours_left,
+            per_entity=None,
+            history_path=str(path or "(ONTOFILL_CONSOLE_SPEND_HISTORY unset)"),
+        )
 
     @app.get("/evidence", response_class=HTMLResponse)
     def track_evidence(request: Request):

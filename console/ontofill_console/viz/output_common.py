@@ -13,8 +13,12 @@ from ..gold import inferred_ontology
 from .core import Artifacts
 
 # Cell / value states in the completeness views. "weak" = gold but not enough on its own (Jev alone, or no evidence).
-STATE_LABELS = {"gold": "gold with evidence", "weak": "gold, not enough alone", "conflict": "conflict kept",
-                "missing": "missing"}
+STATE_LABELS = {
+    "gold": "gold with evidence",
+    "weak": "gold, not enough alone",
+    "conflict": "conflict kept",
+    "missing": "missing",
+}
 
 
 def q(ident: str) -> str:
@@ -79,13 +83,22 @@ def evidence_view(case_id: str, a: Artifacts, ev: dict, with_meta: bool = True) 
     shot, raw = ev.get("screenshot_key"), ev.get("bronze_key")
     base = f"/cases/{case_id}/bronze/"
     meta = a.bronze_meta(raw) if (with_meta and raw) else {}
-    return {"url": url if parts.scheme in ("http", "https") else None, "host": parts.hostname or url,
-            "path": (parts.path or "/") + (f"?{parts.query}" if parts.query else ""),
-            "selector": ev.get("selector"), "captured_at": ev.get("captured_at"), "source_id": ev.get("source_id"),
-            "source_type": ev.get("source_type"), "format": ev.get("format"),
-            "screenshot_key": shot, "bronze_key": raw,
-            "screenshot_href": base + shot if shot else None, "raw_href": base + raw if raw else None,
-            "raw_content_type": meta.get("content_type"), "raw_step_id": meta.get("step_id")}
+    return {
+        "url": url if parts.scheme in ("http", "https") else None,
+        "host": parts.hostname or url,
+        "path": (parts.path or "/") + (f"?{parts.query}" if parts.query else ""),
+        "selector": ev.get("selector"),
+        "captured_at": ev.get("captured_at"),
+        "source_id": ev.get("source_id"),
+        "source_type": ev.get("source_type"),
+        "format": ev.get("format"),
+        "screenshot_key": shot,
+        "bronze_key": raw,
+        "screenshot_href": base + shot if shot else None,
+        "raw_href": base + raw if raw else None,
+        "raw_content_type": meta.get("content_type"),
+        "raw_step_id": meta.get("step_id"),
+    }
 
 
 def entity_title(domain: Domain, entity: dict) -> str:

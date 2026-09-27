@@ -17,8 +17,11 @@ PROXY = "100.82.93.149"  # a NetBird proxy address (not ours)
 
 
 def app_client(cases_dir, client_addr=PROXY, deny=f"{MESH},100.82.76.174/32"):
-    env = {"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "sso-group",
-           "ONTOFILL_CONSOLE_DIRECT_DENY": deny}
+    env = {
+        "ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
+        "ONTOFILL_CONSOLE_IDENTITY": "sso-group",
+        "ONTOFILL_CONSOLE_DIRECT_DENY": deny,
+    }
     return TestClient(create_app(settings_from_env(env)), client=(client_addr, 50000))
 
 

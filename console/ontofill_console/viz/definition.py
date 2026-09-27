@@ -25,13 +25,21 @@ from .core import Artifacts, VizContext, gap
 
 ORDER = 20
 CP_LABELS = {"prd": "PRD", "factors": "Factors", "ontology": "Ontology", "source": "Source", "action": "Action"}
-PRD_SECTIONS = (("personas", "persona"), ("jobs_to_be_done", "job"), ("requirements", "requirement"),
-                ("constraints", "constraint"), ("definition_of_done", "done when"))
+PRD_SECTIONS = (
+    ("personas", "persona"),
+    ("jobs_to_be_done", "job"),
+    ("requirements", "requirement"),
+    ("constraints", "constraint"),
+    ("definition_of_done", "done when"),
+)
 BASIS_STATE = {"brief": "done", "human": "run", "proposed": "need"}
 BASIS_WORDS = {"brief": "from the brief", "human": "from a person", "proposed": "proposed by the engine"}
 TIER_ORDER = ("primary", "secondary", "review")
-TIER_WORDS = {"primary": "trusted as evidence", "secondary": "cross-check only, needs review",
-              "review": "needs human review"}
+TIER_WORDS = {
+    "primary": "trusted as evidence",
+    "secondary": "cross-check only, needs review",
+    "review": "needs human review",
+}
 
 
 # shared helpers (the discovery view imports these too) ------------------------------------------------------------
@@ -72,10 +80,15 @@ def pending_strips(a: Artifacts, case_id: str, checkpoints: tuple[str, ...]) -> 
         if item.approved is not None or (item.checkpoint or "") not in checkpoints:
             continue
         cp = item.checkpoint or "checkpoint"
-        out.append({"state": "need", "title": f"{CP_LABELS.get(cp, cp)}: waiting for your review",
-                    "detail": " · ".join(str(x) for x in (item.phase_dir, item.meta.get("reason")) if x),
-                    "meta": str(item.meta.get("requested_at") or "")[:16].replace("T", " "),
-                    "href": f"/cases/{case_id}/approvals/{item.phase_dir}"})
+        out.append(
+            {
+                "state": "need",
+                "title": f"{CP_LABELS.get(cp, cp)}: waiting for your review",
+                "detail": " · ".join(str(x) for x in (item.phase_dir, item.meta.get("reason")) if x),
+                "meta": str(item.meta.get("requested_at") or "")[:16].replace("T", " "),
+                "href": f"/cases/{case_id}/approvals/{item.phase_dir}",
+            }
+        )
     return out
 
 
@@ -98,11 +111,15 @@ def prd_text(doc: dict) -> list[str]:
             elif isinstance(item, dict) and key == "definition_of_done":
                 ratio = f" (min ratio {item['min_ratio']})" if item.get("min_ratio") is not None else ""
                 basis = f" [basis: {item['basis']}]" if item.get("basis") else ""
-                lines.append(f"{word}: {item.get('id', '?')} · {item.get('metric', '?')} {item.get('operator', '')} "
-                             f"{item.get('target', '')}{ratio}{basis}")
+                lines.append(
+                    f"{word}: {item.get('id', '?')} · {item.get('metric', '?')} {item.get('operator', '')} "
+                    f"{item.get('target', '')}{ratio}{basis}"
+                )
             elif isinstance(item, dict):
                 owner = item.get("persona_id") or item.get("job_id")
-                lines.append(f"{word}: {item.get('id', '?')}{f' ({owner})' if owner else ''} · {item.get('description', '')}")
+                lines.append(
+                    f"{word}: {item.get('id', '?')}{f' ({owner})' if owner else ''} · {item.get('description', '')}"
+                )
     return lines
 
 
@@ -145,44 +162,88 @@ def prd_timeline(a: Artifacts, case_id: str) -> dict:
         doc = a.json(rel) if rel else None
         marker = a.json(f"01-scope/revisions/{n}/APPROVED")
         dec = _dict(marker) or _dict(recorded.get(n))
-        drafts.append({"n": n, "path": rel, "doc": doc if isinstance(doc, dict) else None,
-                       "decision": {"decision": dec.get("decision") or "deny", "reason": dec.get("reason"),
-                                    "approver": dec.get("approver"), "date": dec.get("date"),
-                                    "logged_at": (logged[n - 1].get("ts") if len(logged) >= n else None)}})
+        drafts.append(
+            {
+                "n": n,
+                "path": rel,
+                "doc": doc if isinstance(doc, dict) else None,
+                "decision": {
+                    "decision": dec.get("decision") or "deny",
+                    "reason": dec.get("reason"),
+                    "approver": dec.get("approver"),
+                    "date": dec.get("date"),
+                    "logged_at": (logged[n - 1].get("ts") if len(logged) >= n else None),
+                },
+            }
+        )
     if current is not None:
         approved = a.json("01-scope/APPROVED")
         pending = a.text("01-scope/APPROVAL_PENDING.md") is not None
         if isinstance(approved, dict):
-            dec = {"decision": approved.get("decision") or "approve", "reason": approved.get("reason"),
-                   "approver": approved.get("approver"), "date": approved.get("date"),
-                   "logged_at": (logged[n_prior].get("ts") if len(logged) > n_prior else None)}
+            dec = {
+                "decision": approved.get("decision") or "approve",
+                "reason": approved.get("reason"),
+                "approver": approved.get("approver"),
+                "date": approved.get("date"),
+                "logged_at": (logged[n_prior].get("ts") if len(logged) > n_prior else None),
+            }
         else:
-            dec = {"decision": "pending" if pending else None, "reason": None, "approver": None, "date": None,
-                   "logged_at": None}
+            dec = {
+                "decision": "pending" if pending else None,
+                "reason": None,
+                "approver": None,
+                "date": None,
+                "logged_at": None,
+            }
         drafts.append({"n": n_prior + 1, "path": "01-scope/prd.json", "doc": current, "decision": dec})
     rows, diffs = [], []
     for i, d in enumerate(drafts):
         doc = d["doc"]
         dec = d["decision"]
         state = {"deny": "block", "approve": "done", "pending": "need"}.get(dec.get("decision") or "", "none")
-        rows.append({"n": d["n"], "path": d["path"], "href": file_href(case_id, d["path"]) if d["path"] else None,
-                     "version": (doc or {}).get("version"), "generated_by": gen_by(doc),
-                     "n_criteria": len(_list((doc or {}).get("definition_of_done"))),
-                     "current": d["path"] == "01-scope/prd.json", "decision": dec, "state": state})
+        rows.append(
+            {
+                "n": d["n"],
+                "path": d["path"],
+                "href": file_href(case_id, d["path"]) if d["path"] else None,
+                "version": (doc or {}).get("version"),
+                "generated_by": gen_by(doc),
+                "n_criteria": len(_list((doc or {}).get("definition_of_done"))),
+                "current": d["path"] == "01-scope/prd.json",
+                "decision": dec,
+                "state": state,
+            }
+        )
         if i + 1 < len(drafts):
             nxt = drafts[i + 1]
             if doc is not None and nxt["doc"] is not None:
                 diff = line_diff(prd_text(doc), prd_text(nxt["doc"]))
             else:
                 diff = None
-            diffs.append({"from_n": d["n"], "to_n": nxt["n"], "reason": dec.get("reason"),
-                          "missing": None if diff is not None else
-                          f"01-scope/revisions/{d['n']}/prd.json (the archived draft) is not in the case package",
-                          **(diff or {"lines": [], "n_add": 0, "n_del": 0})})
-    return {"path": "01-scope/prd.json", "present": current is not None, "drafts": rows, "diffs": diffs,
-            "empty": None if current is not None else gap(
-                None, "The PRD drafts the engine wrote from the brief, and the human decisions between them.",
-                "01-scope/prd.json (written by phase 1)")}
+            diffs.append(
+                {
+                    "from_n": d["n"],
+                    "to_n": nxt["n"],
+                    "reason": dec.get("reason"),
+                    "missing": None
+                    if diff is not None
+                    else f"01-scope/revisions/{d['n']}/prd.json (the archived draft) is not in the case package",
+                    **(diff or {"lines": [], "n_add": 0, "n_del": 0}),
+                }
+            )
+    return {
+        "path": "01-scope/prd.json",
+        "present": current is not None,
+        "drafts": rows,
+        "diffs": diffs,
+        "empty": None
+        if current is not None
+        else gap(
+            None,
+            "The PRD drafts the engine wrote from the brief, and the human decisions between them.",
+            "01-scope/prd.json (written by phase 1)",
+        ),
+    }
 
 
 def dod_rows(prd: dict | None) -> dict:
@@ -191,17 +252,34 @@ def dod_rows(prd: dict | None) -> dict:
         if not isinstance(c, dict):
             continue
         basis = c.get("basis") if c.get("basis") in BASIS_STATE else None
-        rows.append({"id": c.get("id"), "metric": c.get("metric"), "operator": c.get("operator"),
-                     "target": c.get("target"), "min_ratio": c.get("min_ratio"), "basis": basis or "unstated",
-                     "basis_state": BASIS_STATE.get(basis or "", "none"),
-                     "basis_words": BASIS_WORDS.get(basis or "", "no basis recorded"),
-                     "quote": c.get("basis_quote"), "rationale": c.get("rationale"),
-                     "feasibility": c.get("feasibility")})
+        rows.append(
+            {
+                "id": c.get("id"),
+                "metric": c.get("metric"),
+                "operator": c.get("operator"),
+                "target": c.get("target"),
+                "min_ratio": c.get("min_ratio"),
+                "basis": basis or "unstated",
+                "basis_state": BASIS_STATE.get(basis or "", "none"),
+                "basis_words": BASIS_WORDS.get(basis or "", "no basis recorded"),
+                "quote": c.get("basis_quote"),
+                "rationale": c.get("rationale"),
+                "feasibility": c.get("feasibility"),
+            }
+        )
     tally = {k: sum(1 for r in rows if r["basis"] == k) for k in ("brief", "human", "proposed", "unstated")}
-    return {"rows": rows, "by_basis": tally,
-            "empty": None if rows else gap(None, "Each done-when criterion with its basis: a quote from the brief, "
-                                                 "a person's words, or the engine's proposal with rationale.",
-                                           "01-scope/prd.json · definition_of_done[]")}
+    return {
+        "rows": rows,
+        "by_basis": tally,
+        "empty": None
+        if rows
+        else gap(
+            None,
+            "Each done-when criterion with its basis: a quote from the brief, "
+            "a person's words, or the engine's proposal with rationale.",
+            "01-scope/prd.json · definition_of_done[]",
+        ),
+    }
 
 
 def authority(prd: dict | None) -> dict:
@@ -210,14 +288,37 @@ def authority(prd: dict | None) -> dict:
     for p in _list(pol.get("trusted_publishers")):
         if isinstance(p, dict):
             tier = p.get("tier") if p.get("tier") in TIER_ORDER else "primary"
-            tiers.setdefault(tier, []).append({"kind": p.get("kind"), "domains": [str(d) for d in _list(p.get("domains"))],
-                                               "rationale": p.get("rationale"), "jurisdiction": p.get("jurisdiction")})
-    rows = [{"tier": t, "words": TIER_WORDS[t], "state": {"primary": "done", "secondary": "pause", "review": "need"}[t],
-             "publishers": tiers[t], "n_domains": sum(len(p["domains"]) for p in tiers[t])} for t in TIER_ORDER if t in tiers]
-    return {"jurisdiction": pol.get("jurisdiction"), "unknown_source_action": pol.get("unknown_source_action"),
-            "tiers": rows,
-            "empty": None if pol else gap(None, "Which publishers count as evidence, by tier, and what happens to an "
-                                                "unknown source.", "01-scope/prd.json · authority_policy")}
+            tiers.setdefault(tier, []).append(
+                {
+                    "kind": p.get("kind"),
+                    "domains": [str(d) for d in _list(p.get("domains"))],
+                    "rationale": p.get("rationale"),
+                    "jurisdiction": p.get("jurisdiction"),
+                }
+            )
+    rows = [
+        {
+            "tier": t,
+            "words": TIER_WORDS[t],
+            "state": {"primary": "done", "secondary": "pause", "review": "need"}[t],
+            "publishers": tiers[t],
+            "n_domains": sum(len(p["domains"]) for p in tiers[t]),
+        }
+        for t in TIER_ORDER
+        if t in tiers
+    ]
+    return {
+        "jurisdiction": pol.get("jurisdiction"),
+        "unknown_source_action": pol.get("unknown_source_action"),
+        "tiers": rows,
+        "empty": None
+        if pol
+        else gap(
+            None,
+            "Which publishers count as evidence, by tier, and what happens to an unknown source.",
+            "01-scope/prd.json · authority_policy",
+        ),
+    }
 
 
 # ontology side ------------------------------------------------------------------------------------------------------
@@ -236,23 +337,46 @@ def factors(a: Artifacts, case_id: str, ontology: dict | None) -> dict:
         if not isinstance(f, dict):
             continue
         d = decisions.get(f.get("id"))
-        rows.append({"id": f.get("id"), "label": f.get("label"), "kind": f.get("kind"),
-                     "description": f.get("description"),
-                     "evidence": [{"url": e.get("url"), "description": e.get("description")}
-                                  for e in _list(f.get("evidence")) if isinstance(e, dict)],
-                     "decision": d, "state": {"accept": "done", "reject": "block"}.get(d or "", "need" if pending and not marker else "none")})
+        rows.append(
+            {
+                "id": f.get("id"),
+                "label": f.get("label"),
+                "kind": f.get("kind"),
+                "description": f.get("description"),
+                "evidence": [
+                    {"url": e.get("url"), "description": e.get("description")}
+                    for e in _list(f.get("evidence"))
+                    if isinstance(e, dict)
+                ],
+                "decision": d,
+                "state": {"accept": "done", "reject": "block"}.get(
+                    d or "", "need" if pending and not marker else "none"
+                ),
+            }
+        )
     if marker:
         state = "denied" if marker.get("decision") == "deny" else "approved"
     else:
         state = "pending" if pending else "none"
-    return {"path": src, "href": file_href(case_id, src), "rows": rows, "state": state,
-            "approver": (marker or {}).get("approver"), "date": (marker or {}).get("date"),
-            "reason": (marker or {}).get("reason"),
-            "n_accepted": sum(1 for r in rows if r["decision"] == "accept"),
-            "n_rejected": sum(1 for r in rows if r["decision"] == "reject"),
-            "generated_by": gen_by(doc),
-            "empty": None if rows else gap(None, "The factors of variation the engine proposed from the PRD, each "
-                                                 "accepted or rejected by a person.", rel)}
+    return {
+        "path": src,
+        "href": file_href(case_id, src),
+        "rows": rows,
+        "state": state,
+        "approver": (marker or {}).get("approver"),
+        "date": (marker or {}).get("date"),
+        "reason": (marker or {}).get("reason"),
+        "n_accepted": sum(1 for r in rows if r["decision"] == "accept"),
+        "n_rejected": sum(1 for r in rows if r["decision"] == "reject"),
+        "generated_by": gen_by(doc),
+        "empty": None
+        if rows
+        else gap(
+            None,
+            "The factors of variation the engine proposed from the PRD, each accepted or rejected by a person.",
+            rel,
+        ),
+    }
 
 
 def _critic_state(label: str | None) -> str:
@@ -269,15 +393,23 @@ def _tax_nodes(children, depth: int = 1, out: list | None = None, limit: int = 4
     out = [] if out is None else out
     for n in _list(children):
         if isinstance(n, dict) and len(out) < limit:
-            out.append({"id": n.get("id"), "label": n.get("label"), "level": n.get("level", depth),
-                        "critic": n.get("critic_label"), "state": _critic_state(n.get("critic_label"))})
+            out.append(
+                {
+                    "id": n.get("id"),
+                    "label": n.get("label"),
+                    "level": n.get("level", depth),
+                    "critic": n.get("critic_label"),
+                    "state": _critic_state(n.get("critic_label")),
+                }
+            )
             _tax_nodes(n.get("children"), depth + 1, out, limit)
     return out
 
 
 def taxonomies(a: Artifacts, case_id: str, ontology: dict | None) -> dict:
-    found: list[tuple[dict, str]] = [(t, "02-ontology/ontology.json") for t in _list((ontology or {}).get("taxonomies"))
-                                     if isinstance(t, dict)]
+    found: list[tuple[dict, str]] = [
+        (t, "02-ontology/ontology.json") for t in _list((ontology or {}).get("taxonomies")) if isinstance(t, dict)
+    ]
     for rel in a.glob("02-ontology/taxonomies/*.json"):
         doc = a.json(rel)
         items = doc.get("taxonomies") if isinstance(doc, dict) and "taxonomies" in doc else [doc]
@@ -292,15 +424,30 @@ def taxonomies(a: Artifacts, case_id: str, ontology: dict | None) -> dict:
         seen.add(key)
         stats = ap.taxonomy_stats(t)
         nodes = _tax_nodes(t.get("children"))
-        rows.append({"factor_id": t.get("factor_id"), "root": t.get("root_label") or t.get("root_id"),
-                     "soundness": t.get("soundness"), "coverage": t.get("coverage"),
-                     "levels": [{"level": k, "n": v} for k, v in stats["levels"].items()],
-                     "critic": [{"label": k, "n": v, "state": _critic_state(k)} for k, v in sorted(stats["critic"].items())],
-                     "n_nodes": stats["nodes"], "nodes": nodes, "path": rel, "href": file_href(case_id, rel)})
-    return {"rows": rows,
-            "empty": None if rows else gap("R10", "Each factor expanded into a taxonomy: nodes per level and the "
-                                                  "critic's label for each node.",
-                                           "02-ontology/ontology.json · taxonomies[] or 02-ontology/taxonomies/*")}
+        rows.append(
+            {
+                "factor_id": t.get("factor_id"),
+                "root": t.get("root_label") or t.get("root_id"),
+                "soundness": t.get("soundness"),
+                "coverage": t.get("coverage"),
+                "levels": [{"level": k, "n": v} for k, v in stats["levels"].items()],
+                "critic": [{"label": k, "n": v, "state": _critic_state(k)} for k, v in sorted(stats["critic"].items())],
+                "n_nodes": stats["nodes"],
+                "nodes": nodes,
+                "path": rel,
+                "href": file_href(case_id, rel),
+            }
+        )
+    return {
+        "rows": rows,
+        "empty": None
+        if rows
+        else gap(
+            "R10",
+            "Each factor expanded into a taxonomy: nodes per level and the critic's label for each node.",
+            "02-ontology/ontology.json · taxonomies[] or 02-ontology/taxonomies/*",
+        ),
+    }
 
 
 GRAPH_W, GRAPH_H = 720, 400
@@ -342,9 +489,21 @@ def graph_layout(classes: list[dict], relations: list[dict]) -> dict:
         w = _node_w(c["label"])
         pos[c["id"]] = (x, y)
         half[c["id"]] = (w / 2, 22)
-        nodes.append({"id": c["id"], "label": c["label"], "x": round(x - w / 2, 1), "y": round(y - 22, 1), "w": w,
-                      "h": 44, "tx": round(x, 1), "ty": round(y - 3, 1), "sy": round(y + 13, 1),
-                      "sub": f"{c['n_props']} props · {c['n_dod']} DoD", "primary": c["primary"]})
+        nodes.append(
+            {
+                "id": c["id"],
+                "label": c["label"],
+                "x": round(x - w / 2, 1),
+                "y": round(y - 22, 1),
+                "w": w,
+                "h": 44,
+                "tx": round(x, 1),
+                "ty": round(y - 3, 1),
+                "sy": round(y + 13, 1),
+                "sub": f"{c['n_props']} props · {c['n_dod']} DoD",
+                "primary": c["primary"],
+            }
+        )
     pair_seen: dict[tuple, int] = {}
     edges = []
     for r in relations:
@@ -372,8 +531,16 @@ def graph_layout(classes: list[dict], relations: list[dict]) -> dict:
             ex, ey = _clip(qx, qy, x2, y2, half[g], pad=4)  # stop at the target box edge so the arrow shows
             path = f"M{sx:.1f},{sy:.1f} Q{qx:.1f},{qy:.1f} {ex:.1f},{ey:.1f}"
             lx, ly = (mx + qx) / 2, (my + qy) / 2 - 4
-        edges.append({"id": r.get("id"), "label": r.get("label") or r.get("id"), "path": path,
-                      "lx": round(lx, 1), "ly": round(ly, 1), "symmetric": bool(r.get("symmetric"))})
+        edges.append(
+            {
+                "id": r.get("id"),
+                "label": r.get("label") or r.get("id"),
+                "path": path,
+                "lx": round(lx, 1),
+                "ly": round(ly, 1),
+                "symmetric": bool(r.get("symmetric")),
+            }
+        )
     return {"width": GRAPH_W, "height": round(height + 20), "nodes": nodes, "edges": edges}
 
 
@@ -386,26 +553,68 @@ def ontology_view(case_id: str, ontology: dict | None) -> dict:
     for c in _list(onto.get("classes")):
         if not isinstance(c, dict) or not c.get("id"):
             continue
-        mine = sorted((p for p in props if p.get("domain") == c["id"]), key=lambda p: (p.get("order") or 99, p.get("id") or ""))
-        classes.append({"id": c["id"], "label": c.get("label") or c["id"], "description": c.get("description"),
-                        "primary": c["id"] == primary, "aligned_to": c.get("aligned_to"),
-                        "title_property": c.get("title_property"), "identifier_property": c.get("identifier_property"),
-                        "n_props": len(mine), "n_dod": sum(1 for p in mine if p.get("dod")),
-                        "props": [{"id": p.get("id"), "label": p.get("label") or p.get("id"), "datatype": p.get("datatype"),
-                                   "dod": bool(p.get("dod")), "description": p.get("description")} for p in mine]})
+        mine = sorted(
+            (p for p in props if p.get("domain") == c["id"]), key=lambda p: (p.get("order") or 99, p.get("id") or "")
+        )
+        classes.append(
+            {
+                "id": c["id"],
+                "label": c.get("label") or c["id"],
+                "description": c.get("description"),
+                "primary": c["id"] == primary,
+                "aligned_to": c.get("aligned_to"),
+                "title_property": c.get("title_property"),
+                "identifier_property": c.get("identifier_property"),
+                "n_props": len(mine),
+                "n_dod": sum(1 for p in mine if p.get("dod")),
+                "props": [
+                    {
+                        "id": p.get("id"),
+                        "label": p.get("label") or p.get("id"),
+                        "datatype": p.get("datatype"),
+                        "dod": bool(p.get("dod")),
+                        "description": p.get("description"),
+                    }
+                    for p in mine
+                ],
+            }
+        )
     classes.sort(key=lambda c: not c["primary"])
-    relations = [{"id": r.get("id"), "label": r.get("label") or r.get("id"), "domain": r.get("domain"),
-                  "range": r.get("range"), "symmetric": bool(r.get("symmetric"))}
-                 for r in _list(onto.get("relations")) if isinstance(r, dict)]
-    return {"path": rel, "href": file_href(case_id, rel), "version": onto.get("version"), "primary_class": primary,
-            "classes": classes, "relations": relations,
-            "n_props": sum(c["n_props"] for c in classes), "n_dod": sum(c["n_dod"] for c in classes),
-            "source_classes": [{"id": s.get("id"), "label": s.get("label")} for s in _list(onto.get("source_classes"))
-                               if isinstance(s, dict)],
-            "graph": graph_layout(classes, relations) if classes else None,
-            "generated_by": gen_by(onto),
-            "empty": None if classes else gap(None, "The classes, properties and relations the engine derived, with "
-                                                    "the definition-of-done properties marked.", rel)}
+    relations = [
+        {
+            "id": r.get("id"),
+            "label": r.get("label") or r.get("id"),
+            "domain": r.get("domain"),
+            "range": r.get("range"),
+            "symmetric": bool(r.get("symmetric")),
+        }
+        for r in _list(onto.get("relations"))
+        if isinstance(r, dict)
+    ]
+    return {
+        "path": rel,
+        "href": file_href(case_id, rel),
+        "version": onto.get("version"),
+        "primary_class": primary,
+        "classes": classes,
+        "relations": relations,
+        "n_props": sum(c["n_props"] for c in classes),
+        "n_dod": sum(c["n_dod"] for c in classes),
+        "source_classes": [
+            {"id": s.get("id"), "label": s.get("label")}
+            for s in _list(onto.get("source_classes"))
+            if isinstance(s, dict)
+        ],
+        "graph": graph_layout(classes, relations) if classes else None,
+        "generated_by": gen_by(onto),
+        "empty": None
+        if classes
+        else gap(
+            None,
+            "The classes, properties and relations the engine derived, with the definition-of-done properties marked.",
+            rel,
+        ),
+    }
 
 
 def queries(a: Artifacts, case_id: str, metrics: dict) -> dict:
@@ -421,21 +630,49 @@ def queries(a: Artifacts, case_id: str, metrics: dict) -> dict:
         except (KeyError, TypeError, ValueError):
             text = str(q.get("aggregate"))
         m = measured.pop(q.get("criterion_id"), {})
-        rows.append({"criterion_id": q.get("criterion_id"), "text": text, "aggregate": q.get("aggregate"),
-                     "operator": q.get("operator"), "target": q.get("target"), "actual": m.get("actual"),
-                     "met": m.get("met"), "state": {True: "done", False: "block"}.get(m.get("met"), "none")})
+        rows.append(
+            {
+                "criterion_id": q.get("criterion_id"),
+                "text": text,
+                "aggregate": q.get("aggregate"),
+                "operator": q.get("operator"),
+                "target": q.get("target"),
+                "actual": m.get("actual"),
+                "met": m.get("met"),
+                "state": {True: "done", False: "block"}.get(m.get("met"), "none"),
+            }
+        )
     source = rel
     for cid, m in measured.items():  # compiled queries the run measured but the case package no longer lists
-        rows.append({"criterion_id": cid, "text": m.get("query"), "aggregate": None, "operator": None,
-                     "target": m.get("target"), "actual": m.get("actual"), "met": m.get("met"),
-                     "state": {True: "done", False: "block"}.get(m.get("met"), "none")})
+        rows.append(
+            {
+                "criterion_id": cid,
+                "text": m.get("query"),
+                "aggregate": None,
+                "operator": None,
+                "target": m.get("target"),
+                "actual": m.get("actual"),
+                "met": m.get("met"),
+                "state": {True: "done", False: "block"}.get(m.get("met"), "none"),
+            }
+        )
         source = f"{rel} · metrics.json dod[]"
-    return {"path": rel, "href": file_href(case_id, rel), "source": source, "rows": rows,
-            "n_met": sum(1 for r in rows if r["met"] is True), "measured": bool(metrics.get("dod")),
-            "generated_by": gen_by(doc),
-            "empty": None if rows else gap(None, "Each done-when criterion compiled to a declarative query over gold, "
-                                                 "with what the run measured.",
-                                           "02-ontology/dod-queries.json · metrics.json dod[]")}
+    return {
+        "path": rel,
+        "href": file_href(case_id, rel),
+        "source": source,
+        "rows": rows,
+        "n_met": sum(1 for r in rows if r["met"] is True),
+        "measured": bool(metrics.get("dod")),
+        "generated_by": gen_by(doc),
+        "empty": None
+        if rows
+        else gap(
+            None,
+            "Each done-when criterion compiled to a declarative query over gold, with what the run measured.",
+            "02-ontology/dod-queries.json · metrics.json dod[]",
+        ),
+    }
 
 
 def critic(steps: list[dict]) -> dict:
@@ -448,20 +685,44 @@ def critic(steps: list[dict]) -> dict:
         for i, s in enumerate(flat):
             d = s["detail"]
             for o in d["objections"]:
-                later = next((x for x in flat[i + 1:] if x["detail"]["role"] in ("revise", "decide")), None)
+                later = next((x for x in flat[i + 1 :] if x["detail"]["role"] in ("revise", "decide")), None)
                 res = None
                 if later is not None:
                     ld = later["detail"]
                     who = "a person" if ld["human"] else (ld["model"] or "the engine")
                     res = f"{ld['role']} by {who}" + (f": {ld['reason']}" if ld.get("reason") else "")
-                items.append({"iteration": d["iteration"], "role": d["role"], "text": o, "model": d["model"],
-                              "resolution": res, "step_id": s.get("step_id")})
-        threads.append({"id": t["id"], "label": t["label"], "phase": t["phase"], "iterations": len(t["iterations"]),
-                        "stop_label": t["stop_label"], "usd": t["usd"], "objections": items})
-    return {"threads": threads, "n_objections": sum(len(t["objections"]) for t in threads),
-            "empty": None if threads else gap(None, "What the critic objected to while phases 1 and 2 drafted, and how "
-                                                    "each objection was resolved.",
-                                              "runs/<case>/<run>/trace.live.jsonl · loop steps (phase 1, 2)")}
+                items.append(
+                    {
+                        "iteration": d["iteration"],
+                        "role": d["role"],
+                        "text": o,
+                        "model": d["model"],
+                        "resolution": res,
+                        "step_id": s.get("step_id"),
+                    }
+                )
+        threads.append(
+            {
+                "id": t["id"],
+                "label": t["label"],
+                "phase": t["phase"],
+                "iterations": len(t["iterations"]),
+                "stop_label": t["stop_label"],
+                "usd": t["usd"],
+                "objections": items,
+            }
+        )
+    return {
+        "threads": threads,
+        "n_objections": sum(len(t["objections"]) for t in threads),
+        "empty": None
+        if threads
+        else gap(
+            None,
+            "What the critic objected to while phases 1 and 2 drafted, and how each objection was resolved.",
+            "runs/<case>/<run>/trace.live.jsonl · loop steps (phase 1, 2)",
+        ),
+    }
 
 
 def model(case, run: str | None = None) -> dict:
@@ -474,15 +735,32 @@ def model(case, run: str | None = None) -> dict:
     metrics = run_metrics(a, run_id)
     steps = a.steps(run_id)
     brief = a.text("brief.md", limit=4000)
-    m = {"case_id": case.id, "run_id": run_id, "run_ids": run_ids, "live": run is None,
-         "brief": {"path": "brief.md", "present": brief is not None,
-                   "lines": [ln.strip() for ln in (brief or "").splitlines() if ln.strip() and not ln.lstrip().startswith("#")]},
-         "pending": pending_strips(a, case.id, ("prd", "factors", "ontology")),
-         "prd": prd_timeline(a, case.id), "dod": dod_rows(prd), "authority": authority(prd),
-         "factors": factors(a, case.id, ontology), "taxonomies": taxonomies(a, case.id, ontology),
-         "ontology": ontology_view(case.id, ontology), "queries": queries(a, case.id, metrics), "critic": critic(steps)}
-    backends = {(g or {}).get("backend") for g in (gen_by(prd), gen_by(ontology), m["queries"]["generated_by"],
-                                                   m["factors"]["generated_by"])}
+    m = {
+        "case_id": case.id,
+        "run_id": run_id,
+        "run_ids": run_ids,
+        "live": run is None,
+        "brief": {
+            "path": "brief.md",
+            "present": brief is not None,
+            "lines": [
+                ln.strip() for ln in (brief or "").splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+            ],
+        },
+        "pending": pending_strips(a, case.id, ("prd", "factors", "ontology")),
+        "prd": prd_timeline(a, case.id),
+        "dod": dod_rows(prd),
+        "authority": authority(prd),
+        "factors": factors(a, case.id, ontology),
+        "taxonomies": taxonomies(a, case.id, ontology),
+        "ontology": ontology_view(case.id, ontology),
+        "queries": queries(a, case.id, metrics),
+        "critic": critic(steps),
+    }
+    backends = {
+        (g or {}).get("backend")
+        for g in (gen_by(prd), gen_by(ontology), m["queries"]["generated_by"], m["factors"]["generated_by"])
+    }
     m["backend"] = "recorded" if "recorded" in backends else backend_of(metrics, steps)
     return m
 

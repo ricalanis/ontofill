@@ -37,9 +37,14 @@ def server(cases_dir):
     thread.join(timeout=5)
 
 
-PAGES = ("/cases/libraries/graph", "/cases/libraries/graph?focus=lib%3Afixture-001&depth=2&sel=lib%3Afixture-001",
-         "/cases/libraries/graph?signal=hours_not_published", "/cases/parks/graph",
-         "/cases/libraries/graph?run=run-scale-0500", "/cases/libraries/graph?run=run-scale-0500&limit=500")
+PAGES = (
+    "/cases/libraries/graph",
+    "/cases/libraries/graph?focus=lib%3Afixture-001&depth=2&sel=lib%3Afixture-001",
+    "/cases/libraries/graph?signal=hours_not_published",
+    "/cases/parks/graph",
+    "/cases/libraries/graph?run=run-scale-0500",
+    "/cases/libraries/graph?run=run-scale-0500&limit=500",
+)
 
 
 @pytest.mark.parametrize("width", [1280, 390])
@@ -55,8 +60,10 @@ def test_graph_pages_fit(server, width):
             sw = page.evaluate("Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)")
             assert sw <= width, (url, width, sw)
             if page.locator("#ggraph").count():
-                wrap = page.evaluate("(() => { const w = document.querySelector('.gwrap'); "
-                                     "return [w.clientWidth, w.getBoundingClientRect().right]; })()")
+                wrap = page.evaluate(
+                    "(() => { const w = document.querySelector('.gwrap'); "
+                    "return [w.clientWidth, w.getBoundingClientRect().right]; })()"
+                )
                 assert wrap[1] <= width + 0.5, (url, wrap)
         # the list fallback is on the page at phone width
         page.goto(server + "/cases/libraries/graph")

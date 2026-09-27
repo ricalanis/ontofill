@@ -9,11 +9,43 @@ RUN = "run-libraries-0001"
 def test_runner_events_in_who_acted(client, tmp_path, monkeypatch):
     root = tmp_path / "runner"
     root.mkdir()
-    rows = [{"ts": "2026-09-27T10:00:00Z", "case_id": "libraries", "kind": "started", "detail": "start requested", "run_id": RUN},
-            {"ts": "2026-09-27T10:40:00Z", "case_id": "libraries", "kind": "paused_at_checkpoint", "detail": "prd", "run_id": RUN},
-            {"ts": "2026-09-27T11:10:00Z", "case_id": "libraries", "kind": "resumed", "detail": "resumed after the prd decision", "run_id": RUN},
-            {"ts": "2026-09-27T11:11:00Z", "case_id": "parks", "kind": "started", "detail": "other case", "run_id": "run-x"},
-            {"ts": "2026-09-27T11:12:00Z", "case_id": "libraries", "kind": "resumed", "detail": "other run", "run_id": "run-other"}]
+    rows = [
+        {
+            "ts": "2026-09-27T10:00:00Z",
+            "case_id": "libraries",
+            "kind": "started",
+            "detail": "start requested",
+            "run_id": RUN,
+        },
+        {
+            "ts": "2026-09-27T10:40:00Z",
+            "case_id": "libraries",
+            "kind": "paused_at_checkpoint",
+            "detail": "prd",
+            "run_id": RUN,
+        },
+        {
+            "ts": "2026-09-27T11:10:00Z",
+            "case_id": "libraries",
+            "kind": "resumed",
+            "detail": "resumed after the prd decision",
+            "run_id": RUN,
+        },
+        {
+            "ts": "2026-09-27T11:11:00Z",
+            "case_id": "parks",
+            "kind": "started",
+            "detail": "other case",
+            "run_id": "run-x",
+        },
+        {
+            "ts": "2026-09-27T11:12:00Z",
+            "case_id": "libraries",
+            "kind": "resumed",
+            "detail": "other run",
+            "run_id": "run-other",
+        },
+    ]
     (root / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows) + "{torn")
     monkeypatch.setenv("ONTOFILL_RUNNER_STATE", str(root))
     m = client.get(f"/cases/libraries/api/viz/inference?run={RUN}").json()

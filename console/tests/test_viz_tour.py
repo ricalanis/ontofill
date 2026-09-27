@@ -15,26 +15,83 @@ LIVE_STATUS = "libraries/lake/runs/fixture-libraries/run-libraries-0001/status.j
 
 GAP = {"type": ["object", "null"], "required": ["what", "source", "row", "row_desc"]}
 STATE = {"enum": ["ready", "partial", "empty"]}
-STEP = {"type": "object",
-        "required": ["n", "id", "question", "proves", "href", "view", "hint", "state", "css", "state_label", "why", "gap", "also"],
-        "properties": {"n": {"type": "integer", "minimum": 1, "maximum": 10}, "state": STATE,
-                       "css": {"enum": ["done", "pause", "none"]}, "href": {"type": "string", "pattern": "^/"},
-                       "gap": GAP, "also": {"type": "array", "items": {"type": "object", "required": ["label", "href"],
-                                                                        "properties": {"href": {"pattern": "^/"}}}}}}
-TRACK = {"type": "object", "required": ["requirement", "proof", "href", "view", "state", "css", "state_label", "why", "gap"],
-         "properties": {"state": STATE, "href": {"type": "string", "pattern": "^/"}, "gap": GAP}}
-RUN = {"type": "object", "required": ["run_id", "live", "kind", "latest", "state", "updated_at", "has_feed", "selected", "href"],
-       "properties": {"live": {"type": "boolean"}, "kind": {"enum": ["live", "recorded"]}, "href": {"pattern": "^/tour\\?"}}}
-COUNTS = {"type": "object", "required": ["ready", "partial", "empty"],
-          "additionalProperties": {"type": "integer", "minimum": 0}}
-TOUR = {"type": "object",
-        "required": ["case_id", "title", "question", "cases", "run_id", "runs", "run_live", "steps", "track", "counts",
-                     "track_counts", "start_href", "backend", "sources", "empty"],
-        "properties": {"cases": {"type": "array", "items": {"type": "object", "required": ["id", "title", "has_run", "selected"]}},
-                       "runs": {"type": "array", "items": RUN},
-                       "steps": {"type": "array", "items": STEP, "minItems": 10, "maxItems": 10},
-                       "track": {"type": "array", "items": TRACK, "minItems": 8},
-                       "counts": COUNTS, "track_counts": COUNTS, "empty": GAP}}
+STEP = {
+    "type": "object",
+    "required": [
+        "n",
+        "id",
+        "question",
+        "proves",
+        "href",
+        "view",
+        "hint",
+        "state",
+        "css",
+        "state_label",
+        "why",
+        "gap",
+        "also",
+    ],
+    "properties": {
+        "n": {"type": "integer", "minimum": 1, "maximum": 10},
+        "state": STATE,
+        "css": {"enum": ["done", "pause", "none"]},
+        "href": {"type": "string", "pattern": "^/"},
+        "gap": GAP,
+        "also": {
+            "type": "array",
+            "items": {"type": "object", "required": ["label", "href"], "properties": {"href": {"pattern": "^/"}}},
+        },
+    },
+}
+TRACK = {
+    "type": "object",
+    "required": ["requirement", "proof", "href", "view", "state", "css", "state_label", "why", "gap"],
+    "properties": {"state": STATE, "href": {"type": "string", "pattern": "^/"}, "gap": GAP},
+}
+RUN = {
+    "type": "object",
+    "required": ["run_id", "live", "kind", "latest", "state", "updated_at", "has_feed", "selected", "href"],
+    "properties": {
+        "live": {"type": "boolean"},
+        "kind": {"enum": ["live", "recorded"]},
+        "href": {"pattern": "^/tour\\?"},
+    },
+}
+COUNTS = {
+    "type": "object",
+    "required": ["ready", "partial", "empty"],
+    "additionalProperties": {"type": "integer", "minimum": 0},
+}
+TOUR = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "title",
+        "question",
+        "cases",
+        "run_id",
+        "runs",
+        "run_live",
+        "steps",
+        "track",
+        "counts",
+        "track_counts",
+        "start_href",
+        "backend",
+        "sources",
+        "empty",
+    ],
+    "properties": {
+        "cases": {"type": "array", "items": {"type": "object", "required": ["id", "title", "has_run", "selected"]}},
+        "runs": {"type": "array", "items": RUN},
+        "steps": {"type": "array", "items": STEP, "minItems": 10, "maxItems": 10},
+        "track": {"type": "array", "items": TRACK, "minItems": 8},
+        "counts": COUNTS,
+        "track_counts": COUNTS,
+        "empty": GAP,
+    },
+}
 
 
 def _ok(page: str) -> None:
@@ -60,8 +117,16 @@ def test_tour_json_and_page_on_the_full_case(client):
     assert steps[5]["href"].startswith("/cases/libraries/lineage/") and "?run=run-libraries-0001" in steps[5]["href"]
     assert steps[10]["href"] == "/compare?a=libraries&b=parks"
     track = m["track"]
-    for req in ("process isolation", "credentials", "caps", "destroy", "Vision", "approve-before-submit",
-                "hostile page", "endless loop"):
+    for req in (
+        "process isolation",
+        "credentials",
+        "caps",
+        "destroy",
+        "Vision",
+        "approve-before-submit",
+        "hostile page",
+        "endless loop",
+    ):
         assert _by(track, "requirement", req)["state"] == "ready", req
     assert _by(track, "requirement", "Vultr")["state"] == "partial"  # the fixture run is recorded inference
     assert _by(track, "requirement", "Zero inbound ports")["state"] == "empty"
@@ -119,7 +184,11 @@ def test_runs_listed_and_live_marked(make_client, cases_dir, two_runs):  # noqa:
     m2 = c.get(f"/api/viz/tour?run={R2}").json()
     jsonschema.validate(m2, TOUR)
     assert m2["run_id"] == R2 and not m2["run_live"]
-    assert all(f"run={R2}" in s["href"] for s in m2["steps"] if s["href"].startswith("/cases/") and "/lineage/" not in s["href"])
+    assert all(
+        f"run={R2}" in s["href"]
+        for s in m2["steps"]
+        if s["href"].startswith("/cases/") and "/lineage/" not in s["href"]
+    )
     page = c.get(f"/tour?run={R2}").text
     _ok(page)
     for h in {html.unescape(h) for h in re.findall(r'href="(/cases/[^"#]*)', page)}:

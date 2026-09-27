@@ -124,8 +124,11 @@ def approvals(case: CaseDir) -> list[Approval]:
     return out
 
 
-DEFAULT_ARTIFACTS = {"prd": ["01-scope/prd.json"], "factors": ["02-ontology/factors/factors.json"],
-                     "ontology": ["02-ontology/ontology.json"]}
+DEFAULT_ARTIFACTS = {
+    "prd": ["01-scope/prd.json"],
+    "factors": ["02-ontology/factors/factors.json"],
+    "ontology": ["02-ontology/ontology.json"],
+}
 
 
 def artifact_paths(item: Approval) -> list[str]:
@@ -174,8 +177,11 @@ def archived_drafts(case: CaseDir, item: Approval) -> list[dict]:
     for d in base.iterdir():
         if not (d.is_dir() and d.name.isdigit()):
             continue
-        files = sorted(str(f.relative_to(case.root)) for f in d.iterdir()
-                       if f.is_file() and not f.is_symlink() and case.path(str(f.relative_to(case.root))))
+        files = sorted(
+            str(f.relative_to(case.root))
+            for f in d.iterdir()
+            if f.is_file() and not f.is_symlink() and case.path(str(f.relative_to(case.root)))
+        )
         out.append({"n": int(d.name), "files": files})
     return sorted(out, key=lambda r: r["n"], reverse=True)
 
@@ -195,9 +201,15 @@ def taxonomy_stats(tax: dict) -> dict:
     return {"levels": dict(sorted(levels.items())), "critic": critic, "nodes": sum(levels.values())}
 
 
-def build_record(case: CaseDir, item: Approval, approver: str, today: date | None = None,
-                 decisions: dict[str, str] | None = None, decision: str | None = None,
-                 reason: str | None = None) -> dict:
+def build_record(
+    case: CaseDir,
+    item: Approval,
+    approver: str,
+    today: date | None = None,
+    decisions: dict[str, str] | None = None,
+    decision: str | None = None,
+    reason: str | None = None,
+) -> dict:
     """The APPROVED record for a pending checkpoint (without digests). Raises DecisionError(400) when invalid.
 
     An action checkpoint (approve-before-submit, CONTRACT §12) needs `decision` approve|deny. The prd, factors and
@@ -244,10 +256,14 @@ def build_record(case: CaseDir, item: Approval, approver: str, today: date | Non
         if "accept" not in decisions.values():
             raise DecisionError("accept at least one factor, or ask the engine to propose new ones")
         record["decisions"] = dict(sorted(decisions.items()))
-    elif (decision != "deny" and item.checkpoint == "factors"
-          and (load_artifacts(case, item).get("factors") or {}).get("factors")):
+    elif (
+        decision != "deny"
+        and item.checkpoint == "factors"
+        and (load_artifacts(case, item).get("factors") or {}).get("factors")
+    ):
         raise DecisionError("decide each factor (accept or reject) before approving")
     return record
+
 
 class DecisionError(ValueError):
     """A decision the console refuses; `status` is the HTTP status the web layer answers with."""
@@ -354,10 +370,20 @@ def decisions_log(case: CaseDir) -> list[dict]:
     return rows[::-1]
 
 
-def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_source: str,
-           seen_digests: dict[str, str], today: date | None = None, decisions: dict[str, str] | None = None,
-           decision: str | None = None, reason: str | None = None, run_id: str | None = None,
-           extra: dict | None = None) -> dict:
+def decide(
+    case: CaseDir,
+    case_id: str,
+    phase_dir: str,
+    approver: str,
+    identity_source: str,
+    seen_digests: dict[str, str],
+    today: date | None = None,
+    decisions: dict[str, str] | None = None,
+    decision: str | None = None,
+    reason: str | None = None,
+    run_id: str | None = None,
+    extra: dict | None = None,
+) -> dict:
     """Validate and record one decision: the APPROVED marker (atomic) and one decisions.jsonl line, both or neither.
 
     Raises DecisionError(status=409) when the checkpoint is no longer pending or the artifact changed since the
@@ -370,8 +396,11 @@ def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_
         if item is None:
             raise DecisionError(f"{phase_dir} is not waiting for a decision (already answered or no request)", 409)
         current = artifact_digests(case, item)
-        if not current or any(v is None for v in current.values()) or \
-                any(seen_digests.get(rel) != digest for rel, digest in current.items()):
+        if (
+            not current
+            or any(v is None for v in current.values())
+            or any(seen_digests.get(rel) != digest for rel, digest in current.items())
+        ):
             raise DecisionError(STALE_MESSAGE, 409)
         record = build_record(case, item, approver, today, decisions, decision, reason)
         record["identity_source"] = identity_source
@@ -391,11 +420,19 @@ def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_
             os.replace(tmp, marker)
         finally:
             tmp.unlink(missing_ok=True)
-        line = {"ts": datetime.now(UTC).isoformat(timespec="seconds"), "case_id": case_id,
-                "checkpoint": record.get("checkpoint"), "phase_dir": phase_dir,
-                "decision": record.get("decision", "approve"), **({"reason": record["reason"]} if record.get("reason") else {}),
-                "approver": record["approver"], "identity_source": identity_source, **(extra or {}),
-                "artifact_sha256": record["artifact_sha256"], **({"run_id": run_id} if run_id else {})}
+        line = {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "case_id": case_id,
+            "checkpoint": record.get("checkpoint"),
+            "phase_dir": phase_dir,
+            "decision": record.get("decision", "approve"),
+            **({"reason": record["reason"]} if record.get("reason") else {}),
+            "approver": record["approver"],
+            "identity_source": identity_source,
+            **(extra or {}),
+            "artifact_sha256": record["artifact_sha256"],
+            **({"run_id": run_id} if run_id else {}),
+        }
         try:
             fd = os.open(case.root / "decisions.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
             try:
@@ -405,5 +442,7 @@ def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_
                 os.close(fd)
         except OSError as exc:
             marker.unlink(missing_ok=True)  # both land or neither
-            raise DecisionError(f"could not record the decision ({type(exc).__name__}); nothing was written", 500) from exc
+            raise DecisionError(
+                f"could not record the decision ({type(exc).__name__}); nothing was written", 500
+            ) from exc
         return record

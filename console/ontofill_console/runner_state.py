@@ -114,8 +114,15 @@ def line(root: Path, case_id: str) -> dict:
         text = "Runner paused by an operator"
     elif state == "running":
         since = _hhmm(st.get("last_resumed_at") or st.get("running_since"))
-        text = (f"Resumed automatically at {since}" if st.get("last_resumed_at") and st.get("last_resumed_at") ==
-                st.get("running_since") else f"Running since {since}") if since else "Running"
+        text = (
+            (
+                f"Resumed automatically at {since}"
+                if st.get("last_resumed_at") and st.get("last_resumed_at") == st.get("running_since")
+                else f"Running since {since}"
+            )
+            if since
+            else "Running"
+        )
     elif state == "waiting_approval":
         text = f"Waiting for the {st.get('checkpoint') or 'checkpoint'} decision; resumes by itself after it"
         if st.get("last_resumed_at"):
@@ -130,8 +137,15 @@ def line(root: Path, case_id: str) -> dict:
         text = state.replace("_", " ").capitalize()
     else:
         text = "Runner has not seen this case yet"
-    return {"state": state, "text": text, "run_id": st.get("run_id"), "reason": st.get("reason"),
-            "paused": bool(ctl.get("paused")), "kill": kill, "available": root.is_dir()}
+    return {
+        "state": state,
+        "text": text,
+        "run_id": st.get("run_id"),
+        "reason": st.get("reason"),
+        "paused": bool(ctl.get("paused")),
+        "kill": kill,
+        "available": root.is_dir(),
+    }
 
 
 def events(root: Path, limit: int = 200) -> list[dict]:
@@ -148,8 +162,11 @@ def events(root: Path, limit: int = 200) -> list[dict]:
     return out
 
 
-INBOX_KINDS = {"failed": ("block", "Runner: the run failed"), "budget_stop": ("block", "Runner stopped: budget reached"),
-               "killed": ("pause", "Runner stopped by the kill switch")}
+INBOX_KINDS = {
+    "failed": ("block", "Runner: the run failed"),
+    "budget_stop": ("block", "Runner stopped: budget reached"),
+    "killed": ("pause", "Runner stopped by the kill switch"),
+}
 
 
 def inbox_items(root: Path, case_ids: set[str]) -> list[dict]:
@@ -162,7 +179,16 @@ def inbox_items(root: Path, case_ids: set[str]) -> list[dict]:
     for (cid, kind), ev in latest.items():
         st, title = INBOX_KINDS[kind]
         detail = (ev.get("detail") or "").splitlines()
-        items.append({"state": st, "case_id": cid, "kind": f"runner_{kind}", "title": title,
-                      "detail": " · ".join(x for x in (ev.get("run_id"), detail[0] if detail else None) if x),
-                      "when": None, "since": ev.get("ts"), "href": f"/cases/{cid}"})
+        items.append(
+            {
+                "state": st,
+                "case_id": cid,
+                "kind": f"runner_{kind}",
+                "title": title,
+                "detail": " · ".join(x for x in (ev.get("run_id"), detail[0] if detail else None) if x),
+                "when": None,
+                "since": ev.get("ts"),
+                "href": f"/cases/{cid}",
+            }
+        )
     return items

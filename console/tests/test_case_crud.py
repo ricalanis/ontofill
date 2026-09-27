@@ -19,21 +19,40 @@ QUESTION = "Which community gardens in Example Town are open to the public, and 
 def root(tmp_path) -> Path:
     r = tmp_path / "cases-root"
     r.mkdir()
-    (r / registry.TEMPLATE).write_text(yaml.safe_dump({"case_id": "{case_id}", "bronze": {
-        "kind": "s3", "bucket": "example-bucket", "endpoint": "objects.example"}}))
+    (r / registry.TEMPLATE).write_text(
+        yaml.safe_dump(
+            {
+                "case_id": "{case_id}",
+                "bronze": {"kind": "s3", "bucket": "example-bucket", "endpoint": "objects.example"},
+            }
+        )
+    )
     return r
 
 
 def make(root, cases_dir, tmp_path, mode="local", extra_env=None):
-    env = {"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": mode,
-           "ONTOFILL_CASES_ROOT": str(root), "ONTOFILL_RUNNER_STATE": str(tmp_path / "runner"), **(extra_env or {})}
+    env = {
+        "ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
+        "ONTOFILL_CONSOLE_IDENTITY": mode,
+        "ONTOFILL_CASES_ROOT": str(root),
+        "ONTOFILL_RUNNER_STATE": str(tmp_path / "runner"),
+        **(extra_env or {}),
+    }
     (tmp_path / "runner").mkdir(exist_ok=True)
     return TestClient(create_app(settings_from_env(env)))
 
 
 def create(c, **over):
-    form = {"title": "Community gardens", "question": QUESTION, "notes": "Public sources only.", "budget_usd": "1.5",
-            "lake": "default", "to_phase": "2", "approver": "Ana Example", **over}
+    form = {
+        "title": "Community gardens",
+        "question": QUESTION,
+        "notes": "Public sources only.",
+        "budget_usd": "1.5",
+        "lake": "default",
+        "to_phase": "2",
+        "approver": "Ana Example",
+        **over,
+    }
     return c.post("/cases", data=form, follow_redirects=False)
 
 
@@ -42,8 +61,9 @@ def test_create_registers_logs_and_shows(root, cases_dir, tmp_path):
     r = create(c)
     assert r.status_code == 303 and r.headers["location"] == "/cases/community-gardens?created=1"
     case_dir = root / "community-gardens" / "case"
-    assert (case_dir / "brief.md").read_text() == ("# Community gardens\n\n" + QUESTION +
-                                                   "\n\n## Constraints and notes\n\nPublic sources only.\n")
+    assert (case_dir / "brief.md").read_text() == (
+        "# Community gardens\n\n" + QUESTION + "\n\n## Constraints and notes\n\nPublic sources only.\n"
+    )
     lake = yaml.safe_load((root / "community-gardens" / "lake.yaml").read_text())
     assert lake["case_id"] == "community-gardens" and lake["bronze"]["kind"] == "s3"
     item = registry.entry(registry.load(root), "community-gardens")
@@ -69,8 +89,13 @@ def test_start_now_hands_the_case_to_the_runner(root, cases_dir, tmp_path):
 
 def test_validation_and_unique_ids(root, cases_dir, tmp_path):
     c = make(root, cases_dir, tmp_path)
-    for bad, msg in (({"question": "short"}, "question needs"), ({"budget_usd": "999"}, "budget must be"),
-                     ({"title": "a\nb"}, "title needs"), ({"budget_usd": "abc"}, "number"), ({"to_phase": "9"}, "phase")):
+    for bad, msg in (
+        ({"question": "short"}, "question needs"),
+        ({"budget_usd": "999"}, "budget must be"),
+        ({"title": "a\nb"}, "title needs"),
+        ({"budget_usd": "abc"}, "number"),
+        ({"to_phase": "9"}, "phase"),
+    ):
         r = create(c, **bad)
         assert r.status_code == 400 and msg in r.text, bad
     assert not any(p.name.startswith("community") for p in root.iterdir())
@@ -83,7 +108,10 @@ def test_scratch_lake_and_missing_template(root, cases_dir, tmp_path):
     c = make(root, cases_dir, tmp_path)
     assert create(c, lake="scratch", title="Scratch one").status_code == 303
     lake = yaml.safe_load((root / "scratch-one" / "lake.yaml").read_text())
-    assert lake == {"case_id": "scratch-one", "bronze": {"kind": "file", "root": str((root / "scratch-one" / ".lake").resolve())}}
+    assert lake == {
+        "case_id": "scratch-one",
+        "bronze": {"kind": "file", "root": str((root / "scratch-one" / ".lake").resolve())},
+    }
     (root / registry.TEMPLATE).unlink()
     r = create(c, title="No template")
     assert r.status_code == 400 and "no default lake configured" in r.text and not (root / "no-template").exists()
@@ -100,10 +128,17 @@ def test_brief_editable_only_before_a_run_then_revise(root, cases_dir, tmp_path)
     assert r.status_code == 409 and "Revise the question" in r.text
     r = c.post("/cases/community-gardens/meta", data={"budget_usd": "3", "approver": "Ana"})
     assert r.status_code == 409 and "fixed once a run" in r.text
-    assert c.post("/cases/community-gardens/meta", data={"title": "Gardens v1", "approver": "Ana"},
-                  follow_redirects=False).status_code == 303  # titles stay editable (logged)
-    r = c.post("/cases/community-gardens/revise", data={"question": new_q + " Revised.", "approver": "Ana"},
-               follow_redirects=False)
+    assert (
+        c.post(
+            "/cases/community-gardens/meta", data={"title": "Gardens v1", "approver": "Ana"}, follow_redirects=False
+        ).status_code
+        == 303
+    )  # titles stay editable (logged)
+    r = c.post(
+        "/cases/community-gardens/revise",
+        data={"question": new_q + " Revised.", "approver": "Ana"},
+        follow_redirects=False,
+    )
     assert r.status_code == 303
     data = registry.load(root)
     old, new = registry.entry(data, "community-gardens"), data["cases"][-1]
@@ -117,13 +152,19 @@ def test_brief_editable_only_before_a_run_then_revise(root, cases_dir, tmp_path)
 def test_archive_and_restore(root, cases_dir, tmp_path):
     c = make(root, cases_dir, tmp_path)
     create(c)
-    assert c.post("/cases/community-gardens/archive", data={"reason": "demo done", "approver": "Ana"},
-                  follow_redirects=False).status_code == 303
+    assert (
+        c.post(
+            "/cases/community-gardens/archive", data={"reason": "demo done", "approver": "Ana"}, follow_redirects=False
+        ).status_code
+        == 303
+    )
     assert "Community gardens" not in c.get("/").text and "Community gardens" in c.get("/cases-archived").text
     assert c.get("/cases/community-gardens").status_code == 200  # still readable
     assert (root / "community-gardens/case/brief.md").exists()  # nothing deleted
     assert c.post("/cases/community-gardens/archive", data={"approver": "Ana"}).status_code == 409
-    assert c.post("/cases/community-gardens/restore", data={"approver": "Ana"}, follow_redirects=False).status_code == 303
+    assert (
+        c.post("/cases/community-gardens/restore", data={"approver": "Ana"}, follow_redirects=False).status_code == 303
+    )
     assert "Community gardens" in c.get("/").text
     log = (root / "community-gardens/case/decisions.jsonl").read_text()
     assert "case.archive" in log and "case.restore" in log and "demo done" in log
@@ -138,10 +179,15 @@ def test_identity_and_origin_required(root, cases_dir, tmp_path):
     r = group.post("/cases", data=form, headers={"X-NetBird-Groups": "approvers"}, follow_redirects=False)
     assert r.status_code == 303
     item = registry.entry(registry.load(root), "group-case")
-    assert item["created_by"] == {"approver": "group:approvers", "identity_source": "sso-group", "unverified_name": "Ana"}
+    assert item["created_by"] == {
+        "approver": "group:approvers",
+        "identity_source": "sso-group",
+        "unverified_name": "Ana",
+    }
     local = make(root, cases_dir, tmp_path)
-    r = local.post("/cases", data={"title": "X", "question": QUESTION, "approver": "A"},
-                   headers={"origin": "https://evil.example"})
+    r = local.post(
+        "/cases", data={"title": "X", "question": QUESTION, "approver": "A"}, headers={"origin": "https://evil.example"}
+    )
     assert r.status_code == 403
 
 
@@ -154,11 +200,29 @@ def test_path_safety_and_migrated_absolute_paths(root, cases_dir, tmp_path):
     with pytest.raises(registry.RegistryError):
         registry.safe_path(root, "link/case")
     lib = cases_dir / "libraries" / "case"
-    data = {"version": 1, "cases": [
-        {"id": "migrated", "title": "Migrated", "path": str(lib), "lake": str(lib.parent / "lake.yaml"), "budget_usd": 1,
-         "archived": False, "created_by": {"approver": "migration"}, "created_at": "2026-09-27T00:00:00Z"},
-        {"id": "escape", "title": "Escape", "path": "../escape/case", "lake": "../escape/lake.yaml", "archived": False},
-        {"id": "Bad Id", "title": "bad", "path": "x/case", "archived": False}]}
+    data = {
+        "version": 1,
+        "cases": [
+            {
+                "id": "migrated",
+                "title": "Migrated",
+                "path": str(lib),
+                "lake": str(lib.parent / "lake.yaml"),
+                "budget_usd": 1,
+                "archived": False,
+                "created_by": {"approver": "migration"},
+                "created_at": "2026-09-27T00:00:00Z",
+            },
+            {
+                "id": "escape",
+                "title": "Escape",
+                "path": "../escape/case",
+                "lake": "../escape/lake.yaml",
+                "archived": False,
+            },
+            {"id": "Bad Id", "title": "bad", "path": "x/case", "archived": False},
+        ],
+    }
     (root / registry.REGISTRY).write_text(json.dumps(data))
     c = make(root, cases_dir, tmp_path)
     ids = {x["id"] for x in c.get("/api/cases").json()["cases"]}
@@ -176,8 +240,11 @@ def test_torn_registry_keeps_last_good(root, cases_dir, tmp_path):
 
 
 def test_env_only_console_keeps_working(cases_dir, tmp_path):
-    c = TestClient(create_app(settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
-                                                 "ONTOFILL_CONSOLE_IDENTITY": "local"})))
+    c = TestClient(
+        create_app(
+            settings_from_env({"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local"})
+        )
+    )
     assert c.post("/cases", data={"title": "x", "question": QUESTION, "approver": "A"}).status_code == 503
     assert "not configured" in c.get("/cases/new").text and c.get("/").status_code == 200
 
@@ -192,8 +259,12 @@ def test_forms_fit(root, cases_dir, tmp_path, width, scheme):
 
     import uvicorn
 
-    env = {"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": "local",
-           "ONTOFILL_CASES_ROOT": str(root), "ONTOFILL_RUNNER_STATE": str(tmp_path / "runner")}
+    env = {
+        "ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
+        "ONTOFILL_CONSOLE_IDENTITY": "local",
+        "ONTOFILL_CASES_ROOT": str(root),
+        "ONTOFILL_RUNNER_STATE": str(tmp_path / "runner"),
+    }
     (tmp_path / "runner").mkdir(exist_ok=True)
     app = create_app(settings_from_env(env))
     with socket.socket() as sock:

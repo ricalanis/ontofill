@@ -49,8 +49,12 @@ def checklist_rows(text: str) -> list[dict]:
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if len(cells) < 2 or set(cells[0]) <= {"-", " ", ":"}:
                 continue
-            rows.append({"requirement": cells[0].replace("**", "").replace("`", ""),
-                         "answer": cells[1].replace("**", "").replace("`", "")})
+            rows.append(
+                {
+                    "requirement": cells[0].replace("**", "").replace("`", ""),
+                    "answer": cells[1].replace("**", "").replace("`", ""),
+                }
+            )
     return rows
 
 
@@ -110,8 +114,18 @@ def load_spend() -> dict | None:
             continue
     if not isinstance(latest, dict):
         return None
-    totals = {k: latest.get(k) for k in ("ts", "credit_total", "credit_used", "credit_remaining", "pending_charges",
-                                           "resource_rate_usd_per_hour") if isinstance(latest.get(k), (int, float, str))}
+    totals = {
+        k: latest.get(k)
+        for k in (
+            "ts",
+            "credit_total",
+            "credit_used",
+            "credit_remaining",
+            "pending_charges",
+            "resource_rate_usd_per_hour",
+        )
+        if isinstance(latest.get(k), (int, float, str))
+    }
     return totals or None
 
 
@@ -132,8 +146,17 @@ def job_proof(cases) -> dict | None:
 def _job_proof(case_id: str, store, run_id: str, jobs: list[dict]) -> dict:
     p = live.proof(jobs, live.annotate(store.live_steps(run_id)))
     runtimes = sorted({((j.get("checkpoints") or {}).get("host") or {}).get("runtime") or "unknown" for j in jobs})
-    return {"case_id": case_id, "run_id": run_id, "jobs": p["jobs"], "counts": p["counts"], "labels": {k: lbl for k, lbl, _ in p["checkpoints"]},
-            "with_limits": p["with_limits"], "killed_total": p["killed_total"], "runtimes": runtimes, "tier": p["tier"]}
+    return {
+        "case_id": case_id,
+        "run_id": run_id,
+        "jobs": p["jobs"],
+        "counts": p["counts"],
+        "labels": {k: lbl for k, lbl, _ in p["checkpoints"]},
+        "with_limits": p["with_limits"],
+        "killed_total": p["killed_total"],
+        "runtimes": runtimes,
+        "tier": p["tier"],
+    }
 
 
 # Requirement keyword → which proof speaks to it (checked in order; first match wins).
@@ -162,12 +185,16 @@ def _jobs_status(jp: dict | None, keys: list[str]) -> tuple[str, list[str]]:
     notes, ok = [], True
     for key in keys:
         if key == "limits":
-            notes.append(f"{jp['with_limits']} of {jp['jobs']} jobs recorded their caps; {jp['killed_total']} stopped by a cap")
+            notes.append(
+                f"{jp['with_limits']} of {jp['jobs']} jobs recorded their caps; {jp['killed_total']} stopped by a cap"
+            )
             ok = ok and jp["with_limits"] == jp["jobs"]
             continue
         c = jp["counts"].get(key) or {}
-        notes.append(f"{jp['labels'].get(key, key)}: {c.get('pass', 0)} passed, {c.get('fail', 0)} failed, "
-                     f"{c.get('pending', 0)} pending")
+        notes.append(
+            f"{jp['labels'].get(key, key)}: {c.get('pass', 0)} passed, {c.get('fail', 0)} failed, "
+            f"{c.get('pending', 0)} pending"
+        )
         ok = ok and c.get("fail", 0) == 0 and c.get("pass", 0) > 0
     if "host" in keys:
         notes.append("runtimes seen: " + ", ".join(jp["runtimes"]))
@@ -202,5 +229,11 @@ def rows(cases) -> dict:
         elif rule and rule.startswith("link:"):
             link = rule[5:]
         out.append({**row, "status": status, "notes": notes, "link": link})
-    return {"rows": out, "checklist_src": checklist_src, "verify": verify, "jobs": jp, "spend": load_spend(),
-            "live_view": load_verify(LIVE_VIEW_FILE)}
+    return {
+        "rows": out,
+        "checklist_src": checklist_src,
+        "verify": verify,
+        "jobs": jp,
+        "spend": load_spend(),
+        "live_view": load_verify(LIVE_VIEW_FILE),
+    }

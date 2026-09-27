@@ -12,36 +12,87 @@ import jsonschema
 LAKE_RUNS = ("libraries", "lake", "gold", "fixture-libraries")
 RUN = "run-libraries-0001"
 
-DOD_ROW = {"type": "object", "required": ["criterion_id", "query", "target", "label", "actual", "met", "mock", "v", "t",
-                                          "state", "shown"],
-           "properties": {"met": {"type": ["boolean", "null"]}, "mock": {"type": "boolean"},
-                          "v": {"type": "number", "minimum": 0, "maximum": 100},
-                          "state": {"enum": ["done", "run", "pause"]}}}
-CELL = {"type": "object", "required": ["prop", "state", "href"],
-        "properties": {"state": {"enum": ["gold", "weak", "conflict", "missing"]},
-                       "href": {"type": "string", "pattern": "^/cases/"}}}
-HEAT = {"type": "object", "required": ["columns", "rows", "n_rows", "capped", "threshold", "meeting", "class_label"],
-        "properties": {"rows": {"type": "array", "items": {"type": "object",
-                                                           "required": ["entity_id", "title", "ratio", "cells", "href"],
-                                                           "properties": {"cells": {"type": "array", "items": CELL},
-                                                                          "ratio": {"type": "number"}}}},
-                       "columns": {"type": "array", "items": {"type": "object",
-                                                              "required": ["id", "label", "ratio", "gold", "missing"]}},
-                       "n_rows": {"type": "integer"}}}
-OUTPUT = {"type": "object",
-          "required": ["case_id", "run_id", "gold_run_ids", "brief", "backend", "mock", "dod", "dod_met", "heat",
-                       "growth", "coverage", "conflicts", "conflicts_kept", "gap_decisions", "reopened", "exports",
-                       "empty", "empty_gap"],
-          "properties": {"dod": {"type": "array", "items": DOD_ROW},
-                         "heat": {"oneOf": [{"type": "null"}, HEAT]},
-                         "growth": {"type": "object", "required": ["runs", "n_runs", "chart"],
-                                    "properties": {"runs": {"type": "array", "items": {
-                                        "type": "object", "required": ["run_id", "entities_total", "meeting_dod"]}}}},
-                         "gap_decisions": {"type": "array", "items": {"type": "object", "required": [
-                             "step_id", "iteration", "reopen", "reopen_label", "state"]}},
-                         "exports": {"type": "array", "items": {"type": "object", "required": ["name", "bytes", "href"]}},
-                         "conflicts_kept": {"type": "integer", "minimum": 0},
-                         "empty": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["what", "source", "row"]}]}}}
+DOD_ROW = {
+    "type": "object",
+    "required": ["criterion_id", "query", "target", "label", "actual", "met", "mock", "v", "t", "state", "shown"],
+    "properties": {
+        "met": {"type": ["boolean", "null"]},
+        "mock": {"type": "boolean"},
+        "v": {"type": "number", "minimum": 0, "maximum": 100},
+        "state": {"enum": ["done", "run", "pause"]},
+    },
+}
+CELL = {
+    "type": "object",
+    "required": ["prop", "state", "href"],
+    "properties": {
+        "state": {"enum": ["gold", "weak", "conflict", "missing"]},
+        "href": {"type": "string", "pattern": "^/cases/"},
+    },
+}
+HEAT = {
+    "type": "object",
+    "required": ["columns", "rows", "n_rows", "capped", "threshold", "meeting", "class_label"],
+    "properties": {
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["entity_id", "title", "ratio", "cells", "href"],
+                "properties": {"cells": {"type": "array", "items": CELL}, "ratio": {"type": "number"}},
+            },
+        },
+        "columns": {
+            "type": "array",
+            "items": {"type": "object", "required": ["id", "label", "ratio", "gold", "missing"]},
+        },
+        "n_rows": {"type": "integer"},
+    },
+}
+OUTPUT = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "run_id",
+        "gold_run_ids",
+        "brief",
+        "backend",
+        "mock",
+        "dod",
+        "dod_met",
+        "heat",
+        "growth",
+        "coverage",
+        "conflicts",
+        "conflicts_kept",
+        "gap_decisions",
+        "reopened",
+        "exports",
+        "empty",
+        "empty_gap",
+    ],
+    "properties": {
+        "dod": {"type": "array", "items": DOD_ROW},
+        "heat": {"oneOf": [{"type": "null"}, HEAT]},
+        "growth": {
+            "type": "object",
+            "required": ["runs", "n_runs", "chart"],
+            "properties": {
+                "runs": {
+                    "type": "array",
+                    "items": {"type": "object", "required": ["run_id", "entities_total", "meeting_dod"]},
+                }
+            },
+        },
+        "gap_decisions": {
+            "type": "array",
+            "items": {"type": "object", "required": ["step_id", "iteration", "reopen", "reopen_label", "state"]},
+        },
+        "exports": {"type": "array", "items": {"type": "object", "required": ["name", "bytes", "href"]}},
+        "conflicts_kept": {"type": "integer", "minimum": 0},
+        "empty": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["what", "source", "row"]}]},
+    },
+}
 
 
 def gold_dir(cases_dir):
@@ -110,8 +161,12 @@ def test_gap_loop_decisions_from_the_trace(client):
 def test_growth_single_run_says_so(client):
     m = client.get("/cases/libraries/api/viz/output").json()
     g = m["growth"]
-    assert g["n_runs"] == 1 and g["runs"][0] == {"run_id": RUN, "entities_total": 24, "meeting_dod": 20,
-                                                 "backend": "recorded"}
+    assert g["n_runs"] == 1 and g["runs"][0] == {
+        "run_id": RUN,
+        "entities_total": 24,
+        "meeting_dod": 20,
+        "backend": "recorded",
+    }
     assert "single point" in client.get("/cases/libraries/output").text
 
 

@@ -12,43 +12,152 @@ LIVE = "libraries/lake/runs/fixture-libraries"
 R1, R2 = "run-libraries-0001", "run-libraries-0002"
 CASE_PAGES = ("failures", "cost", "learning", "compare")
 
-STRIP = {"type": "object", "required": ["kind", "state", "title", "detail", "step_id", "href"],
-         "properties": {"state": {"enum": ["block", "quar", "pause"]}, "href": {"type": "string", "pattern": "^/cases/"}}}
-CELL = {"type": "object", "required": ["job_id", "checkpoints", "passed", "failed", "missing", "teardown", "href"],
-        "properties": {"checkpoints": {"type": "array", "minItems": 6, "maxItems": 6,
-                                       "items": {"type": "object", "required": ["key", "state", "glyph"],
-                                                 "properties": {"state": {"enum": ["pass", "fail", "pending"]}}}},
-                       "teardown": {"type": "boolean"}}}
-FAILURES = {"type": "object", "required": ["case_id", "run_id", "runs", "strips", "counts", "n_strips", "cells", "totals",
-                                           "empty", "cells_empty"],
-            "properties": {"run_id": {"type": ["string", "null"]}, "strips": {"type": "array", "items": STRIP},
-                           "cells": {"type": "array", "items": CELL}, "n_strips": {"type": "integer"},
-                           "totals": {"type": "object", "required": ["jobs", "all_pass", "teardown", "by_checkpoint"]}}}
-BAR = {"type": "object", "required": ["key", "label", "metric", "rows", "table"],
-       "properties": {"metric": {"enum": ["usd", "steps"]},
-                      "rows": {"type": "array", "items": {"type": "object", "required": ["name", "share", "c"],
-                                                          "properties": {"c": {"type": "string", "pattern": "^var\\(--"}}}}}}
-COST = {"type": "object", "required": ["case_id", "run_id", "has_cost", "usd_total", "n_priced", "n_steps", "bars", "loops",
-                                       "n_values", "per_value", "budget_usd", "burn", "decisions_by_backend", "empty"],
-        "properties": {"has_cost": {"type": "boolean"}, "usd_total": {"type": ["number", "null"]},
-                       "bars": {"type": "array", "minItems": 4, "maxItems": 4, "items": BAR},
-                       "per_value": {"type": ["number", "null"]}}}
-LEARNING = {"type": "object", "required": ["case_id", "runs", "n_runs", "chart", "repair_groups", "n_repairs", "macros",
-                                           "n_macro_versions", "crystallizations", "empty", "repairs_empty", "macros_empty"],
-            "properties": {"runs": {"type": "array", "items": {"type": "object", "required": ["run_id", "modes", "share"]}},
-                           "chart": {"type": "object", "required": ["points", "n", "path", "yticks"]},
-                           "repair_groups": {"type": "array", "items": {"type": "object", "required": ["source_id", "attempts"]}}}}
-COL = {"type": "object", "required": ["id", "title", "question", "prd", "ontology", "discovery", "output", "runs"],
-       "properties": {"prd": {"type": "object", "required": ["present", "personas", "dod"]},
-                      "discovery": {"type": "object", "required": ["n_sources"]},
-                      "runs": {"type": "object", "required": ["n", "modes", "code_only"]}}}
-COMPARE = {"type": "object", "required": ["a", "b", "case_ids", "cols", "empty"],
-           "properties": {"cols": {"type": "array", "items": COL}}}
+STRIP = {
+    "type": "object",
+    "required": ["kind", "state", "title", "detail", "step_id", "href"],
+    "properties": {"state": {"enum": ["block", "quar", "pause"]}, "href": {"type": "string", "pattern": "^/cases/"}},
+}
+CELL = {
+    "type": "object",
+    "required": ["job_id", "checkpoints", "passed", "failed", "missing", "teardown", "href"],
+    "properties": {
+        "checkpoints": {
+            "type": "array",
+            "minItems": 6,
+            "maxItems": 6,
+            "items": {
+                "type": "object",
+                "required": ["key", "state", "glyph"],
+                "properties": {"state": {"enum": ["pass", "fail", "pending"]}},
+            },
+        },
+        "teardown": {"type": "boolean"},
+    },
+}
+FAILURES = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "run_id",
+        "runs",
+        "strips",
+        "counts",
+        "n_strips",
+        "cells",
+        "totals",
+        "empty",
+        "cells_empty",
+    ],
+    "properties": {
+        "run_id": {"type": ["string", "null"]},
+        "strips": {"type": "array", "items": STRIP},
+        "cells": {"type": "array", "items": CELL},
+        "n_strips": {"type": "integer"},
+        "totals": {"type": "object", "required": ["jobs", "all_pass", "teardown", "by_checkpoint"]},
+    },
+}
+BAR = {
+    "type": "object",
+    "required": ["key", "label", "metric", "rows", "table"],
+    "properties": {
+        "metric": {"enum": ["usd", "steps"]},
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "share", "c"],
+                "properties": {"c": {"type": "string", "pattern": "^var\\(--"}},
+            },
+        },
+    },
+}
+COST = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "run_id",
+        "has_cost",
+        "usd_total",
+        "n_priced",
+        "n_steps",
+        "bars",
+        "loops",
+        "n_values",
+        "per_value",
+        "budget_usd",
+        "burn",
+        "decisions_by_backend",
+        "empty",
+    ],
+    "properties": {
+        "has_cost": {"type": "boolean"},
+        "usd_total": {"type": ["number", "null"]},
+        "bars": {"type": "array", "minItems": 4, "maxItems": 4, "items": BAR},
+        "per_value": {"type": ["number", "null"]},
+    },
+}
+LEARNING = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "runs",
+        "n_runs",
+        "chart",
+        "repair_groups",
+        "n_repairs",
+        "macros",
+        "n_macro_versions",
+        "crystallizations",
+        "empty",
+        "repairs_empty",
+        "macros_empty",
+    ],
+    "properties": {
+        "runs": {"type": "array", "items": {"type": "object", "required": ["run_id", "modes", "share"]}},
+        "chart": {"type": "object", "required": ["points", "n", "path", "yticks"]},
+        "repair_groups": {"type": "array", "items": {"type": "object", "required": ["source_id", "attempts"]}},
+    },
+}
+COL = {
+    "type": "object",
+    "required": ["id", "title", "question", "prd", "ontology", "discovery", "output", "runs"],
+    "properties": {
+        "prd": {"type": "object", "required": ["present", "personas", "dod"]},
+        "discovery": {"type": "object", "required": ["n_sources"]},
+        "runs": {"type": "object", "required": ["n", "modes", "code_only"]},
+    },
+}
+COMPARE = {
+    "type": "object",
+    "required": ["a", "b", "case_ids", "cols", "empty"],
+    "properties": {"cols": {"type": "array", "items": COL}},
+}
 DELTA = {"type": "object", "required": ["label", "a", "b", "delta", "dir"]}
-COMPARE_RUNS = {"type": "object", "required": ["case_id", "runs", "run_a", "run_b", "ready", "metrics", "props", "added",
-                                               "removed", "changed", "n_added", "n_removed", "n_changed", "modes", "empty"],
-                "properties": {"metrics": {"type": "array", "items": DELTA}, "modes": {"type": "array", "items": DELTA},
-                               "ready": {"type": "boolean"}}}
+COMPARE_RUNS = {
+    "type": "object",
+    "required": [
+        "case_id",
+        "runs",
+        "run_a",
+        "run_b",
+        "ready",
+        "metrics",
+        "props",
+        "added",
+        "removed",
+        "changed",
+        "n_added",
+        "n_removed",
+        "n_changed",
+        "modes",
+        "empty",
+    ],
+    "properties": {
+        "metrics": {"type": "array", "items": DELTA},
+        "modes": {"type": "array", "items": DELTA},
+        "ready": {"type": "boolean"},
+    },
+}
 
 
 def _page_ok(page: str) -> None:
@@ -77,33 +186,139 @@ def two_runs(cases_dir):
     _write(dst / "entities.jsonl", ents)
     live_src, live_dst = cases_dir / LIVE / R1, cases_dir / LIVE / R2
     shutil.copytree(live_src, live_dst)
-    steps = [dict(s, run_id=R2, ts=s["ts"].replace("2026-09-26T18", "2026-09-26T20")) for s in _jsonl(live_dst / "trace.live.jsonl")]
-    base = {"run_id": R2, "phase": 5, "objective_id": None, "tdd_path": None, "parent_step_id": None, "value_ids": [],
-            "ts": "2026-09-26T21:00:00+00:00", "generated_by": {"backend": "vultr", "model": "m-live", "at": "2026-09-26T21:00:00+00:00"}}
+    steps = [
+        dict(s, run_id=R2, ts=s["ts"].replace("2026-09-26T18", "2026-09-26T20"))
+        for s in _jsonl(live_dst / "trace.live.jsonl")
+    ]
+    base = {
+        "run_id": R2,
+        "phase": 5,
+        "objective_id": None,
+        "tdd_path": None,
+        "parent_step_id": None,
+        "value_ids": [],
+        "ts": "2026-09-26T21:00:00+00:00",
+        "generated_by": {"backend": "vultr", "model": "m-live", "at": "2026-09-26T21:00:00+00:00"},
+    }
     steps += [
-        {**base, "step_id": "y1", "source_id": "src-a", "mode": "S1", "observed": "open", "requested": "open the list",
-         "executed": "stopped", "evaluated": {"status": "stopped", "reason": "captcha shown"}, "event": "hard_stop"},
-        {**base, "step_id": "y2", "source_id": "src-b", "mode": "D1", "observed": "x", "requested": "parse table",
-         "executed": "raised", "evaluated": {"status": "error", "error": "ValueError"}},
-        {**base, "step_id": "y3", "source_id": "src-b", "mode": "S1", "observed": "x", "requested": "open cdn page",
-         "executed": "refused", "evaluated": {"status": "domain_not_allowed", "url": "https://cdn.example/x"}},
-        {**base, "step_id": "y4", "source_id": "src-b", "mode": "S1", "observed": "x", "requested": "parse table",
-         "executed": "done", "evaluated": "ok", "event": "escalation", "parent_step_id": "y2"},
-        {**base, "step_id": "y5", "source_id": "src-c", "mode": "S1", "observed": "x", "requested": "plan", "executed": "done",
-         "evaluated": "ok", "usage": {"model": "m-live", "backend": "vultr", "input_tokens": 1200, "output_tokens": 300, "est_usd": 0.25}},
-        {**base, "step_id": "y6", "source_id": "src-c", "mode": "S2", "observed": "x", "requested": "look", "executed": "done",
-         "evaluated": "ok", "usage": {"model": "m-vision", "backend": "vultr", "input_tokens": 800, "output_tokens": 100, "est_usd": 0.75}},
-        {**base, "step_id": "y7", "source_id": "src-c", "mode": "D1", "observed": "x", "requested": "promote extractor",
-         "executed": {"tool": "code.promote", "version": "v2"}, "evaluated": "ok", "event": "crystallization"},
-        {**base, "step_id": "y8", "source_id": "src-c", "mode": "S1", "observed": "x", "requested": {"tool": "browser.act", "action": "send form"},
-         "executed": "held", "evaluated": {"status": "denied"}, "event": "action_gate",
-         "gate": {"action": "send form", "risk_tier": "HIGH", "decided_by": "code", "outcome": "denied", "approval_path": None}},
+        {
+            **base,
+            "step_id": "y1",
+            "source_id": "src-a",
+            "mode": "S1",
+            "observed": "open",
+            "requested": "open the list",
+            "executed": "stopped",
+            "evaluated": {"status": "stopped", "reason": "captcha shown"},
+            "event": "hard_stop",
+        },
+        {
+            **base,
+            "step_id": "y2",
+            "source_id": "src-b",
+            "mode": "D1",
+            "observed": "x",
+            "requested": "parse table",
+            "executed": "raised",
+            "evaluated": {"status": "error", "error": "ValueError"},
+        },
+        {
+            **base,
+            "step_id": "y3",
+            "source_id": "src-b",
+            "mode": "S1",
+            "observed": "x",
+            "requested": "open cdn page",
+            "executed": "refused",
+            "evaluated": {"status": "domain_not_allowed", "url": "https://cdn.example/x"},
+        },
+        {
+            **base,
+            "step_id": "y4",
+            "source_id": "src-b",
+            "mode": "S1",
+            "observed": "x",
+            "requested": "parse table",
+            "executed": "done",
+            "evaluated": "ok",
+            "event": "escalation",
+            "parent_step_id": "y2",
+        },
+        {
+            **base,
+            "step_id": "y5",
+            "source_id": "src-c",
+            "mode": "S1",
+            "observed": "x",
+            "requested": "plan",
+            "executed": "done",
+            "evaluated": "ok",
+            "usage": {
+                "model": "m-live",
+                "backend": "vultr",
+                "input_tokens": 1200,
+                "output_tokens": 300,
+                "est_usd": 0.25,
+            },
+        },
+        {
+            **base,
+            "step_id": "y6",
+            "source_id": "src-c",
+            "mode": "S2",
+            "observed": "x",
+            "requested": "look",
+            "executed": "done",
+            "evaluated": "ok",
+            "usage": {
+                "model": "m-vision",
+                "backend": "vultr",
+                "input_tokens": 800,
+                "output_tokens": 100,
+                "est_usd": 0.75,
+            },
+        },
+        {
+            **base,
+            "step_id": "y7",
+            "source_id": "src-c",
+            "mode": "D1",
+            "observed": "x",
+            "requested": "promote extractor",
+            "executed": {"tool": "code.promote", "version": "v2"},
+            "evaluated": "ok",
+            "event": "crystallization",
+        },
+        {
+            **base,
+            "step_id": "y8",
+            "source_id": "src-c",
+            "mode": "S1",
+            "observed": "x",
+            "requested": {"tool": "browser.act", "action": "send form"},
+            "executed": "held",
+            "evaluated": {"status": "denied"},
+            "event": "action_gate",
+            "gate": {
+                "action": "send form",
+                "risk_tier": "HIGH",
+                "decided_by": "code",
+                "outcome": "denied",
+                "approval_path": None,
+            },
+        },
     ]
     _write(live_dst / "trace.live.jsonl", steps)
     status = json.loads((live_dst / "status.json").read_text())
-    status.update(run_id=R2, state="done", budget_usd=2.0,
-                  sources=[{"source_id": "src-a", "source_type": "registry", "health": {"ok": 0, "failed": 3, "yield": 0}},
-                           {"source_id": "src-b", "source_type": "website", "health": {"ok": 4, "failed": 1, "yield": 6}}])
+    status.update(
+        run_id=R2,
+        state="done",
+        budget_usd=2.0,
+        sources=[
+            {"source_id": "src-a", "source_type": "registry", "health": {"ok": 0, "failed": 3, "yield": 0}},
+            {"source_id": "src-b", "source_type": "website", "health": {"ok": 4, "failed": 1, "yield": 6}},
+        ],
+    )
     (live_dst / "status.json").write_text(json.dumps(status))
     jobs = _jsonl(live_dst / "jobs.jsonl")
     bad = json.loads(json.dumps(jobs[0]))
@@ -120,6 +335,7 @@ def two_runs(cases_dir):
 
 
 # --- HTML for both fixture cases ----------------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("slug", CASE_PAGES)
 @pytest.mark.parametrize("case", ["libraries", "parks"])
@@ -142,12 +358,18 @@ def test_unknown_case_and_run_are_404(client, slug):
 
 def test_nav_lists_the_views(client):
     page = client.get("/cases/libraries/failures").text
-    for slug, label in (("failures", "Failures"), ("cost", "Cost"), ("learning", "Learning"), ("compare", "Compare runs")):
+    for slug, label in (
+        ("failures", "Failures"),
+        ("cost", "Cost"),
+        ("learning", "Learning"),
+        ("compare", "Compare runs"),
+    ):
         assert f'href="/cases/libraries/{slug}"' in page and label in page
     assert 'href="/compare"' in page
 
 
 # --- Q7 failures ----------------------------------------------------------------------------------------------------
+
 
 def test_failures_fixture_run(client):
     m = client.get("/cases/libraries/api/viz/failures").json()
@@ -167,8 +389,18 @@ def test_failures_every_kind(make_client, two_runs):
     m = c.get(f"/cases/libraries/api/viz/failures?run={R2}").json()
     jsonschema.validate(m, FAILURES)
     kinds = {s["kind"] for s in m["strips"]}
-    assert {"stop", "failure", "blocked_domain", "escalation", "gate", "limit_kill", "quarantine", "checkpoint_fail",
-            "source_dropped", "source_degraded"} <= kinds, kinds
+    assert {
+        "stop",
+        "failure",
+        "blocked_domain",
+        "escalation",
+        "gate",
+        "limit_kill",
+        "quarantine",
+        "checkpoint_fail",
+        "source_dropped",
+        "source_degraded",
+    } <= kinds, kinds
     bad = next(r for r in m["cells"] if r["job_id"] == "job:bad")
     states = {c["key"]: c["state"] for c in bad["checkpoints"]}
     assert states["isolation"] == "fail" and states["secrets"] == "pending" and bad["killed_by"] == "memory"
@@ -186,6 +418,7 @@ def test_failures_parks_is_honest(client):
 
 
 # --- Q8 cost ----------------------------------------------------------------------------------------------------------
+
 
 def test_cost_fixture_run(client):
     m = client.get("/cases/libraries/api/viz/cost").json()
@@ -222,8 +455,12 @@ def test_cost_without_prices_says_so(make_client, two_runs):
 
 def test_cost_reads_spend_tracker(client, tmp_path, monkeypatch):
     hist = tmp_path / "history.jsonl"
-    hist.write_text(json.dumps({"ts": "2026-09-26T20:00:00+00:00", "credit_used": 3.0,
-                                "engine": {"reported": True, "runs": {R1: 0.0421}}}) + "\n")
+    hist.write_text(
+        json.dumps(
+            {"ts": "2026-09-26T20:00:00+00:00", "credit_used": 3.0, "engine": {"reported": True, "runs": {R1: 0.0421}}}
+        )
+        + "\n"
+    )
     monkeypatch.setenv("ONTOFILL_CONSOLE_SPEND_HISTORY", str(hist))
     m = client.get("/cases/libraries/api/viz/cost").json()
     assert m["tracker_run_usd"] == 0.0421
@@ -231,6 +468,7 @@ def test_cost_reads_spend_tracker(client, tmp_path, monkeypatch):
 
 
 # --- Q9 learning --------------------------------------------------------------------------------------------------------
+
 
 def test_learning_fixture(client):
     m = client.get("/cases/libraries/api/viz/learning").json()
@@ -254,7 +492,7 @@ def test_learning_over_two_runs(make_client, two_runs):
     assert m["macros"][0]["versions"][1]["date"] == "2026-09-26T21:00:00+00:00"
     assert len(m["crystallizations"]) == 1
     page = c.get("/cases/libraries/learning").text
-    assert "<path class=\"line\"" in page and "src-c" in page and "Crystallized" in page
+    assert '<path class="line"' in page and "src-c" in page and "Crystallized" in page
 
 
 def test_learning_parks(client):
@@ -264,6 +502,7 @@ def test_learning_parks(client):
 
 
 # --- Q10 compare -------------------------------------------------------------------------------------------------------
+
 
 def test_compare_cases_default_and_swap(client):
     m = client.get("/api/viz/compare").json()

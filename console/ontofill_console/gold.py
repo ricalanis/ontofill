@@ -77,9 +77,7 @@ class S3Source:
 
     def list_dirs(self, prefix: str) -> list[str]:
         prefix = prefix.rstrip("/") + "/"
-        pages = self.client.get_paginator("list_objects_v2").paginate(
-            Bucket=self.bucket, Prefix=prefix, Delimiter="/"
-        )
+        pages = self.client.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix, Delimiter="/")
         return sorted(
             cp["Prefix"][len(prefix) :].rstrip("/") for page in pages for cp in page.get("CommonPrefixes", [])
         )
@@ -112,8 +110,11 @@ def inferred_ontology(entities: list[dict]) -> dict:
         counts[e.get("class") or "entity"] = counts.get(e.get("class") or "entity", 0) + 1
         props.setdefault(e.get("class") or "entity", {}).update(dict.fromkeys(e.get("properties") or {}))
     primary = max(counts, key=counts.get) if counts else "entity"
-    return {"primary_class": primary, "classes": [{"id": c} for c in counts],
-            "properties": [{"id": p, "domain": c} for c, ps in props.items() for p in ps]}
+    return {
+        "primary_class": primary,
+        "classes": [{"id": c} for c in counts],
+        "properties": [{"id": p, "domain": c} for c, ps in props.items() for p in ps],
+    }
 
 
 @dataclass
@@ -156,7 +157,9 @@ class Run:
         f = (entity.get("properties") or {}).get(prop or "") or {}
         if f.get("value") not in (None, ""):
             return str(f.get("value"))
-        return str(self.identifier(entity) or entity["id"])  # no title published: the identifier reads better than the id
+        return str(
+            self.identifier(entity) or entity["id"]
+        )  # no title published: the identifier reads better than the id
 
     def identifier(self, entity: dict | None) -> str | None:
         prop = self.domain.identifier_property((entity or {}).get("class"))
@@ -225,7 +228,9 @@ class GoldStore:
         if not cases:  # no gold published yet: a case paused at a checkpoint still has its run feed under runs/
             cases = self.source.list_dirs("runs")
         if len(cases) != 1:
-            raise LookupError(f"set case_id in lake.yaml: found {len(cases)} cases under gold/ or runs/ in {self.source!r}")
+            raise LookupError(
+                f"set case_id in lake.yaml: found {len(cases)} cases under gold/ or runs/ in {self.source!r}"
+            )
         return cases[0]
 
     @property
@@ -274,8 +279,10 @@ class GoldStore:
                 onto = json.loads(raw) if raw else None
             except ValueError:
                 onto = None
-            if isinstance(onto, dict) and (onto.get("primary_class") or any(
-                    isinstance(c, dict) and c.get("primary") for c in onto.get("classes") or [])):
+            if isinstance(onto, dict) and (
+                onto.get("primary_class")
+                or any(isinstance(c, dict) and c.get("primary") for c in onto.get("classes") or [])
+            ):
                 return Domain.from_ontology(onto)
         return Domain.from_ontology(inferred_ontology(entities))
 
@@ -389,7 +396,9 @@ def store_for_case(case_dir: Path, lake: str | None = None, env: dict[str, str] 
     env = dict(os.environ if env is None else env)
     case_dir = Path(case_dir)
     if lake:
-        store = GoldStore(LocalSource(lake), None, env.get("ONTOFILL_CONSOLE_BRONZE_KEY_TEMPLATE", DEFAULT_BRONZE_TEMPLATE))
+        store = GoldStore(
+            LocalSource(lake), None, env.get("ONTOFILL_CONSOLE_BRONZE_KEY_TEMPLATE", DEFAULT_BRONZE_TEMPLATE)
+        )
     else:
         store = _store_from_lake_yaml(case_dir.resolve().parent / "lake.yaml", env)
     store.case_dir = case_dir

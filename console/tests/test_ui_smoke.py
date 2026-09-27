@@ -34,8 +34,9 @@ def test_approver_flow_and_phone_width(server):
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(f"{server}/")
-        page.click("text=Public library access") if page.locator("text=Public library access").count() else \
-            page.click("a[href='/cases/libraries']")
+        page.click("text=Public library access") if page.locator("text=Public library access").count() else page.click(
+            "a[href='/cases/libraries']"
+        )
         page.click("a[href$='/runs/run-libraries-0001']")
         page.wait_for_selector("#steps li")
         assert page.locator("details").count() >= 1  # the loop thread
@@ -46,8 +47,13 @@ def test_approver_flow_and_phone_width(server):
         page.click("button[value='deny']")
         page.wait_for_url("**/approvals?done=01-scope")
         assert page.locator("text=Decision history").count() == 1
-        for url in ("/", "/cases/libraries", "/cases/libraries/runs/run-libraries-0001",
-                    "/cases/libraries/approvals/02-ontology", "/evidence"):
+        for url in (
+            "/",
+            "/cases/libraries",
+            "/cases/libraries/runs/run-libraries-0001",
+            "/cases/libraries/approvals/02-ontology",
+            "/evidence",
+        ):
             page.set_viewport_size({"width": 390, "height": 800})
             page.goto(server + url)
             width = page.evaluate("document.documentElement.scrollWidth")

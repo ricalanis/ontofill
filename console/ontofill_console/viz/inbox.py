@@ -31,14 +31,31 @@ def case_items(case, now: datetime) -> list[dict]:
             continue
         cp = item.checkpoint or "checkpoint"
         what = item.meta.get("intended_action") if cp == "action" else None
-        items.append({"state": "need", "case_id": case.id, "kind": "checkpoint",
-                      "title": f"{CP_LABELS.get(cp, cp)} awaits your review" + (f": {what}" if what else ""),
-                      "detail": " · ".join(x for x in (item.phase_dir, item.meta.get("reason")) if x),
-                      "when": age(item.meta.get("requested_at"), now), "since": item.meta.get("requested_at"),
-                      "href": f"{base}/approvals/{item.phase_dir}"})
+        items.append(
+            {
+                "state": "need",
+                "case_id": case.id,
+                "kind": "checkpoint",
+                "title": f"{CP_LABELS.get(cp, cp)} awaits your review" + (f": {what}" if what else ""),
+                "detail": " · ".join(x for x in (item.phase_dir, item.meta.get("reason")) if x),
+                "when": age(item.meta.get("requested_at"), now),
+                "since": item.meta.get("requested_at"),
+                "href": f"{base}/approvals/{item.phase_dir}",
+            }
+        )
     if case.lake_error:
-        items.append({"state": "block", "case_id": case.id, "kind": "lake", "title": "Lake unreachable",
-                      "detail": case.lake_error, "when": None, "since": None, "href": base})
+        items.append(
+            {
+                "state": "block",
+                "case_id": case.id,
+                "kind": "lake",
+                "title": "Lake unreachable",
+                "detail": case.lake_error,
+                "when": None,
+                "since": None,
+                "href": base,
+            }
+        )
     rid = a.latest_run_id()
     if rid:
         status = a.status(rid)
@@ -49,37 +66,85 @@ def case_items(case, now: datetime) -> list[dict]:
             if s.get("mode"):
                 modes[s["mode"]] = modes.get(s["mode"], 0) + 1
         phase = status.get("phase")
-        detail = [f"phase {phase} · {live.phase_name(phase)}" if phase else None, f"{len(steps)} steps",
-                  " · ".join(f"{m} {n}" for m, n in sorted(modes.items(), key=lambda kv: live.MODE_RANK.get(kv[0], 9)))]
+        detail = [
+            f"phase {phase} · {live.phase_name(phase)}" if phase else None,
+            f"{len(steps)} steps",
+            " · ".join(f"{m} {n}" for m, n in sorted(modes.items(), key=lambda kv: live.MODE_RANK.get(kv[0], 9))),
+        ]
         if status.get("checkpoint_pending"):
             detail.insert(0, f"paused at {status['checkpoint_pending']}")
         if status.get("reason"):  # run-status.schema.json: why the run paused or failed
             detail.insert(0, str(status["reason"]))
-        items.append({"state": state, "case_id": case.id, "kind": "run", "title": f"Run {rid}: {status.get('state') or 'no status yet'}",
-                      "detail": " · ".join(x for x in detail if x), "when": age(status.get("updated_at"), now),
-                      "since": status.get("updated_at"), "href": f"{base}/runs/{rid}",
-                      "live": is_live(status, now), "activity": last_activity(status, steps)})
+        items.append(
+            {
+                "state": state,
+                "case_id": case.id,
+                "kind": "run",
+                "title": f"Run {rid}: {status.get('state') or 'no status yet'}",
+                "detail": " · ".join(x for x in detail if x),
+                "when": age(status.get("updated_at"), now),
+                "since": status.get("updated_at"),
+                "href": f"{base}/runs/{rid}",
+                "live": is_live(status, now),
+                "activity": last_activity(status, steps),
+            }
+        )
         for s in steps:
             if s.get("kind") == "quarantine":
                 d = s.get("detail") or {}
-                items.append({"state": "quar", "case_id": case.id, "kind": "quarantine",
-                              "title": f"Page quarantined · {s.get('source_id') or 'unknown source'}",
-                              "detail": " · ".join(str(x) for x in (d.get("jev_choice"), d.get("reason"), "withheld from planning, kept as evidence") if x),
-                              "when": age(s.get("ts"), now), "since": s.get("ts"), "href": f"{base}/runs/{rid}#{s.get('step_id')}"})
+                items.append(
+                    {
+                        "state": "quar",
+                        "case_id": case.id,
+                        "kind": "quarantine",
+                        "title": f"Page quarantined · {s.get('source_id') or 'unknown source'}",
+                        "detail": " · ".join(
+                            str(x)
+                            for x in (d.get("jev_choice"), d.get("reason"), "withheld from planning, kept as evidence")
+                            if x
+                        ),
+                        "when": age(s.get("ts"), now),
+                        "since": s.get("ts"),
+                        "href": f"{base}/runs/{rid}#{s.get('step_id')}",
+                    }
+                )
             elif s.get("kind") == "kill":
                 reason = (s.get("detail") or {}).get("reason")
-                items.append({"state": "block", "case_id": case.id, "kind": "limit_kill",
-                              "title": "Job stopped by a resource limit",
-                              "detail": " · ".join(str(x) for x in (live.KILL_LABELS.get(reason, reason), s.get("source_id"), "host untouched") if x),
-                              "when": age(s.get("ts"), now), "since": s.get("ts"), "href": f"{base}/runs/{rid}#{s.get('step_id')}"})
+                items.append(
+                    {
+                        "state": "block",
+                        "case_id": case.id,
+                        "kind": "limit_kill",
+                        "title": "Job stopped by a resource limit",
+                        "detail": " · ".join(
+                            str(x)
+                            for x in (live.KILL_LABELS.get(reason, reason), s.get("source_id"), "host untouched")
+                            if x
+                        ),
+                        "when": age(s.get("ts"), now),
+                        "since": s.get("ts"),
+                        "href": f"{base}/runs/{rid}#{s.get('step_id')}",
+                    }
+                )
             else:  # hard stops, blocked domains, refused derivations and denied actions (classified as on Failures)
                 c = classify(s)
-                if c is None or not (c[0] in ("stop", "blocked_domain", "refusal") or
-                                     (c[0] == "gate" and (s.get("detail") or {}).get("outcome") == "denied")):
+                if c is None or not (
+                    c[0] in ("stop", "blocked_domain", "refusal")
+                    or (c[0] == "gate" and (s.get("detail") or {}).get("outcome") == "denied")
+                ):
                     continue
-                items.append({"state": "block", "case_id": case.id, "kind": c[0], "title": c[1],
-                              "detail": c[2] or None, "when": age(s.get("ts"), now), "since": s.get("ts"),
-                              "href": f"{base}/runs/{rid}#{s.get('step_id')}"})
+                items.append(
+                    {
+                        "state": "block",
+                        "case_id": case.id,
+                        "kind": c[0],
+                        "title": c[1],
+                        "detail": c[2] or None,
+                        "when": age(s.get("ts"), now),
+                        "since": s.get("ts"),
+                        "href": f"{base}/runs/{rid}#{s.get('step_id')}",
+                    }
+                )
     return items
 
 
@@ -89,24 +154,41 @@ def model(settings) -> dict:
     for case in settings.cases.values():
         mine = case_items(case, now)
         items += mine
-        cases.append({"id": case.id, "title": case.title, "question": case.brief,
-                      "needs_you": sum(1 for i in mine if i["state"] == "need")})
+        cases.append(
+            {
+                "id": case.id,
+                "title": case.title,
+                "question": case.brief,
+                "needs_you": sum(1 for i in mine if i["state"] == "need"),
+            }
+        )
     root = getattr(settings, "runner_state", None)  # R18: runner failures, budget stops, kills (runner_state owns this)
     if root is not None:
         items += runner_state.inbox_items(root, set(settings.cases))
     items.sort(key=lambda i: (RANK.get(i["state"], 9), i["since"] or ""))
     moving = [i["activity"] for i in items if i.get("live")]
     newest = max(moving, key=lambda ts: parse_ts(ts) or datetime.min.replace(tzinfo=UTC), default=None)
-    return {"live": live_marker(bool(moving), newest), "strips": items, "cases": cases, "needs_you": sum(1 for i in items if i["state"] == "need"),
-            "empty": None if items else gap(None, "Checkpoints waiting for a person, runs in motion, quarantined pages and "
-                                                  "limit kills across every registered case.",
-                                            "*/APPROVAL_PENDING.md, runs/<case>/<run>/status.json, trace.live.jsonl")}
+    return {
+        "live": live_marker(bool(moving), newest),
+        "strips": items,
+        "cases": cases,
+        "needs_you": sum(1 for i in items if i["state"] == "need"),
+        "empty": None
+        if items
+        else gap(
+            None,
+            "Checkpoints waiting for a person, runs in motion, quarantined pages and "
+            "limit kills across every registered case.",
+            "*/APPROVAL_PENDING.md, runs/<case>/<run>/status.json, trace.live.jsonl",
+        ),
+    }
 
 
 def install(ctx: VizContext) -> None:
     app, render, settings = ctx.app, ctx.render, ctx.settings
     ctx.env.globals["inbox_count"] = lambda: sum(
-        1 for c in settings.cases.values() for a in Artifacts(c).approvals() if a.approved is None)
+        1 for c in settings.cases.values() for a in Artifacts(c).approvals() if a.approved is None
+    )
 
     @app.get("/inbox", response_class=HTMLResponse)
     def inbox(request: Request):

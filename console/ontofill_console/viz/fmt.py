@@ -19,6 +19,7 @@ def value_text(value) -> str:
 def install(ctx: VizContext) -> None:
     brief = ctx.env.filters.get("brief")
     if brief is not None and not getattr(brief, "jsonish", False):
+
         def brief_json(value, limit: int = 240) -> str:
             return brief(jsonish(value), limit)
 

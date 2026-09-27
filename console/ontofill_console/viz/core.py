@@ -33,8 +33,8 @@ GAPS = {
 
 @dataclass
 class View:
-    key: str        # nav key (render(..., nav=key))
-    slug: str       # URL segment under /cases/<id>/ (case views) or absolute href (global views)
+    key: str  # nav key (render(..., nav=key))
+    slug: str  # URL segment under /cases/<id>/ (case views) or absolute href (global views)
     label: str
     order: int = 100
 
@@ -43,7 +43,7 @@ class View:
         return self.slug
 
 
-VIEWS: list[View] = []          # kept for import compatibility; each app's views live on its VizContext
+VIEWS: list[View] = []  # kept for import compatibility; each app's views live on its VizContext
 GLOBAL_VIEWS: list[View] = []
 
 

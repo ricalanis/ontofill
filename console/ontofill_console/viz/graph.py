@@ -42,7 +42,7 @@ ORDER = 56
 DEFAULT_LIMIT = 150
 MAX_LIMIT = 500
 LIMITS = (50, 150, 300, 500)
-N_COLORS = 3          # validated categorical slots (all pairs, both themes); later classes are neutral + own shape
+N_COLORS = 3  # validated categorical slots (all pairs, both themes); later classes are neutral + own shape
 SHAPES = ("circle", "square", "diamond", "triangle", "hexagon", "pentagon")
 DASHES = ("", "7 4", "2 3", "10 3 2 3", "1 4")
 LABEL_ALL_BELOW = 60  # show every node label when the graph is this small
@@ -55,9 +55,15 @@ def _poly(n: int, r: float, rot: float = -math.pi / 2) -> str:
 
 
 SHAPE_PATHS = {  # centred on 0,0; about 15 px across so each class reads by shape as well as colour
-    "circle": "M-7,0A7,7 0 1,0 7,0A7,7 0 1,0 -7,0Z", "square": "M-6,-6H6V6H-6Z", "diamond": _poly(4, 8.2),
-    "triangle": _poly(3, 8.5), "hexagon": _poly(6, 7.5, 0), "pentagon": _poly(5, 7.8),
-    "dot": "M-4.5,0A4.5,4.5 0 1,0 4.5,0A4.5,4.5 0 1,0 -4.5,0Z", "hub": "M-10,-7H10V7H-10Z"}
+    "circle": "M-7,0A7,7 0 1,0 7,0A7,7 0 1,0 -7,0Z",
+    "square": "M-6,-6H6V6H-6Z",
+    "diamond": _poly(4, 8.2),
+    "triangle": _poly(3, 8.5),
+    "hexagon": _poly(6, 7.5, 0),
+    "pentagon": _poly(5, 7.8),
+    "dot": "M-4.5,0A4.5,4.5 0 1,0 4.5,0A4.5,4.5 0 1,0 -4.5,0Z",
+    "hub": "M-10,-7H10V7H-10Z",
+}
 SOURCE = "gold/<case>/<run>/entities.jsonl (links[], flags[]) · ontology.json (classes, relations, rules)"
 
 
@@ -174,11 +180,19 @@ def _catalog(domain, entities) -> list[dict]:
     for i, c in enumerate(known):
         if c not in counts and c not in domain.classes:
             continue
-        out.append({"id": c, "label": domain.class_label(c) if c in domain.classes else humanize(c),
-                    "n": counts.get(c, 0), "primary": c == domain.primary_class,
-                    "related": c in related and c != domain.primary_class, "in_ontology": c in domain.classes,
-                    "color": i + 1 if i < N_COLORS else 0, "shape": SHAPES[i] if i < len(SHAPES) else "dot",
-                    "path": SHAPE_PATHS[SHAPES[i] if i < len(SHAPES) else "dot"]})
+        out.append(
+            {
+                "id": c,
+                "label": domain.class_label(c) if c in domain.classes else humanize(c),
+                "n": counts.get(c, 0),
+                "primary": c == domain.primary_class,
+                "related": c in related and c != domain.primary_class,
+                "in_ontology": c in domain.classes,
+                "color": i + 1 if i < N_COLORS else 0,
+                "shape": SHAPES[i] if i < len(SHAPES) else "dot",
+                "path": SHAPE_PATHS[SHAPES[i] if i < len(SHAPES) else "dot"],
+            }
+        )
     return out
 
 
@@ -192,14 +206,27 @@ def _relation_catalog(domain, used: dict[str, int]) -> list[dict]:
         rule_text = None
         if match:
             left, right = match.get("domain_property") or "?", match.get("range_property") or "?"
-            rule_text = (f"derived by rule: same {domain.prop_label(left)}" if left == right else
-                         f"derived by rule: {domain.prop_label(left)} equals {domain.prop_label(right)}")
+            rule_text = (
+                f"derived by rule: same {domain.prop_label(left)}"
+                if left == right
+                else f"derived by rule: {domain.prop_label(left)} equals {domain.prop_label(right)}"
+            )
         elif derived:
             rule_text = f"derived by rule {r.get('derived_by') or r.get('rule_id')}"
-        out.append({"id": rid, "label": domain.relation_label(rid), "symmetric": bool(r.get("symmetric")),
-                    "domain": r.get("domain"), "range": r.get("range"), "in_ontology": rid in domain.relations,
-                    "derived": derived, "rule_text": rule_text, "n": used.get(rid, 0),
-                    "dash": DASHES[i] if i < len(DASHES) else ""})
+        out.append(
+            {
+                "id": rid,
+                "label": domain.relation_label(rid),
+                "symmetric": bool(r.get("symmetric")),
+                "domain": r.get("domain"),
+                "range": r.get("range"),
+                "in_ontology": rid in domain.relations,
+                "derived": derived,
+                "rule_text": rule_text,
+                "n": used.get(rid, 0),
+                "dash": DASHES[i] if i < len(DASHES) else "",
+            }
+        )
     return out
 
 
@@ -226,8 +253,15 @@ class _Graph:
                 eid = _hid("e-", rid, a, b)
                 edge = self.edges.get(eid)
                 if edge is None:
-                    edge = self.edges[eid] = {"id": eid, "source": a, "target": b, "relation": rid,
-                                              "symmetric": sym, "via_value_ids": [], "n_links": 0}
+                    edge = self.edges[eid] = {
+                        "id": eid,
+                        "source": a,
+                        "target": b,
+                        "relation": rid,
+                        "symmetric": sym,
+                        "via_value_ids": [],
+                        "n_links": 0,
+                    }
                     self.used[rid] = self.used.get(rid, 0) + 1
                 edge["n_links"] += 1
                 via = ln.get("via_value_id")
@@ -241,12 +275,27 @@ def _url(case_id: str, params: dict, **over) -> str:
     return f"/cases/{case_id}/graph" + (f"?{qs}" if qs else "")
 
 
-def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", signal: str = "", text: str = "",
-                focus: str = "", depth: int = 1, limit: int = DEFAULT_LIMIT, sel: str = "", expand: str = "") -> dict:
+def graph_model(
+    case,
+    run: str | None = None,
+    cls: str = "",
+    rel: str = "",
+    signal: str = "",
+    text: str = "",
+    focus: str = "",
+    depth: int = 1,
+    limit: int = DEFAULT_LIMIT,
+    sel: str = "",
+    expand: str = "",
+) -> dict:
     a = Artifacts(case)
     g, run_id, note = resolve_run(a, run)
-    text, cls, rel, signal = (text or "").strip()[:200], (cls or "").strip()[:100], (rel or "").strip()[:100], \
-        (signal or "").strip()[:100]
+    text, cls, rel, signal = (
+        (text or "").strip()[:200],
+        (cls or "").strip()[:100],
+        (rel or "").strip()[:100],
+        (signal or "").strip()[:100],
+    )
     focus, sel = (focus or "").strip()[:300], (sel or "").strip()[:300]
     depth = 2 if depth == 2 else 1
     try:
@@ -254,22 +303,68 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
     except (TypeError, ValueError):
         limit = DEFAULT_LIMIT
     expanded = [x for x in (expand or "").split(",") if x.startswith("c-")][:20]
-    params = {"run": run_id if run else "", "cls": cls, "rel": rel, "signal": signal, "q": text, "focus": focus,
-              "depth": depth if focus else 0, "limit": limit if limit != DEFAULT_LIMIT else 0,
-              "expand": ",".join(expanded)}
-    base = {"case_id": case.id, "run_id": run_id, "gold_run_ids": a.gold_run_ids(), "brief": brief_text(a),
-            "filters": {"run": run_id if run else "", "cls": cls, "rel": rel, "signal": signal, "q": text, "focus": focus, "depth": depth,
-                        "limit": limit, "expand": expanded},
-            "limits": list(LIMITS), "source": SOURCE, "backend": None, "classes": [], "relations": [], "signals": [],
-            "nodes": [], "edges": [], "clusters": [], "groups": [], "selected": None, "n_entities": 0,
-            "n_matched": 0, "n_context": 0, "n_nodes": 0, "n_edges": 0, "n_links": 0, "n_dangling": 0,
-            "capped": False, "width": 0, "height": 0, "focus_note": None, "empty_links": None,
-            "clear_href": _url(case.id, {"run": run_id if run else ""})}
+    params = {
+        "run": run_id if run else "",
+        "cls": cls,
+        "rel": rel,
+        "signal": signal,
+        "q": text,
+        "focus": focus,
+        "depth": depth if focus else 0,
+        "limit": limit if limit != DEFAULT_LIMIT else 0,
+        "expand": ",".join(expanded),
+    }
+    base = {
+        "case_id": case.id,
+        "run_id": run_id,
+        "gold_run_ids": a.gold_run_ids(),
+        "brief": brief_text(a),
+        "filters": {
+            "run": run_id if run else "",
+            "cls": cls,
+            "rel": rel,
+            "signal": signal,
+            "q": text,
+            "focus": focus,
+            "depth": depth,
+            "limit": limit,
+            "expand": expanded,
+        },
+        "limits": list(LIMITS),
+        "source": SOURCE,
+        "backend": None,
+        "classes": [],
+        "relations": [],
+        "signals": [],
+        "nodes": [],
+        "edges": [],
+        "clusters": [],
+        "groups": [],
+        "selected": None,
+        "n_entities": 0,
+        "n_matched": 0,
+        "n_context": 0,
+        "n_nodes": 0,
+        "n_edges": 0,
+        "n_links": 0,
+        "n_dangling": 0,
+        "capped": False,
+        "width": 0,
+        "height": 0,
+        "focus_note": None,
+        "empty_links": None,
+        "clear_href": _url(case.id, {"run": run_id if run else ""}),
+    }
     if g is None:
-        what = ("Every entity of the run as a node coloured by its ontology class, the links between them labelled "
-                "by relation, and clusters of entities that share a value; each node opens the entity's evidence.")
-        src = ("gold/<case>/<run>/entities.jsonl (this run has a live feed but no gold export yet)"
-               if note == "live-only" else "gold/<case>/<run>/entities.jsonl (written when a run publishes gold)")
+        what = (
+            "Every entity of the run as a node coloured by its ontology class, the links between them labelled "
+            "by relation, and clusters of entities that share a value; each node opens the entity's evidence."
+        )
+        src = (
+            "gold/<case>/<run>/entities.jsonl (this run has a live feed but no gold export yet)"
+            if note == "live-only"
+            else "gold/<case>/<run>/entities.jsonl (written when a run publishes gold)"
+        )
         return {**base, "empty": gap(None, what, src)}
 
     domain = domain_for(g)
@@ -288,15 +383,20 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
                 rid = str(fl["rule_id"])
                 sig_counts[rid] = sig_counts.get(rid, 0) + 1
                 sig_labels.setdefault(rid, fl.get("label") or "")
-    signals = [{"id": rid, "label": domain.rule(rid, sig_labels.get(rid, ""))["label"], "n": sig_counts.get(rid, 0)}
-               for rid in list(domain.rules) + sorted(r for r in sig_counts if r not in domain.rules)]
+    signals = [
+        {"id": rid, "label": domain.rule(rid, sig_labels.get(rid, ""))["label"], "n": sig_counts.get(rid, 0)}
+        for rid in list(domain.rules) + sorted(r for r in sig_counts if r not in domain.rules)
+    ]
 
     titles = {e["id"]: entity_title(domain, e) for e in g.entities}
     idents = {e["id"]: entity_identifier(domain, e) for e in g.entities}
 
     def order_key(x):
-        return (corder.get(g.entities_by_id[x].get("class") or "?", 99), titles[x].casefold(), x) \
-            if x in g.entities_by_id else (99, x, x)
+        return (
+            (corder.get(g.entities_by_id[x].get("class") or "?", 99), titles[x].casefold(), x)
+            if x in g.entities_by_id
+            else (99, x, x)
+        )
 
     considered = [ed for ed in graph.edges.values() if not rel or ed["relation"] == rel]
     nbrs: dict[str, set] = {}
@@ -326,8 +426,16 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
         matched = list(dist)
     else:
         needle = text.casefold()
-        flagged = {e["id"] for e in g.entities for fl in e.get("flags") or []
-                   if isinstance(fl, dict) and str(fl.get("rule_id")) == signal} if signal else set()
+        flagged = (
+            {
+                e["id"]
+                for e in g.entities
+                for fl in e.get("flags") or []
+                if isinstance(fl, dict) and str(fl.get("rule_id")) == signal
+            }
+            if signal
+            else set()
+        )
         matched = []
         for e in g.entities:
             x = e["id"]
@@ -356,8 +464,11 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
 
     def holds(x: str) -> set:
         if x not in held:
-            held[x] = {_norm(f.get("value")) for f in (g.entities_by_id[x].get("properties") or {}).values()
-                       if isinstance(f, dict) and f.get("value") not in (None, "")}
+            held[x] = {
+                _norm(f.get("value"))
+                for f in (g.entities_by_id[x].get("properties") or {}).values()
+                if isinstance(f, dict) and f.get("value") not in (None, "")
+            }
         return held[x]
 
     groups_by_key: dict[tuple, dict] = {}
@@ -366,8 +477,9 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
             ref = g.values.get(vid)
             val = _norm(ref.data.get("value")) if ref else ""
             if val and val in holds(ed["source"]) and val in holds(ed["target"]):
-                grp = groups_by_key.setdefault((ed["relation"], val), {"edges": {}, "members": set(), "vias": [],
-                                                                       "ref": ref})
+                grp = groups_by_key.setdefault(
+                    (ed["relation"], val), {"edges": {}, "members": set(), "vias": [], "ref": ref}
+                )
                 grp["edges"][ed["id"]] = ed
                 grp["members"].update((ed["source"], ed["target"]))
                 if vid not in grp["vias"]:
@@ -384,17 +496,34 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
         cid = _hid("c-", rid, _val)
         ref = grp["ref"]
         is_open = cid in expanded
-        clusters.append({"id": cid, "relation": rid, "relation_label": rmeta.get(rid, {}).get("label") or humanize(rid),
-                         "value": str(ref.data.get("value")), "prop": ref.prop,
-                         "prop_label": domain.prop_label(ref.prop), "members": members, "n_members": len(members),
-                         "n_edges": len(free), "via_value_ids": grp["vias"][:50], "expanded": is_open,
-                         "toggle_href": _url(case.id, params, expand=",".join(
-                             [x for x in expanded if x != cid] if is_open else expanded + [cid]), sel=cid),
-                         "sel_href": _url(case.id, params, sel=cid)})
+        clusters.append(
+            {
+                "id": cid,
+                "relation": rid,
+                "relation_label": rmeta.get(rid, {}).get("label") or humanize(rid),
+                "value": str(ref.data.get("value")),
+                "prop": ref.prop,
+                "prop_label": domain.prop_label(ref.prop),
+                "members": members,
+                "n_members": len(members),
+                "n_edges": len(free),
+                "via_value_ids": grp["vias"][:50],
+                "expanded": is_open,
+                "toggle_href": _url(
+                    case.id,
+                    params,
+                    expand=",".join([x for x in expanded if x != cid] if is_open else expanded + [cid]),
+                    sel=cid,
+                ),
+                "sel_href": _url(case.id, params, sel=cid),
+            }
+        )
         if not is_open:
             hidden_edges.update(free)
-            spokes += [{"id": f"{cid}-{i}", "source": m, "target": cid, "relation": rid, "kind": "spoke"}
-                       for i, m in enumerate(members)]
+            spokes += [
+                {"id": f"{cid}-{i}", "source": m, "target": cid, "relation": rid, "kind": "spoke"}
+                for i, m in enumerate(members)
+            ]
     ccount: dict[str, list[str]] = {}
     for c in clusters:
         for m in c["members"]:
@@ -441,8 +570,13 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
         for x in sorted(isolated, key=order_key):
             by_cls.setdefault(g.entities_by_id[x].get("class") or "?", []).append(x)
         for c, xs in by_cls.items():
-            grid_rows.append({"y": round(y + 12, 1), "x": pad - 12,
-                              "label": f"{cmeta.get(c, {}).get('label', humanize(c))} · {len(xs)} without links"})
+            grid_rows.append(
+                {
+                    "y": round(y + 12, 1),
+                    "x": pad - 12,
+                    "label": f"{cmeta.get(c, {}).get('label', humanize(c))} · {len(xs)} without links",
+                }
+            )
             y += 26.0
             for i, x in enumerate(xs):
                 pos[x] = (pad + (i % cols) * colw, y + (i // cols) * rowh + 8)
@@ -461,27 +595,64 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
         flags = [str(fl.get("rule_id")) for fl in e.get("flags") or [] if isinstance(fl, dict) and fl.get("rule_id")]
         px, py = pos.get(x, (pad, pad))
         label_on = x in top or x in isolated_set or x == focus or (focus and dist.get(x) == 1 and len(dist) <= 40)
-        nodes.append({"id": x, "kind": "entity", "class": e.get("class") or "?", "class_label": c.get("label"),
-                      "color": c.get("color", 0), "shape": c.get("shape", "dot"),
-                      "path": c.get("path") or SHAPE_PATHS["dot"], "title": titles[x],
-                      "short": _clip(titles[x]), "identifier": idents[x], "x": round(px, 1), "y": round(py, 1),
-                      "degree": degree.get(x, 0), "flags": flags, "context": x in context, "focus": x == focus,
-                      "depth": dist.get(x), "label_on": bool(label_on), "clusters": ccount.get(x, []),
-                      "href": f"/cases/{case.id}/entities/{q(x)}{rq}", "sel_href": _url(case.id, params, sel=x),
-                      "focus_href": _url(case.id, {**params, "cls": "", "signal": "", "q": ""}, focus=x,
-                                         depth=depth, sel=x),
-                      "aria": f"{c.get('label') or 'Entity'}: {titles[x]}"
-                              + (f", {len(flags)} signal{'s' if len(flags) != 1 else ''}" if flags else "")
-                              + f", {degree.get(x, 0)} linked"})
+        nodes.append(
+            {
+                "id": x,
+                "kind": "entity",
+                "class": e.get("class") or "?",
+                "class_label": c.get("label"),
+                "color": c.get("color", 0),
+                "shape": c.get("shape", "dot"),
+                "path": c.get("path") or SHAPE_PATHS["dot"],
+                "title": titles[x],
+                "short": _clip(titles[x]),
+                "identifier": idents[x],
+                "x": round(px, 1),
+                "y": round(py, 1),
+                "degree": degree.get(x, 0),
+                "flags": flags,
+                "context": x in context,
+                "focus": x == focus,
+                "depth": dist.get(x),
+                "label_on": bool(label_on),
+                "clusters": ccount.get(x, []),
+                "href": f"/cases/{case.id}/entities/{q(x)}{rq}",
+                "sel_href": _url(case.id, params, sel=x),
+                "focus_href": _url(case.id, {**params, "cls": "", "signal": "", "q": ""}, focus=x, depth=depth, sel=x),
+                "aria": f"{c.get('label') or 'Entity'}: {titles[x]}"
+                + (f", {len(flags)} signal{'s' if len(flags) != 1 else ''}" if flags else "")
+                + f", {degree.get(x, 0)} linked",
+            }
+        )
     for c in hubs:
         px, py = pos.get(c["id"], (pad, pad))
-        nodes.append({"id": c["id"], "kind": "cluster", "class": None, "class_label": None, "color": 0,
-                      "shape": "hub", "path": SHAPE_PATHS["hub"], "title": c["value"], "short": _clip(c["value"], 28), "identifier": None,
-                      "x": round(px, 1), "y": round(py, 1), "degree": c["n_members"], "flags": [],
-                      "context": False, "focus": False, "depth": None, "label_on": True, "clusters": [],
-                      "href": c["sel_href"], "sel_href": c["sel_href"], "focus_href": None,
-                      "aria": f"Shared {c['prop_label']}: {c['value']}, {c['n_members']} entities, "
-                              f"{c['relation_label']}"})
+        nodes.append(
+            {
+                "id": c["id"],
+                "kind": "cluster",
+                "class": None,
+                "class_label": None,
+                "color": 0,
+                "shape": "hub",
+                "path": SHAPE_PATHS["hub"],
+                "title": c["value"],
+                "short": _clip(c["value"], 28),
+                "identifier": None,
+                "x": round(px, 1),
+                "y": round(py, 1),
+                "degree": c["n_members"],
+                "flags": [],
+                "context": False,
+                "focus": False,
+                "depth": None,
+                "label_on": True,
+                "clusters": [],
+                "href": c["sel_href"],
+                "sel_href": c["sel_href"],
+                "focus_href": None,
+                "aria": f"Shared {c['prop_label']}: {c['value']}, {c['n_members']} entities, {c['relation_label']}",
+            }
+        )
     npos = {n["id"]: (n["x"], n["y"]) for n in nodes}
     show_edge_labels = not focus and len(draw_edges) <= EDGE_LABELS_BELOW
     edges = []
@@ -491,63 +662,145 @@ def graph_model(case, run: str | None = None, cls: str = "", rel: str = "", sign
         if not ed["symmetric"]:  # stop short of the target so the arrowhead shows
             d = math.hypot(x2 - x1, y2 - y1) or 1.0
             x2, y2 = round(x2 - (x2 - x1) / d * 11, 1), round(y2 - (y2 - y1) / d * 11, 1)
-        edges.append({"id": ed["id"], "kind": "link", "source": ed["source"], "target": ed["target"],
-                      "relation": ed["relation"], "label": r.get("label") or humanize(ed["relation"]),
-                      "symmetric": ed["symmetric"], "derived": bool(r.get("derived")), "dash": r.get("dash", ""),
-                      "via_value_ids": ed["via_value_ids"], "n_links": ed["n_links"],
-                      "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                      "label_on": show_edge_labels or (bool(focus) and focus in (ed["source"], ed["target"])
-                                                       and len(dist) <= 30),
-                      "sel_href": _url(case.id, params, sel=ed["id"]),
-                      "aria": f"{r.get('label') or humanize(ed['relation'])}: {titles[ed['source']]} "
-                              f"{'—' if ed['symmetric'] else '→'} {titles[ed['target']]}"})
+        edges.append(
+            {
+                "id": ed["id"],
+                "kind": "link",
+                "source": ed["source"],
+                "target": ed["target"],
+                "relation": ed["relation"],
+                "label": r.get("label") or humanize(ed["relation"]),
+                "symmetric": ed["symmetric"],
+                "derived": bool(r.get("derived")),
+                "dash": r.get("dash", ""),
+                "via_value_ids": ed["via_value_ids"],
+                "n_links": ed["n_links"],
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "label_on": show_edge_labels
+                or (bool(focus) and focus in (ed["source"], ed["target"]) and len(dist) <= 30),
+                "sel_href": _url(case.id, params, sel=ed["id"]),
+                "aria": f"{r.get('label') or humanize(ed['relation'])}: {titles[ed['source']]} "
+                f"{'—' if ed['symmetric'] else '→'} {titles[ed['target']]}",
+            }
+        )
     for s in spokes:
         r = rmeta.get(s["relation"], {})
         (x1, y1), (x2, y2) = npos[s["source"]], npos[s["target"]]
-        edges.append({"id": s["id"], "kind": "spoke", "source": s["source"], "target": s["target"],
-                      "relation": s["relation"], "label": r.get("label") or humanize(s["relation"]),
-                      "symmetric": True, "derived": bool(r.get("derived")), "dash": r.get("dash", ""),
-                      "via_value_ids": [], "n_links": 0, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "label_on": False,
-                      "sel_href": _url(case.id, params, sel=s["target"]),
-                      "aria": f"{titles[s['source']]} in the shared-value cluster"})
+        edges.append(
+            {
+                "id": s["id"],
+                "kind": "spoke",
+                "source": s["source"],
+                "target": s["target"],
+                "relation": s["relation"],
+                "label": r.get("label") or humanize(s["relation"]),
+                "symmetric": True,
+                "derived": bool(r.get("derived")),
+                "dash": r.get("dash", ""),
+                "via_value_ids": [],
+                "n_links": 0,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "label_on": False,
+                "sel_href": _url(case.id, params, sel=s["target"]),
+                "aria": f"{titles[s['source']]} in the shared-value cluster",
+            }
+        )
 
     # list fallback (390 px and screen readers): entities grouped by class with their links and clusters ------------
     inc: dict[str, list[dict]] = {}
     for ed in disp:
         for me, other in ((ed["source"], ed["target"]), (ed["target"], ed["source"])):
             direction = "—" if ed["symmetric"] else ("→" if me == ed["source"] else "←")
-            inc.setdefault(me, []).append({"label": rmeta.get(ed["relation"], {}).get("label") or ed["relation"],
-                                           "direction": direction, "title": titles[other],
-                                           "href": f"/cases/{case.id}/entities/{q(other)}{rq}",
-                                           "sel_href": _url(case.id, params, sel=ed["id"])})
+            inc.setdefault(me, []).append(
+                {
+                    "label": rmeta.get(ed["relation"], {}).get("label") or ed["relation"],
+                    "direction": direction,
+                    "title": titles[other],
+                    "href": f"/cases/{case.id}/entities/{q(other)}{rq}",
+                    "sel_href": _url(case.id, params, sel=ed["id"]),
+                }
+            )
     cl_by_id = {c["id"]: c for c in clusters}
     groups = []
     for c in classes:
-        rows = [{"entity_id": x, "title": titles[x],
-                 "identifier": idents[x] if str(idents[x] or "") != titles[x] else None, "context": x in context,
-                 "href": f"/cases/{case.id}/entities/{q(x)}{rq}", "sel_href": _url(case.id, params, sel=x),
-                 "links": inc.get(x, [])[:8], "n_links": len(inc.get(x, [])),
-                 "clusters": [{"id": cid, "text": f"{cl_by_id[cid]['prop_label']}: {cl_by_id[cid]['value']}",
-                               "href": cl_by_id[cid]["sel_href"]} for cid in ccount.get(x, [])]}
-                for x in sorted((x for x in shown if (g.entities_by_id[x].get("class") or "?") == c["id"]), key=order_key)]
+        rows = [
+            {
+                "entity_id": x,
+                "title": titles[x],
+                "identifier": idents[x] if str(idents[x] or "") != titles[x] else None,
+                "context": x in context,
+                "href": f"/cases/{case.id}/entities/{q(x)}{rq}",
+                "sel_href": _url(case.id, params, sel=x),
+                "links": inc.get(x, [])[:8],
+                "n_links": len(inc.get(x, [])),
+                "clusters": [
+                    {
+                        "id": cid,
+                        "text": f"{cl_by_id[cid]['prop_label']}: {cl_by_id[cid]['value']}",
+                        "href": cl_by_id[cid]["sel_href"],
+                    }
+                    for cid in ccount.get(x, [])
+                ],
+            }
+            for x in sorted((x for x in shown if (g.entities_by_id[x].get("class") or "?") == c["id"]), key=order_key)
+        ]
         if rows:
-            groups.append({"class": c["id"], "label": c["label"], "color": c["color"], "shape": c["shape"], "path": c["path"],
-                           "rows": rows})
+            groups.append(
+                {
+                    "class": c["id"],
+                    "label": c["label"],
+                    "color": c["color"],
+                    "shape": c["shape"],
+                    "path": c["path"],
+                    "rows": rows,
+                }
+            )
 
-    selected = _selected(case, a, g, domain, sel, graph, cl_by_id, rmeta, titles, idents, params, rq, depth) \
-        if sel else None
-    return {**base, "backend": g.inference_backend, "empty": None, "classes": classes, "relations": relations,
-            "signals": signals, "nodes": nodes, "edges": edges, "clusters": clusters, "groups": groups,
-            "selected": selected, "n_entities": len(g.entities), "n_matched": n_matched, "n_context": len(context),
-            "n_nodes": len(shown), "n_pool": len(pool), "n_edges": len(draw_edges), "n_links": graph.n_links,
-            "n_dangling": graph.n_dangling, "capped": len(pool) > len(shown), "width": width, "height": height,
-            "grid_rows": grid_rows, "focus_note": focus_note,
-            "focus_title": titles.get(focus) if focus else None,
-            "clear_focus_href": _url(case.id, params, focus="", depth=0, sel="") if focus else None,
-            "empty_links": None if graph.n_links else gap(
-                "R6", "Links between entities: ontology relations, including links a rule derives from a shared "
-                      "value, each with the value it was read through. Until then the entities are grouped by class.",
-                "entities.jsonl links[] · ontology.json relations[]")}
+    selected = (
+        _selected(case, a, g, domain, sel, graph, cl_by_id, rmeta, titles, idents, params, rq, depth) if sel else None
+    )
+    return {
+        **base,
+        "backend": g.inference_backend,
+        "empty": None,
+        "classes": classes,
+        "relations": relations,
+        "signals": signals,
+        "nodes": nodes,
+        "edges": edges,
+        "clusters": clusters,
+        "groups": groups,
+        "selected": selected,
+        "n_entities": len(g.entities),
+        "n_matched": n_matched,
+        "n_context": len(context),
+        "n_nodes": len(shown),
+        "n_pool": len(pool),
+        "n_edges": len(draw_edges),
+        "n_links": graph.n_links,
+        "n_dangling": graph.n_dangling,
+        "capped": len(pool) > len(shown),
+        "width": width,
+        "height": height,
+        "grid_rows": grid_rows,
+        "focus_note": focus_note,
+        "focus_title": titles.get(focus) if focus else None,
+        "clear_focus_href": _url(case.id, params, focus="", depth=0, sel="") if focus else None,
+        "empty_links": None
+        if graph.n_links
+        else gap(
+            "R6",
+            "Links between entities: ontology relations, including links a rule derives from a shared "
+            "value, each with the value it was read through. Until then the entities are grouped by class.",
+            "entities.jsonl links[] · ontology.json relations[]",
+        ),
+    }
 
 
 def _value_view(case, a, g, domain, vid: str, titles: dict, rq: str) -> dict:
@@ -555,34 +808,70 @@ def _value_view(case, a, g, domain, vid: str, titles: dict, rq: str) -> dict:
     if ref is None:
         return {"value_id": vid, "found": False, "lineage_href": None, "evidence": []}
     f = ref.data
-    return {"value_id": vid, "found": True, "prop": ref.prop, "prop_label": domain.prop_label(ref.prop),
-            "value": f.get("value"), "status": f.get("status"), "state": value_state(f),
-            "entity_id": ref.entity_id, "entity_title": titles.get(ref.entity_id, ref.entity_id),
-            "entity_href": f"/cases/{case.id}/entities/{q(ref.entity_id)}{rq}#p-{ref.prop}",
-            "lineage_href": f"/cases/{case.id}/lineage/{q(vid)}{rq}",
-            "evidence": [evidence_view(case.id, a, ev) for ev in (f.get("evidence") or [])[:3]]}
+    return {
+        "value_id": vid,
+        "found": True,
+        "prop": ref.prop,
+        "prop_label": domain.prop_label(ref.prop),
+        "value": f.get("value"),
+        "status": f.get("status"),
+        "state": value_state(f),
+        "entity_id": ref.entity_id,
+        "entity_title": titles.get(ref.entity_id, ref.entity_id),
+        "entity_href": f"/cases/{case.id}/entities/{q(ref.entity_id)}{rq}#p-{ref.prop}",
+        "lineage_href": f"/cases/{case.id}/lineage/{q(vid)}{rq}",
+        "evidence": [evidence_view(case.id, a, ev) for ev in (f.get("evidence") or [])[:3]],
+    }
 
 
 def _selected(case, a, g, domain, sel, graph, clusters, rmeta, titles, idents, params, rq, depth) -> dict:
     if sel in graph.edges:
         ed = graph.edges[sel]
         r = rmeta.get(ed["relation"], {})
-        return {"kind": "edge", "id": sel, "relation": ed["relation"],
-                "label": r.get("label") or humanize(ed["relation"]), "symmetric": ed["symmetric"],
-                "rule_text": r.get("rule_text"), "n_links": ed["n_links"],
-                "ends": [{"entity_id": x, "title": titles[x], "href": f"/cases/{case.id}/entities/{q(x)}{rq}",
-                          "sel_href": _url(case.id, params, sel=x)} for x in (ed["source"], ed["target"])],
-                "vias": [_value_view(case, a, g, domain, v, titles, rq) for v in ed["via_value_ids"][:6]],
-                "empty_via": None if ed["via_value_ids"] else gap(None, "The value this link was read through.",
-                                                                  "entities.jsonl links[].via_value_id")}
+        return {
+            "kind": "edge",
+            "id": sel,
+            "relation": ed["relation"],
+            "label": r.get("label") or humanize(ed["relation"]),
+            "symmetric": ed["symmetric"],
+            "rule_text": r.get("rule_text"),
+            "n_links": ed["n_links"],
+            "ends": [
+                {
+                    "entity_id": x,
+                    "title": titles[x],
+                    "href": f"/cases/{case.id}/entities/{q(x)}{rq}",
+                    "sel_href": _url(case.id, params, sel=x),
+                }
+                for x in (ed["source"], ed["target"])
+            ],
+            "vias": [_value_view(case, a, g, domain, v, titles, rq) for v in ed["via_value_ids"][:6]],
+            "empty_via": None
+            if ed["via_value_ids"]
+            else gap(None, "The value this link was read through.", "entities.jsonl links[].via_value_id"),
+        }
     if sel in clusters:
         c = clusters[sel]
-        return {"kind": "cluster", "id": sel, "relation_label": c["relation_label"], "value": c["value"],
-                "prop_label": c["prop_label"], "expanded": c["expanded"], "toggle_href": c["toggle_href"],
-                "members": [{"entity_id": x, "title": titles[x], "href": f"/cases/{case.id}/entities/{q(x)}{rq}",
-                             "sel_href": _url(case.id, params, sel=x)} for x in c["members"]],
-                "vias": [_value_view(case, a, g, domain, v, titles, rq) for v in c["via_value_ids"][:4]],
-                "n_vias": len(c["via_value_ids"])}
+        return {
+            "kind": "cluster",
+            "id": sel,
+            "relation_label": c["relation_label"],
+            "value": c["value"],
+            "prop_label": c["prop_label"],
+            "expanded": c["expanded"],
+            "toggle_href": c["toggle_href"],
+            "members": [
+                {
+                    "entity_id": x,
+                    "title": titles[x],
+                    "href": f"/cases/{case.id}/entities/{q(x)}{rq}",
+                    "sel_href": _url(case.id, params, sel=x),
+                }
+                for x in c["members"]
+            ],
+            "vias": [_value_view(case, a, g, domain, v, titles, rq) for v in c["via_value_ids"][:4]],
+            "n_vias": len(c["via_value_ids"]),
+        }
     e = g.entities_by_id.get(sel)
     if e is None:
         return {"kind": "missing", "id": sel}
@@ -593,28 +882,54 @@ def _selected(case, a, g, domain, sel, graph, clusters, rmeta, titles, idents, p
     for p in sorted(props, key=lambda p: (not p.dod, p.order))[:6]:
         f = values.get(p.id) if isinstance(values.get(p.id), dict) else None
         ev = [evidence_view(case.id, a, x, with_meta=False) for x in (f or {}).get("evidence") or []][:1]
-        rows.append({"id": p.id, "label": p.label, "dod": p.dod, "value": (f or {}).get("value"),
-                     "state": value_state(f), "evidence": ev,
-                     "lineage_href": f"/cases/{case.id}/lineage/{q(f['value_id'])}{rq}" if f and f.get("value_id")
-                     else None})
+        rows.append(
+            {
+                "id": p.id,
+                "label": p.label,
+                "dod": p.dod,
+                "value": (f or {}).get("value"),
+                "state": value_state(f),
+                "evidence": ev,
+                "lineage_href": f"/cases/{case.id}/lineage/{q(f['value_id'])}{rq}" if f and f.get("value_id") else None,
+            }
+        )
     links = []
     for ed in graph.edges.values():
         if sel not in (ed["source"], ed["target"]):
             continue
         other = ed["target"] if ed["source"] == sel else ed["source"]
-        links.append({"label": rmeta.get(ed["relation"], {}).get("label") or humanize(ed["relation"]),
-                      "direction": "—" if ed["symmetric"] else ("→" if ed["source"] == sel else "←"),
-                      "title": titles[other], "href": f"/cases/{case.id}/entities/{q(other)}{rq}",
-                      "sel_href": _url(case.id, params, sel=ed["id"])})
+        links.append(
+            {
+                "label": rmeta.get(ed["relation"], {}).get("label") or humanize(ed["relation"]),
+                "direction": "—" if ed["symmetric"] else ("→" if ed["source"] == sel else "←"),
+                "title": titles[other],
+                "href": f"/cases/{case.id}/entities/{q(other)}{rq}",
+                "sel_href": _url(case.id, params, sel=ed["id"]),
+            }
+        )
     links.sort(key=lambda x: (x["label"], x["title"]))
-    flags = [{"rule_id": fl.get("rule_id"), "label": fl.get("label") or d.rule(str(fl.get("rule_id") or ""))["label"],
-              "explanation": fl.get("explanation")} for fl in e.get("flags") or [] if isinstance(fl, dict)]
-    return {"kind": "entity", "id": sel, "title": titles[sel],
-            "identifier": idents[sel] if str(idents[sel] or "") != titles[sel] else None,
-            "class_label": d.class_label(cls) if cls in d.classes else humanize(cls),
-            "href": f"/cases/{case.id}/entities/{q(sel)}{rq}",
-            "focus_href": _url(case.id, {**params, "cls": "", "signal": "", "q": ""}, focus=sel, depth=depth, sel=sel),
-            "props": rows, "links": links[:20], "n_links": len(links), "flags": flags}
+    flags = [
+        {
+            "rule_id": fl.get("rule_id"),
+            "label": fl.get("label") or d.rule(str(fl.get("rule_id") or ""))["label"],
+            "explanation": fl.get("explanation"),
+        }
+        for fl in e.get("flags") or []
+        if isinstance(fl, dict)
+    ]
+    return {
+        "kind": "entity",
+        "id": sel,
+        "title": titles[sel],
+        "identifier": idents[sel] if str(idents[sel] or "") != titles[sel] else None,
+        "class_label": d.class_label(cls) if cls in d.classes else humanize(cls),
+        "href": f"/cases/{case.id}/entities/{q(sel)}{rq}",
+        "focus_href": _url(case.id, {**params, "cls": "", "signal": "", "q": ""}, focus=sel, depth=depth, sel=sel),
+        "props": rows,
+        "links": links[:20],
+        "n_links": len(links),
+        "flags": flags,
+    }
 
 
 def install(ctx: VizContext) -> None:
@@ -625,14 +940,36 @@ def install(ctx: VizContext) -> None:
         return graph_model(ctx.get_case(case_id), run, cls, rel, signal, q_, focus, depth, limit, sel, expand)
 
     @app.get("/cases/{case_id}/graph", response_class=HTMLResponse)
-    def graph_page(request: Request, case_id: str, run: str | None = None, cls: str = "", rel: str = "",
-                   signal: str = "", q: str = "", focus: str = "", depth: int = 1, limit: int = DEFAULT_LIMIT,
-                   sel: str = "", expand: str = ""):
+    def graph_page(
+        request: Request,
+        case_id: str,
+        run: str | None = None,
+        cls: str = "",
+        rel: str = "",
+        signal: str = "",
+        q: str = "",
+        focus: str = "",
+        depth: int = 1,
+        limit: int = DEFAULT_LIMIT,
+        sel: str = "",
+        expand: str = "",
+    ):
         case = ctx.get_case(case_id)
         m = graph_model(case, run, cls, rel, signal, q, focus, depth, limit, sel, expand)
         return render(request, "viz/graph.html", nav="graph", case=case, m=m, backend=m["backend"])
 
     @app.get("/cases/{case_id}/api/viz/graph")
-    def graph_api(case_id: str, run: str | None = None, cls: str = "", rel: str = "", signal: str = "", q: str = "",
-                  focus: str = "", depth: int = 1, limit: int = DEFAULT_LIMIT, sel: str = "", expand: str = "") -> dict:
+    def graph_api(
+        case_id: str,
+        run: str | None = None,
+        cls: str = "",
+        rel: str = "",
+        signal: str = "",
+        q: str = "",
+        focus: str = "",
+        depth: int = 1,
+        limit: int = DEFAULT_LIMIT,
+        sel: str = "",
+        expand: str = "",
+    ) -> dict:
         return _model(case_id, run, cls, rel, signal, q, focus, depth, limit, sel, expand)

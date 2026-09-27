@@ -22,64 +22,222 @@ LAKE_CASE = "fixture-libraries"
 
 NULLABLE_STR = {"type": ["string", "null"]}
 NUM = {"type": ["number", "null"]}
-STRIP = {"type": "object", "required": ["state", "title", "detail", "href"],
-         "properties": {"state": {"enum": ["need", "run", "pause", "block", "quar", "done", "none"]},
-                        "title": {"type": "string"}, "href": NULLABLE_STR}}
-RUN_SCHEMA = {"type": "object",
-              "required": ["run_id", "state", "phase", "checkpoint", "reason", "started_at", "ended_at", "duration_s",
-                           "duration", "n_steps", "has_feed", "stop", "pauses", "resumes", "pause_basis", "n_decisions",
-                           "runner_events", "href"],
-              "properties": {"run_id": {"type": "string"}, "stop": {"type": "array", "items": {"type": "string"}},
-                             "pauses": {"type": "integer", "minimum": 0}, "resumes": {"type": "integer", "minimum": 0},
-                             "n_steps": {"type": "integer"}, "duration_s": NUM}}
-CRITERION = {"type": "object", "required": ["criterion_id", "label", "query", "actual", "target", "met", "mock", "v", "t", "state"],
-             "properties": {"met": {"type": ["boolean", "null"]}, "mock": {"type": "boolean"},
-                            "v": {"type": "number", "minimum": 0, "maximum": 100},
-                            "state": {"enum": ["done", "run", "pause"]}}}
-PROP = {"type": "object", "required": ["id", "label", "ratio", "pct", "missing", "v"],
-        "properties": {"ratio": {"type": "number", "minimum": 0, "maximum": 1}, "pct": {"type": "string"}}}
-RECEIPT = {"type": "object",
-           "required": ["value_id", "entity_id", "entity_title", "entity_href", "prop", "prop_label", "value", "status",
-                        "state", "why", "n_sources", "sources", "evidence", "lineage_href"],
-           "properties": {"lineage_href": {"type": "string", "pattern": "^/cases/[^/]+/lineage/"},
-                          "state": {"enum": ["gold", "weak", "conflict", "missing"]},
-                          "evidence": {"oneOf": [{"type": "null"}, {
-                              "type": "object", "required": ["host", "url", "captured_at", "source_id", "screenshot_href"]}]}}}
+STRIP = {
+    "type": "object",
+    "required": ["state", "title", "detail", "href"],
+    "properties": {
+        "state": {"enum": ["need", "run", "pause", "block", "quar", "done", "none"]},
+        "title": {"type": "string"},
+        "href": NULLABLE_STR,
+    },
+}
+RUN_SCHEMA = {
+    "type": "object",
+    "required": [
+        "run_id",
+        "state",
+        "phase",
+        "checkpoint",
+        "reason",
+        "started_at",
+        "ended_at",
+        "duration_s",
+        "duration",
+        "n_steps",
+        "has_feed",
+        "stop",
+        "pauses",
+        "resumes",
+        "pause_basis",
+        "n_decisions",
+        "runner_events",
+        "href",
+    ],
+    "properties": {
+        "run_id": {"type": "string"},
+        "stop": {"type": "array", "items": {"type": "string"}},
+        "pauses": {"type": "integer", "minimum": 0},
+        "resumes": {"type": "integer", "minimum": 0},
+        "n_steps": {"type": "integer"},
+        "duration_s": NUM,
+    },
+}
+CRITERION = {
+    "type": "object",
+    "required": ["criterion_id", "label", "query", "actual", "target", "met", "mock", "v", "t", "state"],
+    "properties": {
+        "met": {"type": ["boolean", "null"]},
+        "mock": {"type": "boolean"},
+        "v": {"type": "number", "minimum": 0, "maximum": 100},
+        "state": {"enum": ["done", "run", "pause"]},
+    },
+}
+PROP = {
+    "type": "object",
+    "required": ["id", "label", "ratio", "pct", "missing", "v"],
+    "properties": {"ratio": {"type": "number", "minimum": 0, "maximum": 1}, "pct": {"type": "string"}},
+}
+RECEIPT = {
+    "type": "object",
+    "required": [
+        "value_id",
+        "entity_id",
+        "entity_title",
+        "entity_href",
+        "prop",
+        "prop_label",
+        "value",
+        "status",
+        "state",
+        "why",
+        "n_sources",
+        "sources",
+        "evidence",
+        "lineage_href",
+    ],
+    "properties": {
+        "lineage_href": {"type": "string", "pattern": "^/cases/[^/]+/lineage/"},
+        "state": {"enum": ["gold", "weak", "conflict", "missing"]},
+        "evidence": {
+            "oneOf": [
+                {"type": "null"},
+                {"type": "object", "required": ["host", "url", "captured_at", "source_id", "screenshot_href"]},
+            ]
+        },
+    },
+}
 SUMMARY = {
     "type": "object",
-    "required": ["case_id", "case_title", "question", "run_id", "runs", "gold_run_ids", "live", "so_far", "backend", "mock",
-                 "primary_class", "run", "produced", "completeness", "failures", "cost", "receipts", "next", "plain",
-                 "sources", "json_href", "empty", "receipts_empty", "next_empty"],
+    "required": [
+        "case_id",
+        "case_title",
+        "question",
+        "run_id",
+        "runs",
+        "gold_run_ids",
+        "live",
+        "so_far",
+        "backend",
+        "mock",
+        "primary_class",
+        "run",
+        "produced",
+        "completeness",
+        "failures",
+        "cost",
+        "receipts",
+        "next",
+        "plain",
+        "sources",
+        "json_href",
+        "empty",
+        "receipts_empty",
+        "next_empty",
+    ],
     "properties": {
-        "run_id": NULLABLE_STR, "so_far": {"type": "boolean"}, "mock": {"type": "boolean"},
+        "run_id": NULLABLE_STR,
+        "so_far": {"type": "boolean"},
+        "mock": {"type": "boolean"},
         "live": {"type": "object", "required": ["on", "updated_at", "poll_ms"]},
         "run": {"oneOf": [{"type": "null"}, RUN_SCHEMA]},
-        "produced": {"type": "object",
-                     "required": ["basis", "entities_by_class", "n_entities", "n_values", "sources", "n_sources",
-                                  "source_classes", "n_source_classes", "n_sources_touched", "n_pages", "n_screenshots",
-                                  "n_cells", "n_steps", "pages_href", "entities_href"],
-                     "properties": {k: {"type": "integer", "minimum": 0} for k in (
-                         "n_entities", "n_values", "n_sources", "n_source_classes", "n_pages", "n_cells", "n_steps")}},
-        "completeness": {"type": "object",
-                         "required": ["basis", "mock", "criteria", "n_met", "props", "primary_label", "n_primary",
-                                      "meeting", "threshold", "href", "empty"],
-                         "properties": {"criteria": {"type": "array", "items": CRITERION},
-                                        "props": {"type": "array", "items": PROP}}},
-        "failures": {"type": "object",
-                     "required": ["n", "reasons", "n_reasons", "dropped", "contained", "n_contained", "jobs",
-                                  "jobs_all_pass", "href", "empty"],
-                     "properties": {"reasons": {"type": "array", "maxItems": 6, "items": {
-                         "type": "object", "required": ["kind", "label", "state", "n", "example", "contained"]}},
-                         "contained": {"type": "object",
-                                       "required": ["quarantines", "limit_kills", "blocked_domains", "gates"]}}},
-        "cost": {"type": "object",
-                 "required": ["usd_total", "usd_text", "basis", "has_cost", "by_phase", "by_model", "n_values",
-                              "per_value", "per_value_text", "per_entity", "per_entity_text", "budget_usd", "burn",
-                              "inference", "href", "empty"],
-                 "properties": {"inference": {"type": "object", "required": ["mounted", "n_calls", "pct_vultr",
-                                                                             "unattributed", "n_model_steps", "text", "href"]},
-                                "by_phase": {"type": "array", "items": {"type": "object",
-                                                                        "required": ["name", "usd", "usd_text", "steps"]}}}},
+        "produced": {
+            "type": "object",
+            "required": [
+                "basis",
+                "entities_by_class",
+                "n_entities",
+                "n_values",
+                "sources",
+                "n_sources",
+                "source_classes",
+                "n_source_classes",
+                "n_sources_touched",
+                "n_pages",
+                "n_screenshots",
+                "n_cells",
+                "n_steps",
+                "pages_href",
+                "entities_href",
+            ],
+            "properties": {
+                k: {"type": "integer", "minimum": 0}
+                for k in ("n_entities", "n_values", "n_sources", "n_source_classes", "n_pages", "n_cells", "n_steps")
+            },
+        },
+        "completeness": {
+            "type": "object",
+            "required": [
+                "basis",
+                "mock",
+                "criteria",
+                "n_met",
+                "props",
+                "primary_label",
+                "n_primary",
+                "meeting",
+                "threshold",
+                "href",
+                "empty",
+            ],
+            "properties": {
+                "criteria": {"type": "array", "items": CRITERION},
+                "props": {"type": "array", "items": PROP},
+            },
+        },
+        "failures": {
+            "type": "object",
+            "required": [
+                "n",
+                "reasons",
+                "n_reasons",
+                "dropped",
+                "contained",
+                "n_contained",
+                "jobs",
+                "jobs_all_pass",
+                "href",
+                "empty",
+            ],
+            "properties": {
+                "reasons": {
+                    "type": "array",
+                    "maxItems": 6,
+                    "items": {"type": "object", "required": ["kind", "label", "state", "n", "example", "contained"]},
+                },
+                "contained": {"type": "object", "required": ["quarantines", "limit_kills", "blocked_domains", "gates"]},
+            },
+        },
+        "cost": {
+            "type": "object",
+            "required": [
+                "usd_total",
+                "usd_text",
+                "basis",
+                "has_cost",
+                "by_phase",
+                "by_model",
+                "n_values",
+                "per_value",
+                "per_value_text",
+                "per_entity",
+                "per_entity_text",
+                "budget_usd",
+                "burn",
+                "inference",
+                "href",
+                "empty",
+            ],
+            "properties": {
+                "inference": {
+                    "type": "object",
+                    "required": ["mounted", "n_calls", "pct_vultr", "unattributed", "n_model_steps", "text", "href"],
+                },
+                "by_phase": {
+                    "type": "array",
+                    "items": {"type": "object", "required": ["name", "usd", "usd_text", "steps"]},
+                },
+            },
+        },
         "receipts": {"type": "array", "maxItems": 6, "items": RECEIPT},
         "next": {"type": "array", "items": STRIP},
         "plain": {"type": "string"},
@@ -102,8 +260,13 @@ def _write_jsonl(path, rows):
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
-def build_recorded_run(cases_dir, rid: str = "run-libraries-0002", backend: str = "vultr", state: str = "done",
-                       updated_at: str | None = None) -> str:
+def build_recorded_run(
+    cases_dir,
+    rid: str = "run-libraries-0002",
+    backend: str = "vultr",
+    state: str = "done",
+    updated_at: str | None = None,
+) -> str:
     """Copy the fixture run to a new run id (live feed + gold export) with live inference, a reason it stopped, a
     conflict kept, a membership boolean and a value backed by two sources."""
     lake = cases_dir.joinpath(*LAKE)
@@ -124,12 +287,27 @@ def build_recorded_run(cases_dir, rid: str = "run-libraries-0002", backend: str 
     libs = [e for e in ents if e["class"] == "library"]
     hours = libs[0]["properties"]["opening_hours"]
     ev = hours["evidence"][0]
-    hours.update(status="conflict", evidence=[ev, {**ev, "source_id": "registry-example", "url": "https://bibliotecas-registro.example/x"}])
+    hours.update(
+        status="conflict",
+        evidence=[ev, {**ev, "source_id": "registry-example", "url": "https://bibliotecas-registro.example/x"}],
+    )
     name = libs[2]["properties"]["name"]
-    name["evidence"] = [*name["evidence"], {**name["evidence"][0], "source_id": "website-example",
-                                            "source_type": "library_website", "url": "https://web.example/lib-3"}]
-    libs[1]["properties"]["in_network"] = {"value_id": "val:lib-002-in_network", "value": True, "confidence": 0.9,
-                                           "status": "gold", "evidence": [dict(libs[1]["properties"]["name"]["evidence"][0])]}
+    name["evidence"] = [
+        *name["evidence"],
+        {
+            **name["evidence"][0],
+            "source_id": "website-example",
+            "source_type": "library_website",
+            "url": "https://web.example/lib-3",
+        },
+    ]
+    libs[1]["properties"]["in_network"] = {
+        "value_id": "val:lib-002-in_network",
+        "value": True,
+        "confidence": 0.9,
+        "status": "gold",
+        "evidence": [dict(libs[1]["properties"]["name"]["evidence"][0])],
+    }
     _write_jsonl(ents_path, ents)
     return rid
 
@@ -137,16 +315,33 @@ def build_recorded_run(cases_dir, rid: str = "run-libraries-0002", backend: str 
 def runner_env(tmp_path, rid: str) -> dict:
     root = tmp_path / "runner"
     root.mkdir(exist_ok=True)
-    events = [{"ts": "2026-09-26T18:05:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "started"},
-              {"ts": "2026-09-26T18:06:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "paused_at_checkpoint",
-               "detail": "prd"},
-              {"ts": "2026-09-26T18:20:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "resumed"},
-              {"ts": "2026-09-26T18:21:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "paused_at_checkpoint",
-               "detail": "ontology"},
-              {"ts": "2026-09-26T18:25:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "resumed"},
-              {"ts": "2026-09-26T18:40:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "done",
-               "detail": "all criteria met"},
-              {"ts": "2026-09-26T18:41:00+00:00", "case_id": "parks", "run_id": rid, "kind": "failed"}]
+    events = [
+        {"ts": "2026-09-26T18:05:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "started"},
+        {
+            "ts": "2026-09-26T18:06:00+00:00",
+            "case_id": "libraries",
+            "run_id": rid,
+            "kind": "paused_at_checkpoint",
+            "detail": "prd",
+        },
+        {"ts": "2026-09-26T18:20:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "resumed"},
+        {
+            "ts": "2026-09-26T18:21:00+00:00",
+            "case_id": "libraries",
+            "run_id": rid,
+            "kind": "paused_at_checkpoint",
+            "detail": "ontology",
+        },
+        {"ts": "2026-09-26T18:25:00+00:00", "case_id": "libraries", "run_id": rid, "kind": "resumed"},
+        {
+            "ts": "2026-09-26T18:40:00+00:00",
+            "case_id": "libraries",
+            "run_id": rid,
+            "kind": "done",
+            "detail": "all criteria met",
+        },
+        {"ts": "2026-09-26T18:41:00+00:00", "case_id": "parks", "run_id": rid, "kind": "failed"},
+    ]
     _write_jsonl(root / "events.jsonl", events)
     return {"ONTOFILL_RUNNER_STATE": str(root)}
 
@@ -170,7 +365,9 @@ def test_summary_json_schema_both_cases(client):
     assert m["produced"]["n_values"] > 0 and m["produced"]["n_pages"] > 0 and m["produced"]["n_cells"] >= 1
     assert all(c["mock"] and c["met"] is False for c in m["completeness"]["criteria"])  # recorded never counts
     assert m["failures"]["n_contained"] >= 2 and m["failures"]["contained"]["quarantines"] >= 1
-    assert all(x["example"] and x["example"]["href"].startswith("/cases/libraries/runs/") for x in m["failures"]["reasons"])
+    assert all(
+        x["example"] and x["example"]["href"].startswith("/cases/libraries/runs/") for x in m["failures"]["reasons"]
+    )
     assert m["cost"]["has_cost"] and m["cost"]["usd_total"] > 0
     assert m["cost"]["inference"]["mounted"] is False and "gateway log not mounted" in m["cost"]["inference"]["text"]
     assert 3 <= len(m["receipts"]) <= 6
@@ -184,13 +381,26 @@ def test_numbers_in_html_match_json(client):
     assert "built-in method" not in body and "Undefined" not in body
     text = page_text(body)
     p, c, f, k, r = m["produced"], m["completeness"], m["failures"], m["cost"], m["run"]
-    for needle in (m["question"].split("\n")[0], r["run_id"], r["duration"], f"{r['n_steps']} steps", r["started"],
-                   f"entities {p['n_entities']}", f"gold values {p['n_values']}", f"sources used {p['n_sources']}",
-                   f"pages captured {p['n_pages']}", f"cells run {p['n_cells']}",
-                   f"{c['n_met']} of {len(c['criteria'])} met",
-                   f"quarantined {f['contained']['quarantines']}", f"limit kills {f['contained']['limit_kills']}",
-                   f"total {k['usd_text']}", f"per gold value {k['per_value_text']}",
-                   f"per entity meeting the DoD {k['per_entity_text']}", "gateway log not mounted", "does not count"):
+    for needle in (
+        m["question"].split("\n")[0],
+        r["run_id"],
+        r["duration"],
+        f"{r['n_steps']} steps",
+        r["started"],
+        f"entities {p['n_entities']}",
+        f"gold values {p['n_values']}",
+        f"sources used {p['n_sources']}",
+        f"pages captured {p['n_pages']}",
+        f"cells run {p['n_cells']}",
+        f"{c['n_met']} of {len(c['criteria'])} met",
+        f"quarantined {f['contained']['quarantines']}",
+        f"limit kills {f['contained']['limit_kills']}",
+        f"total {k['usd_text']}",
+        f"per gold value {k['per_value_text']}",
+        f"per entity meeting the DoD {k['per_entity_text']}",
+        "gateway log not mounted",
+        "does not count",
+    ):
         assert needle in text, needle
     for x in c["criteria"]:
         assert f"{x['actual']} / {x['target']}" in text, x
@@ -280,7 +490,11 @@ def test_recorded_run_built_in_tmp(cases_dir, tmp_path):
     assert any(s.startswith("runner: done") and "all criteria met" in s for s in run["stop"])
     assert all(e["kind"] != "failed" for e in run["runner_events"])  # another case's event stays out
     crit = m["completeness"]["criteria"]
-    assert crit and all(x["mock"] is False for x in crit) and m["completeness"]["n_met"] == sum(1 for x in crit if x["met"])
+    assert (
+        crit
+        and all(x["mock"] is False for x in crit)
+        and m["completeness"]["n_met"] == sum(1 for x in crit if x["met"])
+    )
     # receipts: the two-source value first, one conflict kept, one membership boolean
     rec = m["receipts"]
     assert 3 <= len(rec) <= 6
@@ -302,8 +516,9 @@ def test_recorded_run_built_in_tmp(cases_dir, tmp_path):
 
 
 def test_live_run_numbers_are_labelled_so_far(cases_dir):
-    rid = build_recorded_run(cases_dir, "run-libraries-0003", state="running",
-                             updated_at=datetime.now(UTC).isoformat(timespec="seconds"))
+    rid = build_recorded_run(
+        cases_dir, "run-libraries-0003", state="running", updated_at=datetime.now(UTC).isoformat(timespec="seconds")
+    )
     c = client_for(cases_dir)
     m = c.get(f"/cases/libraries/api/viz/summary?run={rid}").json()
     assert m["so_far"] is True and m["live"]["on"] is True and m["run"]["state"] == "running"

@@ -136,14 +136,16 @@ def spend_history_latest() -> dict | None:
     return latest
 
 
-def shares(rows: list[dict], key: str, limit: int = 6, colours: dict | None = None, keep_order: bool = False) -> list[dict]:
+def shares(
+    rows: list[dict], key: str, limit: int = 6, colours: dict | None = None, keep_order: bool = False
+) -> list[dict]:
     """Rows sorted by `key` desc (or kept in order), the tail folded into 'other', each with `share` (0..1) and a
     colour token."""
     rows = [r for r in rows if (r.get(key) or 0) > 0]
     if not keep_order:
         rows.sort(key=lambda r: -(r.get(key) or 0))
     if len(rows) > limit:
-        head, tail = rows[: limit - 1], rows[limit - 1:]
+        head, tail = rows[: limit - 1], rows[limit - 1 :]
         other = {"name": f"other ({len(tail)})", key: sum(r.get(key) or 0 for r in tail), "other": True}
         for k in ("steps", "input_tokens", "output_tokens", "calls", "usd"):
             if k != key and any(k in r for r in tail):

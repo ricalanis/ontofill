@@ -34,8 +34,10 @@ _FAIL_WORDS = ("fail", "captcha", "timeout", "error", "refused")
 
 
 def _text(step: dict) -> str:
-    return " ".join(json.dumps(step.get(k)) if isinstance(step.get(k), (dict, list)) else str(step.get(k) or "")
-                    for k in ("requested", "executed", "evaluated")).lower()
+    return " ".join(
+        json.dumps(step.get(k)) if isinstance(step.get(k), (dict, list)) else str(step.get(k) or "")
+        for k in ("requested", "executed", "evaluated")
+    ).lower()
 
 
 def _evaluated(step: dict) -> str:
@@ -61,8 +63,12 @@ def step_kind(step: dict) -> str | None:
         return "loop"
     req = step.get("requested") if isinstance(step.get("requested"), dict) else {}
     evald = step.get("evaluated") if isinstance(step.get("evaluated"), dict) else {}
-    if ev == "verify" or isinstance(step.get("verify"), dict) or "vision" in str(req.get("tool") or "") \
-            or "verdict" in evald:
+    if (
+        ev == "verify"
+        or isinstance(step.get("verify"), dict)
+        or "vision" in str(req.get("tool") or "")
+        or "verdict" in evald
+    ):
         return "verify"
     if ev == "repair" or isinstance(step.get("repair"), dict):
         return "repair"
@@ -82,29 +88,50 @@ def _details(s: dict, kind: str) -> dict:
     if kind == "verify":
         v = s.get("verify") if isinstance(s.get("verify"), dict) else evald
         verdict = str(v.get("verdict") or v.get("status") or "uncertain").lower()
-        return {"verdict": VERDICT_ALIASES.get(verdict, verdict), "confidence": v.get("confidence"),
-                "backend": v.get("backend"), "model": v.get("model"), "goal": v.get("goal"),
-                "reason": v.get("reason") or evald.get("reason"),  # the controller puts the verifier's reason there
-                "screenshot_key": v.get("screenshot_key") or s.get("screenshot_key")}
+        return {
+            "verdict": VERDICT_ALIASES.get(verdict, verdict),
+            "confidence": v.get("confidence"),
+            "backend": v.get("backend"),
+            "model": v.get("model"),
+            "goal": v.get("goal"),
+            "reason": v.get("reason") or evald.get("reason"),  # the controller puts the verifier's reason there
+            "screenshot_key": v.get("screenshot_key") or s.get("screenshot_key"),
+        }
     if kind == "repair":
         r = s.get("repair") if isinstance(s.get("repair"), dict) else {}
-        return {"attempt": r.get("attempt") or evald.get("attempt"), "max_attempts": r.get("max_attempts"),
-                "result": r.get("result") or evald.get("status"),
-                "stderr": r.get("stderr_excerpt") or ex.get("stderr"), "diff_key": r.get("diff_key"),
-                "code_key": r.get("code_key"), "patch": ex.get("diff") or ex.get("patch"), "test": r.get("test") or {}}
+        return {
+            "attempt": r.get("attempt") or evald.get("attempt"),
+            "max_attempts": r.get("max_attempts"),
+            "result": r.get("result") or evald.get("status"),
+            "stderr": r.get("stderr_excerpt") or ex.get("stderr"),
+            "diff_key": r.get("diff_key"),
+            "code_key": r.get("code_key"),
+            "patch": ex.get("diff") or ex.get("patch"),
+            "test": r.get("test") or {},
+        }
     if kind == "gate":
         g = s.get("gate") if isinstance(s.get("gate"), dict) else {}
-        return {"action": g.get("action"), "risk_tier": g.get("risk_tier"), "decided_by": g.get("decided_by"),
-                "outcome": g.get("outcome"), "approval_path": g.get("approval_path")}
+        return {
+            "action": g.get("action"),
+            "risk_tier": g.get("risk_tier"),
+            "decided_by": g.get("decided_by"),
+            "outcome": g.get("outcome"),
+            "approval_path": g.get("approval_path"),
+        }
     if kind == "kill":
         return {"reason": evald.get("reason") or ex.get("reason")}
     if kind == "loop":
         return _loop_details(s, evald, ex)
     if kind == "quarantine":
         sc = s.get("screen") if isinstance(s.get("screen"), dict) else {}
-        return {"jev_choice": sc.get("jev_choice"), "jev_confidence": sc.get("jev_confidence"),
-                "safety_verdict": sc.get("safety_verdict"), "reason": sc.get("reason"), "by": sc.get("by"),
-                "screenshot_key": s.get("screenshot_key")}
+        return {
+            "jev_choice": sc.get("jev_choice"),
+            "jev_confidence": sc.get("jev_confidence"),
+            "safety_verdict": sc.get("safety_verdict"),
+            "reason": sc.get("reason"),
+            "by": sc.get("by"),
+            "screenshot_key": s.get("screenshot_key"),
+        }
     return {}
 
 
@@ -118,8 +145,12 @@ def annotate(steps: list[dict]) -> list[dict]:
         if "event" not in s:
             parent = by_id.get(s.get("parent_step_id"))
             text = _text(s)
-            if parent and parent.get("phase") == 5 and _failed(parent) and \
-                    MODE_RANK.get(s.get("mode"), 0) > MODE_RANK.get(parent.get("mode"), 0):
+            if (
+                parent
+                and parent.get("phase") == 5
+                and _failed(parent)
+                and MODE_RANK.get(s.get("mode"), 0) > MODE_RANK.get(parent.get("mode"), 0)
+            ):
                 event = "escalation"  # a costlier mode after the cheaper one failed its check
             elif "crystalliz" in text or "code.promote" in text:
                 event = "crystallization"
@@ -135,8 +166,12 @@ def annotate(steps: list[dict]) -> list[dict]:
 
 # --- phase loops (CONTRACT v0.9.6) ---------------------------------------------------------------------------
 LOOP_ROLES = ("gather", "propose", "critique", "revise", "check", "decide")
-STOP_LABELS = {"checks_passed": "checks passed", "budget": "budget reached", "human": "a person decided",
-               "max_iterations": "iteration cap"}
+STOP_LABELS = {
+    "checks_passed": "checks passed",
+    "budget": "budget reached",
+    "human": "a person decided",
+    "max_iterations": "iteration cap",
+}
 
 
 def _loop_details(s: dict, evald: dict, ex: dict) -> dict:
@@ -147,14 +182,23 @@ def _loop_details(s: dict, evald: dict, ex: dict) -> dict:
     phase = lp.get("phase") if lp.get("phase") == "outer" else (lp.get("phase") or s.get("phase"))
     human = role == "revise" and (gen.get("backend") == "human" or evald.get("source") == "human")
     objections = [str(o) for o in lp.get("objections") or [] if str(o).strip()]
-    model = next((m for m in (lp.get("model"), usage.get("model"), None if human else gen.get("model"))
-                  if m and m != "none"), None)  # phase_loop writes model "none" for a stage without a model call
-    return {"phase": phase, "iteration": lp.get("iteration") if isinstance(lp.get("iteration"), int) else 1,
-            "role": role, "model": model,
-            "verdict": lp.get("verdict"), "objections": objections, "stop_reason": lp.get("stop_reason"),
-            "reopen": ex.get("reopen") if role == "decide" else None, "human": human,
-            "reason": evald.get("reason") or ex.get("reason"),
-            "usd": usage.get("est_usd") if isinstance(usage.get("est_usd"), (int, float)) else None}
+    model = next(
+        (m for m in (lp.get("model"), usage.get("model"), None if human else gen.get("model")) if m and m != "none"),
+        None,
+    )  # phase_loop writes model "none" for a stage without a model call
+    return {
+        "phase": phase,
+        "iteration": lp.get("iteration") if isinstance(lp.get("iteration"), int) else 1,
+        "role": role,
+        "model": model,
+        "verdict": lp.get("verdict"),
+        "objections": objections,
+        "stop_reason": lp.get("stop_reason"),
+        "reopen": ex.get("reopen") if role == "decide" else None,
+        "human": human,
+        "reason": evald.get("reason") or ex.get("reason"),
+        "usd": usage.get("est_usd") if isinstance(usage.get("est_usd"), (int, float)) else None,
+    }
 
 
 def is_reopen_marker(s: dict) -> bool:
@@ -182,8 +226,15 @@ def loop_threads(steps: list[dict]) -> list[dict]:
         if t is None or it < t["max_iteration"]:
             n = sum(1 for x in threads if x["phase"] == phase) + 1
             key = "outer" if phase == "outer" else f"p{phase}"
-            t = {"id": f"loop-{key}-{n}", "phase": phase, "first": idx, "last": idx, "max_iteration": it,
-                 "by_iteration": {}, "step_ids": []}
+            t = {
+                "id": f"loop-{key}-{n}",
+                "phase": phase,
+                "first": idx,
+                "last": idx,
+                "max_iteration": it,
+                "by_iteration": {},
+                "step_ids": [],
+            }
             threads.append(t)
             current[phase] = t
         t["last"], t["max_iteration"] = idx, max(t["max_iteration"], it)
@@ -205,8 +256,9 @@ def loop_threads(steps: list[dict]) -> list[dict]:
     return threads
 
 
-def stream_items(steps: list[dict], start: int = 0, threads: list[dict] | None = None,
-                 incremental: bool = False) -> tuple[list[dict], list[dict]]:
+def stream_items(
+    steps: list[dict], start: int = 0, threads: list[dict] | None = None, incremental: bool = False
+) -> tuple[list[dict], list[dict]]:
     """The step stream from index `start` on, newest first: loop steps folded into their thread (placed at the thread's
     first step at or after `start`), everything else as single steps. With `incremental` (the live poll, `start` = the
     steps the page already has), a thread that began before `start` is not placed again: it is returned in the second
@@ -233,14 +285,26 @@ def loop_summary(steps: list[dict], metrics: dict | None) -> dict:
     rows = []
     for row in (metrics or {}).get("loops") or []:
         if isinstance(row, dict):
-            rows.append({"phase": row.get("phase"), "iterations": row.get("iterations"),
-                         "stop_reason": row.get("stop_reason"),
-                         "stop_label": STOP_LABELS.get(row.get("stop_reason"), row.get("stop_reason")),
-                         "usd": row.get("usd")})
+            rows.append(
+                {
+                    "phase": row.get("phase"),
+                    "iterations": row.get("iterations"),
+                    "stop_reason": row.get("stop_reason"),
+                    "stop_label": STOP_LABELS.get(row.get("stop_reason"), row.get("stop_reason")),
+                    "usd": row.get("usd"),
+                }
+            )
     if not rows:
         for t in loop_threads(steps):
-            rows.append({"phase": t["phase"], "iterations": len(t["iterations"]), "stop_reason": t["stop_reason"],
-                         "stop_label": t["stop_label"], "usd": t["usd"]})
+            rows.append(
+                {
+                    "phase": t["phase"],
+                    "iterations": len(t["iterations"]),
+                    "stop_reason": t["stop_reason"],
+                    "stop_label": t["stop_label"],
+                    "usd": t["usd"],
+                }
+            )
     reopened: dict = {}
     for s in steps:
         if is_reopen_marker(s) and s["detail"].get("reopen") is not None:
@@ -252,8 +316,11 @@ def property_ratios(metrics: dict, domain: Domain | None) -> list[dict]:
     """Per-property completeness bars from metrics in §11 shape (or the pre-§11 per_field_completeness)."""
     if domain is None:
         return []
-    per = ((metrics.get("per_property_completeness") or {}).get(domain.primary_class)
-           or metrics.get("per_field_completeness") or {})
+    per = (
+        (metrics.get("per_property_completeness") or {}).get(domain.primary_class)
+        or metrics.get("per_field_completeness")
+        or {}
+    )
     return [{"name": p.id, "label": p.label, "ratio": per.get(p.id)} for p in domain.dod_props()]
 
 
@@ -269,8 +336,18 @@ def summarize(steps: list[dict], status: dict | None, domain: Domain | None = No
     """Everything the side panel shows, from the step stream plus status.json."""
     status = status or {}
     modes = {m: 0 for m in MODE_RANK}
-    events = {"escalation": 0, "crystallization": 0, "repair": 0, "hard_stop": 0, "failure": 0, "verify": 0,
-              "action_gate": 0, "limit_kill": 0, "quarantine": 0, "loop": 0}
+    events = {
+        "escalation": 0,
+        "crystallization": 0,
+        "repair": 0,
+        "hard_stop": 0,
+        "failure": 0,
+        "verify": 0,
+        "action_gate": 0,
+        "limit_kill": 0,
+        "quarantine": 0,
+        "loop": 0,
+    }
     verdicts = {"achieved": 0, "not_achieved": 0, "uncertain": 0}
     values = 0
     for s in steps:
@@ -279,8 +356,9 @@ def summarize(steps: list[dict], status: dict | None, domain: Domain | None = No
         if s.get("event") in events:
             events[s["event"]] += 1
         if s.get("kind") == "verify":
-            verdicts[(s.get("detail") or {}).get("verdict", "uncertain")] = \
+            verdicts[(s.get("detail") or {}).get("verdict", "uncertain")] = (
                 verdicts.get((s.get("detail") or {}).get("verdict", "uncertain"), 0) + 1
+            )
         values += len(s.get("value_ids") or [])
     phase = status.get("phase") or max((s.get("phase") or 1 for s in steps), default=1)
     metrics = status.get("metrics") or {}
@@ -311,9 +389,15 @@ CHECKPOINTS = [
     ("teardown", "Teardown", "Pod gone, no sandboxes left"),
     ("secrets", "Secret hygiene", "No keys in the pod; the metadata IP and the NetBird mesh are BLOCKED"),
 ]
-KILL_LABELS = {"timeout": "wall-clock timeout", "memory": "memory cap", "pids": "process cap",
-               "max_steps": "step cap", "steps": "step cap",
-               "browser_closed": "browser closed", "cdp_unreachable": "browser unreachable"}
+KILL_LABELS = {
+    "timeout": "wall-clock timeout",
+    "memory": "memory cap",
+    "pids": "process cap",
+    "max_steps": "step cap",
+    "steps": "step cap",
+    "browser_closed": "browser closed",
+    "cdp_unreachable": "browser unreachable",
+}
 LIMIT_REASONS = ("timeout", "memory", "pids", "max_steps", "steps")
 
 
@@ -348,9 +432,19 @@ def isolation_tier(runtime: str | None) -> dict | None:
     if any(k in r for k in ("firecracker", "kata", "microvm", "libkrun")):
         return {"tier": 4, "name": "microVM", "ok": True, "note": "own kernel; the VM is thrown away"}
     if "runsc" in r or "gvisor" in r:
-        return {"tier": 3, "name": "gVisor user-space kernel", "ok": True, "note": "syscalls intercepted; only the sandbox process can die"}
+        return {
+            "tier": 3,
+            "name": "gVisor user-space kernel",
+            "ok": True,
+            "note": "syscalls intercepted; only the sandbox process can die",
+        }
     if "runc" in r or "docker" in r:
-        return {"tier": 2, "name": "container (runc)", "ok": False, "note": "shared kernel: a container is not a sandbox"}
+        return {
+            "tier": 2,
+            "name": "container (runc)",
+            "ok": False,
+            "note": "shared kernel: a container is not a sandbox",
+        }
     return {"tier": None, "name": runtime, "ok": False, "note": "runtime not on the ladder"}
 
 
@@ -364,17 +458,38 @@ def proof(jobs: list[dict], steps: list[dict] | None = None) -> dict:
     featured = complete[-1] if complete else (jobs[-1] if jobs else None)
     runtime = (((featured or {}).get("checkpoints") or {}).get("host") or {}).get("runtime")
     kills = [s for s in steps or [] if s.get("event") == "limit_kill"]
-    killed = [{"job_id": j.get("job_id"), "reason": job_stop_reason(j), "limits": j.get("limits"),
-               "usage": j.get("usage")} for j in jobs if job_stop_reason(j)]
-    killed += [{"job_id": s.get("step_id"), "reason": _details(s, "kill")["reason"], "limits": None, "usage": None,
-                "source_id": s.get("source_id")} for s in kills]
-    return {"jobs": len(jobs), "counts": counts, "featured": featured, "recent": jobs[-8:][::-1],
-            "checkpoints": CHECKPOINTS, "state": checkpoint_state, "tier": isolation_tier(runtime),
-            "killed": killed[-5:][::-1], "killed_total": len(killed), "kill_labels": KILL_LABELS,
-            "with_limits": sum(1 for j in jobs if j.get("limits"))}
+    killed = [
+        {"job_id": j.get("job_id"), "reason": job_stop_reason(j), "limits": j.get("limits"), "usage": j.get("usage")}
+        for j in jobs
+        if job_stop_reason(j)
+    ]
+    killed += [
+        {
+            "job_id": s.get("step_id"),
+            "reason": _details(s, "kill")["reason"],
+            "limits": None,
+            "usage": None,
+            "source_id": s.get("source_id"),
+        }
+        for s in kills
+    ]
+    return {
+        "jobs": len(jobs),
+        "counts": counts,
+        "featured": featured,
+        "recent": jobs[-8:][::-1],
+        "checkpoints": CHECKPOINTS,
+        "state": checkpoint_state,
+        "tier": isolation_tier(runtime),
+        "killed": killed[-5:][::-1],
+        "killed_total": len(killed),
+        "kill_labels": KILL_LABELS,
+        "with_limits": sum(1 for j in jobs if j.get("limits")),
+    }
 
 
 # Replayer ------------------------------------------------------------------------------------------------------
+
 
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,9 +508,18 @@ def _ts(step: dict) -> float:
 class Replayer:
     """Replay a finished run from a file lake into the live feed of the same (or another) file lake."""
 
-    def __init__(self, root: Path, source_run_id: str | None = None, *, target_root: Path | None = None,
-                 case_id: str | None = None, new_run_id: str | None = None, duration: float = 45.0,
-                 speed: float | None = None, publish_gold: bool = True):
+    def __init__(
+        self,
+        root: Path,
+        source_run_id: str | None = None,
+        *,
+        target_root: Path | None = None,
+        case_id: str | None = None,
+        new_run_id: str | None = None,
+        duration: float = 45.0,
+        speed: float | None = None,
+        publish_gold: bool = True,
+    ):
         self.source = GoldStore(LocalSource(root), case_id)
         self.run = self.source.run(source_run_id)
         self.case_id = self.source.case_id
@@ -429,8 +553,11 @@ class Replayer:
         """Metrics as far as the replay has got, in §11 shape."""
         seen = []
         for e in self.run.entities:
-            props = {name: (v if v.get("value_id") in emitted else {**v, "status": "missing", "evidence": []})
-                     for name, v in (e.get("properties") or {}).items() if isinstance(v, dict)}
+            props = {
+                name: (v if v.get("value_id") in emitted else {**v, "status": "missing", "evidence": []})
+                for name, v in (e.get("properties") or {}).items()
+                if isinstance(v, dict)
+            }
             if any(v.get("value_id") in emitted for v in (e.get("properties") or {}).values() if isinstance(v, dict)):
                 seen.append({**e, "properties": props})
         m = dod.compute(seen, self.run.domain)
@@ -444,10 +571,14 @@ class Replayer:
                 for e in (v.get("evidence") if isinstance(v, dict) else None) or []:
                     types.setdefault(e.get("source_id"), e.get("source_type"))
         return {
-            "run_id": self.new_run_id, "state": state, "phase": phase, "checkpoint_pending": None,
+            "run_id": self.new_run_id,
+            "state": state,
+            "phase": phase,
+            "checkpoint_pending": None,
             "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "sources": [{"source_id": sid, "source_type": types.get(sid) or "unknown", "health": h}
-                        for sid, h in health.items()],
+            "sources": [
+                {"source_id": sid, "source_type": types.get(sid) or "unknown", "health": h} for sid, h in health.items()
+            ],
             "metrics": self._metrics_with_provenance(emitted),
             "generated_by": self.generated_by,
         }
@@ -458,8 +589,11 @@ class Replayer:
         gen = self.recorded_status.get("generated_by") or self.run.metrics.get("generated_by")
         if gen:
             return gen
-        return {"backend": self.run.inference_backend or "recorded", "model": "unknown",
-                "at": datetime.now(UTC).isoformat(timespec="seconds")}
+        return {
+            "backend": self.run.inference_backend or "recorded",
+            "model": "unknown",
+            "at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
 
     def _metrics_with_provenance(self, emitted: set[str]) -> dict:
         metrics = self._partial_metrics(emitted)
@@ -508,12 +642,15 @@ class Replayer:
                 h["yield"] += len(step.get("value_ids") or [])
             now = time.monotonic()
             if now - last_status > 0.4 or step is self.steps[-1]:
-                _write_atomic(self.run_dir / "status.json",
-                              json.dumps(self._status("running", step.get("phase") or 1, emitted, health)))
+                _write_atomic(
+                    self.run_dir / "status.json",
+                    json.dumps(self._status("running", step.get("phase") or 1, emitted, health)),
+                )
                 last_status = now
         done = not self._stop.is_set()
-        _write_atomic(self.run_dir / "status.json", json.dumps(
-            self._status("done" if done else "failed", 5, emitted, health)))
+        _write_atomic(
+            self.run_dir / "status.json", json.dumps(self._status("done" if done else "failed", 5, emitted, health))
+        )
         if done and self.publish_gold:
             self._publish_gold()
         return self.new_run_id

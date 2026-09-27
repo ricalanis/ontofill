@@ -15,8 +15,12 @@ MESH, PROXY = "100.82.17.158", "100.82.93.149"
 
 
 def client(cases_dir, tmp_path, identity="sso-group", addr=PROXY):
-    env = {"ONTOFILL_CONSOLE_CASES": spec_for(cases_dir), "ONTOFILL_CONSOLE_IDENTITY": identity,
-           "ONTOFILL_CONSOLE_DIRECT_DENY": MESH, "ONTOFILL_RUNNER_STATE": str(tmp_path / "runner")}
+    env = {
+        "ONTOFILL_CONSOLE_CASES": spec_for(cases_dir),
+        "ONTOFILL_CONSOLE_IDENTITY": identity,
+        "ONTOFILL_CONSOLE_DIRECT_DENY": MESH,
+        "ONTOFILL_RUNNER_STATE": str(tmp_path / "runner"),
+    }
     return TestClient(create_app(settings_from_env(env)), client=(addr, 50000))
 
 
@@ -57,8 +61,13 @@ def test_pause_resume_start_write_control_and_the_decision_log(cases_dir, tmp_pa
     assert post(c, url, {"action": "start", "to_phase": "9", "display_name": "Ana"}, GROUPS).status_code == 400
     lines = [x for x in log_lines(cases_dir) if x.get("checkpoint") == "runner"]
     assert [x["decision"] for x in lines] == ["pause", "resume", "start"]
-    assert all(x["approver"] == "group:approvers" and x["identity_source"] == "sso-group"
-               and x["unverified_name"] == "Ana" and x["verified"]["group"] == "approvers" for x in lines)
+    assert all(
+        x["approver"] == "group:approvers"
+        and x["identity_source"] == "sso-group"
+        and x["unverified_name"] == "Ana"
+        and x["verified"]["group"] == "approvers"
+        for x in lines
+    )
 
 
 def test_kill_switch_toggle_is_logged(cases_dir, tmp_path):
@@ -76,16 +85,30 @@ def test_kill_switch_toggle_is_logged(cases_dir, tmp_path):
 def test_state_line_and_inbox_events(cases_dir, tmp_path):
     root = tmp_path / "runner"
     (root / "cases" / "libraries").mkdir(parents=True)
-    (root / "cases" / "libraries" / "status.json").write_text(json.dumps(
-        {"state": "running", "run_id": "run-x", "running_since": "2026-09-27T03:10:00+00:00",
-         "last_resumed_at": "2026-09-27T03:10:00+00:00"}))
+    (root / "cases" / "libraries" / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "run_id": "run-x",
+                "running_since": "2026-09-27T03:10:00+00:00",
+                "last_resumed_at": "2026-09-27T03:10:00+00:00",
+            }
+        )
+    )
     c = client(cases_dir, tmp_path)
     page = c.get("/cases/libraries", headers=GROUPS).text
     assert "Resumed automatically at 03:10 UTC" in page and "run-x" in page
     assert "Resumed automatically at 03:10 UTC" in c.get("/cases/libraries/approvals", headers=GROUPS).text
-    runner_state.append_line(root / "events.jsonl", {"ts": "2026-09-27T03:20:00+00:00", "case_id": "libraries",
-                                                     "kind": "failed", "detail": "engine exited 1\nboom",
-                                                     "run_id": "run-x"})
+    runner_state.append_line(
+        root / "events.jsonl",
+        {
+            "ts": "2026-09-27T03:20:00+00:00",
+            "case_id": "libraries",
+            "kind": "failed",
+            "detail": "engine exited 1\nboom",
+            "run_id": "run-x",
+        },
+    )
     inbox = c.get("/api/viz/inbox", headers=GROUPS).json()
     assert any(s["kind"] == "runner_failed" and "run-x" in s["detail"] for s in inbox["strips"])
 
