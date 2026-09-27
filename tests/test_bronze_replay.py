@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from ontofill import workflow
 from ontofill.lake import FileLake
-from ontofill.refiner import export_run, refine_observations
+from ontofill.refiner import MemorySilverStore, export_run, refine_observations
 from ontofill.refiner.bronze_replay import replay_bronze_observations
 from tests.test_refiner import RECORDED, SOURCE_ID, URL, dod_queries, ontology, write_lineage
 
@@ -159,6 +162,33 @@ def _recorded_case(tmp_path, *, duplicate_property_label: bool = False):
     return case_dir, lake, model, queries, bronze_key, screenshot_key, trace
 
 
+def _trace_payload(trace: list[dict]) -> bytes:
+    return b"".join(
+        (json.dumps(step, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        for step in trace
+    )
+
+
+def _install_refine_case(monkeypatch, case_dir, lake, trace: list[dict]) -> tuple[str, bytes]:
+    case_id = "library-case"
+    trace_key = f"runs/{case_id}/{RUN_ID}/trace.live.jsonl"
+    original_trace = _trace_payload(trace)
+    lake.write_key(trace_key, original_trace)
+    monkeypatch.setattr(
+        workflow,
+        "_existing_run",
+        lambda _case, _run: (
+            case_id,
+            lake,
+            RUN_ID,
+            {"generated_by": RECORDED, "preview": True},
+        ),
+    )
+    monkeypatch.setattr(workflow, "_scratch_case", lambda _case, _run: (case_dir, lake))
+    monkeypatch.setattr(workflow, "silver_store_from_env", MemorySilverStore)
+    return trace_key, original_trace
+
+
 def test_replay_fills_new_ontology_property_and_exports_trace_lineage(tmp_path) -> None:
     case_dir, lake, model, queries, bronze_key, screenshot_key, trace = _recorded_case(tmp_path)
 
@@ -265,3 +295,69 @@ def test_replay_step_is_deterministic_for_the_same_capture_and_ontology(tmp_path
     assert [item.value_id for item in first.observations] == [
         item.value_id for item in second.observations
     ]
+
+
+def test_refine_case_exports_replayed_values_once_and_persists_lineage_idempotently(
+    tmp_path, monkeypatch
+) -> None:
+    case_dir, lake, _model, _queries, _bronze_key, _screenshot_key, trace = _recorded_case(tmp_path)
+    trace_key, _original_trace = _install_refine_case(monkeypatch, case_dir, lake, trace)
+    original_export = workflow.export_run
+    exported_traces = []
+
+    def export_spy(*args, **kwargs):
+        persisted = [
+            json.loads(line) for line in lake.read_key(trace_key).decode("utf-8").splitlines()
+        ]
+        replay_steps = [
+            step for step in persisted if step.get("requested", {}).get("tool") == "bronze.replay"
+        ]
+        assert len(replay_steps) == 1
+        assert replay_steps[0]["parent_step_id"] == "step:file"
+        exported_traces.append(kwargs["trace"])
+        return original_export(*args, **kwargs)
+
+    monkeypatch.setattr(workflow, "export_run", export_spy)
+
+    assert workflow.refine_case(case_dir, run_id=RUN_ID) == 0
+    first_live_trace = lake.read_key(trace_key)
+    first_steps = [json.loads(line) for line in first_live_trace.decode("utf-8").splitlines()]
+    replay_steps = [
+        step for step in first_steps if step.get("requested", {}).get("tool") == "bronze.replay"
+    ]
+    assert len(replay_steps) == 1
+    assert replay_steps[0]["parent_step_id"] == "step:file"
+    assert len(exported_traces) == 1
+    gold = json.loads(lake.read_key(f"gold/library-case/{RUN_ID}/entities.jsonl"))
+    assert gold["properties"]["service_zone"]["value"] == "North"
+
+    assert workflow.refine_case(case_dir, run_id=RUN_ID) == 0
+    assert lake.read_key(trace_key) == first_live_trace
+    assert len(exported_traces) == 2
+    assert all(
+        sum(step.get("requested", {}).get("tool") == "bronze.replay" for step in trace_rows) == 1
+        for trace_rows in exported_traces
+    )
+
+
+def test_refine_case_restores_live_trace_when_export_fails(tmp_path, monkeypatch) -> None:
+    case_dir, lake, _model, _queries, _bronze_key, _screenshot_key, trace = _recorded_case(tmp_path)
+    trace_key, original_trace = _install_refine_case(monkeypatch, case_dir, lake, trace)
+    export_calls = 0
+
+    def fail_export(*_args, **_kwargs):
+        nonlocal export_calls
+        export_calls += 1
+        persisted = [
+            json.loads(line) for line in lake.read_key(trace_key).decode("utf-8").splitlines()
+        ]
+        assert any(step.get("requested", {}).get("tool") == "bronze.replay" for step in persisted)
+        raise RuntimeError("synthetic export failure")
+
+    monkeypatch.setattr(workflow, "export_run", fail_export)
+
+    with pytest.raises(RuntimeError, match="synthetic export failure"):
+        workflow.refine_case(case_dir, run_id=RUN_ID)
+
+    assert export_calls == 1
+    assert lake.read_key(trace_key) == original_trace

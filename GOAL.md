@@ -23,14 +23,14 @@ DONE C4: `uv run pytest -q && uv run ruff check src tests packages infra && uv r
 
 DONE R3: `uv run pytest -q tests/test_p5_controller.py tests/genericity && uv run ruff check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py && uv run ruff format --check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py`; a fake controller reaches P5 through S1, emits only evidence-validated target properties, and drains verify/action_gate/quarantine into `trace.jsonl`.
 
-## R11 bronze replay seam
-Implement an offline helper that rebuilds typed observations for current ontology properties from file bytes referenced by a run's phase-5 trace, and returns lineage trace steps so refine can export newly added fields without browsing.
+## R11 bronze replay integration
+Have `refine_case` rebuild current-ontology observations from successful trace-referenced bronze captures, persist parented replay steps before the one gold export, and restore the prior live trace if export fails.
 
-DONE: `uv run pytest -q tests/test_bronze_replay.py tests/test_cli.py` proves the replayed property and its evidence/value trace pass the existing gold export lineage gate and the CLI documents the trace-bounded behavior.
+DONE: `uv run pytest -q tests/test_bronze_replay.py tests/test_cli.py` proves a newly added property reaches gold through `refine_case`, replay lineage is persisted once without browsing, export runs once, and a failed export restores the original live trace.
 
-Status: the helper and gold-lineage tests passed, but the combined managed focused check failed twice on test assertions. The final whitespace-tolerant CLI assertion is unverified under the two-attempt guard; root owns integration and the broader acceptance gate.
+Status: workflow wiring is implemented, but its managed focused gate failed twice before reaching export. The integration fixtures omit the required `book-shape.ttl`; the live integration behavior and rollback remain unverified under the two-attempt guard.
 
-Constraints: replay only keys referenced by completed file-fetch trace steps; no network access or URL fetch; keep workflow.py, refiner/core.py, refiner/export.py, P5, console, browser-agent, case, and coordination files unchanged.
+Constraints: replay only keys referenced by completed file-fetch trace steps; no network access or URL fetch; keep refiner/core.py, refiner/export.py, P5, console, browser-agent, case, and coordination files unchanged.
 
 Constraints: public pushes only after slice checks and a pre-push scan; no committed data or secrets; source discovery without hard-coded source URLs; all captures in a sandbox; local bronze uses file:// and Vultr bronze uses S3; approvals use the contract protocol.
 
