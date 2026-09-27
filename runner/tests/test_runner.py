@@ -292,7 +292,8 @@ def test_registry_is_reread_each_tick_with_budget_clamp_and_archive(setup, tmp_p
 
 def test_global_spend_is_published_every_tick(setup, tmp_path):
     log = tmp_path / "gw.jsonl"
-    log.write_text(json.dumps({"status": 200, "est_usd": 0.25}) + "\n" + json.dumps({"status": 502, "est_usd": 9}) + "\n")
+    rows = [{"status": 200, "est_usd": 0.25}, {"status": 502, "est_usd": 9}]
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows))
     setup["cfg"].gateway_log = log
     r = Runner(setup["cfg"], env=dict(os.environ))
     r.poll_once()
