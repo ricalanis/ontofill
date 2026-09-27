@@ -1,0 +1,32 @@
+{# R34: one candidate source the engine paused on (an unknown publisher or redirect host). Shows where it really
+   lands, how it got there, who publishes it, the tier the engine suggests and why it asked, what it would cover,
+   and the capture as evidence. The decision binds the candidate's bytes and the engine's source fingerprint. #}
+{% set s = docs.source %}
+{% set landing = s.landing_url or s.url %}
+{% set tier_words = {"primary": "primary: can back values on its own", "secondary": "secondary: cross-checks only"} %}
+<section class="block src-review" aria-labelledby="src-h">
+  <h2 id="src-h">Source to review</h2>
+  <p class="src-host"><span class="mono">{{ host_of(landing) if landing else "—" }}</span>{% if s.url and landing and host_of(s.url) != host_of(landing) %} <small class="muted">requested at <span class="mono">{{ host_of(s.url) }}</span></small>{% endif %}</p>
+  {% if s.title or s.snippet %}<p>{% if s.title %}<b>{{ s.title }}</b>{% endif %}{% if s.snippet %}<br><span class="muted">{{ s.snippet|truncate(300, true, "…") }}</span>{% endif %}</p>{% endif %}
+  <dl class="kv src-kv">
+    <dt>Lands on</dt><dd>{% if landing and safe_url(landing) %}<a class="mono" href="{{ landing }}" target="_blank" rel="noopener noreferrer nofollow">{{ landing }}</a>{% else %}<span class="mono">{{ landing or "—" }}</span>{% endif %}</dd>
+    <dt>Redirects</dt><dd>{% if s.redirect_chain and s.redirect_chain|length > 1 %}<ol class="src-chain">{% for u in s.redirect_chain %}<li class="mono" title="{{ u }}">{{ host_of(u) }}</li>{% endfor %}</ol>{% else %}<span class="muted">none: it answers where it was asked</span>{% endif %}</dd>
+    <dt>Publisher kind</dt><dd class="mono">{{ s.source_type or "—" }}</dd>
+    <dt>Suggested tier</dt><dd>{% if s.authority_tier %}<b>{{ tier_words.get(s.authority_tier, s.authority_tier) }}</b>{% else %}—{% endif %}</dd>
+    <dt>Why it asks you</dt><dd>{{ s.authority_reason or "no reason recorded" }}</dd>
+    <dt>Would cover</dt><dd>{% if s.covers %}{% for p in s.covers %}<span class="chip st-none mono">{{ p }}</span> {% endfor %}{% else %}<span class="muted">no definition-of-done property yet</span>{% endif %}</dd>
+    {% if s.discovered_by %}<dt>Found by</dt><dd><span class="mono">{{ s.discovered_by.provider or s.provider or "—" }}</span>{% if s.discovered_by.query %} · query <q>{{ s.discovered_by.query }}</q>{% endif %}{% if s.discovered_by.at %} · <span class="mono">{{ s.discovered_by.at[:16]|replace("T", " ") }} UTC</span>{% endif %}</dd>
+    {% elif s.provider %}<dt>Found by</dt><dd class="mono">{{ s.provider }}</dd>{% endif %}
+  </dl>
+  {% if s.property_evidence %}
+  <h3>What the page shows for each property</h3>
+  <ul class="plain src-evidence">{% for prop, ev in s.property_evidence.items() %}<li><span class="mono">{{ prop }}</span>: {% if ev is mapping %}{{ ev.quote or ev.text or ev.value or (ev|tojson) }}{% else %}{{ ev }}{% endif %}</li>{% endfor %}</ul>
+  {% endif %}
+  <h3>Capture</h3>
+  {% if s.screenshot_key and has_screenshot %}
+  <a href="{{ base }}/bronze/{{ s.screenshot_key|urlencode|replace('/', '%2F') }}" target="_blank" rel="noopener"><img class="src-shot" src="{{ base }}/bronze/{{ s.screenshot_key|urlencode|replace('/', '%2F') }}" alt="Screenshot of {{ host_of(landing) if landing else 'the candidate page' }} as the engine captured it" loading="lazy"></a>
+  {% elif s.screenshot_key %}<p class="muted">Screenshot <span class="mono">{{ s.screenshot_key[:24] }}…</span> is not in the lake yet.</p>
+  {% else %}<p class="muted">No screenshot was captured.</p>{% endif %}
+  {% if s.capture_key %}<p class="note">Captured page: <a class="mono" href="{{ base }}/bronze/{{ s.capture_key|urlencode|replace('/', '%2F') }}" target="_blank" rel="noopener">{{ s.capture_key[:32] }}…</a></p>{% endif %}
+  <p class="note">Your decision binds this candidate's bytes and the engine's source fingerprint <span class="mono" title="{{ a.meta.source_fingerprint or s.fingerprint }}">{{ (a.meta.source_fingerprint or s.fingerprint or "")[:12] }}…</span>. Approve to trust it at the suggested tier; deny to have the engine skip it.</p>
+</section>

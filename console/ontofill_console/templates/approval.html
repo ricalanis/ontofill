@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action before submit"} %}
+{% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action before submit", "source": "Source"} %}
 {% block title %}Review {{ CP_NAMES.get(a.checkpoint, "checkpoint") }}{% endblock %}
 {% block main %}
 <nav class="crumbs" aria-label="Breadcrumb"><a href="{{ base }}/approvals">Approvals</a> <span aria-hidden="true">/</span> <span class="mono">{{ a.phase_dir }}</span></nav>
@@ -47,6 +47,7 @@
   {% if docs.prd %}{% include "_review_prd.html" %}{% endif %}
   {% if docs.factors %}{% include "_review_factors.html" %}{% endif %}
   {% if docs.ontology %}{% include "_review_ontology.html" %}{% endif %}
+  {% if docs.source %}{% include "_review_source.html" %}{% endif %}
   {% if not docs and a.checkpoint != "action" %}
   <section class="block"><h2>What the engine is asking</h2><pre class="record">{{ a.pending_text }}</pre></section>
   {% endif %}
@@ -56,15 +57,16 @@
     <h2 id="signoff-h">Sign off</h2>
     {% if readonly %}<p class="note">Waiting for an approver.</p>{% include "_readonly_note.html" %}{% else %}
     {% if backend == "recorded" %}<p class="note">This artifact came from recorded (simulated) inference. You can approve it to test the flow, but it will not satisfy the checkpoint on a live run: the engine regenerates it with Vultr inference first.</p>{% endif %}
-    {% if a.checkpoint in ("prd", "factors", "ontology") %}
-    <p class="note">Approve to let the run continue. Deny to send it back: the engine archives this draft and regenerates it with your reason as a human revision.</p>
+    {% if a.checkpoint in ("prd", "factors", "ontology", "source") %}
+    {% if a.checkpoint == "source" %}<p class="note">Approve to trust this source at the suggested tier and let discovery continue. Deny, with a reason, to have the engine skip it; your reason is logged.</p>
+    {% else %}<p class="note">Approve to let the run continue. Deny to send it back: the engine archives this draft and regenerates it with your reason as a human revision.</p>{% endif %}
     {% if a.checkpoint == "factors" and docs.factors %}{% set pre_reject = docs.factors.factors|selectattr("kind", "equalto", "grounded")|rejectattr("evidence")|list %}{% if pre_reject %}<p class="notice factors__preselect" role="note"><b>Preselected: {{ docs.factors.factors|length - pre_reject|length }} accept, {{ pre_reject|length }} reject.</b> Approving as-is rejects {{ pre_reject|map(attribute="label")|join(", ") }}. Change any answer above before you approve.</p>{% endif %}{% endif %}
     <div class="action-gate">
       {% include "_signer.html" %}
       <label for="reason">Reason (required to deny)</label>
       <textarea id="reason" name="reason" rows="3" maxlength="{{ reason_max }}"{% if error and not reason %} aria-invalid="true"{% endif %}>{{ reason }}</textarea>
       <div class="action-gate__buttons">
-        <button type="submit" name="decision" value="approve"{% if not can_decide %} disabled{% endif %}>Approve {{ {"prd": "the PRD", "factors": "the accepted factors", "ontology": "the ontology"}[a.checkpoint] }}</button>
+        <button type="submit" name="decision" value="approve"{% if not can_decide %} disabled{% endif %}>Approve {{ {"prd": "the PRD", "factors": "the accepted factors", "ontology": "the ontology", "source": "this source"}[a.checkpoint] }}</button>
         <button type="submit" name="decision" value="deny" class="btn--deny"{% if not can_decide %} disabled{% endif %}>Deny with reason</button>
       </div>
     </div>

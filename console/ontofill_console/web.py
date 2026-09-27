@@ -638,6 +638,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             (d.get("generated_by") for d in docs.values() if d.get("generated_by")), None
         )
         shot = item.meta.get("screenshot_key") if item.checkpoint == "action" else None
+        if item.checkpoint == "source":  # R34: the candidate's own capture
+            shot = (docs.get("source") or {}).get("screenshot_key")
         has_screenshot = bool(shot) and case.store.bronze(str(shot)) is not None
         who = identity(request)
         can_decide = item.approved is None and (

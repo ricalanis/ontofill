@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "viz/_macros.html" as v %}
 {% block title %}{{ case.title }}{% endblock %}
-{% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action"} %}
+{% set CP_NAMES = {"prd": "Global PRD", "factors": "Factors of variation", "ontology": "Ontology", "action": "Action", "source": "Source"} %}
 {% set RUN_STATE = {"running": "run", "paused": "pause", "failed": "block", "done": "done"} %}
 {% set QUESTIONS = [
   ("operation", "What is the engine doing right now?", "Runs, the P1–P5 pipeline, loop threads, who decided each step"),

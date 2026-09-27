@@ -114,3 +114,26 @@ def test_readonly_console_cannot_decide_it(cases_dir):
     c = client(cases_dir, identity="readonly")
     assert c.get(PAGE, headers=GROUPS).status_code == 200
     assert decide(c).status_code == 403 and not (d / "APPROVED").exists()
+
+
+def test_source_review_shows_what_an_approver_decides(cases_dir):
+    write_source_request(cases_dir)
+    html = client(cases_dir).get(PAGE, headers=GROUPS).text
+    assert '<p class="src-host"><span class="mono">www.gob.mx</span>' in html  # where it really lands
+    assert 'requested at <span class="mono">www.economia.gob.mx</span>' in html
+    chain = html.split('class="src-chain"', 1)[1].split("</ol>", 1)[0]
+    assert chain.index("www.economia.gob.mx") < chain.index("www.gob.mx")  # the redirect chain in order
+    assert "government_registry" in html and "primary: can back values on its own" in html
+    assert "redirect host www.gob.mx is not a named publisher" in html
+    assert "supplier_name" in html
+    assert f"{FP[:12]}…" in html  # the fingerprint the decision binds
+    assert "bronze%2Fsha256%2F" in html  # the capture, through the bronze route
+    assert "Deny, with a reason, to have the engine skip it" in html and "<h1>Review: Source</h1>" in html
+    assert 'value="deny"' in html and 'name="reason"' in html
+
+
+def test_readonly_source_review_has_no_form(cases_dir):
+    write_source_request(cases_dir)
+    html = client(cases_dir, identity="readonly").get(PAGE).text
+    assert "Source to review" in html and "www.gob.mx" in html
+    assert 'method="post"' not in html and 'value="deny"' not in html

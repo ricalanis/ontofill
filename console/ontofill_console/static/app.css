@@ -304,6 +304,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .factor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-md); padding: var(--space-sm) 0; border-bottom: var(--rule-hair); align-items: start; }
 .factor__text { display: grid; gap: var(--space-2xs); }
 .factor__noev { color: var(--color-signal); }
+.src-host { font-size: var(--text-lg); margin: 0 0 var(--space-xs); overflow-wrap: anywhere; }
+.src-chain { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin: 0; padding: 0; list-style: none; }
+.src-chain li { overflow-wrap: anywhere; }
+.src-chain li + li::before { content: "→ "; color: var(--fg-3); }
+.src-shot { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); }
 .dodq-warn { color: var(--color-signal); font-weight: 600; }
 .factor__prereject { font-weight: 600; margin-left: var(--space-2xs); }
 .kind { font-size: var(--text-xs); font-weight: 600; padding: 0 var(--space-2xs); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-sm); margin-left: var(--space-2xs); vertical-align: 1px; }
