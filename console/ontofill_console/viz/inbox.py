@@ -98,11 +98,7 @@ def case_items(case, now: datetime) -> list[dict]:
                         "case_id": case.id,
                         "kind": "quarantine",
                         "title": f"Page quarantined · {s.get('source_id') or 'unknown source'}",
-                        "detail": " · ".join(
-                            str(x)
-                            for x in (d.get("jev_choice"), d.get("reason"), "withheld from planning, kept as evidence")
-                            if x
-                        ),
+                        "detail": live.screen_text(d),
                         "when": age(s.get("ts"), now),
                         "since": s.get("ts"),
                         "href": f"{base}/runs/{rid}#{s.get('step_id')}",

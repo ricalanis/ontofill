@@ -129,19 +129,7 @@ def classify(s: dict) -> tuple[str, str, str] | None:
     src = source_label(s)
     evald = _ev(s)
     if kind == "quarantine":
-        detail = " · ".join(
-            str(x)
-            for x in (
-                d.get("jev_choice"),
-                f"confidence {d['jev_confidence']}" if d.get("jev_confidence") is not None else None,
-                d.get("safety_verdict") and f"safety {d['safety_verdict']}",
-                d.get("reason"),
-                d.get("by") and f"by {d['by']}",
-                "withheld from planning, kept as evidence",
-            )
-            if x
-        )
-        return "quarantine", f"Page quarantined · {src}", detail
+        return "quarantine", f"Page quarantined · {src}", live.screen_text(d)
     if kind == "kill" or ev == "limit_kill":
         reason = d.get("reason")
         return (

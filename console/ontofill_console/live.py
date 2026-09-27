@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import threading
 import time
 from datetime import UTC, datetime
@@ -124,13 +125,18 @@ def _details(s: dict, kind: str) -> dict:
         return _loop_details(s, evald, ex)
     if kind == "quarantine":
         sc = s.get("screen") if isinstance(s.get("screen"), dict) else {}
+        reason = sc.get("reason") or evald.get("reason")
+        model = re.search(r"content safety \w+ \(([^)]+)\)", str(reason or ""))
+        offered = ex.get("urls_offered_from_quarantined_page") if isinstance(ex, dict) else None
         return {
             "jev_choice": sc.get("jev_choice"),
             "jev_confidence": sc.get("jev_confidence"),
             "safety_verdict": sc.get("safety_verdict"),
-            "reason": sc.get("reason"),
+            "safety_model": model.group(1) if model else None,  # only in the reason string (no schema field)
+            "reason": reason,
             "by": sc.get("by"),
             "screenshot_key": s.get("screenshot_key"),
+            "urls_offered": [u for u in offered if isinstance(u, str)] if isinstance(offered, list) else [],
         }
     return {}
 
@@ -209,6 +215,27 @@ def is_reopen_marker(s: dict) -> bool:
 
 def phase_name(n) -> str:
     return dict(PHASES).get(n, str(n))
+
+
+def screen_text(d: dict) -> str:
+    """One line for a quarantine: each screener's verdict (Jev, content safety), who screened, and what the page
+    offered. Old traces carry only "gateway X-BA-Gate: flagged", so they read as flagged without per-screener detail."""
+    parts = []
+    if d.get("jev_choice"):
+        conf = d.get("jev_confidence")
+        parts.append(f"Jev: {d['jev_choice']}" + (f" {conf:.2f}" if isinstance(conf, (int, float)) else ""))
+    verdict = d.get("safety_verdict")
+    if verdict:
+        parts.append(f"safety: {verdict}" + (f" ({d['safety_model']})" if d.get("safety_model") else ""))
+    if not d.get("jev_choice") and "X-BA-Gate" in str(d.get("reason") or ""):
+        parts.append("flagged by the gateway (no per-screener detail recorded)")
+    if d.get("by"):
+        parts.append(f"screened by the {d['by']}")
+    n = len(d.get("urls_offered") or [])
+    if n:
+        parts.append(f"{n} allowlisted link{'s' if n != 1 else ''} offered from the withheld page")
+    parts.append("withheld from planning, kept as evidence")
+    return " · ".join(parts)
 
 
 def loop_threads(steps: list[dict]) -> list[dict]:

@@ -221,7 +221,7 @@ def criterion_label(query: str, criterion_id: str, domain: Domain) -> str:
     if "count_entities_with_relation" in q and rel:
         cls = re.search(r'class(?:_id)?="?([\w-]+)', query)
         who = domain.class_label(cls.group(1) if cls else None, plural=True)
-        return f"{who} linked by {domain.relation_label(rel.group(1))}"
+        return f"{who} with a “{domain.relation_label(rel.group(1))}” link"
     return (criterion_id or query).replace("_", " ").capitalize()
 
 

@@ -64,7 +64,7 @@ def test_relation_criterion_reads_as_words():
         relations={"supplier_awarded_contract": {"label": "awarded a contract"}},
     )
     engine_q = 'count_entities_with_relation(class_id="supplier", relation_id="supplier_awarded_contract")'
-    assert dod.criterion_label(engine_q, "dod1", d) == "Suppliers linked by awarded a contract"
+    assert dod.criterion_label(engine_q, "dod1", d) == "Suppliers with a “awarded a contract” link"
     ours = dod.query_text(
         {
             "aggregate": "count_entities_with_relation",
@@ -74,4 +74,4 @@ def test_relation_criterion_reads_as_words():
             "operator": ">=",
         }
     )
-    assert dod.criterion_label(ours, "dod1", d) == "Suppliers linked by awarded a contract"
+    assert dod.criterion_label(ours, "dod1", d) == "Suppliers with a “awarded a contract” link"
