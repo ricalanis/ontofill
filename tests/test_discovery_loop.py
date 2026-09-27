@@ -897,6 +897,7 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path, monk
     denied_bytes = denied_candidate.read_bytes()
     denied_pending = denied_directory / "APPROVAL_PENDING.md"
     pending_bytes = denied_pending.read_bytes()
+    pending_mtime = denied_pending.stat().st_mtime_ns
     denied_relative = denied_candidate.relative_to(tmp_path).as_posix()
     (denied_directory / "APPROVED").write_text(
         json.dumps(
@@ -919,6 +920,19 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path, monk
     assert denied_capture.calls == []
     assert denied_candidate.read_bytes() == denied_bytes
     assert denied_pending.read_bytes() == pending_bytes
+    assert denied_pending.stat().st_mtime_ns == pending_mtime
+
+    calls_after_denial = provider.calls
+    repeated, repeated_capture = _loop(tmp_path, [provider], pages, backend="vultr")
+    repeated_document = repeated.discover_sources(tmp_path, ontology, decision)
+    repeated_sources = {item["source_url"] for item in repeated_document["objectives"]}
+    assert unknown not in repeated_sources
+    assert primary in repeated_sources
+    assert provider.calls == calls_after_denial
+    assert repeated_capture.calls == []
+    assert denied_candidate.read_bytes() == denied_bytes
+    assert denied_pending.read_bytes() == pending_bytes
+    assert denied_pending.stat().st_mtime_ns == pending_mtime
 
 
 def test_high_stakes_and_tier_helpers_are_generic() -> None:
