@@ -65,6 +65,11 @@ class Metrics:
                                "estimated_usd_saved": round(self.estimated_usd_saved, 6)}
 
 
+
+def _target_closed(exc: BaseException) -> bool:
+    """Playwright's TargetClosedError, or a wrapped error whose message says the target/browser closed."""
+    return type(exc).__name__ == "TargetClosedError" or "has been closed" in str(exc)
+
 class Stop(Exception):
     """Ends the goal: a limit, an exhausted/revoked token, or a closed session."""
 
@@ -108,6 +113,7 @@ class Session:
         self.cell = cell  # the leased cell (§13a): id, isolation, timings; noted on the first step's `executed`
         self._cell_note = dict(cell) if cell else None
         self._pending_sid: str | None = None  # step id for the model calls of the step being built
+        self.browser_gone = False  # the cell's browser target died (GAPS R16)
         self._open_args = {"session_id": session_id, "allowed_domains": self.allowed_domains,
                            "start_url": start_url, "cdp_url": cdp_url}
 
@@ -121,13 +127,35 @@ class Session:
         return self.call(self._open)
 
     def run_goal(self, goal: str) -> dict:
-        return self.call(self._run_goal, goal)
+        return self._browser_call(self._run_goal, goal)
 
     def run_action(self, action: dict, goal: str | None = None) -> dict:
-        return self.call(self._run_action, action, goal)
+        return self._browser_call(self._run_action, action, goal)
 
     def observe(self) -> dict:
-        return self.call(self._observe_summary)
+        return self._browser_call(self._observe_summary)
+
+    def _browser_call(self, fn, *args) -> dict:
+        """A dead browser target (renderer crash, dropped CDP connection) ends the session cleanly: one hard_stop
+        step, status "stopped", what was already extracted kept; later calls get the same answer (GAPS R16)."""
+        if self.browser_gone:
+            return self._stopped_result()
+        try:
+            return self.call(fn, *args)
+        except Exception as exc:
+            if not _target_closed(exc):
+                raise
+            self.browser_gone = True
+            self.call(lambda: self._emit(observed={"error": type(exc).__name__}, requested={"tool": "browser"},
+                                         executed={"status": "failed"},
+                                         evaluated={"status": "stopped", "reason": "browser closed"},
+                                         event="hard_stop"))
+            return self._stopped_result()
+
+    def _stopped_result(self) -> dict:
+        return {"session_id": self.session_id, "status": "stopped",
+                "summary": "the cell's browser closed; this session cannot continue (open a new one)",
+                "url": None, "extracted": self.extracted, "metrics": self.metrics.as_dict()}
 
     def close(self) -> dict:
         if self.closed:

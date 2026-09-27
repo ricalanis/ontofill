@@ -258,3 +258,25 @@ def test_not_achieved_retries_then_gives_up(tmp_path):
     assert result["status"] == "not_achieved"
     assert "check: not_achieved" in gw.planner_prompts[1]  # the planner was told about the failed check
 
+
+
+def test_dead_browser_target_stops_the_session_cleanly(tmp_path):
+    """GAPS R16: a closed target ends the session with status stopped + one hard_stop step, not an exception."""
+    gw = FakeGateway([("done", {"status": "achieved", "summary": "unused"})])
+    session, path = make_session(tmp_path, gw)
+
+    class TargetClosedError(Exception):
+        pass
+
+    def dead(*_a, **_k):
+        raise TargetClosedError("Page.evaluate: Target page, context or browser has been closed")
+
+    try:
+        session.backend.observe = dead
+        first = session.run_action({"tool": "scroll", "args": {}})
+        second = session.run_action({"tool": "scroll", "args": {}})
+    finally:
+        session.close()
+    assert first["status"] == second["status"] == "stopped" and "browser closed" in first["summary"]
+    stops = [s for s in read_steps(path) if s.get("event") == "hard_stop"]
+    assert len(stops) == 1 and stops[0]["evaluated"]["reason"] == "browser closed"
