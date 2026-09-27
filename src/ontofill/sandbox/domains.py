@@ -28,6 +28,20 @@ def registrable_domain(host: str) -> str:
         return (result.top_domain_under_public_suffix or normalized).casefold()
 
 
+def public_suffix(host: str) -> str:
+    """Return the bundled PSL suffix for a DNS host, without fetching list data."""
+    normalized = host.casefold().rstrip(".")
+    if not normalized:
+        return ""
+    try:
+        ipaddress.ip_address(normalized)
+    except ValueError:
+        pass
+    else:
+        return ""
+    return _EXTRACT(normalized).suffix.casefold()
+
+
 def url_registrable_domain(value: str) -> str:
     """Extract the registrable domain from an absolute URL or hostname."""
     parsed = urlsplit(value if "://" in value or value.startswith("//") else f"//{value}")

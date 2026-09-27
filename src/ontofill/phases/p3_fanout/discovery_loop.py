@@ -57,7 +57,7 @@ from ontofill.phases.p3_fanout.leads import (
     public_url,
 )
 from ontofill.sandbox import CaptureBlocked, SandboxLimits
-from ontofill.sandbox.domains import registrable_domain
+from ontofill.sandbox.domains import public_suffix, registrable_domain
 from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 TDD_PATH = "03-fanout/discovery-loop.json"
@@ -90,6 +90,7 @@ _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
 _REDIRECT_PREVIEW_LIMITS = SandboxLimits(memory_mb=512, cpus=1, pids=64, timeout_s=30, max_steps=8)
+_GOVERNMENT_PSL_LABELS = frozenset({"gov", "gob", "govt", "government"})
 
 
 def _summary_text(value: object, limit: int = 180) -> str:
@@ -164,6 +165,67 @@ def _matching_policy_domains(host: str, policy: Mapping) -> list[str]:
     return matches
 
 
+def _policy_country_suffixes(policy: Mapping) -> set[str]:
+    """Get country suffix evidence from policy publishers in the PRD jurisdiction."""
+    policy_jurisdiction = _jurisdiction_key(policy.get("jurisdiction"))
+    if not policy_jurisdiction:
+        return set()
+    countries: set[str] = set()
+    for publisher in policy.get("trusted_publishers", []):
+        if not isinstance(publisher, Mapping):
+            continue
+        publisher_jurisdiction = _jurisdiction_key(publisher.get("jurisdiction"))
+        if publisher_jurisdiction and publisher_jurisdiction != policy_jurisdiction:
+            continue
+        for domain in publisher.get("domains", []):
+            if not isinstance(domain, str) or not _public_dns_host(domain):
+                continue
+            suffix = public_suffix(domain)
+            country = suffix.rsplit(".", 1)[-1]
+            if len(country) == 2 and country.isalpha():
+                countries.add(country)
+    return countries
+
+
+def _jurisdiction_key(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = unicodedata.normalize("NFKD", value.casefold())
+    plain = "".join(char for char in normalized if not unicodedata.combining(char))
+    return " ".join(re.findall(r"[a-z0-9]+", plain))
+
+
+def _government_namespace_country(host: str) -> str | None:
+    """Return a country suffix only for a government namespace in the bundled PSL."""
+    suffix_labels = public_suffix(host).split(".")
+    if len(suffix_labels) < 2:
+        return None
+    country = suffix_labels[-1]
+    if len(country) != 2 or not country.isalpha():
+        return None
+    if not _GOVERNMENT_PSL_LABELS.intersection(suffix_labels[:-1]):
+        return None
+    return country
+
+
+def _government_jurisdiction_rejection(url: str, policy: Mapping) -> dict | None:
+    try:
+        host = (urlsplit(url).hostname or "").casefold().rstrip(".")
+    except ValueError:
+        return None
+    candidate_country = _government_namespace_country(host)
+    expected = sorted(_policy_country_suffixes(policy))
+    if candidate_country is None or not expected or candidate_country in expected:
+        return None
+    return {
+        "reason_code": "government_jurisdiction_mismatch",
+        "candidate_host": host,
+        "observed_country_suffix": candidate_country,
+        "expected_country_suffixes": expected,
+        "policy_jurisdiction": _summary_text(policy.get("jurisdiction"), 100),
+    }
+
+
 class NoConfirmedSources(ValueError):
     """P3 reached its bounded stop without a source accepted by the authority policy."""
 
@@ -178,6 +240,7 @@ class NoConfirmedSources(ValueError):
         unreachable_count: int = 0,
         review_source_ids: Sequence[str] = (),
         review_source_hosts: Sequence[str] = (),
+        jurisdiction_rejections: Sequence[Mapping] = (),
     ) -> None:
         gap_ids = [_summary_text(gap, 80) for gap in gaps]
         reason_gaps = ", ".join(gap_ids[:5])
@@ -227,6 +290,8 @@ class NoConfirmedSources(ValueError):
             "review_sources_omitted": max(0, len(self.review_source_ids) - 8),
             "review_source_hosts": host_labels,
             "review_hosts_omitted": omitted_hosts,
+            "jurisdiction_rejections": [dict(item) for item in jurisdiction_rejections[:8]],
+            "jurisdiction_rejections_omitted": max(0, len(jurisdiction_rejections) - 8),
         }
         query_summary = (
             _summary_text("; ".join(self.summary["queries"][:2]), 160) or "none recorded"
@@ -493,6 +558,7 @@ class DiscoveryLoop:
         self._pending_spider_gap_properties: set[str] = set()
         self.source_display_by_id: dict[str, dict[str, str]] = {}
         self._redirect_frontier: dict[str, dict] = {}
+        self._jurisdiction_rejections: list[dict] = []
 
     def request_site_graph_refresh(self, property_ids: Iterable[str]) -> None:
         """Request bounded recrawls for confirmed sources that may cover these gaps."""
@@ -534,6 +600,33 @@ class DiscoveryLoop:
         self._annotate_source_steps([step])
         self.trace.append(step)
         return step
+
+    def _reject_wrong_government_jurisdiction(
+        self, url: str, policy: Mapping, *, source_id: str | None = None
+    ) -> bool:
+        rejection = _government_jurisdiction_rejection(url, policy)
+        if rejection is None:
+            return False
+        if rejection not in self._jurisdiction_rejections:
+            self._jurisdiction_rejections.append(rejection)
+            self._step(
+                {
+                    "tool": "p3.authority.government_jurisdiction_guard",
+                    "candidate_host": rejection["candidate_host"],
+                    "expected_country_suffixes": rejection["expected_country_suffixes"],
+                },
+                {"status": "rejected", "reason_code": rejection["reason_code"]},
+                {
+                    "outcome": "candidate country conflicts with approved publisher policy",
+                    **rejection,
+                },
+                source_id=source_id,
+                observed={
+                    "candidate_host": rejection["candidate_host"],
+                    "country_suffix": rejection["observed_country_suffix"],
+                },
+            )
+        return True
 
     # ---------------------------------------------------------------- gather
     def _plan_queries(
@@ -998,6 +1091,15 @@ class DiscoveryLoop:
             return None
         destination = canonical_chain[-1]
         destination_host = urlsplit(destination).hostname or ""
+        for redirect_target in canonical_chain[1:]:
+            redirect_source_id = _source_id(redirect_target)
+            self.source_display_by_id[redirect_source_id] = source_display_identity(
+                redirect_target, None, redirect_source_id
+            )
+            if self._reject_wrong_government_jurisdiction(
+                redirect_target, policy, source_id=redirect_source_id
+            ):
+                return None
         for existing_url, existing in self._redirect_frontier.items():
             if existing_url == destination:
                 existing["redirect_chain"] = canonical_chain
@@ -1188,10 +1290,16 @@ class DiscoveryLoop:
         url = candidate["url"]
         host = (urlsplit(url).hostname or "").lower()
         source_id = str(candidate.get("source_review_id") or _source_id(url))
-        allowed_domains = sorted({host, *_matching_policy_domains(host, policy)})
         self.source_display_by_id[source_id] = source_display_identity(
             url, candidate.get("title"), source_id
         )
+        if self._reject_wrong_government_jurisdiction(url, policy, source_id=source_id):
+            candidate.update(
+                status="jurisdiction_rejected",
+                capture_reason="government_jurisdiction_mismatch",
+            )
+            return None
+        allowed_domains = sorted({host, *_matching_policy_domains(host, policy)})
         capture_kwargs = {
             "allowed_domains": allowed_domains,
             "lake": self.lake,
@@ -1964,6 +2072,7 @@ class DiscoveryLoop:
         gaps: tuple[str, ...] | None = None,
         max_sources: int = 8,
     ) -> dict:
+        self._jurisdiction_rejections = []
         properties = {item["id"]: item for item in ontology["properties"]}
         explicit = gaps is not None
         targets = tuple(dict.fromkeys(gaps or _dod_properties(ontology)))
@@ -2770,6 +2879,10 @@ class DiscoveryLoop:
                 "selected_source_ids": [c["source_id"] for c in confirmed],
                 "candidate_count": len(draft["candidates"]),
                 "lead_count": len(draft["leads"]),
+                "jurisdiction_rejections": [
+                    dict(item) for item in self._jurisdiction_rejections[:8]
+                ],
+                "jurisdiction_rejections_omitted": max(0, len(self._jurisdiction_rejections) - 8),
                 "generated_by": provenance,
             }
         )
@@ -2811,6 +2924,7 @@ class DiscoveryLoop:
                 ),
                 review_source_ids=review_source_ids,
                 review_source_hosts=review_source_hosts,
+                jurisdiction_rejections=self._jurisdiction_rejections,
             )
         write_json(case_dir / "03-fanout/objectives.json", document)
         (case_dir / "03-fanout/objectives.yaml").write_text(
