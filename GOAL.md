@@ -1,4 +1,8 @@
 # Goal
+R24: a PRD offered for approval must pass the code-owned authority policy, and an approved cached PRD must be reused byte-for-byte on rerun. If a previously approved PRD fails the current policy, pause without changing its approval or artifacts.
+DONE: `agent-progress run --task r24-prd-policy --paths src/ontofill/phases/p1_scope/phase.py,tests/test_r24_prd_policy.py --check focused-prd-gate --strategy final-policy-checkpoint -- sh -c 'uv run pytest -q tests/test_r24_prd_policy.py tests/test_r22_p1.py tests/test_scope_thresholds.py && uv run ruff check src/ontofill/phases/p1_scope/phase.py tests/test_r24_prd_policy.py && uv run ruff format --check src/ontofill/phases/p1_scope/phase.py tests/test_r24_prd_policy.py'` passes, followed by the full engine gate, clean pre-push scan, and control VM fast-forward.
+
+## Prior R21 goal
 R21: remove case-specific legacy schemas from the generic engine while preserving generic artifact validation and rejecting future domain-named schemas. Add the judges' read-only console pointer.
 DONE: `agent-progress run --task r21-generic-schemas --paths schemas,tests/test_no_case_vocabulary.py,tests/test_schemas.py,README.md --check full-engine-gate --strategy generic-schema-cleanup -- sh -c 'uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox'` passes, and the public pre-push scan finds no tracked env, credential values, private markers, or app-owned paths.
 

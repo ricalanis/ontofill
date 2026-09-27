@@ -1,5 +1,12 @@
 # Strategy and assumptions
 
+## R24 authority checkpoint (2026-09-27)
+- Baseline managed check: 1 passed, 2 failed. The real regression reproduced: an older, approved PRD with a policy-invalid tier was redrafted and its approval staled. The final-boundary test failed earlier than intended because its injected loop artifact omitted required `generated_by`; that is a fixture setup error, not a policy result. The fixture now supplies valid provenance so the final-boundary invariant is exercised.
+- Strategy: keep R22's three-attempt model validator as the authority-policy repair path, add a final policy gate before staging an artifact, and preserve any existing approval if the approved cached artifact fails the current policy. Do not act on an invalid approval or rewrite reviewed bytes.
+- Focused check attempt 1 after the code change: all 28 P1 tests and Ruff lint passed. Ruff format alone requested two deterministic line wraps in the new guard; no behavior failure. Apply exactly those wraps, then retry the same focused gate under the standing authorization.
+- First full integration gate: 417 passed, 1 failed, 5 skipped. The failure was the recorded mock preview's intentionally untrusted `APPROVED` marker: the new legacy-approval preservation branch treated it like a live approval and paused with a draft-unavailable reason. Recorded output never satisfies a checkpoint. Restrict the preservation guard to strict live Vultr approvals; keep mock-preview behavior unchanged, then retry the full gate.
+- Full integration retry with that live-only guard passed: 418 tests, 5 skipped; Ruff lint and format clean on 160 files.
+
 ## R22 typed decision strategy (2026-09-27)
 - First focused managed check: 13 passed, 2 failed. Both existing inference tests expected `TypeError` on exhausted malformed model output, while the new typed `ModelValidationExhausted` initially inherited `ValueError`. The output still failed closed; this was an exception-compatibility regression, not a retry or safety failure.
 - Revised strategy: make the typed exhaustion a `TypeError` subtype, preserving existing callers while exposing purpose, exact bounded reason, and attempt count for phase-specific pause/source isolation. Keep schema/semantic retries bounded and leave network/approval failures outside the retry class.

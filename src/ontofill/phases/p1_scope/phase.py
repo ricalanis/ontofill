@@ -522,15 +522,30 @@ def draft_prd(
             legacy_digest is not None and cached_digest == legacy_digest
         )
         if document.get("generated_by", {}).get("backend") == decision.backend and cache_matches:
+            approval = output.parent / "APPROVED"
+            approved = (
+                not mock_preview
+                and decision.backend == "vultr"
+                and approval.exists()
+                and load_json(approval).get("decision", "approve") != "deny"
+            )
             try:
                 validate_document("global-prd", document)
-            except ValidationError:
-                pass
+            except ValidationError as exc:
+                if approved:
+                    raise PrdDraftUnavailable(
+                        f"approved PRD fails current schema validation: {exc.message}"
+                    ) from exc
             else:
-                if _authority_policy_check(document, revisions).passed:
+                authority = _authority_policy_check(document, revisions)
+                if authority.passed:
                     if legacy_digest is not None and cached_digest == legacy_digest:
                         fingerprint_path.write_text(digest + "\n", encoding="utf-8")
                     return document
+                if approved:
+                    raise PrdDraftUnavailable(
+                        "approved PRD fails authority policy: " + "; ".join(authority.objections)
+                    )
     prompt = (
         "Draft the global PRD from this brief. Include personas, jobs, "
         "requirements traced to jobs, constraints, non-goals, and measurable completion criteria. "
@@ -722,6 +737,28 @@ def draft_prd(
             write_prd_budget_pending(output.parent, generated_by(decision))
         raise PrdDraftUnavailable("PRD loop budget exhausted before a draft was produced")
     document = result.artifact
+    if not mock_preview:
+        try:
+            validate_document("global-prd", document)
+            final_errors = list(_authority_policy_check(document, revisions).objections)
+            if document["brief_path"] != "brief.md":
+                final_errors.append("PRD brief_path must be brief.md")
+        except ValidationError as exc:
+            final_errors = [exc.message]
+        if final_errors:
+            document = complete(
+                prompt
+                + "\nThe final PRD failed code-owned checks: "
+                + json.dumps(final_errors, ensure_ascii=False)
+                + "\nCorrect the exact fields and return a complete revised PRD: "
+                + json.dumps(document, ensure_ascii=False)
+            )
+            validate_document("global-prd", document)
+            if (
+                document["brief_path"] != "brief.md"
+                or not _authority_policy_check(document, revisions).passed
+            ):
+                raise PrdDraftUnavailable("revised PRD still fails code-owned checks")
     if result.stop_reason != "checks_passed":
         document["open_issues"] = list(result.objections) or [
             f"PRD review stopped on {result.stop_reason} before all checks passed."

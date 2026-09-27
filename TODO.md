@@ -1,5 +1,15 @@
 # Work list
 
+## R24 PRD authority checkpoint
+- [x] Reproduce policy failure before approval and prove a corrected answer receives validator feedback.
+- [x] Preserve an existing approval and artifact bytes if an older approved PRD now fails the policy.
+- [x] Guard the final PRD after the phase loop, before any artifact or approval write.
+- [x] Run focused and full managed gates; finish the pre-push scan, main push, and VM deployment.
+FILES: `src/ontofill/phases/p1_scope/phase.py`, `tests/test_r24_prd_policy.py`, and these task records.
+TASK: break the PRD approve/rerun loop without invalidating a valid approval.
+DONE: a policy-failing candidate is corrected before the checkpoint; approved valid PRD rerun has no model call and no stale marker; invalid legacy approval is preserved while paused.
+FORMAT: Ruff check and format on edited Python.
+
 ## R21 generic schemas and judges pointer
 - [x] Remove legacy case-domain schemas and identifiers from `schemas/`.
 - [x] Make the genericity guard scan schema filenames and contents.
