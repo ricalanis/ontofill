@@ -91,6 +91,9 @@ def test_redirect_location_is_retained_when_navigation_raises_before_target_requ
         async def route(self, pattern: str, handler) -> None:
             self.route_handler = handler
 
+        async def route_web_socket(self, pattern: str, handler) -> None:
+            self.websocket_route_handler = handler
+
         async def new_page(self):
             return page
 

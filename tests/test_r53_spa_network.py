@@ -109,6 +109,9 @@ def test_pod_capture_emits_spa_requests_not_present_in_dom(tmp_path, monkeypatch
         async def route(self, pattern, handler):
             self.route_handler = handler
 
+        async def route_web_socket(self, pattern, handler):
+            self.websocket_route_handler = handler
+
         async def new_page(self):
             return page
 
