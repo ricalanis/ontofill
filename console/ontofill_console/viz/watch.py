@@ -39,6 +39,10 @@ SOURCES = (
     "gold/<case>/<run>/metrics.json"
 )
 STALE_MIN = 10.0  # default: a running case with no step for longer than this is STALE
+STALL_MIN = 15.0  # default: a running case whose steps are only model calls for longer than this is not progressing
+STALL_MIN_CALLS = 5
+PROGRESS_TOOLS = ("lead.", "browser_agent.", "file.", "document.", "source.review")
+CAPTURE_KEYS = ("bronze_key", "html_key", "screenshot_key", "document_key")
 WINDOWS = (15, 60)  # throughput windows, minutes
 PROJECTION_ALERT_H = 8.0  # a cap projected to be hit within this many hours goes on the attention list
 GOLD_CAP = 20  # DoD series: at most this many recent gold runs
@@ -195,6 +199,66 @@ def case_runner(root: Path, case_id: str, evs: list[dict], ok: bool) -> dict:
         "last_resume": ev(resume),
         "last_event": ev(last),
         "_status": st,
+    }
+
+
+# progress ------------------------------------------------------------------------------------------------------------
+def _step_tool(s: dict) -> str:
+    for part in ("requested", "executed", "observed"):
+        v = s.get(part)
+        if isinstance(v, dict) and isinstance(v.get("tool"), str):
+            return v["tool"]
+    return ""
+
+
+def is_progress(s: dict) -> bool:
+    """A step that moves a run toward values: a search or lead, a browser or file action, a capture, work on a source,
+    a job, or a value. Model decisions, loop critiques and artifact writes alone are not progress."""
+    if s.get("value_ids") or s.get("source_id") or s.get("job_id"):
+        return True
+    if _step_tool(s).startswith(PROGRESS_TOOLS):
+        return True
+    for part in (s, s.get("requested"), s.get("executed"), s.get("observed")):
+        if isinstance(part, dict) and any(part.get(k) for k in CAPTURE_KEYS):
+            return True
+    return False
+
+
+def progress_stall(steps: list[dict], says_running: bool, now: datetime, stall_min: float = STALL_MIN) -> dict | None:
+    """MOVING BUT NOT PROGRESSING: the run keeps stepping, but for more than `stall_min` minutes every step has been a
+    model call or artifact write, with no lead, capture, source action or value (live: P3 re-planning queries it
+    never ran). None while progressing, idle, or with too few calls to tell."""
+    if not says_running or not steps:
+        return None
+    phases = [s.get("phase") for s in steps[-10:] if isinstance(s.get("phase"), int)]
+    if not phases or max(phases) < 3:  # P1 and P2 are model work by design: only discovery onward must fetch
+        return None
+    last_progress = max((t for t in (parse_ts(s.get("ts")) for s in steps if is_progress(s)) if t), default=None)
+    since = last_progress or min((t for t in (parse_ts(s.get("ts")) for s in steps) if t), default=None)
+    if since is None:
+        return None
+    later = [s for s in steps if (parse_ts(s.get("ts")) or since) > since]
+    calls = sum(1 for s in later if _step_tool(s) == "decision.complete_json" or s.get("kind") == "loop")
+    quiet = (now - since).total_seconds() / 60
+    if quiet <= stall_min or calls < STALL_MIN_CALLS:
+        return None
+    purposes = sorted(
+        {
+            str((s.get("requested") or {}).get("engine_purpose") or (s.get("executed") or {}).get("artifact") or "")
+            for s in later
+            if isinstance(s.get("requested"), dict)
+        }
+        - {""}
+    )[:4]
+    return {
+        "minutes": round(quiet),
+        "model_calls": calls,
+        "steps": len(later),
+        "since": since.isoformat(),
+        "last_progress_at": last_progress.isoformat() if last_progress else None,
+        "purposes": purposes,
+        "text": f"{calls} model calls in {round(quiet)} min with no search, capture or source action"
+        + (f" since {last_progress.strftime('%H:%M')} UTC" if last_progress else " this run"),
     }
 
 
@@ -634,6 +698,7 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
     steps = a.steps(rid)
     jobs = a.jobs(rid)
     lv = liveness(runner, status, steps, now, stale_min)
+    stall = progress_stall(steps, lv["says_running"], now, float(env.get("ONTOFILL_WATCH_STALL_MIN") or STALL_MIN))
     moving = lv["says_running"] or (is_live(status, now) and runner["state"] in (None, "idle", RUNNING))
     last_step = parse_ts(lv["last_step_at"])
     anchor = now if moving else (last_step or parse_ts(status.get("updated_at")) or now)
@@ -703,6 +768,7 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
         "pending_approvals": case.pending,
         "lake_error": case.lake_error,
         "liveness": lv,
+        "stall": stall,
         "throughput": thr,
         "failures": fails,
         "spend": spend,
@@ -733,6 +799,8 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
                 f"(threshold {lv['stale_min']:g} min)",
                 L["run"],
             )
+        if c.get("stall") and not lv["stale"]:
+            add(2, cid, "MOVING BUT NOT PROGRESSING: " + c["stall"]["text"], L["run"])
         if r["state"] in CRITICAL:
             why = r["reason"] or (r["last_event"] or {}).get("detail") or ""
             if c["stop_cause"]:

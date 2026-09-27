@@ -618,3 +618,50 @@ def test_needs_human_is_a_need_not_a_failure(cases_dir, tmp_path):
     assert 'chip st-need">runner needs human' in client.get("/watch").text
     hub = client.get("/cases/libraries").text
     assert "Needs you: the engine found no authoritative source" in hub and why in hub
+
+
+def model_call(i: int, minutes_ago: float, purpose="phase3.plan_queries") -> dict:
+    return {
+        "step_id": f"step:{LIVE_RID}:m{i:04d}",
+        "run_id": LIVE_RID,
+        "ts": ago(minutes_ago),
+        "phase": 3,
+        "mode": "D1",
+        "requested": {"tool": "decision.complete_json", "engine_purpose": purpose},
+        "executed": {"artifact": purpose},
+        "evaluated": {"status": "ok"},
+    }
+
+
+def test_moving_but_not_progressing(cases_dir, tmp_path):
+    """Live: P3 kept proposing publishers and planning queries every few minutes and never searched or captured.
+    Steps kept landing, so it was never STALE; /watch now calls it out."""
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60))
+    steps = [step(0, 40, src="ok-src")]  # the last real progress, 40 min ago
+    steps += [model_call(i, 36 - 3 * i, ("phase3.propose_publishers", "phase3.plan_queries")[i % 2]) for i in range(12)]
+    live_run(cases_dir, steps)
+    m = watch.model(settings(cases_dir, root), now=NOW)
+    stall = case_of(m)["stall"]
+    assert stall and stall["model_calls"] == 12 and stall["minutes"] == 40
+    assert "phase3.plan_queries" in stall["purposes"]
+    alert = next(a for a in m["attention"] if a["case_id"] == "libraries" and a["text"].startswith("MOVING BUT"))
+    assert alert["severity"] == 2 and "12 model calls in 40 min" in alert["text"]
+    html = TestClient(create_app(settings(cases_dir, root))).get("/watch").text
+    assert "moving but not progressing" in html
+
+
+def test_a_progressing_run_is_not_a_stall(cases_dir, tmp_path):
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60))
+    steps = [model_call(i, 40 - 3 * i) for i in range(10)] + [step(99, 2, src="ok-src")]  # a capture 2 min ago
+    live_run(cases_dir, steps)
+    assert case_of(watch.model(settings(cases_dir, root), now=NOW))["stall"] is None
+
+
+def test_definition_phases_are_model_work_not_a_stall(cases_dir, tmp_path):
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60))
+    steps = [{**model_call(i, 40 - 3 * i, "phase1.prd"), "phase": 1} for i in range(12)]
+    live_run(cases_dir, steps)
+    assert case_of(watch.model(settings(cases_dir, root), now=NOW))["stall"] is None
