@@ -9,8 +9,8 @@
    - `DONE`: the managed red baseline failed both new regressions with current P2 exhausting after attempt 3; no ontology artifact existed.
 2. [x] Add stable diagnostics and narrow retry-exhaustion salvage for invalid rule/relation proposals; write schema-validated unresolved recommendations only after ontology and DoD queries validate.
    - `DONE`: recorded tests prove invalid rules/relations are set aside, valid rules and typed relations survive, and an unrelated class/property defect still raises without artifacts.
-3. Validate the focused P2 contract, formatting, and schemas; record results here and commit this isolated branch.
-   - `DONE`: managed focused pytest, Ruff lint/format, JSON schema checks, and `git diff --check` pass; branch commit is pending.
+3. [x] Validate the focused P2 contract, formatting, and schemas; record results here and commit this isolated branch.
+   - `DONE`: managed focused pytest, Ruff lint/format, JSON schema checks, and `git diff --check` passed; branch commit `6248563` is integrated for the full gate.
 
 # Prior task work
 
@@ -18,7 +18,7 @@
 - [x] Review and integrate independent inference-header and sandbox-outcome lanes.
 - [x] Wire workflow run_id before model catalog request and reuse each inference call's step_id in its trace row, including standalone refine.
 - [x] Integrate P3 source labels/hosts and stop reasons; verify its corrected workflow fixture in the root integration gate.
-- [ ] Run full managed gate, pre-push scan, push only main, fast-forward VM, and hand live attribution check to orchestrator.
+- [x] Run full managed gate, pre-push scan, push only main, fast-forward VM, and hand live attribution check to orchestrator.
 
 ## R26c current slice
 - [x] Reproduce false secondary subjects, full redraft and optional tier with the recorded v4 plus fourth denial.

@@ -202,15 +202,19 @@ def test_cross_class_predicate_retries_schema_step_with_validator_error(tmp_path
     ]
     assert len(schema_calls) == 2
     assert _CROSS_CLASS_ERROR in schema_calls[1][1]
-    assert validation_calls == [("phase2.schema", 1, _CROSS_CLASS_ERROR)]
+    assert len(validation_calls) == 1
+    assert validation_calls[0][:2] == ("phase2.schema", 1)
+    assert "rule `same_label`" in validation_calls[0][2]
+    assert _CROSS_CLASS_ERROR in validation_calls[0][2]
+    assert "Allowed rule predicates" in validation_calls[0][2]
     assert ontology["rules"] == []
 
 
-def test_three_invalid_schema_responses_pause_without_writing_artifacts(tmp_path) -> None:
+def test_three_invalid_core_schema_responses_pause_without_writing_artifacts(tmp_path) -> None:
     _case(tmp_path)
-    decision = _base_decisions(
-        schemas=[_cross_class_schema(), _cross_class_schema(), _cross_class_schema()]
-    )
+    invalid = _schema()
+    invalid["classes"][0]["identifier_property"] = "missing_property"
+    decision = _base_decisions(schemas=[invalid, invalid, invalid])
     validation_calls: list[tuple[str, int, str]] = []
 
     with pytest.raises(OntologyDraftUnavailable) as raised:
@@ -224,10 +228,11 @@ def test_three_invalid_schema_responses_pause_without_writing_artifacts(tmp_path
 
     assert raised.value.purpose == "phase2.schema"
     assert raised.value.attempts == 3
-    assert _CROSS_CLASS_ERROR in raised.value.reason
+    assert "identifier_property must refer to a property of its class" in raised.value.reason
     assert [attempt for _, attempt, _ in validation_calls] == [1, 2, 3]
     assert not (tmp_path / "02-ontology/ontology.json").exists()
     assert not (tmp_path / "02-ontology/dod-queries.json").exists()
+    assert not (tmp_path / "02-ontology/recommendations/unresolved.json").exists()
     assert not (tmp_path / "02-ontology/APPROVED.stale").exists()
 
 

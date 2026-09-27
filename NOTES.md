@@ -1,5 +1,9 @@
 # R31 P2 schema salvage plan (2026-09-27)
 
+The first root integration gate on current public main passed 463 tests but failed two pre-existing R22 assertions. One required the old exact generic rule error, while R31 deliberately names the offending rule and allowed forms; the other required three cross-class rules to pause without artifacts, which is the R31 defect being fixed. The recorded R22 test now checks the precise feedback and uses a separate invalid core class property to preserve the fail-closed invariant. This is a changed-spec test correction, not a production change. Re-run the full gate once under the standing distinct-cause authorization.
+
+The corrected R22 focused check passed 10 tests and Ruff. The authorized full integration retry passed **465 tests, 5 skipped**, Ruff lint/format clean on 168 files, recommendation JSON syntax valid, and committed plus working diffs whitespace-clean. The R31 production source did not change after the worker's 107-test gate.
+
 Scope is the P2 ontology draft/validator, its new unresolved-recommendations schema documentation, and generic recorded tests. The code must not edit case data, approvals, console, browser-agent, coordination files, or deployment targets.
 
 Selected strategy: keep the existing three-attempt model retry. Improve semantic validation to aggregate named relation/rule diagnostics and give concrete accepted grammar forms. Retain only the last structurally valid candidate. After bounded exhaustion, remove only rule/relation proposals that have semantic diagnostics; revalidate the complete remaining ontology and compile/validate DoD queries before writing any artifact. Missing classes, properties, malformed objects, and other schema errors continue to fail without an ontology checkpoint.
