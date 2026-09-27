@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Definition · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-definition.css">{% endblock %}
+{% macro src(path, extra=None) %}<p class="path__src">reads <a href="/cases/{{ case.id }}/files/{{ path }}">{{ path }}</a>{% if extra %} · {{ extra }}{% endif %}</p>{% endmacro %}
+{% macro gb(g) %}{% if g %}{{ g.model or "model ?" }} · {{ g.backend or "backend ?" }}{% if g.at %} · {{ g.at[:16]|replace("T", " ") }}{% endif %}{% endif %}{% endmacro %}
+{% block main %}
+{{ v.head("Definition", "How this question became a contract: the brief, each PRD draft and the human decision that followed it, the done-when criteria with their basis, the authority policy, then factors, taxonomies and the ontology, and the criteria compiled to queries.", "brief.md · 01-scope/prd.json · 01-scope/revisions/<n>/ · decisions.jsonl · 02-ontology/factors/factors.json · 02-ontology/ontology.json · 02-ontology/dod-queries.json · metrics.json · trace (loop steps)") }}
+<p class="runline">{% if m.run_id %}Loop objections and measured values from run
+  {% for r in m.run_ids %}<a href="?run={{ r }}" {% if r == m.run_id %}aria-current="true"{% endif %}>{{ r }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+  {% if m.live %}(latest){% else %}· <a href="/cases/{{ case.id }}/definition">latest</a>{% endif %}
+{% else %}No run yet: the path below is the case package only.{% endif %}</p>
+
+{% if m.pending %}
+<ul class="strips" aria-label="Checkpoints waiting">
+  {% for p in m.pending %}<li>{{ v.strip(p.state, p.title, p.detail, p.meta, p.href) }}</li>{% endfor %}
+</ul>
+<p></p>
+{% endif %}
+
+<ol class="path">
+  {# 1 · the question #}
+  <li class="path__step" data-n="1" id="question">
+    <h2>The question</h2>
+    {{ src("brief.md", "the only human-written input") }}
+    {% if m.brief.lines %}<blockquote class="quote">{% for ln in m.brief.lines %}<p>{{ ln }}</p>{% endfor %}</blockquote>
+    {% else %}<p class="empty">This case has no <span class="mono">brief.md</span> yet.</p>{% endif %}
+  </li>
+
+  {# 2 · PRD drafts #}
+  {% set prd_need = m.prd.drafts and m.prd.drafts[-1].state == "need" %}
+  <li class="path__step {% if prd_need %}is-need{% endif %}" data-n="2" id="prd">
+    <h2>PRD drafts</h2>
+    {{ src("01-scope/prd.json", "01-scope/revisions/<n>/ · decisions.jsonl") }}
+    {% if m.prd.drafts %}
+    <p class="nums"><span><b>{{ m.prd.drafts|length }}</b> drafts</span><span><b>{{ m.prd.diffs|length }}</b> human revisions</span></p>
+    <ol class="revs">
+      {% for d in m.prd.drafts %}
+      <li class="rev st-{{ d.state }}">
+        <div class="rev__h">
+          <b>Draft {{ d.n }}</b>{% if d.version %}<small>version {{ d.version }}</small>{% endif %}
+          <small>{{ d.n_criteria }} criteria</small>
+          {% if d.href %}<a class="rev__meta" href="{{ d.href }}">{{ d.path }}</a>{% else %}<small>archived draft missing</small>{% endif %}
+        </div>
+        {% if d.generated_by %}<p class="rev__meta">written by {{ gb(d.generated_by) }}</p>{% endif %}
+        <p class="rev__why">
+          {% set dec = d.decision %}
+          {% if dec.decision == "deny" %}<span class="chip st-block">denied</span>
+          {% elif dec.decision == "approve" %}<span class="chip st-done">approved</span>
+          {% elif dec.decision == "pending" %}<a class="chip st-need" href="/cases/{{ case.id }}/approvals/01-scope">awaits review</a>
+          {% else %}<span class="chip st-none">no decision recorded</span>{% endif %}
+          {% if dec.approver %}<small>{{ dec.approver }}{% if dec.date %} · {{ dec.date }}{% endif %}{% if dec.logged_at %} · logged {{ dec.logged_at[:16]|replace("T", " ") }}{% endif %}</small>{% endif %}
+          {% if dec.reason %}<br><q>{{ dec.reason }}</q>{% endif %}
+        </p>
+      </li>
+      {% set df = m.prd.diffs[loop.index0] if loop.index0 < m.prd.diffs|length else None %}
+      {% if df %}
+      <li class="revgap">
+        <details {% if loop.index0 == m.prd.diffs|length - 1 %}open{% endif %}>
+          <summary>draft {{ df.from_n }} → draft {{ df.to_n }} · +{{ df.n_add }} −{{ df.n_del }} lines (personas, jobs, requirements, constraints, done-when)</summary>
+          {% if df.missing %}<p class="empty">No diff: {{ df.missing }}.</p>
+          {% elif df.lines %}<pre class="diff">{% for l in df.lines %}<span class="{{ l.op }}">{{ l.text }}</span>
+{% endfor %}</pre>
+          {% else %}<p class="path__lede">The key sections did not change.</p>{% endif %}
+        </details>
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ol>
+    {% else %}{{ v.empty(m.prd.empty, "No PRD yet") }}{% endif %}
+  </li>
+
+  {# 3 · DoD with basis #}
+  <li class="path__step" data-n="3" id="dod">
+    <h2>Done when</h2>
+    {{ src("01-scope/prd.json", "definition_of_done[]") }}
+    {% if m.dod.rows %}
+    <p class="nums">{% for k, n in m.dod.by_basis.items() %}{% if n %}<span><b>{{ n }}</b> {{ k }}</span>{% endif %}{% endfor %}</p>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Criterion</th><th>Target</th><th>Basis</th><th>Why</th></tr></thead>
+      <tbody>{% for r in m.dod.rows %}
+        <tr><td><b>{{ r.metric }}</b><span class="why mono">{{ r.id }}</span></td>
+          <td class="num">{{ r.operator }} {{ r.target }}{% if r.min_ratio is not none %}<span class="why">min ratio {{ r.min_ratio }}</span>{% endif %}</td>
+          <td><span class="chip st-{{ r.basis_state }}" title="{{ r.basis_words }}">{{ r.basis }}</span></td>
+          <td class="wrap">{% if r.quote %}<q class="quote basis-quote">{{ r.quote }}</q>{% endif %}
+            {% if r.rationale %}<span class="basis-quote">{{ r.rationale }}</span>{% endif %}
+            {% if r.feasibility %}<span class="why">feasibility: {{ r.feasibility }}</span>{% endif %}
+            {% if not (r.quote or r.rationale or r.feasibility) %}<span class="why">no quote or rationale recorded</span>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}{{ v.empty(m.dod.empty, "No criteria yet") }}{% endif %}
+  </li>
+
+  {# 4 · authority policy #}
+  <li class="path__step" data-n="4" id="authority">
+    <h2>Authority policy</h2>
+    {{ src("01-scope/prd.json", "authority_policy") }}
+    {% if m.authority.tiers or m.authority.jurisdiction %}
+    <dl class="kv">
+      <dt>Jurisdiction</dt><dd>{{ m.authority.jurisdiction or "not stated" }}</dd>
+      <dt>Unknown source</dt><dd>{{ m.authority.unknown_source_action or "not stated" }}{% if m.authority.unknown_source_action == "review" %}: held for a person, never used as evidence until approved{% endif %}</dd>
+    </dl>
+    <div class="panels">
+      {% for t in m.authority.tiers %}
+      <section class="panel">
+        <h3 class="section-h"><span class="chip st-{{ t.state }}">{{ t.tier }}</span> {{ t.words }} · {{ t.n_domains }} domains</h3>
+        <ul class="pubs">{% for p in t.publishers %}
+          <li><b>{{ p.kind }}</b>{% if p.jurisdiction %} <small class="why">{{ p.jurisdiction }}</small>{% endif %}
+            <span class="doms">{{ p.domains|join(" · ") or "no domains" }}</span>
+            {% if p.rationale %}<span class="why">{{ p.rationale }}</span>{% endif %}</li>
+        {% endfor %}</ul>
+      </section>
+      {% endfor %}
+    </div>
+    {% else %}{{ v.empty(m.authority.empty, "No authority policy yet") }}{% endif %}
+  </li>
+
+  {# 5 · factors #}
+  <li class="path__step {% if m.factors.state == 'pending' %}is-need{% endif %}" data-n="5" id="factors">
+    <h2>Factors</h2>
+    {{ src(m.factors.path, "02-ontology/factors/APPROVED (decisions)") }}
+    {% if m.factors.rows %}
+    <p class="nums"><span><b>{{ m.factors.rows|length }}</b> proposed</span>
+      {% if m.factors.state == "approved" %}<span><b>{{ m.factors.n_accepted }}</b> accepted</span><span><b>{{ m.factors.n_rejected }}</b> rejected</span><span>by {{ m.factors.approver }} · {{ m.factors.date }}</span>
+      {% elif m.factors.state == "denied" %}<span class="chip st-block">denied</span><span>{{ m.factors.reason }}</span>
+      {% elif m.factors.state == "pending" %}<a class="chip st-need" href="/cases/{{ case.id }}/approvals/02-ontology/factors">awaits review</a>
+      {% endif %}{% if m.factors.generated_by %}<span>{{ gb(m.factors.generated_by) }}</span>{% endif %}</p>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Factor</th><th>Kind</th><th>Evidence</th><th>Decision</th></tr></thead>
+      <tbody>{% for f in m.factors.rows %}
+        <tr><td><b>{{ f.label }}</b><span class="why">{{ f.description }}</span></td><td>{{ f.kind }}</td>
+          <td class="wrap">{% for e in f.evidence %}<span class="why"><a href="{{ safe_url(e.url) }}" rel="noopener noreferrer">{{ host_of(e.url) }}</a>: {{ e.description }}</span>{% else %}<span class="why">none</span>{% endfor %}</td>
+          <td>{% if f.decision %}<span class="chip st-{{ f.state }}">{{ f.decision }}</span>{% else %}<span class="chip st-{{ f.state }}">undecided</span>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}{{ v.empty(m.factors.empty, "No factors yet") }}{% endif %}
+  </li>
+
+  {# 6 · taxonomies #}
+  <li class="path__step" data-n="6" id="taxonomies">
+    <h2>Taxonomies</h2>
+    <p class="path__src">reads <a href="/cases/{{ case.id }}/files/02-ontology/ontology.json">02-ontology/ontology.json</a> · taxonomies[] · 02-ontology/taxonomies/*</p>
+    {% if m.taxonomies.rows %}
+    <div class="panels">
+      {% for t in m.taxonomies.rows %}
+      <section class="panel">
+        <h3 class="section-h">{{ t.root }} <span class="mono">· {{ t.factor_id }}</span></h3>
+        <p class="nums"><span><b>{{ t.n_nodes }}</b> nodes</span>{% for l in t.levels %}<span>level {{ l.level }}: <b>{{ l.n }}</b></span>{% endfor %}
+          {% if t.soundness is not none %}<span>soundness <b>{{ t.soundness }}</b></span>{% endif %}{% if t.coverage is not none %}<span>coverage <b>{{ t.coverage }}</b></span>{% endif %}</p>
+        <p class="nums">critic: {% for c in t.critic %}<span class="chip st-{{ c.state }}">{{ c.label }} {{ c.n }}</span>{% endfor %}</p>
+        <ul class="tax-nodes">{% for n in t.nodes %}<li><span class="chip st-{{ n.state }}" title="level {{ n.level }} · {{ n.critic or 'no critic label' }}">{{ n.label }}</span></li>{% endfor %}</ul>
+        <p class="path__src"><a href="{{ t.href }}">{{ t.path }}</a></p>
+      </section>
+      {% endfor %}
+    </div>
+    {% else %}{{ v.empty(m.taxonomies.empty, "No taxonomies yet") }}{% endif %}
+  </li>
+
+  {# 7 · ontology graph #}
+  {% set o = m.ontology %}
+  <li class="path__step" data-n="7" id="ontology">
+    <h2>Ontology</h2>
+    {{ src(o.path, "classes · properties · relations") }}
+    {% if o.graph %}
+    <p class="nums"><span><b>{{ o.classes|length }}</b> classes</span><span><b>{{ o.n_props }}</b> properties</span><span><b>{{ o.n_dod }}</b> DoD properties</span><span><b>{{ o.relations|length }}</b> relations</span>{% if o.version %}<span>version {{ o.version }}</span>{% endif %}{% if o.generated_by %}<span>{{ gb(o.generated_by) }}</span>{% endif %}</p>
+    <div class="graph-wrap">
+      <svg class="graph" viewBox="0 0 {{ o.graph.width }} {{ o.graph.height }}" role="img" aria-labelledby="onto-t">
+        <title id="onto-t">Ontology: {{ o.classes|length }} classes as boxes, {{ o.relations|length }} relations as arrows; the primary class has a thick outline.</title>
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+        {% for e in o.graph.edges %}<path class="edge edge--rel {% if e.symmetric %}edge--sym{% endif %}" d="{{ e.path }}" {% if not e.symmetric %}marker-end="url(#arrow)"{% endif %}/>{% endfor %}
+        {% for n in o.graph.nodes %}<g class="node {% if n.primary %}node--primary{% endif %}">
+          <rect x="{{ n.x }}" y="{{ n.y }}" width="{{ n.w }}" height="{{ n.h }}" rx="4"/>
+          <text x="{{ n.tx }}" y="{{ n.ty }}" text-anchor="middle">{{ n.label }}</text>
+          <text class="sub" x="{{ n.tx }}" y="{{ n.sy }}" text-anchor="middle">{{ n.sub }}</text>
+        </g>{% endfor %}
+        {% for e in o.graph.edges %}<text class="elabel" x="{{ e.lx }}" y="{{ e.ly }}" text-anchor="middle">{{ e.label }}{% if e.symmetric %} ↔{% endif %}</text>{% endfor %}
+      </svg>
+    </div>
+    <p class="legend"><span>thick outline: primary class{% if o.primary_class %} ({{ o.primary_class }}){% endif %}</span><span>arrow: relation domain → range</span><span>dashed: symmetric</span><span class="dodmark">DoD</span><span>counts toward done</span></p>
+    <div class="panels">
+      {% for c in o.classes %}
+      <section class="panel">
+        <h3 class="section-h">{{ c.label }}{% if c.primary %} <span class="chip st-need">primary</span>{% endif %} <span class="mono">· {{ c.id }}</span></h3>
+        {% if c.description %}<p class="path__lede">{{ c.description }}</p>{% endif %}
+        <ul class="props">{% for p in c.props %}
+          <li>{% if p.dod %}<span class="dodmark" title="definition-of-done property">DoD</span>{% endif %}<span>{{ p.label }}</span><code>{{ p.id }} · {{ p.datatype or "?" }}</code>
+            {% if p.id == c.identifier_property %}<code>identifier</code>{% endif %}{% if p.id == c.title_property %}<code>title</code>{% endif %}</li>
+        {% else %}<li class="why">no properties</li>{% endfor %}</ul>
+      </section>
+      {% endfor %}
+    </div>
+    {% if o.relations %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Relation</th><th>From</th><th>To</th><th></th></tr></thead>
+      <tbody>{% for r in o.relations %}<tr><td>{{ r.label }} <span class="why mono">{{ r.id }}</span></td><td class="mono">{{ r.domain }}</td><td class="mono">{{ r.range }}</td><td>{% if r.symmetric %}symmetric{% endif %}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% endif %}
+    {% if o.source_classes %}<p class="nums">source classes: {% for s in o.source_classes %}<span>{{ s.label }}</span>{% endfor %}</p>{% endif %}
+    {% else %}{{ v.empty(o.empty, "No ontology yet") }}{% endif %}
+  </li>
+
+  {# 8 · DoD compiled to queries #}
+  <li class="path__step" data-n="8" id="queries">
+    <h2>Done when, compiled</h2>
+    {{ src(m.queries.path, "metrics.json dod[] for the run's measurement") }}
+    {% if m.queries.rows %}
+    <p class="nums"><span><b>{{ m.queries.rows|length }}</b> queries</span>{% if m.queries.measured %}<span><b>{{ m.queries.n_met }}</b> met in {{ m.run_id }}</span>{% else %}<span>not measured by a run yet</span>{% endif %}</p>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Criterion</th><th>Query</th><th class="num">Target</th><th class="num">Measured</th><th></th></tr></thead>
+      <tbody>{% for q in m.queries.rows %}
+        <tr><td class="mono">{{ q.criterion_id }}</td><td class="mono wrap">{{ q.text }}</td><td class="num">{{ q.operator or "" }} {{ q.target }}</td>
+          <td class="num">{{ q.actual if q.actual is not none else "—" }}</td>
+          <td>{% if q.met is true %}<span class="chip st-done">met</span>{% elif q.met is false %}<span class="chip st-block">not met</span>{% else %}<span class="chip st-none">unmeasured</span>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}{{ v.empty(m.queries.empty, "No compiled queries yet") }}{% endif %}
+  </li>
+
+  {# 9 · critic objections #}
+  <li class="path__step" data-n="9" id="critic">
+    <h2>Critic objections</h2>
+    <p class="path__src">reads trace loop steps (phases 1 and 2){% if m.run_id %} · <a href="/cases/{{ case.id }}/runs/{{ m.run_id }}">run {{ m.run_id }}</a>{% endif %}</p>
+    {% if m.critic.threads %}
+    {% for t in m.critic.threads %}
+    <h3 class="section-h">{{ t.label }} · {{ t.iterations }} iterations{% if t.stop_label %} · stopped: {{ t.stop_label }}{% endif %}{% if t.usd is not none %} · {{ t.usd|money }} USD{% endif %}</h3>
+    {% if t.objections %}
+    <ul class="strips">{% for o in t.objections %}
+      <li>{{ v.strip("done" if o.resolution else "need", o.text, ("resolved: " ~ o.resolution) if o.resolution else "no resolution recorded in the trace", "iteration " ~ o.iteration ~ " · " ~ o.role, "/cases/" ~ case.id ~ "/runs/" ~ m.run_id ~ "#" ~ o.step_id) }}</li>
+    {% endfor %}</ul>
+    {% else %}<p class="path__lede">No objections in this loop.</p>{% endif %}
+    {% endfor %}
+    {% else %}{{ v.empty(m.critic.empty, "No loop steps yet") }}{% endif %}
+  </li>
+</ol>
+{% endblock %}
