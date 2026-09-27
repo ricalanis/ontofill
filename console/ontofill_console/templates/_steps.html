@@ -1,5 +1,5 @@
 {% set PHASE_NAMES = {1: "scope", 2: "ontology", 3: "fan out", 4: "local scoping", 5: "execute"} %}
-{% set STOP_LABELS = {"checks_passed": "checks passed", "budget": "budget reached", "human": "a person decided", "max_iterations": "iteration cap"} %}
+{% set STOP_LABELS = {"checks_passed": "checks passed", "budget": "budget reached", "wall_clock": "time limit", "human": "a person decided", "max_iterations": "iteration cap"} %}
 {% set EVENT_LABELS = {"escalation": "Escalated: the cheaper mode failed its check", "crystallization": "Crystallized into a reusable macro", "repair": "Self-healing: code attempt", "hard_stop": "Hard stop: login, captcha or policy; flagged for a human", "failure": "Failed check", "verify": "Vision check", "action_gate": "Approve-before-submit gate", "limit_kill": "Stopped by a resource limit", "quarantine": "Hostile page quarantined: withheld from planning, kept as evidence", "loop": "Loop step"} %}
 {% set VERDICT_LABELS = {"achieved": "achieved", "not_achieved": "not achieved", "uncertain": "uncertain"} %}
 {% set KILL_LABELS = {"timeout": "wall-clock timeout", "memory": "memory cap", "pids": "process cap", "max_steps": "step cap"} %}

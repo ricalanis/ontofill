@@ -1,4 +1,4 @@
-{% set STOP_TEXT = {"checks_passed": "checks passed", "budget": "budget reached", "human": "a person decided", "max_iterations": "iteration cap"} %}
+{% set STOP_TEXT = {"checks_passed": "checks passed", "budget": "budget reached", "wall_clock": "time limit", "human": "a person decided", "max_iterations": "iteration cap"} %}
 {% set ROLE_LABELS = {"gather": "Gather", "propose": "Proposal", "critique": "Critique", "revise": "Revision", "check": "Check", "decide": "Decision"} %}
 {% set n_it = t.iterations|length %}
 <li class="step step--thread" id="{{ t.id }}" data-step="{{ t.step_ids[0] }}" data-thread="{{ t.id }}">

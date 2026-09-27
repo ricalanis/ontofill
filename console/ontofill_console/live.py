@@ -175,6 +175,7 @@ LOOP_ROLES = ("gather", "propose", "critique", "revise", "check", "decide")
 STOP_LABELS = {
     "checks_passed": "checks passed",
     "budget": "budget reached",
+    "wall_clock": "time limit",  # R51b: the loop's wall clock, reported apart from its money budget
     "human": "a person decided",
     "max_iterations": "iteration cap",
 }

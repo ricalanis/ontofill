@@ -212,3 +212,24 @@ def test_pages_show_a_document_parse_outcome(client, cases_dir):
     assert "300+ rows (sample cap 300 reached; there may be more)" in cards["/big.xls"]["parsed"]["text"]
     page = client.get(f"/cases/libraries/pages?run={RUN}&all=1").text
     assert "15 rows parsed of a 300-row sample" in page and "pg-parsed--capped" in page
+
+
+def test_wall_clock_stop_reads_as_a_time_limit():
+    steps = [
+        {
+            **loop_step(i, "wall_clock" if i == 4 else None),
+            "kind": "loop",
+            "detail": {
+                "phase": 3,
+                "iteration": i,
+                "role": "critique",
+                "objections": [OBJECTION],
+                "stop_reason": "wall_clock" if i == 4 else None,
+                "usd": None,
+            },
+        }
+        for i in (1, 2, 3, 4)
+    ]
+    c = hc.stop_cause(steps, "failed", "c", "r")
+    assert c["stop_label"] == "time limit"
+    assert "its loop stopped at the time limit after 4 iterations" in c["text"]
