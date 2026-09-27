@@ -16,7 +16,7 @@ from ontofill.workflow import _scratch_case, export_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
 
 BRIEF = Path(__file__).parent / "cases/libraries/brief.md"
-HTML = """<html><table><tr><th>Branch</th><th>Free internet</th><th>Hours</th></tr>
+HTML = """<html><a href="/branches.csv">Download CSV</a><table><tr><th>Branch</th><th>Free internet</th><th>Hours</th></tr>
 <tr><td>North Branch</td><td>true</td><td>Mon-Fri 09:00-17:00</td></tr></table></html>"""
 
 
@@ -65,6 +65,37 @@ def _capture(url: str, **kwargs):
     }
 
 
+def _fetch(url: str, **kwargs):
+    lake = kwargs["lake"]
+    content = b"Branch,Free internet,Hours\nNorth Branch,true,Mon-Fri 09:00-17:00\n"
+    key = lake.put_bytes(content)
+    timestamp = datetime.now(UTC).isoformat()
+    return {
+        "url": url,
+        "bytes": content,
+        "bronze_key": key,
+        "trace": [
+            {
+                "step_id": f"step:{uuid.uuid4().hex}",
+                "run_id": kwargs["run_id"],
+                "phase": 5,
+                "source_id": kwargs["source_id"],
+                "objective_id": kwargs["objective_id"],
+                "tdd_path": kwargs["tdd_path"],
+                "mode": "D0",
+                "observed": {"url": url},
+                "requested": {"url": url},
+                "executed": {"bronze_key": key},
+                "evaluated": {"status": "captured"},
+                "parent_step_id": None,
+                "value_ids": [],
+                "ts": timestamp,
+                "generated_by": kwargs["generated_by"],
+            }
+        ],
+    }
+
+
 def test_library_brief_runs_all_phases_with_generic_gold(tmp_path) -> None:
     case = tmp_path / "case"
     case.mkdir()
@@ -77,6 +108,7 @@ def test_library_brief_runs_all_phases_with_generic_gold(tmp_path) -> None:
         preview_past_checkpoints=True,
         search_client=LibrarySearch(),
         capture=_capture,
+        fetch=_fetch,
     )
     assert result == 3
     assert sorted(path.name for path in case.iterdir()) == ["brief.md"]

@@ -105,10 +105,13 @@ def test_mcp_session_lifecycle_and_screening(tmp_path: Path) -> None:
     with pytest.raises(ObservationQuarantined) as missing:
         client.session_observe("browser-session")
     assert "untrusted page bytes" not in str(missing.value)
-    with pytest.raises(ObservationQuarantined):
+    assert missing.value.screen_status == "missing"
+    with pytest.raises(ObservationQuarantined) as unsafe:
         client.session_observe("browser-session")
-    with pytest.raises(ObservationQuarantined):
+    assert unsafe.value.screen_status == "unsafe"
+    with pytest.raises(ObservationQuarantined) as uncertain:
         client.session_observe("browser-session")
+    assert uncertain.value.screen_status == "uncertain"
     assert (
         client.session_observe("browser-session")["observation"]["text_excerpt"]
         == "confident benign page bytes"

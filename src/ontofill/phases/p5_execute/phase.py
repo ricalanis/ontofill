@@ -19,11 +19,14 @@ from ontofill_scrape import Evidence, emit_observation, file_parse, page_links
 from ontofill_scrape import Observation as ToolObservation
 from ontofill_scrape.models import ParsedFile, ParsedRow
 
+from ontofill.browser_agent import BrowserAgentClient
 from ontofill.case.checkpoints import load_json, write_json
 from ontofill.inference import DecisionClient
 from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
+from ontofill.phases.p5_execute.controller import execute_controller
 from ontofill.refiner import Observation, SilverStore
+from ontofill.runfeed import RunFeed
 from ontofill.sandbox import capture_url, fetch_url
 
 Capture = Callable[..., dict]
@@ -245,6 +248,10 @@ def execute_objective(
     provenance: dict,
     capture: Capture = capture_url,
     fetch: Capture = fetch_url,
+    feed: RunFeed | None = None,
+    browser_client: BrowserAgentClient | None = None,
+    browser_steps_root: Path | None = None,
+    browser_captures_root: Path | None = None,
 ) -> ExecutionResult:
     """Execute one approved TDD; every emitted value is a literal captured cell."""
     source_id = objective["source_id"]
@@ -260,6 +267,28 @@ def execute_objective(
         "phase": 5,
         "generated_by": provenance,
     }
+    starts_s1 = bool(tdd.get("steps")) and tdd["steps"][0].get("starting_mode") == "S1"
+    if starts_s1:
+        if feed is None:
+            raise RuntimeError("P5 S1 execution requires the run feed")
+        result = execute_controller(
+            case_dir=case_dir,
+            objective=objective,
+            ontology=ontology,
+            tdd=tdd,
+            lake=lake,
+            run_id=run_id,
+            store=store,
+            provenance=provenance,
+            feed=feed,
+            tdd_path=tdd_path,
+            coerce=_coerce,
+            client=browser_client,
+            steps_root=browser_steps_root,
+            captures_root=browser_captures_root,
+        )
+        return ExecutionResult(result.observations, result.trace, [], "html")
+
     page = capture(objective["source_url"], **kwargs)
     traces = list(page["trace"])
     jobs = [page]
@@ -299,9 +328,30 @@ def execute_objective(
         evidence_url, bronze_key = downloaded["url"], downloaded["bronze_key"]
         parent_step = downloaded["trace"][0]["step_id"]
     else:
-        parsed = _html_table(page["html"])
-        evidence_url, bronze_key = page["url"], page["html_key"]
-        parent_step = page["trace"][0]["step_id"]
+        if feed is None:
+            raise RuntimeError("P5 S1 fallback requires the run feed")
+        result = execute_controller(
+            case_dir=case_dir,
+            objective=objective,
+            ontology=ontology,
+            tdd=tdd,
+            lake=lake,
+            run_id=run_id,
+            store=store,
+            provenance=provenance,
+            feed=feed,
+            tdd_path=tdd_path,
+            coerce=_coerce,
+            client=browser_client,
+            steps_root=browser_steps_root,
+            captures_root=browser_captures_root,
+        )
+        return ExecutionResult(
+            result.observations,
+            [*traces, *result.trace],
+            jobs,
+            "html",
+        )
     mapped = _map_columns(
         case_dir=case_dir,
         source_id=source_id,

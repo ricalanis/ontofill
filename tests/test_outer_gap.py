@@ -10,7 +10,7 @@ from copy import deepcopy
 from ontofill.outer_gap import decide_outer_gap, gaps_from_metrics, outer_trace_step
 from ontofill.workflow import _scratch_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
-from tests.genericity.test_library_workflow import BRIEF, LibrarySearch, _capture
+from tests.genericity.test_library_workflow import BRIEF, LibrarySearch, _capture, _fetch
 
 
 def _run_library_case(tmp_path, *, target: int, reopen: list[dict] | None = None):
@@ -34,6 +34,7 @@ def _run_library_case(tmp_path, *, target: int, reopen: list[dict] | None = None
         preview_past_checkpoints=True,
         search_client=LibrarySearch(),
         capture=_capture,
+        fetch=_fetch,
     )
     scratch, lake = _scratch_case(case, run_id)
     prefix = f"runs/{case.name}/{run_id}"

@@ -1,5 +1,15 @@
 # Work list
 
+## R3: P5 to browser controller S1
+- [x] Add an isolated P5 controller helper and route S1-start/no-download TDDs through the existing session MCP API.
+- [x] Convert only target-property fields with a safe screen, allowed URL, selector, and mirrored screenshot evidence.
+- [x] Drain controller verify/action_gate/quarantine steps into the run feed and always close the session.
+- [x] Add recorded fake-controller tests; checked for live configuration, which was unavailable.
+FILES: `src/ontofill/phases/p5_execute/`, the P5 dispatch call in `src/ontofill/workflow.py`, `tests/test_p5_controller.py`, `.env.example`.
+TASK: Connect P5's S1 path to BrowserAgentClient while preserving evidence and controller safety decisions.
+DONE: `uv run pytest -q tests/test_p5_controller.py tests/genericity && uv run ruff check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py && uv run ruff format --check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py`.
+FORMAT: Ruff check and format across edited engine/test files.
+
 ## Critical path: brief 10d and CONTRACT v0.9.7
 - [x] Make every live P1 revision consume all critic objections and prior failed checks, with deterministic human percent/tier grounding and specific-domain review.
 - [x] Generate and validate a replacement PRD before archiving a denied draft; keep current artifacts and approval intact on inference failure.

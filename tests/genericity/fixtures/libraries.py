@@ -182,8 +182,8 @@ def library_decisions() -> RecordedDecisionClient:
                         {
                             "id": "read_directory",
                             "description": "Read directory table",
-                            "starting_mode": "S1",
-                            "allowed_modes": ["S1"],
+                            "starting_mode": "D0",
+                            "allowed_modes": ["D0", "S1"],
                             "observation_channel": "text_structure",
                             "risk_tier": "SAFE",
                             "termination_predicate": "One evidenced row or no more rows",
@@ -201,5 +201,6 @@ def library_decisions() -> RecordedDecisionClient:
                     ],
                 }
             ],
+            "phase5.select_download": [{"index": 0}],
         }
     )

@@ -1,5 +1,14 @@
 # Strategy and assumptions
 
+## R3 controller strategy
+
+- Read the engine definition/plan, brief 14 and R3 gap check before editing. R3 adds no contract schema fields.
+- Keep browser MCP orchestration in a new P5 module; change the existing P5 path only at its controller dispatch seam so the R2 branch can be rebased cleanly.
+- Start the controller for a TDD whose first step starts at S1, or after P5 finds no allowed downloadable table. Keep the file download route for the deterministic case.
+- Use the current RunFeed and BrowserTraceBridge directly. Accept only controller extracted values that exactly match a target ontology property and carry a safe screen, allowed HTTP(S) URL, selector, and mirrored bronze screenshot.
+- Do not include page excerpts, live-view URLs, absolute controller paths, or case paths in public trace fields. Close every opened session in `finally`, then drain its final trace rows.
+- The synthetic fake-controller test is required; the live synthetic-page run depends on the controller/gateway being configured and reachable without exposing credentials.
+
 C1 establishes contract schemas and local infrastructure. The orchestrator changed local bronze to a file:// adapter; the S3 adapter remains for Vultr. C2 isolates browser capture in a disposable Docker service with an explicit per-task allowlist. C3 keeps each phase thin and persists phase outputs in the case package while evidence remains in bronze. A recorded inference double supports tests until Vultr credentials arrive. Runtime case writes are required by the contract and are owned by the case runner; engine source changes stay in this repo.
 
 The local Docker daemon was unavailable at task start and was started with `orb start`. A manual public register lookup checked feasibility; its URL and content must never enter engine code, tests, prompts, or fixtures. `source.discover` will search from the brief at runtime. All agent inference uses Vultr Serverless Inference; no Jev backend.

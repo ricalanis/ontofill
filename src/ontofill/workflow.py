@@ -491,6 +491,9 @@ def run_case(
     search_client=None,
     capture=None,
     fetch=None,
+    browser_client=None,
+    browser_steps_root: Path | None = None,
+    browser_captures_root: Path | None = None,
     lake=None,
     store=None,
 ) -> int:
@@ -754,6 +757,10 @@ def run_case(
                 decision=decision,
                 store=store,
                 provenance=provenance,
+                feed=feed,
+                browser_client=browser_client,
+                browser_steps_root=browser_steps_root,
+                browser_captures_root=browser_captures_root,
                 **kwargs,
             )
             _publish_decision_calls(feed, trace, decision, decision_start, run_id, 5)
@@ -925,6 +932,9 @@ def run_case(
             search_client=search_client,
             capture=capture,
             fetch=fetch,
+            browser_client=browser_client,
+            browser_steps_root=browser_steps_root,
+            browser_captures_root=browser_captures_root,
             lake=lake,
             store=store,
         )

@@ -19,14 +19,24 @@ from ontofill.runfeed import RunFeed
 class ObservationQuarantined(RuntimeError):
     """The controller did not provide an explicit safe screening verdict."""
 
+    def __init__(self, message: str, *, screen_status: str = "uncertain") -> None:
+        super().__init__(message)
+        self.screen_status = screen_status
 
-def _screen_cleared(screen: object) -> bool:
+
+def screen_is_cleared(screen: object) -> bool:
     if not isinstance(screen, dict) or screen.get("flagged") is not False:
         return False
     verdict = screen.get("safety_verdict")
     if verdict == "unsafe":
         return False
     if verdict == "safe":
+        return True
+    if (
+        verdict == "unavailable"
+        and screen.get("by") == "gateway"
+        and screen.get("reason") == "gateway X-BA-Gate: clean"
+    ):
         return True
     confidence = screen.get("jev_confidence")
     return (
@@ -176,8 +186,21 @@ class BrowserAgentClient:
     def session_observe(self, session_id: str) -> dict:
         result = self._tool("session.observe", {"session_id": session_id})
         screen = result.get("screen")
-        if not _screen_cleared(screen):
-            raise ObservationQuarantined(f"browser observation withheld for session {session_id}")
+        if not screen_is_cleared(screen):
+            status = (
+                "missing"
+                if screen is None
+                else "unsafe"
+                if (
+                    isinstance(screen, dict)
+                    and (screen.get("flagged") is True or screen.get("safety_verdict") == "unsafe")
+                )
+                else "uncertain"
+            )
+            raise ObservationQuarantined(
+                f"browser observation withheld for session {session_id}",
+                screen_status=status,
+            )
         return result
 
     def session_close(self, session_id: str) -> dict:

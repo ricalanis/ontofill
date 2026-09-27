@@ -12,7 +12,7 @@ import pytest
 from ontofill.sandbox import SandboxLimitExceeded
 from ontofill.workflow import _scratch_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
-from tests.genericity.test_library_workflow import BRIEF, LibrarySearch, _capture
+from tests.genericity.test_library_workflow import BRIEF, LibrarySearch, _capture, _fetch
 
 
 def test_limit_kill_publishes_trace_failed_job_and_status(tmp_path: Path) -> None:
@@ -65,6 +65,7 @@ def test_limit_kill_publishes_trace_failed_job_and_status(tmp_path: Path) -> Non
             preview_past_checkpoints=True,
             search_client=LibrarySearch(),
             capture=limited_capture,
+            fetch=_fetch,
         )
     _, lake = _scratch_case(case, run_id)
     prefix = f"runs/{case.name}/{run_id}"
