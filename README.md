@@ -36,11 +36,11 @@ which also states where each case stands.
   that the sandbox egress allowlist refused, and the source critic accepted none of the other candidates. The
   allowlist now admits that portal's own API and CDN hosts (`378a8c0`), and the run resumed on it. The engine run
   continues after submission; its status is live on the judges console, with every run, review and failure.
-- **Building in the open.** A simpler second case (San Francisco library branches) surfaced four engine defects
-  that the hard case had hidden, each fixed the same day with tests: city-level jurisdictions in P1, invalid
-  ontology rules set aside with deterministic salvage in P2, core PRD fields bound to a property with a repair
-  receipt, and exhausted phases reported as needs-human instead of a crash. A fifth (an ontology rule whose label
-  does not match its predicate) stopped its rerun at the ontology step; the fix is queued.
+- **Building in the open.** A simpler second case (San Francisco library branches) surfaced five engine defects
+  that the hard case had hidden. Three are fixed with tests: city-level jurisdictions in P1, invalid ontology rules
+  set aside with salvage in P2, and exhausted phases reported as needs-human instead of a crash. Two are found and
+  queued: rules whose label does not match their predicate, and a core PRD field that is still not bound to a
+  property (a first fix shipped in `378a8c0` but did not trigger on the rerun).
 
 ## How it works
 
