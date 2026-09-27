@@ -19,6 +19,8 @@ from tests.test_discovery_loop import PAGE, StaticProvider, _library_case, _loop
         ("https://libraries.example.test/font.woff2", None),
         ("https://libraries.example.test/api/resource", "image/x-icon"),
         ("https://libraries.example.test/api/resource", "text/css; charset=utf-8"),
+        ("https://libraries.example.test/styleswitcher/css/theme?version=1", None),
+        ("https://libraries.example.test/fonts/branch-display", None),
     ],
 )
 def test_static_asset_classification(url: str, content_type: str | None) -> None:
@@ -28,6 +30,14 @@ def test_static_asset_classification(url: str, content_type: str | None) -> None
 @pytest.mark.parametrize("suffix", ["csv", "xls", "xlsx", "zip", "json", "pdf"])
 def test_data_document_formats_remain_candidates(suffix: str) -> None:
     assert _static_asset_reason(f"https://libraries.example.test/records.{suffix}") is None
+    assert _static_asset_reason(f"https://libraries.example.test/css/records.{suffix}") is None
+
+
+def test_suffixless_data_api_remains_a_candidate() -> None:
+    assert (
+        _static_asset_reason("https://libraries.example.test/api/branch-records?format=json")
+        is None
+    )
 
 
 def test_static_leads_skip_pods_and_emit_trace(tmp_path) -> None:

@@ -89,6 +89,7 @@ def test_trusted_catalog_child_is_captured_before_the_empty_root_is_judged(tmp_p
     ontology = _library_case(tmp_path, POLICY)
     root_page = (
         "<html><body><h1>Official open data catalog</h1>"
+        '<a href="/assets/branch-records.css">Branch records stylesheet</a>'
         '<a href="/datasets/branches">Entity level branch records</a></body></html>'
     )
     child_page = PAGE.format(title="Library branch records")
@@ -112,6 +113,13 @@ def test_trusted_catalog_child_is_captured_before_the_empty_root_is_judged(tmp_p
 
     assert capture.calls[:2] == [_ROOT, _CHILD]
     assert len(capture.calls) <= 2
+    assert f"{_ROOT}assets/branch-records.css" not in capture.calls
+    assert any(
+        step.get("requested", {}).get("tool") == "lead.skip"
+        and step.get("requested", {}).get("url") == f"{_ROOT}assets/branch-records.css"
+        and step.get("evaluated", {}).get("reason") == "static_asset"
+        for step in loop.trace
+    )
     candidates = json.loads(
         (tmp_path / "03-fanout/surface-map/leads.json").read_text(encoding="utf-8")
     )["candidates"]
@@ -235,6 +243,36 @@ def test_follow_children_are_bounded_and_deduplicated_across_anchors_and_spa_req
     assert any(child.get("network_observed") for child in children)
 
 
+def test_static_follow_links_do_not_consume_bounded_child_slots():
+    candidate = {
+        "url": _ROOT,
+        "landing_url": _ROOT,
+        "capture_key": "sha256:" + "a" * 64,
+        "title": "Public branch records",
+    }
+    context = {
+        "links": [
+            {"url": f"/assets/branch-records-{index}.css", "text": "Branch records"}
+            for index in range(_MAX_PORTAL_FOLLOW_CHILDREN + 2)
+        ]
+        + [
+            {"url": "/datasets/branch-records", "text": "Branch records"},
+            {"url": "/exports/branches.csv", "text": "Branch records CSV"},
+        ]
+    }
+    ontology = {"classes": [{"label": "Branch"}], "properties": []}
+    skipped: list[dict] = []
+
+    children = _follow_portal_children(candidate, context, ontology, skipped_assets=skipped)
+
+    assert {child["url"] for child in children} == {
+        f"{_ROOT}datasets/branch-records",
+        f"{_ROOT}exports/branches.csv",
+    }
+    assert len(skipped) == _MAX_PORTAL_FOLLOW_CHILDREN + 2
+    assert all(item["reason"] == "extension:.css" for item in skipped)
+
+
 def test_off_host_api_child_is_reviewed_without_a_capture(tmp_path: Path):
     ontology = _library_case(tmp_path, POLICY)
     off_host = "https://files.other.example.test/api/branch-records?resource_id=public"
@@ -320,7 +358,7 @@ def test_query_plan_appends_model_generated_subject_standard_names():
 
         def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
             assert purpose == "phase3.plan_queries"
-            assert "subject-specific open-data vocabulary" in prompt
+            assert "machine-readable publication standard" in prompt
             assert "standard_terms" in schema["properties"]["queries"]["items"]["properties"]
             return {
                 "queries": [

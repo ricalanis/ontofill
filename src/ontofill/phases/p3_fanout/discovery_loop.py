@@ -109,6 +109,9 @@ _STATIC_ASSET_SUFFIXES = frozenset(
         ".apng",
     }
 )
+_STATIC_ASSET_PATH_SEGMENTS = frozenset(
+    {"css", "js", "javascript", "fonts", "font", "images", "img", "stylesheets", "styleswitcher"}
+)
 _STATIC_ASSET_MIME_TYPES = frozenset(
     {
         "text/css",
@@ -265,6 +268,10 @@ def _static_asset_reason(url: str, content_type: str | None = None) -> str | Non
     suffix = Path(path).suffix
     if suffix in _STATIC_ASSET_SUFFIXES:
         return f"extension:{suffix}"
+    if suffix not in _DATASET_FILE_SUFFIXES | {".pdf", ".xml", ".html", ".htm"}:
+        for segment in path.strip("/").split("/"):
+            if segment in _STATIC_ASSET_PATH_SEGMENTS:
+                return f"path_segment:{segment}"
     mime = (content_type or "").split(";", 1)[0].strip().casefold()
     if mime.startswith(("image/", "font/")) or mime in _STATIC_ASSET_MIME_TYPES:
         return f"content_type:{mime}"
@@ -1151,7 +1158,13 @@ def _publisher_of_record(url: str, page_text: str, policy: Mapping) -> dict | No
     return None
 
 
-def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping) -> list[dict]:
+def _portal_child_leads(
+    candidate: Mapping,
+    context: Mapping,
+    ontology: Mapping,
+    *,
+    skipped_assets: list[dict] | None = None,
+) -> list[dict]:
     """Take bounded, relevant public links one level below a captured portal/root."""
     parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
     try:
@@ -1202,6 +1215,13 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
             or not _public_dns_host(host)
             or _dataset_file_suffix(child_url) is not None
         ):
+            continue
+        asset_reason = _static_asset_reason(
+            child_url, str(link.get("content_type") or link.get("mime_type") or "")
+        )
+        if asset_reason is not None:
+            if skipped_assets is not None:
+                skipped_assets.append({"url": child_url, "reason": asset_reason})
             continue
         label = " ".join(str(link.get(key) or "") for key in ("text", "title", "context")).strip()
         relevance = len(_tokens(label + " " + parsed.path) & words)
@@ -1554,11 +1574,12 @@ def _follow_portal_children(
     ontology: Mapping,
     *,
     include_dataset_resources: bool = True,
+    skipped_assets: list[dict] | None = None,
 ) -> list[dict]:
     """Prefer concrete data/API resources, then bounded record pages, with one URL set."""
     ranked = [
         *(_dataset_index_links(candidate, context, ontology) if include_dataset_resources else []),
-        *_portal_child_leads(candidate, context, ontology),
+        *_portal_child_leads(candidate, context, ontology, skipped_assets=skipped_assets),
     ]
     seen: set[str] = set()
     children = []
@@ -1570,6 +1591,13 @@ def _follow_portal_children(
         if url in seen:
             continue
         seen.add(url)
+        asset_reason = _static_asset_reason(
+            url, str(child.get("content_type") or child.get("mime_type") or "")
+        )
+        if asset_reason is not None:
+            if skipped_assets is not None:
+                skipped_assets.append({"url": url, "reason": asset_reason})
+            continue
         normalized = dict(child)
         normalized["url"] = url
         normalized.setdefault("parent_metadata_gets", _parent_metadata_gets(context))
@@ -5054,14 +5082,32 @@ class DiscoveryLoop:
                     and lead.get("exploration_depth", 0) == 0
                 ):
                     page_context = self._page_access_contexts.get(lead["url"], {})
-                    for child in reversed(
-                        _follow_portal_children(
-                            candidate,
-                            page_context,
-                            ontology,
-                            include_dataset_resources=is_open_data_portal(candidate, ontology),
+                    skipped_assets: list[dict] = []
+                    follow_children = _follow_portal_children(
+                        candidate,
+                        page_context,
+                        ontology,
+                        include_dataset_resources=is_open_data_portal(candidate, ontology),
+                        skipped_assets=skipped_assets,
+                    )
+                    for skipped in skipped_assets:
+                        self._step(
+                            {
+                                "tool": "lead.skip",
+                                "url": urlsplit(skipped["url"])
+                                ._replace(query="", fragment="")
+                                .geturl(),
+                                "parent_url": parent_url,
+                            },
+                            {"asset_reason": skipped["reason"]},
+                            {
+                                "status": "skipped",
+                                "reason": "static_asset",
+                                "before_review_or_queue": True,
+                            },
+                            source_id=candidate.get("source_id"),
                         )
-                    ):
+                    for child in reversed(follow_children):
                         child_url = str(child["url"])
                         asset_reason = _static_asset_reason(
                             child_url,
