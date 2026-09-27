@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Answer · {{ case.title }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-output.css"><link rel="stylesheet" href="/static/viz-answer.css">{% endblock %}
+{% block main %}
+<header class="ans-head">
+  <p class="ans-kicker">{{ case.title }}</p>
+  <h1 class="ans-q">{{ m.question }}</h1>
+  {% if m.has_gold %}
+  <p class="ans-stats">
+    <span><b>{{ m.n_cards }}</b> {{ m.class_plural|lower if m.n_cards != 1 else m.class_label|lower }}</span>
+    <span><b>{{ m.n_complete }}</b> with every field</span>
+    <span><b>{{ m.n_filled }}</b> of {{ m.n_values }} values found, each with its source</span>
+    <span class="muted">run <span class="mono">{{ m.run_id }}</span>{% if m.backend %} · {{ m.backend }}{% endif %}</span>
+  </p>
+  {% endif %}
+</header>
+
+{% if m.has_gold %}
+<p class="note ans-how">Every value below was read by the engine from a public page. Open a value to see where it came from: the page, the
+  exact spot on it, a screenshot taken at the time, and the raw capture.</p>
+{% if m.cards %}
+<ol class="ans-cards">
+{% for c in m.cards %}
+  <li class="ans-card" id="e-{{ loop.index }}">
+    <h2><a href="{{ c.href }}">{{ c.title }}</a>{% if c.identifier and c.identifier != c.title %} <small class="mono muted">{{ c.identifier }}</small>{% endif %}</h2>
+    <dl class="ans-fields">
+    {% for r in c.rows %}
+      <dt>{{ r.label }}</dt>
+      <dd class="ans-val s-{{ r.state }}">
+        {% if r.filled %}
+        <details>
+          <summary><span class="ans-text">{{ r.value }}</span>{% if r.evidence %} <span class="ans-src">{{ r.evidence[0].host }}{% if r.evidence|length > 1 %} +{{ r.evidence|length - 1 }}{% endif %}</span>{% endif %}{% if r.state == "conflict" %} <span class="chip st-need">sources disagree</span>{% elif r.state == "weak" %} <span class="chip st-none">weak</span>{% endif %}</summary>
+          <div class="ans-ev">
+            {% for ev in r.evidence %}{% include "viz/_output_evidence.html" %}{% else %}<p class="note">No evidence recorded for this value.</p>{% endfor %}
+            {% if r.lineage_href %}<p class="note"><a href="{{ r.lineage_href }}">How the engine got this value →</a></p>{% endif %}
+          </div>
+        </details>
+        {% else %}<span class="muted">not found yet</span>{% endif %}
+      </dd>
+    {% endfor %}
+    </dl>
+  </li>
+{% endfor %}
+</ol>
+{% else %}
+<p class="notice">The run's gold export has no {{ m.class_plural|lower }} yet.</p>
+{% endif %}
+
+{% else %}
+{% set lv = m.live %}
+<section class="ans-empty" aria-labelledby="ans-empty-h">
+  <h2 id="ans-empty-h">No answer yet{% if lv and lv.state == "running" %}: the engine is working on it{% endif %}</h2>
+  <p>Values appear here when the run publishes its gold export: reconciled, with a source for every value. Nothing on this
+    page is filled in by hand or before the engine has evidence for it.</p>
+  {% if lv %}
+  <ol class="ans-phases" aria-label="Run progress">
+    {% for p in lv.phases %}<li class="{{ 'done' if p.done else ('now' if p.now else '') }}"><span class="mono">{{ p.n }}</span> {{ p.name }}{% if p.now %} <small>now</small>{% endif %}</li>{% endfor %}
+  </ol>
+  <p class="ans-stats">
+    <span>run <span class="mono">{{ lv.run_id }}</span> · {{ lv.state or "unknown" }}{% if lv.checkpoint %} · waiting for a person to approve the {{ lv.checkpoint }}{% endif %}</span>
+    <span><b>{{ lv.n_steps }}</b> steps logged</span>
+    <span><b>{{ lv.n_sources }}</b> sources touched</span>
+    <span><b>{{ lv.n_captures }}</b> pages captured</span>
+  </p>
+  {% if lv.reason and lv.state != "running" %}<p class="note">{{ lv.reason|truncate(300, true, "…") }}</p>{% endif %}
+  <p class="note"><a href="/cases/{{ m.case_id }}/runs/{{ lv.run_id }}">Watch the run live →</a> · <a href="/cases/{{ m.case_id }}/pages">pages it has read</a> · <a href="/cases/{{ m.case_id }}/discovery">sources it is weighing</a></p>
+  {% else %}
+  <p class="note">No run has started for this case yet.</p>
+  {% endif %}
+</section>
+{% endif %}
+<p class="note ans-foot">Read-only. Built from <span class="mono">gold/{{ m.case_id }}/{{ m.run_id or "&lt;run&gt;"|safe }}/entities.jsonl</span>; the JSON behind this page is at <a href="/cases/{{ m.case_id }}/api/viz/answer">/api/viz/answer</a>.</p>
+{% endblock %}

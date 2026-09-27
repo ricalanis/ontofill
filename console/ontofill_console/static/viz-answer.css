@@ -1,0 +1,38 @@
+/* The answer page: a case's question answered from gold, one card per entity, each value one click from its evidence.
+   Uses the console tokens only; the evidence block is the shared .ev from viz-output.css. */
+.ans-head { display: grid; gap: var(--space-xs); padding-bottom: var(--space-md); border-bottom: var(--rule-strong); max-width: 1040px; }
+.ans-kicker { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
+.ans-q { margin: 0; font-size: var(--text-2xl); line-height: 1.15; font-weight: 700; max-width: 34ch; overflow-wrap: anywhere; }
+.ans-stats { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-lg); margin: 0; font-size: var(--text-sm); }
+.ans-stats b { font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
+.ans-how { max-width: 72ch; margin: var(--space-md) 0; }
+.ans-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: var(--space-md); }
+.ans-card { min-width: 0; padding: var(--space-md); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); display: grid; gap: var(--space-sm); align-content: start; }
+.ans-card h2 { margin: 0; font-size: var(--text-lg); line-height: 1.25; overflow-wrap: anywhere; }
+.ans-card h2 a { color: inherit; text-decoration: none; }
+.ans-card h2 a:hover, .ans-card h2 a:focus-visible { text-decoration: underline; }
+.ans-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-xs) var(--space-sm); margin: 0; }
+.ans-fields dt { font-size: var(--text-xs); font-weight: 600; color: var(--fg-2); padding-top: 2px; }
+.ans-fields dd { margin: 0; min-width: 0; }
+.ans-val details > summary { cursor: pointer; list-style: none; display: block; }
+.ans-val details > summary::-webkit-details-marker { display: none; }
+.ans-text { white-space: pre-line; overflow-wrap: anywhere; border-bottom: 1px dotted var(--fg-3); }
+.ans-val summary:hover .ans-text, .ans-val summary:focus-visible .ans-text { border-bottom-style: solid; }
+.ans-src { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
+.ans-ev { display: grid; gap: var(--space-xs); margin-top: var(--space-xs); }
+.ans-ev .ev { grid-template-columns: minmax(0, 1fr); }
+.ans-ev .ev img { max-width: 100%; }
+.ans-val.s-conflict .ans-text { border-bottom-color: var(--color-signal); }
+.ans-empty { display: grid; gap: var(--space-sm); max-width: 72ch; padding: var(--space-lg) 0; }
+.ans-empty h2 { margin: 0; font-size: var(--text-xl); }
+.ans-empty p { margin: 0; }
+.ans-phases { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
+.ans-phases li { padding: var(--space-3xs) var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--fg-3); }
+.ans-phases li.done { color: var(--fg); }
+.ans-phases li.now { color: var(--fg); border-color: var(--fg); font-weight: 600; }
+.ans-foot { margin-top: var(--space-xl); }
+@media (max-width: 480px) {
+  .ans-q { font-size: var(--text-xl); }
+  .ans-fields { grid-template-columns: minmax(0, 1fr); gap: var(--space-2xs); }
+  .ans-fields dd { margin-bottom: var(--space-xs); }
+}
