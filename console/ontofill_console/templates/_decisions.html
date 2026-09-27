@@ -1,10 +1,11 @@
-{# Rows from the case's append-only decisions.jsonl (newest first). #}
+{# Rows from the case's append-only decisions.jsonl (newest first): approvals, runner actions and case edits, each in its own word. #}
+{% set DECISION_WORDS = {"approve": "approved", "start": "started a run", "pause": "paused", "resume": "resumed", "create": "created the case", "update": "updated the case", "archive": "archived", "restore": "restored", "revise": "revised as a new version"} %}
 <table class="ledger decisions">
   <thead><tr><th scope="col">When (UTC)</th><th scope="col">Checkpoint</th><th scope="col">Decision</th><th scope="col">By</th><th scope="col">Reason</th><th scope="col">Artifact</th></tr></thead>
   <tbody>{% for d in log %}
     <tr><td class="mono">{{ (d.ts or "")[:16]|replace("T", " ") }}</td>
-      <td><span class="mono">{{ d.phase_dir }}</span>{% if d.checkpoint %} · {{ d.checkpoint }}{% endif %}{% if d.run_id %}<span class="sub mono">{{ d.run_id }}</span>{% endif %}</td>
-      <td>{% if d.decision == "deny" %}<span class="approval__state--denied">denied</span>{% else %}approved{% endif %}</td>
+      <td>{% if d.phase_dir %}<span class="mono">{{ d.phase_dir }}</span>{% if d.checkpoint %} · {% endif %}{% endif %}{% if d.checkpoint %}{{ {"runner": "runner", "runner_kill": "kill switch", "case": "case record"}.get(d.checkpoint, d.checkpoint) }}{% endif %}{% if d.run_id %}<span class="sub mono">{{ d.run_id }}</span>{% endif %}</td>
+      <td>{% if d.decision == "deny" %}<span class="approval__state--denied">denied</span>{% elif d.checkpoint == "runner_kill" %}{{ "kill switch on" if d.decision == "on" else "kill switch off" }}{% else %}{{ DECISION_WORDS.get(d.decision or "approve", d.decision) }}{% endif %}</td>
       <td>{% if d.unverified_name %}{{ d.unverified_name }} <span class="muted">(self-declared)</span>{% else %}{{ d.approver }}{% endif %}<span class="sub muted">{% if d.identity_source == "sso-group" %}{{ d.approver }} via NetBird SSO{% elif d.identity_source == "sso" %}SSO{% else %}local{% endif %}</span></td>
       <td>{{ d.reason or "—" }}</td>
       <td>{% for rel, h in (d.artifact_sha256 or {}).items() %}<span class="sub mono" title="{{ h }}">{{ rel.rsplit("/", 1)[-1] }} {{ (h or "")[:10] }}</span>{% endfor %}</td></tr>
