@@ -975,7 +975,7 @@ def execute_objective(
                 approved_link_targets[link.url] = (approved_host, approved_url)
             # A valid DENY is intentionally omitted from this run's candidates.
     if pending_links:
-        for link_url, review_dir, _document_format in pending_links:
+        for link_url, review_dir, _link_format in pending_links:
             traces.append(
                 {
                     "step_id": f"step:{uuid.uuid4().hex}",
