@@ -652,6 +652,29 @@ def _peak_memory_mb() -> float:
     return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 3)
 
 
+def _safe_profile(data: bytes, kind: str, envelope: Mapping[str, Any]) -> dict[str, Any]:
+    """Profile the document without letting an unreadable format fail the parse.
+
+    The profiler is a meta-tool: on any failure it returns an empty profile so the
+    existing per-kind parse result stays the contract.
+    """
+    jurisdictions = envelope.get("jurisdictions")
+    allowed = ()
+    if isinstance(jurisdictions, list):
+        allowed = tuple(str(item) for item in jurisdictions if isinstance(item, str))
+    try:
+        from profiler import ProfileFailure, profile_bytes
+    except ImportError:  # pragma: no cover - the pod always ships the profiler
+        return {}
+    try:
+        result = profile_bytes(data, jurisdictions=allowed, patterns=envelope.get("patterns"))
+    except (ProfileFailure, ValueError, OSError, KeyError, TypeError, IndexError, RecursionError):
+        return {}
+    if kind and kind not in {result.get("format"), "html", "json_document"}:
+        result["kind_mismatch"] = kind
+    return result
+
+
 def run(input_path: Path, output_path: Path) -> None:
     started = time.monotonic()
     proof: dict[str, Any] = {}
@@ -661,6 +684,7 @@ def run(input_path: Path, output_path: Path) -> None:
     links: list[dict[str, str]] = []
     forms: list[dict[str, Any]] = []
     table_headers: list[list[str]] = []
+    profile: dict[str, Any] = {}
     skeleton_hash: str | None = None
     challenge_detected = False
     error: dict[str, str] | None = None
@@ -710,6 +734,7 @@ def run(input_path: Path, output_path: Path) -> None:
         if kind == "html":
             forms = _parse_forms(payload)
             table_headers = _parse_table_headers(payload)
+        profile = _safe_profile(payload, kind, envelope)
     except ParseFailure as exc:
         error = {"code": exc.code}
         if exc.message is not None:
@@ -732,6 +757,7 @@ def run(input_path: Path, output_path: Path) -> None:
         "links": links if error is None else [],
         "forms": forms if error is None else [],
         "table_headers": table_headers if error is None else [],
+        "profile": profile if error is None else {},
         "dom_skeleton_hash": skeleton_hash if error is None else None,
         "challenge_detected": challenge_detected if error is None else False,
         "truncated": False,
@@ -754,6 +780,7 @@ def run(input_path: Path, output_path: Path) -> None:
                 "links": [],
                 "forms": [],
                 "table_headers": [],
+                "profile": {},
                 "dom_skeleton_hash": None,
                 "error": {"code": "output_too_large"},
             }
