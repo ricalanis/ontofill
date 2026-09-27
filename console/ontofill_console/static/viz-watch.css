@@ -1,0 +1,46 @@
+/* viz · Watch (global supervision). Colours only through tokens.css. */
+
+.wt-attn { margin-bottom: var(--space-md); }
+.wt-attn .strip__meta { text-transform: uppercase; letter-spacing: 0.06em; font: 600 var(--text-xs) var(--font-mono); color: var(--fg-3); }
+
+.wt-case { border-top: 1px solid var(--line-strong); margin-top: var(--space-lg); padding-top: var(--space-sm); min-width: 0; }
+.wt-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2xs) var(--space-xs); margin-bottom: var(--space-xs); }
+.wt-head h2 { margin: 0; font-size: var(--text-lg); }
+.wt-head h2 a { color: inherit; }
+.wt-head h2 small { color: var(--fg-3); font-size: var(--text-xs); font-weight: 400; }
+.wt-links { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-sm); margin-left: auto; font-size: var(--text-sm); }
+
+.wt-stale { margin: var(--space-xs) 0; }
+.wt-stale .strip { border-left-width: calc(var(--edge) * 2); }
+.wt-stale .strip b { color: var(--st-block); letter-spacing: 0.02em; }
+
+.wt-kv { margin: var(--space-xs) 0 var(--space-sm); }
+.wt-panels { margin-top: var(--space-sm); }
+.wt-panels .panel { min-width: 0; }
+.wt-note { color: var(--fg-2); font-size: var(--text-sm); margin: var(--space-2xs) 0; overflow-wrap: anywhere; }
+.wt-cap { caption-side: bottom; text-align: left; color: var(--fg-3); font: var(--text-xs) var(--font-mono); padding-top: var(--space-3xs); }
+.wt-total th, .wt-total td { font-weight: 600; border-top: 1px solid var(--line-strong); }
+.wt-kinds { font-size: var(--text-xs); color: var(--fg-2); min-width: 10rem; }
+
+.wt-meters { grid-template-columns: minmax(4rem, 14rem) minmax(4rem, 1fr) auto; margin: var(--space-xs) 0; font-size: var(--text-sm); }
+.wt-rows { margin: var(--space-xs) 0; }
+
+.wt-fig { margin: var(--space-sm) 0 0; }
+svg.wt-chart { width: 100%; max-width: 480px; height: auto; display: block; }
+.wt-chart .axis { stroke: var(--line-strong); stroke-width: 1; }
+.wt-chart text { fill: var(--fg-3); font: 9px var(--font-mono); }
+.wt-chart .series { fill: none; stroke-width: 2; }
+.wt-chart .s-total { stroke: var(--st-run); } .wt-chart circle.s-total { fill: var(--st-run); }
+.wt-chart .s-dod { stroke: var(--st-done); } .wt-chart circle.s-dod { fill: var(--st-done); }
+.wt-chart circle { stroke: var(--bg); stroke-width: 1; }
+
+.wt-keys { margin-top: var(--space-xl); font-size: var(--text-sm); }
+.wt-keys summary { cursor: pointer; font-weight: 600; }
+.wt-keys .kv { grid-template-columns: minmax(0, max-content) minmax(0, 1fr); }
+.wt-keys dt { overflow-wrap: anywhere; }
+
+@media (max-width: 560px) {
+  .wt-links { margin-left: 0; }
+  .wt-meters > .wt-note { grid-column: 1 / -1; margin: 0; }  /* tira.css puts label + number on one row, the meter below */
+  .wt-keys .kv { grid-template-columns: minmax(0, 1fr); }
+}
