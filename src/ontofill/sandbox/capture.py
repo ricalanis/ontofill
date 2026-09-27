@@ -31,14 +31,14 @@ _IMAGE_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _REMOTE_OUTPUT_LIMIT = 32 * 1024 * 1024
 _REMOTE_OUTPUT_NAME = re.compile(
-    r"(?:result\.json|page\.html|a11y\.txt|screenshot\.png|document\.bin|page-\d{4}\.(?:html|bin)|robots-\d{4}\.txt)\Z"
+    r"(?:result\.json|page\.html|a11y\.txt|screenshot\.png|document\.bin|payload\.bin|page-\d{4}\.(?:html|bin)|robots-\d{4}\.txt)\Z"
 )
 _DOCUMENT_FILE = re.compile(r"document\.bin\Z")
 _CONTENT_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z", re.IGNORECASE)
 _REMOTE_OUTPUT_SCRIPT = """\
 import base64, io, pathlib, re, sys, zipfile
 root = pathlib.Path('/out')
-allowed = re.compile(r'(?:result\\.json|page\\.html|a11y\\.txt|screenshot\\.png|document\\.bin|page-\\d{4}\\.(?:html|bin)|robots-\\d{4}\\.txt)\\Z')
+allowed = re.compile(r'(?:result\\.json|page\\.html|a11y\\.txt|screenshot\\.png|document\\.bin|payload\\.bin|page-\\d{4}\\.(?:html|bin)|robots-\\d{4}\\.txt)\\Z')
 buffer = io.BytesIO()
 with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(root.iterdir()):

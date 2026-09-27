@@ -5,11 +5,26 @@ from __future__ import annotations
 import base64
 import io
 import subprocess
+import sys
 import zipfile
 
 import pytest
 
 from ontofill.sandbox import capture
+
+
+def test_remote_fetch_output_archive_copies_bounded_payload(tmp_path) -> None:
+    (tmp_path / "result.json").write_text('{"status": 200}')
+    (tmp_path / "payload.bin").write_bytes(b"synthetic document")
+    (tmp_path / "ignored.secret").write_text("must not leave the pod")
+    script = capture._REMOTE_OUTPUT_SCRIPT.replace(
+        "root = pathlib.Path('/out')", f"root = pathlib.Path({str(tmp_path)!r})"
+    )
+    encoded = subprocess.check_output([sys.executable, "-c", script], text=True)
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(encoded))) as archive:
+        assert sorted(archive.namelist()) == ["payload.bin", "result.json"]
+        assert archive.read("payload.bin") == b"synthetic document"
+    assert capture._REMOTE_OUTPUT_NAME.fullmatch("payload.bin")
 
 
 def test_remote_pod_copies_outputs_before_teardown(monkeypatch, tmp_path) -> None:

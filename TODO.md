@@ -461,5 +461,5 @@ Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2
 1. [x] Reproduce one fetch CaptureError followed by a successful objective.
 2. [x] Contain D0 transport CaptureError, preserving the prior page trace and leaving safety errors fatal.
 3. [x] Integrate the proxy pod fix and its HTTP/HTTPS `NO_PROXY` tests.
-4. [x] Run the full gate: 582 passed, 5 skipped; Ruff lint and format clean.
-5. [ ] Run the pre-push scan, push, and deploy in the authorized zero-engine window.
+4. [x] Run the full gate: 584 passed, 5 skipped after the live proxy IP, origin Host, and remote payload fixes; Ruff lint and format clean.
+5. [ ] Run the pre-push scan, push, deploy in the authorized zero-engine window, and prove a live XLS fetch/parse in scratch.

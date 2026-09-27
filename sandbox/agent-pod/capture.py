@@ -698,6 +698,11 @@ def fetch() -> None:
     ):
         raise ValueError("fetch requires a plain HTTP per-job egress proxy")
     request = Request(target, headers={"User-Agent": "Ontofill/0.1"}, method="GET")
+    origin = urlsplit(target)
+    if not origin.hostname:
+        raise ValueError("fetch target requires a hostname")
+    origin_host = origin.hostname if origin.port is None else f"{origin.hostname}:{origin.port}"
+    request.add_unredirected_header("Host", origin_host)
     # Bind the request before urllib's ProxyHandler sees it. ProxyHandler's normal
     # path calls proxy_bypass(), so a matching NO_PROXY entry would otherwise send
     # DNS and the request directly from the pod. The empty handler also disables
