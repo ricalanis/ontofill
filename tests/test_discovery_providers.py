@@ -377,6 +377,17 @@ def test_open_data_portal_classifier_uses_generic_lead_and_source_class_labels()
         {"source_classes": [{"id": "data-catalog", "label": "Public dataset catalog"}]},
     )
     assert not is_open_data_portal({"title": "Public supplier registry"}, {})
+    assert not is_open_data_portal(
+        {
+            "url": "https://files.example.test/exports/records.xls",
+            "query": "official open data catalog",
+            "title": "Download records",
+        },
+        {},
+    )
+    assert is_open_data_portal(
+        {"url": "https://data.example.test/catalog/", "title": "Public data catalog"}, {}
+    )
 
 
 def test_tavily_default_credit_cap_tracks_remaining_p3_budget(monkeypatch) -> None:

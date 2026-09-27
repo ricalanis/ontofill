@@ -62,6 +62,17 @@ _OPEN_DATA_CUES = (
     "catalogue de donnees",
     "ckan",
 )
+_DOCUMENT_SUFFIXES = (
+    ".csv",
+    ".tsv",
+    ".xls",
+    ".xlsx",
+    ".json",
+    ".jsonl",
+    ".pdf",
+    ".zip",
+    ".gz",
+)
 _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
@@ -260,6 +271,9 @@ def is_open_data_portal(lead: Mapping, ontology: Mapping) -> bool:
     not approve the host or make a lead evidence; P3 still applies its normal
     capture and authority checks.
     """
+    raw_url = lead.get("url")
+    if isinstance(raw_url, str) and urlsplit(raw_url).path.casefold().endswith(_DOCUMENT_SUFFIXES):
+        return False
     lead_text = _open_data_text(
         {
             key: lead.get(key)
