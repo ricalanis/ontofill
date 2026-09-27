@@ -748,7 +748,18 @@ def attention(rover: dict, cases: list[dict], now: datetime) -> list[dict]:
             add(1, cid, f"Lake unreachable: {c['lake_error']}", L["case"])
         if r["state"] == "waiting_approval" or (c["run_state"] == "paused" and c["checkpoint_pending"]):
             cp = r["checkpoint"] or c["checkpoint_pending"] or "checkpoint"
-            add(2, cid, f"Waiting for a person: the {cp} decision (the run resumes by itself after it)", "/inbox")
+            if c["pending_approvals"]:
+                add(2, cid, f"Waiting for a person: the {cp} decision (the run resumes by itself after it)", "/inbox")
+            else:  # nothing to decide: the engine paused without writing an approval request
+                why = c["run_reason"] or r["reason"] or ""
+                why = why if len(why) <= 200 else why[:199] + "…"
+                add(
+                    1,
+                    cid,
+                    f"Stuck at the {cp} checkpoint: no approval is pending, so no one can decide"
+                    + (f" · {why}" if why else ""),
+                    L["run"],
+                )
         elif c["pending_approvals"]:
             add(
                 2,

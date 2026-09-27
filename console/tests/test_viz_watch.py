@@ -577,3 +577,24 @@ def test_engine_exit_and_long_runner_reasons(cases_dir, tmp_path):
     html = TestClient(app).get("/watch").text
     assert "Engine exit" in html and "code 1" in html and "· P3" in html
     assert f'title="{long}"' in html.replace("&#39;", "'") and long not in html.split('title="')[0]
+
+
+def test_a_pause_with_nothing_to_decide_is_stuck_not_waiting(cases_dir, tmp_path):
+    """The runner can say waiting_approval while the engine wrote no APPROVAL_PENDING (e.g. the PRD failed its own
+    validation). No one can decide it, so /watch calls it stuck, not "waiting for a person"."""
+    root = tmp_path / "runner"
+    runner_case(
+        root,
+        "libraries",
+        state="waiting_approval",
+        checkpoint="prd",
+        run_id=LIVE_RID,
+        reason="phase1.prd failed validation after 3 attempts: a cross-check lacks a named publisher",
+    )
+    live_run(cases_dir, [step(i, 10 - i, src="ok-src") for i in range(3)])
+    for p in (cases_dir / "libraries" / "case").rglob("APPROVAL_PENDING.md"):
+        p.unlink()
+    m = watch.model(settings(cases_dir, root), now=NOW)
+    mine = [a for a in m["attention"] if a["case_id"] == "libraries"]
+    assert any(a["text"].startswith("Stuck at the prd checkpoint") and "failed validation" in a["text"] for a in mine)
+    assert not any(a["text"].startswith("Waiting for a person") for a in mine)
