@@ -2253,13 +2253,6 @@ class DiscoveryLoop:
             text = " ".join(f"site:{domain} {kind} {channel} {terms_by_gap[gap]}".split())[:240]
             if text not in pass_tried:
                 queries.append(LeadQuery(gap, text))
-        if iteration == 1 and queries:
-            # Primary index capture is the first discovery action. Save these
-            # queries for the next round, then broaden only after that pass.
-            self._planned_query_cache = {}
-            for query in queries:
-                self._planned_query_cache.setdefault(query.property_id, []).append(query.text)
-            return queries[:limit]
         depth = max((len(candidates) for candidates in candidates_by_gap.values()), default=0)
         quotas = {gap: min(2, max(1, len(planned_by_gap.get(gap, [])))) for gap in gaps}
         selected_by_gap = {gap: sum(query.property_id == gap for query in queries) for gap in gaps}
@@ -4560,29 +4553,13 @@ class DiscoveryLoop:
             capture_queue_limit = max(1, self.max_captures)
             chosen: list[dict] = []
             per_host: dict[str, int] = {}
-            if iteration == 1 and self.max_captures > 0:
-                primary_root = next(
-                    (
-                        item
-                        for item in pool
-                        if "authority_policy" in item["providers"]
-                        and authority_tier(str(item.get("url") or ""), policy) == "primary"
-                    ),
-                    None,
-                )
-                if primary_root is not None:
-                    chosen.append(primary_root)
-                    host = urlsplit(primary_root["url"]).hostname or ""
-                    per_host[host] = per_host.get(host, 0) + 1
             # A one-capture round must preserve the highest-ranked lead. There
-            # is no remaining slot to follow a portal child in that round. A
-            # policy-primary root, when present, is already first in the queue.
+            # is no remaining slot to follow a portal child in that round.
             if self.max_captures > 1 and followable_portals:
-                portal = next((item for item in followable_portals if item not in chosen), None)
-                if portal is not None:
-                    chosen.append(portal)
-                    host = urlsplit(portal["url"]).hostname or ""
-                    per_host[host] = per_host.get(host, 0) + 1
+                portal = followable_portals[0]
+                chosen.append(portal)
+                host = urlsplit(portal["url"]).hostname or ""
+                per_host[host] = per_host.get(host, 0) + 1
             while len(chosen) < capture_queue_limit:
                 progressed = False
                 for gap in context["gaps"]:

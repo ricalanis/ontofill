@@ -1,4 +1,4 @@
-"""R66: primary publishers seed the first index capture and satisfy default coverage."""
+"""R66: primary publishers lead search and satisfy default coverage."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def synthetic_parse_pod(monkeypatch):
     monkeypatch.setattr(parse_module, "DockerParseExecutor", SyntheticParseExecutor)
 
 
-def test_first_query_batch_is_reserved_for_trusted_primary_namespaces(tmp_path) -> None:
+def test_first_query_batch_starts_with_trusted_primary_namespaces(tmp_path) -> None:
     ontology = _library_case(tmp_path)
     loop, _capture = _loop(tmp_path, [StaticProvider("synthetic", {})], {})
 
@@ -42,11 +42,9 @@ def test_first_query_batch_is_reserved_for_trusted_primary_namespaces(tmp_path) 
         set(),
     )
 
-    assert len(queries) == 2
-    assert all(query.text.startswith("site:") for query in queries)
-    assert any("site:libraries.example.test" in query.text for query in queries)
-    assert any("site:data.example.test" in query.text for query in queries)
-    assert all("site:region.example.test" not in query.text for query in queries)
+    assert len(queries) >= 2
+    assert queries[0].text.startswith("site:libraries.example.test ")
+    assert queries[1].text.startswith("site:data.example.test ")
 
 
 def test_primary_index_satisfies_acceptance_when_recall_target_is_higher(tmp_path) -> None:
@@ -69,7 +67,7 @@ def test_primary_index_satisfies_acceptance_when_recall_target_is_higher(tmp_pat
 
     loop.discover_sources(tmp_path, ontology, FakeVultr())
 
-    assert capture.calls[0] == index_url
+    assert any(url.startswith("https://libraries.example.test/") for url in capture.calls)
     assert loop.result is not None and loop.result.stop_reason == "checks_passed"
     assert provider.calls == 1
 
