@@ -81,8 +81,17 @@ _DOCUMENT_MIME_FORMAT = {
 }
 _DATASET_FILE_SUFFIXES = frozenset({".csv", ".xls", ".xlsx", ".zip"})
 _DATASET_LINK_CUE = re.compile(
-    r"\b(?:dataset|download|records?|registry|register|spreadsheet|export|roster|archive|list)\b",
+    r"\b(?:dataset|download|records?|registry|register|spreadsheet|export|roster|archive|list|"
+    r"datos?|descarga|listado|relaci[oó]n|padr[oó]n|archivo|registro|cat[aá]logo)\b",
     re.IGNORECASE,
+)
+_NON_DATA_LINK_CUE = re.compile(
+    r"\b(?:press|news|release|blog|prensa|comunicado|noticias?|bolet[ií]n)\b",
+    re.IGNORECASE,
+)
+_AUTH_QUERY_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|credential|authorization|bearer|"
+    r"session|csrf|sig(?:nature)?|access[_-]?key|auth|jwt|sas)"
 )
 _MAX_DATASET_LINKS_PER_INDEX = 5
 _NON_AUTHORITATIVE_PUBLISHER_KIND = re.compile(
@@ -923,7 +932,7 @@ def _dataset_file_suffix(url: str) -> str | None:
         return None
     if suffix not in _DATASET_FILE_SUFFIXES:
         return None
-    if any(_SENSITIVE_HEADER.search(name) for name, _value in query_pairs):
+    if any(_AUTH_QUERY_KEY.search(name) for name, _value in query_pairs):
         return None
     return suffix
 
@@ -986,9 +995,24 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
     )
     ranked: list[tuple[int, int, int, dict]] = []
     seen: set[str] = set()
-    for index, link in enumerate(context.get("links", [])[:300]):
+    page_links = context.get("links", [])
+    observed_requests = context.get("network_requests", [])
+    if not isinstance(page_links, list):
+        page_links = []
+    if not isinstance(observed_requests, list):
+        observed_requests = []
+    for index, link in enumerate([*page_links[:300], *observed_requests[:40]]):
         if not isinstance(link, Mapping):
             continue
+        observed = index >= min(len(page_links), 300)
+        if observed:
+            status = link.get("status")
+            if (
+                str(link.get("method") or "").upper() != "GET"
+                or link.get("resource_type") not in {"xhr", "fetch", "download"}
+                or (status is not None and (not isinstance(status, int) or status >= 400))
+            ):
+                continue
         raw_url = str(link.get("url") or "").strip()
         child_url = urljoin(parent_url, raw_url)
         try:
@@ -998,6 +1022,20 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
         except ValueError:
             continue
         suffix = _dataset_file_suffix(child_url)
+        if observed and suffix is None:
+            try:
+                query_pairs = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=100)
+            except ValueError:
+                continue
+            known_json_path = Path(parsed.path).suffix.casefold() == ".json"
+            known_json_type = str(link.get("content_type") or "").split(";", 1)[0].casefold() in {
+                "application/json",
+                "application/ld+json",
+            }
+            if (known_json_path or known_json_type) and not any(
+                _AUTH_QUERY_KEY.search(name) for name, _value in query_pairs
+            ):
+                suffix = ".json"
         if (
             not suffix
             or child_url in seen
@@ -1016,6 +1054,8 @@ def _dataset_index_links(candidate: Mapping, context: Mapping, ontology: Mapping
         search_text = f"{label} {parsed.path}"
         term_matches = len(_tokens(search_text) & relevant_terms)
         generic_cue = bool(_DATASET_LINK_CUE.search(search_text))
+        if _NON_DATA_LINK_CUE.search(search_text):
+            continue
         if term_matches == 0 and not generic_cue:
             continue
         ranked.append(
@@ -2478,6 +2518,19 @@ class DiscoveryLoop:
         if "proof" in captured:
             self.jobs.append(captured)
         status = int(captured.get("status", 200))
+        if captured.get("capture_reason") == "bot_challenge":
+            candidate.update(
+                status="inconclusive",
+                capture_reason="bot_challenge",
+                capture_outcome="blocked",
+                capture_key=captured.get("html_key"),
+                capture_attempts=attempts,
+                alternate_channel_hint=(
+                    "Search for the publisher's open-data portal, published datasets, or "
+                    "documented API; do not retry or bypass the interstitial."
+                ),
+            )
+            return None
         if status == 403 and attempts == 1:
             try:
                 retry = self.capture(url, **capture_kwargs)

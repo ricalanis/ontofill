@@ -10,13 +10,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import pytest
 from openpyxl import Workbook
 
 from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
 from ontofill.phase_loop import LoopBudget
-from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop
+from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, _dataset_index_links
+from ontofill.phases.p5_execute.source_review import reviewable_download_host
 from ontofill.sandbox import ParseExecution
 from tests.r17_helpers import (
     _HOST,
@@ -35,6 +37,149 @@ _XLSX = "https://libraries.example.test/datasets/branches.xlsx"
 _ZIP = "https://libraries.example.test/datasets/branches.zip"
 _OFF_HOST = "https://files.other.example.test/datasets/branches.zip"
 _PROVENANCE = {"backend": "recorded", "model": "synthetic", "at": "2026-09-27T00:00:00Z"}
+
+
+def _index_candidate() -> dict:
+    return {
+        "source_id": "source-library",
+        "url": _INDEX,
+        "capture_key": "sha256:" + "a" * 64,
+        "property_ids": ["opening_hours"],
+    }
+
+
+def _index_ontology() -> dict:
+    return {
+        "primary_class": "library_branch",
+        "classes": [
+            {
+                "id": "library_branch",
+                "label": "Library branch",
+                "label_plural": "Library branches",
+                "identifier_property": "branch_id",
+                "title_property": "branch_name",
+            }
+        ],
+        "properties": [
+            {"id": "opening_hours", "label": "Opening hours"},
+            {"id": "branch_name", "label": "Branch name"},
+            {"id": "branch_id", "label": "Branch ID"},
+        ],
+    }
+
+
+def test_index_admits_relevant_spanish_csv_without_english_cue() -> None:
+    links = _dataset_index_links(
+        _index_candidate(),
+        {
+            "links": [
+                {
+                    "url": "https://libraries.example.test/datos/Incumplidos_2024.csv",
+                    "text": "Relación de sucursales incumplidas",
+                },
+                {
+                    "url": "https://libraries.example.test/prensa/comunicado.csv",
+                    "text": "Comunicado de prensa",
+                },
+            ]
+        },
+        _index_ontology(),
+    )
+    assert [item["url"] for item in links] == [
+        "https://libraries.example.test/datos/Incumplidos_2024.csv"
+    ]
+
+
+def test_network_observed_documents_use_same_bounded_gate() -> None:
+    links = _dataset_index_links(
+        _index_candidate(),
+        {
+            "network_requests": [
+                {
+                    "url": "https://libraries.example.test/api/library-branches.json",
+                    "method": "GET",
+                    "resource_type": "xhr",
+                },
+                {
+                    "url": "https://libraries.example.test/api/library-branches.json?sig=secret-value",
+                    "method": "GET",
+                    "content_type": "application/json",
+                    "resource_type": "xhr",
+                },
+                {
+                    "url": "https://libraries.example.test/api/library-branches.json",
+                    "method": "POST",
+                    "status": 200,
+                    "content_type": "application/json",
+                    "resource_type": "xhr",
+                },
+                {
+                    "url": "https://libraries.example.test/api/help.json",
+                    "method": "GET",
+                    "status": 200,
+                    "content_type": "application/json",
+                    "resource_type": "xhr",
+                },
+                {
+                    "url": "https://libraries.example.test/api/library-branches.json?signature=secret-value",
+                    "method": "GET",
+                    "status": 200,
+                    "content_type": "application/json",
+                    "resource_type": "xhr",
+                },
+            ]
+        },
+        _index_ontology(),
+    )
+    assert [item["url"] for item in links] == [
+        "https://libraries.example.test/api/library-branches.json"
+    ]
+    assert links[0]["parent_capture_key"] == _index_candidate()["capture_key"]
+
+
+def test_auth_query_keys_never_enter_link_review() -> None:
+    for key in ("sig", "signature", "api_key", "access_token"):
+        url = f"https://files.other.example.test/branches.csv?{key}=synthetic-value"
+        assert reviewable_download_host(url, []) is None
+        assert (
+            _dataset_index_links(
+                _index_candidate(),
+                {"links": [{"url": url, "text": "Library branches dataset"}]},
+                _index_ontology(),
+            )
+            == []
+        )
+
+
+def test_captured_403_challenge_is_inconclusive_before_generic_retry(tmp_path: Path) -> None:
+    ontology = _library_case(tmp_path)
+    lake = FileLake(tmp_path / "lake")
+    capture = _Capture(lake)
+
+    def challenge(url: str, **kwargs) -> dict:
+        result = capture(url, **kwargs)
+        result.update(status=403, capture_reason="bot_challenge")
+        return result
+
+    loop = DiscoveryLoop(
+        [StaticProvider("synthetic", {_INDEX: ("opening_hours",)})],
+        capture=challenge,
+        lake=lake,
+        run_id="mock-r53-challenge",
+        provenance=_PROVENANCE,
+        budget=LoopBudget(max_iterations=1, wall_seconds=60),
+        parse_executor=SyntheticParseExecutor(),
+    )
+    with pytest.raises(ValueError, match="confirmed no source candidates"):
+        loop.discover_sources(
+            tmp_path, ontology, RecordedDecisionClient({}), gaps=("opening_hours",)
+        )
+    ledger = json.loads((tmp_path / "03-fanout/surface-map/leads.json").read_text())
+    candidate = next(item for item in ledger["candidates"] if item["url"] == _INDEX)
+    assert candidate["capture_reason"] == "bot_challenge"
+    assert candidate["status"] == "inconclusive"
+    assert candidate["alternate_channel_hint"]
+    assert candidate["capture_attempts"] == 1
 
 
 def _xlsx_bytes() -> bytes:

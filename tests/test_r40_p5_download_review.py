@@ -191,8 +191,8 @@ def test_off_domain_link_pauses_with_bronze_and_screenshot_provenance(tmp_path) 
     assert (candidates[0].parent / "APPROVAL_PENDING.md").is_file()
 
 
-def test_approval_survives_dynamic_page_evidence_and_fetches_exact_host(tmp_path) -> None:
-    _, html_state, fetch_calls, _, _, run = _make_case(
+def test_approval_reuses_unchanged_parent_capture_and_fetches_exact_host(tmp_path) -> None:
+    _, _, fetch_calls, _, _, run = _make_case(
         tmp_path, f'<main><a href="{_LINK_URL}">Download registry data</a></main>'
     )
     with pytest.raises(SourceReviewPending):
@@ -201,16 +201,9 @@ def test_approval_survives_dynamic_page_evidence_and_fetches_exact_host(tmp_path
     original_packet = candidate_path.read_bytes()
     _source_approval(tmp_path, candidate_path)
 
-    # The same exact URL is still present after a trusted-page recapture changes
-    # page bytes, link order, link text, bronze key, and screenshot.
-    html_state["value"] = (
-        '<main><a href="https://registry.example.test/local.csv">Local list</a>'
-        '<a href="https://BLOB.EXAMPLE.TEST:443/exports/registry.csv">'
-        "Updated download label</a></main>"
-    )
     decision = RecordedDecisionClient(
         {
-            "phase5.select_download": [{"index": 1}],
+            "phase5.select_download": [{"index": 0}],
             "phase5.map_columns": [_MAPPING],
         }
     )
@@ -222,6 +215,24 @@ def test_approval_survives_dynamic_page_evidence_and_fetches_exact_host(tmp_path
     assert fetch_calls[0][1]["phase"] == 5
     assert candidate_path.read_bytes() == original_packet
     assert len(result.sandbox_jobs) >= 4  # page and document fetches plus both parse pods
+
+
+def test_changed_parent_capture_never_reuses_approved_link(tmp_path) -> None:
+    _, html_state, fetch_calls, _, _, run = _make_case(
+        tmp_path, f'<main><a href="{_LINK_URL}">Download registry data</a></main>'
+    )
+    with pytest.raises(SourceReviewPending):
+        run(RecordedDecisionClient({}))
+    candidate_path = next((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
+    _source_approval(tmp_path, candidate_path)
+    before = candidate_path.read_bytes()
+    html_state["value"] = f'<main><a href="{_LINK_URL}">Updated registry data</a></main>'
+
+    with pytest.raises(ApprovalArtifactMismatch):
+        run(RecordedDecisionClient({"phase5.select_download": [{"index": 0}]}))
+
+    assert candidate_path.read_bytes() == before
+    assert fetch_calls == []
 
 
 def test_denial_skips_link_without_rewriting_pending_file(tmp_path) -> None:

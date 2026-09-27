@@ -7,7 +7,7 @@ import ipaddress
 import json
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from jsonschema import ValidationError
 
@@ -24,7 +24,21 @@ from ontofill.phases.p3_fanout.authority import authority_result, source_fingerp
 _DNS_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _LINK_TEXT_LIMIT = 500
+_AUTH_QUERY_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|credential|authorization|bearer|"
+    r"session|csrf|sig(?:nature)?|access[_-]?key|auth|jwt|sas)"
+)
 MAX_PENDING_LINK_CANDIDATES_PER_PAGE = 300
+
+
+def _has_auth_query(query: str) -> bool:
+    try:
+        return any(
+            _AUTH_QUERY_KEY.search(name)
+            for name, _value in parse_qsl(query, keep_blank_values=True, max_num_fields=100)
+        )
+    except ValueError:
+        return True
 
 
 class SourceReviewPending(RuntimeError):
@@ -78,6 +92,8 @@ def reviewable_download_host(url: str, allowed_domains: list[str]) -> str | None
         or ".." in host
     ):
         return None
+    if _has_auth_query(parsed.query):
+        return None
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -117,6 +133,8 @@ def canonical_link_url(value: str) -> str:
     host = (parsed.hostname or "").casefold().rstrip(".")
     if not host or parsed.scheme not in {"http", "https"}:
         raise ValueError("link review requires an absolute HTTP URL")
+    if _has_auth_query(parsed.query):
+        raise ValueError("link review URL contains an authentication query key")
     try:
         port = parsed.port
     except ValueError as exc:
@@ -150,7 +168,10 @@ def _stored_candidate_matches(
     source_id: str,
     parent_source_id: str,
     parent_page_url: str,
+    parent_capture_key: str,
     link_url: str,
+    link_text: str,
+    link_index: int,
     authority_policy: dict,
 ) -> bool:
     link_provenance = candidate.get("link_provenance")
@@ -163,7 +184,10 @@ def _stored_candidate_matches(
         or candidate.get("provider") != "sandbox_page_link"
         or link_provenance.get("parent_source_id") != parent_source_id
         or link_provenance.get("parent_page_url") != parent_page_url
+        or link_provenance.get("parent_capture_key") != parent_capture_key
         or link_provenance.get("link_url") != canonical_url
+        or link_provenance.get("link_text") != " ".join(link_text.split())[:_LINK_TEXT_LIMIT]
+        or link_provenance.get("link_index") != link_index
         or link_provenance.get("parent_capture_key") != candidate.get("capture_key")
     ):
         return False
@@ -291,7 +315,10 @@ def review_link_candidate(
             source_id=expected["source_id"],
             parent_source_id=parent_source_id,
             parent_page_url=parent_page_url,
+            parent_capture_key=parent_capture_key,
             link_url=link_url,
+            link_text=link_text,
+            link_index=link_index,
             authority_policy=authority_policy,
         ):
             raise ApprovalArtifactMismatch("source")

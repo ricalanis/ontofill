@@ -331,3 +331,6 @@ links are ignored, and an off-host ZIP waits on a digest-bound review packet
 without a capture. Existing P3 discovery, recall, linked-download review, and
 document-context regressions pass (46 tests). No live case, approval,
 credential, push, or deploy.
+# Current goal: R53 link integrity and recall
+
+Previously reviewed off-domain links may be reused only with the same captured parent evidence. A bounded captured open-data page may nominate relevant Spanish file links and browser-observed fetchable documents without granting source authority or evidence. Bot interstitials and credential URLs must fail safely. DONE: focused red-to-green synthetic tests, managed pytest/Ruff gate, local commit for integration.

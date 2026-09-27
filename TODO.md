@@ -649,3 +649,10 @@ tests/test_r53_dataset_links.py && git diff --check'`.
 1. [x] Add the synthetic index-page regression and record the red baseline.
 2. [x] Implement bounded dataset-link follow, same-host exact-host capture, and off-host review.
 3. [x] Run the managed focused gate and commit the isolated change; send the SHA to root.
+# R53 integrity and recall slice
+
+- FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `src/ontofill/phases/p5_execute/source_review.py`, `tests/test_r53_dataset_links.py`, `tests/test_r40_p5_download_review.py`, `GOAL.md`, `TODO.md`.
+- TASK: Bind link approval reuse to current capture provenance; admit bounded relevant Spanish and network-observed document leads; classify captured bot challenges before ordinary HTTP errors; reject credential query keys.
+- DONE: `agent-progress run` focused pytest and Ruff gate for R53 and P5 review tests; red-to-green regressions must cover each behavior.
+- FORMAT: `uv run ruff check` and `uv run ruff format --check` on touched Python files.
+- CHECK RESULT: `agent-progress run --task r53-integrity-recall --check r53-integrity-focused` passed: 49 P3/P5 tests, Ruff lint/format, and `git diff --check` (exit 0). Red baseline failed for Spanish links, network records, and changed-parent approval reuse.
