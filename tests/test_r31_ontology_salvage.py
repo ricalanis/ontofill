@@ -189,6 +189,30 @@ def _decision(candidates: list[dict]) -> RecordedDecisionClient:
                     ]
                 }
             ],
+            "critic.phase2.relation_count_semantics": [
+                {
+                    "assessments": [
+                        {
+                            "criterion_id": "record_count",
+                            "counts_related_entities": False,
+                            "class_id": None,
+                            "relation_id": None,
+                            "reason": "The criterion counts records without a relation condition.",
+                        }
+                    ]
+                }
+            ],
+            "critic.phase2.rule_semantics": [
+                {
+                    "assessments": [
+                        {
+                            "rule_id": "record_key_example",
+                            "matches": True,
+                            "reason": "The predicate checks the key against its stated example.",
+                        }
+                    ]
+                }
+            ],
             "phase2.schema": candidates,
             "phase2.dod_queries": [
                 {

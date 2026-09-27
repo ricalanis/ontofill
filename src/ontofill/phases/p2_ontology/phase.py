@@ -102,6 +102,106 @@ NODE_LABELS_SCHEMA = {
 
 _GOOD_LABELS = {"Good-Overlapping", "Good-Exclusive"}
 _TAXONOMY_ALGORITHM_VERSION = "r10-separate-critic-v1"
+_CORE_FIELD_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["requirements"],
+    "properties": {
+        "requirements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["requirement_id", "core_fields", "non_core_reason"],
+                "properties": {
+                    "requirement_id": {"type": "string", "minLength": 1},
+                    "core_fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["field", "property_id"],
+                            "properties": {
+                                "field": {"type": "string", "minLength": 1},
+                                "property_id": {
+                                    "oneOf": [
+                                        {"type": "string", "minLength": 1},
+                                        {"type": "null"},
+                                    ]
+                                },
+                            },
+                        },
+                    },
+                    "non_core_reason": {
+                        "oneOf": [
+                            {"type": "string", "minLength": 1},
+                            {"type": "null"},
+                        ]
+                    },
+                },
+            },
+        }
+    },
+}
+_RELATION_COUNT_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["assessments"],
+    "properties": {
+        "assessments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "criterion_id",
+                    "counts_related_entities",
+                    "class_id",
+                    "relation_id",
+                    "reason",
+                ],
+                "properties": {
+                    "criterion_id": {"type": "string", "minLength": 1},
+                    "counts_related_entities": {"type": "boolean"},
+                    "class_id": {
+                        "oneOf": [
+                            {"type": "string", "minLength": 1},
+                            {"type": "null"},
+                        ]
+                    },
+                    "relation_id": {
+                        "oneOf": [
+                            {"type": "string", "minLength": 1},
+                            {"type": "null"},
+                        ]
+                    },
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        }
+    },
+}
+_RULE_SEMANTICS_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["assessments"],
+    "properties": {
+        "assessments": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["rule_id", "matches", "reason"],
+                "properties": {
+                    "rule_id": {"type": "string", "minLength": 1},
+                    "matches": {"type": "boolean"},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        }
+    },
+}
 _ALLOWED_RELATION_MATCH = (
     "Relation endpoint classes must be honored. Allowed relation matches: use `same_value` "
     "with one declared property from the relation's domain class and one from its range class; "
@@ -602,7 +702,14 @@ def draft_ontology(
                 validate_document("ontology", ontology)
                 validate_document("dod-queries", load_json(queries_path))
                 _validate_ontology(ontology)
-                _validate_queries(prd, ontology, load_json(queries_path))
+                _validate_primary_dod_presence(prd, ontology)
+                relation_counts = _review_ontology_semantics(prd, ontology, decision)
+                _validate_queries(
+                    prd,
+                    ontology,
+                    load_json(queries_path),
+                    relation_count_assessments=relation_counts,
+                )
             except (ValidationError, ValueError):
                 pass
             else:
@@ -675,6 +782,8 @@ def draft_ontology(
         f"Approved case specification: {json.dumps(case_spec, ensure_ascii=False)}"
     )
 
+    schema_reviews: dict[str, dict] = {}
+
     def validate_schema(proposed: dict) -> None:
         ontology = {
             "version": "1",
@@ -689,6 +798,9 @@ def draft_ontology(
         }
         validate_document("ontology", ontology)
         _validate_ontology(ontology)
+        _validate_primary_dod_presence(prd, ontology)
+        relation_counts = _review_ontology_semantics(prd, ontology, decision)
+        schema_reviews["relation_counts"] = relation_counts
 
     unresolved: list[dict] = []
 
@@ -745,6 +857,7 @@ def draft_ontology(
         prd,
         ontology,
         decision,
+        relation_count_assessments=schema_reviews.get("relation_counts"),
         on_validation_error=on_validation_error,
     )
     recommendation_document = {
@@ -846,6 +959,273 @@ def _validate_ontology(ontology: dict) -> None:
     rule_errors = _rule_proposal_errors(ontology["rules"], properties)
     if relation_errors or rule_errors:
         raise OntologyProposalErrors(rule_errors, relation_errors)
+
+
+def _review_model_json(
+    decision: DecisionClient, purpose: str, prompt: str, schema: dict
+) -> dict:
+    """Obtain a typed P2 semantic review through the separate critic model family."""
+    try:
+        response = decision.complete_json(f"critic.phase2.{purpose}", prompt, schema)
+    except ModelValidationExhausted as exc:
+        raise ValueError(f"{purpose} critic returned invalid output: {exc.reason}") from exc
+    Draft202012Validator(schema).validate(response)
+    return response
+
+
+def _normalise_words(value: str) -> str:
+    return re.sub(r"[\W_]+", " ", value.casefold(), flags=re.UNICODE).strip()
+
+
+def _class_named_by_criterion(criterion: dict, classes: list[dict]) -> str | None:
+    """Resolve an unambiguous ontology class name stated in a PRD criterion."""
+    criterion_text = _normalise_words(
+        " ".join(
+            str(criterion.get(field) or "")
+            for field in ("metric", "basis_quote", "rationale", "feasibility")
+        )
+    )
+    if not criterion_text:
+        return None
+    padded_text = f" {criterion_text} "
+    matches = set()
+    for entity_class in classes:
+        aliases = {
+            _normalise_words(str(entity_class.get(field) or ""))
+            for field in ("id", "label", "label_plural")
+        }
+        if any(alias and f" {alias} " in padded_text for alias in aliases):
+            matches.add(entity_class["id"])
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionClient) -> None:
+    completeness_criteria = [
+        item
+        for item in prd.get("definition_of_done", [])
+        if item.get("min_ratio") is not None
+    ]
+    if not completeness_criteria:
+        return
+
+    primary_class = ontology["primary_class"]
+    primary_dod = [
+        item
+        for item in ontology["properties"]
+        if item["domain"] == primary_class and item["dod"]
+    ]
+    if not primary_dod:
+        raise ValueError(
+            f"completeness requires primary class `{primary_class}` to own at least one "
+            "`dod: true` property for its core PRD fields"
+        )
+
+    requirements = prd.get("requirements", [])
+    requirement_ids = [item.get("id") for item in requirements]
+    if any(not isinstance(item, str) or not item for item in requirement_ids):
+        raise ValueError("core field review requires every PRD requirement to have an ID")
+    if len(requirement_ids) != len(set(requirement_ids)):
+        raise ValueError("core field review requires unique PRD requirement IDs")
+    prompt = (
+        "Independently inspect every approved PRD requirement and identify every core data field "
+        "whose value must be present for per-entity completeness. Exclude process, navigation, "
+        "presentation, and other non-field requirements; give each such requirement a concise "
+        "non_core_reason. For each core field, return its requirement ID, a short field name, and "
+        "the single matching ontology property ID, or null if none matches. A property counts only "
+        "when it belongs to the primary class and is marked dod=true. Do not ask for or revise the "
+        "PRD. Return every requirement ID exactly once. "
+        f"Requirements: {json.dumps(requirements, ensure_ascii=False)}. "
+        f"Primary class: {primary_class}. Properties: "
+        f"{json.dumps(ontology['properties'], ensure_ascii=False)}"
+    )
+    response = _review_model_json(decision, "core_field_bindings", prompt, _CORE_FIELD_REVIEW_SCHEMA)
+    received_ids = [item["requirement_id"] for item in response["requirements"]]
+    if len(received_ids) != len(set(received_ids)) or set(received_ids) != set(requirement_ids):
+        raise ValueError("core field critic must assess every approved PRD requirement exactly once")
+
+    properties = {item["id"]: item for item in ontology["properties"]}
+    bindings_seen = set()
+    core_fields_seen = 0
+    errors = []
+    for assessment in response["requirements"]:
+        requirement_id = assessment["requirement_id"]
+        core_fields = assessment["core_fields"]
+        if not core_fields and not assessment["non_core_reason"]:
+            errors.append(
+                f"requirement `{requirement_id}` has no core field mapping or non-core explanation"
+            )
+            continue
+        for field in core_fields:
+            core_fields_seen += 1
+            field_label = field["field"]
+            property_id = field["property_id"]
+            binding_key = (requirement_id, field_label.casefold())
+            if binding_key in bindings_seen:
+                errors.append(
+                    f"core PRD field `{field_label}` is listed more than once for requirement "
+                    f"`{requirement_id}`"
+                )
+                continue
+            bindings_seen.add(binding_key)
+            prop = properties.get(property_id) if isinstance(property_id, str) else None
+            if prop is None:
+                errors.append(
+                    f"core PRD field `{field_label}` from requirement `{requirement_id}` has no "
+                    f"matching property on primary class `{primary_class}` marked `dod: true`"
+                )
+            elif prop["domain"] != primary_class or not prop["dod"]:
+                errors.append(
+                    f"core PRD field `{field_label}` from requirement `{requirement_id}` maps to "
+                    f"property `{property_id}` on class `{prop['domain']}` with dod={prop['dod']}; "
+                    f"it must be a `dod: true` property owned by primary class `{primary_class}`"
+                )
+    if core_fields_seen == 0:
+        errors.append(
+            f"completeness has no core PRD fields mapped to `dod: true` properties of primary "
+            f"class `{primary_class}`"
+        )
+    if errors:
+        raise ValueError("; ".join(errors))
+
+
+def _validate_primary_dod_presence(prd: dict, ontology: dict) -> None:
+    if not any(item.get("min_ratio") is not None for item in prd.get("definition_of_done", [])):
+        return
+    primary_class = ontology["primary_class"]
+    if not any(
+        item["domain"] == primary_class and item["dod"] for item in ontology["properties"]
+    ):
+        raise ValueError(
+            f"completeness requires primary class `{primary_class}` to own at least one "
+            "`dod: true` property for its core PRD fields"
+        )
+
+
+def _review_relation_count_semantics(
+    prd: dict, ontology: dict, decision: DecisionClient
+) -> dict[str, dict]:
+    criteria = prd.get("definition_of_done", [])
+    criterion_ids = [item.get("id") for item in criteria]
+    if any(not isinstance(item, str) or not item for item in criterion_ids):
+        raise ValueError("relation-count review requires every DoD criterion to have an ID")
+    if len(criterion_ids) != len(set(criterion_ids)):
+        raise ValueError("relation-count review requires unique DoD criterion IDs")
+
+    prompt = (
+        "Independently assess each approved DoD criterion against the declared ontology. Decide "
+        "whether it counts entities because they have a typed relation. When it does, identify "
+        "the single declared relation and the entity class named by the criterion that the count "
+        "must measure. The current evaluator counts relation domain entities only, so the selected "
+        "relation's domain must be that named class. When it does not count related entities, set "
+        "counts_related_entities=false and class_id/relation_id=null. Use class IDs, labels, and "
+        "the criterion's wording; do not assume a domain. Return every criterion ID exactly once. "
+        f"Criteria: {json.dumps(criteria, ensure_ascii=False)}. "
+        f"Classes: {json.dumps(ontology['classes'], ensure_ascii=False)}. "
+        f"Relations: {json.dumps(ontology['relations'], ensure_ascii=False)}"
+    )
+    response = _review_model_json(
+        decision, "relation_count_semantics", prompt, _RELATION_COUNT_REVIEW_SCHEMA
+    )
+    assessments = response["assessments"]
+    received_ids = [item["criterion_id"] for item in assessments]
+    if len(received_ids) != len(set(received_ids)) or set(received_ids) != set(criterion_ids):
+        raise ValueError("relation-count critic must assess every approved DoD criterion exactly once")
+
+    classes = {item["id"]: item for item in ontology["classes"]}
+    relations = {item["id"]: item for item in ontology["relations"]}
+    by_criterion = {}
+    for assessment in assessments:
+        criterion_id = assessment["criterion_id"]
+        if not assessment["counts_related_entities"]:
+            if assessment["class_id"] is not None or assessment["relation_id"] is not None:
+                raise ValueError(
+                    f"relation-count critic for criterion `{criterion_id}` must leave class_id "
+                    "and relation_id null when it does not count related entities"
+                )
+            by_criterion[criterion_id] = assessment
+            continue
+
+        class_id = assessment["class_id"]
+        relation_id = assessment["relation_id"]
+        if class_id not in classes:
+            raise ValueError(
+                f"relation-count critic for criterion `{criterion_id}` names an unknown counted class"
+            )
+        relation = relations.get(relation_id)
+        if relation is None:
+            raise ValueError(
+                f"relation-count critic for criterion `{criterion_id}` names an unknown relation"
+            )
+        criterion = next(item for item in criteria if item["id"] == criterion_id)
+        named_class = _class_named_by_criterion(criterion, ontology["classes"])
+        if named_class is not None and named_class != class_id:
+            raise ValueError(
+                f"criterion `{criterion_id}` names class `{named_class}`, but its relation-count "
+                f"critic selected class `{class_id}`"
+            )
+        if relation["domain"] != class_id:
+            raise ValueError(
+                f"criterion `{criterion_id}` names counted class `{class_id}`, but relation "
+                f"`{relation_id}` is oriented `{relation['domain']}` → `{relation['range']}`; "
+                "count_entities_with_relation measures the relation domain. Reverse or replace "
+                "the ontology relation so the named counted class is its domain"
+            )
+        by_criterion[criterion_id] = assessment
+    return by_criterion
+
+
+def _review_rule_semantics(ontology: dict, decision: DecisionClient) -> None:
+    rules = [item for item in ontology["rules"] if item.get("predicate") is not None]
+    if not rules:
+        return
+    prompt = (
+        "Independently compare each executable rule's typed predicate with its label, checks, and "
+        "verify text. Decide whether the predicate actually expresses the described check; a rule "
+        "that merely has valid property IDs can still be semantically wrong. Assess each rule ID "
+        "exactly once, do not rewrite any content, and make each reason name the concrete mismatch. "
+        f"Executable rules: {json.dumps(rules, ensure_ascii=False)}. "
+        f"Declared properties: {json.dumps(ontology['properties'], ensure_ascii=False)}"
+    )
+    response = _review_model_json(
+        decision, "rule_semantics", prompt, _RULE_SEMANTICS_REVIEW_SCHEMA
+    )
+    expected_ids = {item["id"] for item in rules}
+    received_ids = [item["rule_id"] for item in response["assessments"]]
+    if len(received_ids) != len(set(received_ids)) or set(received_ids) != expected_ids:
+        raise ValueError("rule critic must assess every executable rule exactly once")
+    errors = [
+        f"rule `{item['rule_id']}` label/checks do not match its executable predicate: "
+        f"{item['reason']}"
+        for item in response["assessments"]
+        if not item["matches"]
+    ]
+    if errors:
+        raise ValueError("; ".join(errors))
+
+
+def _review_ontology_semantics(
+    prd: dict, ontology: dict, decision: DecisionClient
+) -> dict[str, dict] | None:
+    errors = []
+    try:
+        _review_core_field_bindings(prd, ontology, decision)
+    except (ValidationError, ValueError) as exc:
+        errors.append(str(exc))
+
+    relation_counts = None
+    if ontology["relations"]:
+        try:
+            relation_counts = _review_relation_count_semantics(prd, ontology, decision)
+        except (ValidationError, ValueError) as exc:
+            errors.append(str(exc))
+
+    try:
+        _review_rule_semantics(ontology, decision)
+    except (ValidationError, ValueError) as exc:
+        errors.append(str(exc))
+    if errors:
+        raise ValueError("; ".join(errors))
+    return relation_counts
 
 
 def _relation_proposal_errors(
@@ -1044,6 +1424,7 @@ def _draft_dod_queries(
     ontology: dict,
     decision: DecisionClient,
     *,
+    relation_count_assessments: dict[str, dict] | None = None,
     on_validation_error: ValidationErrorCallback | None = None,
 ) -> dict:
     schema = model_output_schema("dod-queries")
@@ -1052,12 +1433,15 @@ def _draft_dod_queries(
         "query. Use only ontology class/property/relation IDs and the supported aggregate/condition operators. "
         "For a per-entity completeness criterion, use entities_meeting_completeness with "
         "class equal to the primary class, properties='dod', and min_ratio copied from the PRD. "
-        "For a criterion that counts linked records, use count_entities_with_relation and its "
-        "relation_id; class_id, if included, must be the relation domain. "
+        "For each criterion the separate relation-count critic marked as counting related "
+        "entities, use count_entities_with_relation with the exact reviewed relation_id and "
+        "class_id. The relation domain must be the class named by that criterion. Do not use the "
+        "relation aggregate for a criterion the critic marked as an ordinary entity count. "
         "Copy each criterion's target and comparison operator exactly. Do not write SQL or code. "
         f"Criteria: {prd['definition_of_done']}. Classes: {ontology['classes']}. "
         f"Properties: {ontology['properties']}. Relations: {ontology['relations']}. "
-        f"Source classes: {ontology.get('source_classes', [])}."
+        f"Source classes: {ontology.get('source_classes', [])}. "
+        f"Reviewed relation-count semantics: {relation_count_assessments or {}}."
     )
 
     def validate_queries(response: dict) -> None:
@@ -1068,7 +1452,12 @@ def _draft_dod_queries(
             "ontology_version": ontology["version"],
         }
         validate_document("dod-queries", document)
-        _validate_queries(prd, ontology, document)
+        _validate_queries(
+            prd,
+            ontology,
+            document,
+            relation_count_assessments=relation_count_assessments,
+        )
 
     response = _complete_validated_json(
         decision,
@@ -1086,7 +1475,13 @@ def _draft_dod_queries(
     }
 
 
-def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:
+def _validate_queries(
+    prd: dict,
+    ontology: dict,
+    document: dict,
+    *,
+    relation_count_assessments: dict[str, dict] | None = None,
+) -> None:
     criteria = {item["id"]: item for item in prd["definition_of_done"]}
     queries = document["queries"]
     if len(queries) != len(criteria) or {item["criterion_id"] for item in queries} != set(criteria):
@@ -1113,14 +1508,88 @@ def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:
                 raise ValueError("completeness query must use the primary class")
             if criterion.get("min_ratio") is None:
                 raise ValueError("completeness query requires an approved PRD min_ratio")
+            if query.get("properties") != "dod":
+                raise ValueError("completeness query must include all primary-class DoD properties")
+            primary_dod = [
+                item
+                for item in ontology["properties"]
+                if item["domain"] == ontology["primary_class"] and item["dod"]
+            ]
+            if not primary_dod:
+                raise ValueError(
+                    f"completeness query's primary class `{ontology['primary_class']}` has no "
+                    "`dod: true` properties to measure"
+                )
         class_id = query.get("class_id", query.get("class"))
         if query["aggregate"] == "count_entities_with_relation":
             relation = relations.get(query["relation_id"])
             if relation is None:
-                raise ValueError("DoD query references an unknown relation")
-            if class_id is not None and class_id != relation["domain"]:
-                raise ValueError("relation count class must equal the relation domain")
+                raise ValueError(
+                    f"DoD criterion `{query['criterion_id']}` references an unknown relation"
+                )
+            named_classes = {
+                value for value in (query.get("class_id"), query.get("class")) if value is not None
+            }
+            if len(named_classes) > 1:
+                raise ValueError(
+                    f"DoD criterion `{query['criterion_id']}` supplies conflicting count classes"
+                )
+            assessment = None
+            if relation_count_assessments is not None:
+                assessment = relation_count_assessments.get(query["criterion_id"])
+                if assessment is None:
+                    raise ValueError(
+                        f"DoD criterion `{query['criterion_id']}` has no relation-count review"
+                    )
+                if not assessment["counts_related_entities"]:
+                    raise ValueError(
+                        f"DoD criterion `{query['criterion_id']}` was reviewed as an ordinary "
+                        "entity count, not a relation count"
+                    )
+                if query["relation_id"] != assessment["relation_id"]:
+                    raise ValueError(
+                        f"DoD criterion `{query['criterion_id']}` must count relation `"
+                        f"{assessment['relation_id']}` named by the semantic review"
+                    )
+                expected_class = assessment["class_id"]
+                if named_classes and next(iter(named_classes)) != expected_class:
+                    raise ValueError(
+                        f"DoD criterion `{query['criterion_id']}` must count the named class `"
+                        f"{expected_class}`"
+                    )
+                if relation["domain"] != expected_class:
+                    raise ValueError(
+                        f"DoD criterion `{query['criterion_id']}` names counted class `"
+                        f"{expected_class}`, but relation `{relation['id']}` domain is `"
+                        f"{relation['domain']}`"
+                    )
+            if named_classes and next(iter(named_classes)) != relation["domain"]:
+                raise ValueError(
+                    f"DoD criterion `{query['criterion_id']}` counts class `"
+                    f"{next(iter(named_classes))}`, but relation `{relation['id']}` is oriented `"
+                    f"{relation['domain']}` → `{relation['range']}`; its relation domain is `"
+                    f"{relation['domain']}`, and relation counts use that domain class"
+                )
+            named_criterion_class = _class_named_by_criterion(criterion, ontology["classes"])
+            if named_criterion_class and relation["domain"] != named_criterion_class:
+                raise ValueError(
+                    f"DoD criterion `{query['criterion_id']}` names counted class `"
+                    f"{named_criterion_class}`, but relation `{relation['id']}` is oriented `"
+                    f"{relation['domain']}` → `{relation['range']}`; its relation domain is `"
+                    f"{relation['domain']}`, and relation counts use that domain class"
+                )
             class_id = relation["domain"]
+        elif relation_count_assessments is not None:
+            assessment = relation_count_assessments.get(query["criterion_id"])
+            if assessment is None:
+                raise ValueError(
+                    f"DoD criterion `{query['criterion_id']}` has no relation-count review"
+                )
+            if assessment["counts_related_entities"]:
+                raise ValueError(
+                    f"DoD criterion `{query['criterion_id']}` must count relation `"
+                    f"{assessment['relation_id']}` for named class `{assessment['class_id']}`"
+                )
         if class_id is not None and class_id not in classes:
             raise ValueError("DoD query references an unknown class")
         listed = query.get("properties", [])
