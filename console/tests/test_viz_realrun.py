@@ -2328,8 +2328,9 @@ def test_entity_lineage_and_values_read_as_text(rr_client):
 def test_failures_classify_real_stops_refusals_and_gates(rr_client):
     m = rr_client.get(f"/cases/{CASE}/api/viz/failures").json()
     by_kind: dict[str, list[str]] = {}
-    for s in m["strips"]:
-        by_kind.setdefault(s["kind"], []).append(s["title"])
+    for s in m["strips"]:  # titles name the host with the source id beside it: compare by the id
+        by_kind.setdefault(s["kind"], []).append(re.sub(r"· \S+ \(([^)]+)\)$", r"· \1", s["title"]))
+    assert any(re.search(r"· \S+\.\S+ \(", s["title"]) for s in m["strips"])  # at least one strip names its host
     assert sorted(by_kind["stop"]) == sorted(
         [
             "Stopped: captcha · search-provider",

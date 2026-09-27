@@ -8,6 +8,7 @@ Reads the run's `trace.live.jsonl` (or the gold `trace.jsonl`), `status.json` (s
 from __future__ import annotations
 
 import json
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import HTMLResponse
@@ -77,11 +78,55 @@ def _tool(s: dict) -> str | None:
     return req.get("tool") or req.get("action")
 
 
+def _find(obj, key: str, depth: int = 0):
+    """The first value under `key` anywhere in a nested trace or job field (dicts, lists, JSON strings)."""
+    obj = hc.jsonish(obj)
+    if depth > 5:
+        return None
+    if isinstance(obj, dict):
+        if obj.get(key) not in (None, "", [], {}):
+            return obj[key]
+        values = list(obj.values())
+    elif isinstance(obj, list):
+        values = obj
+    else:
+        return None
+    for v in values:
+        found = _find(v, key, depth + 1)
+        if found not in (None, "", [], {}):
+            return found
+    return None
+
+
+def _host(url) -> str | None:
+    if not isinstance(url, str) or "://" not in url:
+        return None
+    return urlsplit(url).hostname
+
+
+def source_label(s: dict) -> str:
+    """A source named by the host it was reading (source ids are opaque hashes), with the id beside it."""
+    src = s.get("source_id")
+    host = _host(_find(s.get("requested"), "url")) or _host(_find(s.get("observed"), "url"))
+    if host and src:
+        return f"{host} ({src})"
+    return host or src or "no source"
+
+
+def redirects(obj) -> str:
+    """A redirect chain, as hosts in order, when a step or job recorded one."""
+    chain = _find(obj, "redirect_chain")
+    if not isinstance(chain, list) or not chain:
+        return ""
+    hops = [(_host(u) or str(u)) for u in chain]
+    return "redirects: " + " → ".join(dict.fromkeys(hops))
+
+
 def classify(s: dict) -> tuple[str, str, str] | None:
     """(kind, title, detail) for a step that went wrong or was contained, else None."""
     kind, ev, d = s.get("kind"), s.get("event"), s.get("detail") or {}
     text = _text(s)
-    src = s.get("source_id") or "no source"
+    src = source_label(s)
     evald = _ev(s)
     if kind == "quarantine":
         detail = " · ".join(
@@ -153,10 +198,21 @@ def classify(s: dict) -> tuple[str, str, str] | None:
         which = next((w for w in STOP_WORDS if w in text), None) or str(evald.get("reason") or "hard stop")
         return "stop", f"Stopped: {which} · {src}", hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested"))
     if any(w in text for w in BLOCK_WORDS):
+        why = _find(s.get("evaluated"), "reason") or _find(s.get("executed"), "reason")
+        allowed = _find(s.get("requested"), "allowed_domains")
+        detail = " · ".join(
+            str(x)
+            for x in (
+                str(why).replace("_", " ") if why else None,
+                redirects([s.get("evaluated"), s.get("executed"), s.get("observed")]),
+                f"allowed: {', '.join(allowed)}" if isinstance(allowed, list) and allowed else None,
+            )
+            if x
+        )
         return (
             "blocked_domain",
             f"Domain blocked · {src}",
-            hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested")),
+            detail or hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested")),
         )
     if ev == "escalation":
         return (
@@ -191,9 +247,33 @@ def job_failure(job: dict) -> str:
     if job.get("failure_reason"):
         return hc.text_of(job["failure_reason"], 200)
     task = (job.get("checkpoints") or {}).get("task")
-    if isinstance(task, dict) and task.get("ok") is False:
-        return hc.text_of(task.get("result"), 200)
-    return ""
+    if not (isinstance(task, dict) and task.get("ok") is False):
+        return ""
+    res = hc.jsonish(task.get("result"))
+    events = _find(res, "egress_events")
+    blocked = sorted(
+        {
+            e.get("host")
+            for e in events or []
+            if isinstance(e, dict)
+            and e.get("decision") == "block"
+            and not str(e.get("host") or "").endswith(".invalid")
+        }  # *.invalid is the isolation probe, blocked on purpose
+        - {None}
+    )
+    why = _find(res, "reason")
+    parts = [
+        f"egress blocked: {', '.join(blocked)}" if blocked else None,
+        str(why).replace("_", " ") if why else None,
+        redirects(res) or None,
+    ]
+    text = " · ".join(p for p in parts if p)
+    return text or hc.text_of(res, 200)
+
+
+def job_host(job: dict) -> str | None:
+    """The host a sandbox job was sent to read, from its task checkpoint's request."""
+    return _host(_find((job.get("checkpoints") or {}).get("task"), "url"))
 
 
 def job_row(job: dict, base: str, rid: str) -> dict:
@@ -210,6 +290,7 @@ def job_row(job: dict, base: str, rid: str) -> dict:
     return {
         "job_id": job.get("job_id"),
         "source_id": job.get("source_id"),
+        "host": job_host(job),
         "step_id": job.get("step_id"),
         "href": f"{base}/runs/{rid}#{job.get('step_id')}" if job.get("step_id") else f"{base}/runs/{rid}#proof-h",
         "checkpoints": cps,
@@ -320,7 +401,7 @@ def model(case, run: str | None = None) -> dict:
                 {
                     "kind": "checkpoint_fail",
                     "state": "block",
-                    "title": f"Proof checkpoint failed · {j.get('job_id')}",
+                    "title": f"Proof checkpoint failed · {job_host(j) or j.get('job_id')}",
                     "detail": " · ".join(x for x in (", ".join(failed), job_failure(j)) if x),
                     "step_id": j.get("step_id"),
                     "when": j.get("ended_at"),

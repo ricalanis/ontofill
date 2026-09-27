@@ -88,7 +88,7 @@ def test_failures_view_leads_with_why_the_run_stopped(client, p3_gave_up):
     m = client.get(f"/cases/libraries/api/viz/failures?run={RUN}").json()
     first = m["strips"][0]
     assert first["kind"] == "run_stop" and first["phase"] == 3 and "iteration cap" in first["title"]
-    job = next(s for s in m["strips"] if s["kind"] == "checkpoint_fail" and "p3probe" in s["title"])
+    job = next(s for s in m["strips"] if s["kind"] == "checkpoint_fail" and "branch.example" in s["title"])
     assert job["phase"] == 3  # the dispatching step's phase, not an assumed P5
     assert "capture refused: http_403" in job["detail"]
     page = client.get(f"/cases/libraries/failures?run={RUN}").text
@@ -114,3 +114,60 @@ def test_pages_name_each_source_by_its_hosts(client):
         assert chip["label"].startswith(g["hosts"][0])  # the chip reads as a site, the id stays in its title
     page = client.get("/cases/libraries/pages").text
     assert f'title="{with_hosts[0]["source_id"]}"' in page and with_hosts[0]["hosts"][0] in page
+
+
+def test_blocked_captures_name_the_host_and_the_redirect_chain(client, cases_dir):
+    """Live, federal pages were blocked for redirecting out of their registrable domain and the view showed only
+    opaque source ids with a truncated dump. Strips now name the host and show the reason, the chain and the
+    allowlist; a job names what egress blocked (not the isolation probe's *.invalid host)."""
+    step = {
+        "step_id": f"step:{RUN}:blocked1",
+        "run_id": RUN,
+        "phase": 3,
+        "mode": "S1",
+        "source_id": "source-abc123",
+        "observed": "dispatch",
+        "executed": "dispatch",
+        "requested": {"url": "https://www.dept.example/files/list", "allowed_domains": ["dept.example"]},
+        "evaluated": {
+            "proof_checkpoint": "dispatch_result",
+            "status": "blocked",
+            "reason": "redirect_outside_registrable_domain",
+            "redirect_chain": ["https://www.dept.example/files/list", "https://www.portal.example/dept/list"],
+        },
+        "value_ids": [],
+        "ts": (T0 + timedelta(seconds=30)).isoformat(),
+    }
+    with (run_dir(cases_dir) / "trace.live.jsonl").open("a") as f:
+        f.write(json.dumps(step) + "\n")
+    job = {
+        "job_id": "job:egress1",
+        "run_id": RUN,
+        "step_id": step["step_id"],
+        "source_id": "source-abc123",
+        "checkpoints": {
+            "task": {
+                "ok": False,
+                "requested": {"url": "https://procure.example/search"},
+                "result": {
+                    "egress_events": [
+                        {"decision": "block", "host": "probe-1.invalid", "method": "GET"},
+                        {"decision": "block", "host": "procure.example", "method": "CONNECT"},
+                    ]
+                },
+                "value_ids": [],
+            }
+        },
+    }
+    with (run_dir(cases_dir) / "jobs.jsonl").open("a") as f:
+        f.write(json.dumps(job) + "\n")
+    m = client.get(f"/cases/libraries/api/viz/failures?run={RUN}").json()
+    blocked = next(s for s in m["strips"] if s["kind"] == "blocked_domain" and "abc123" in s["title"])
+    assert blocked["title"] == "Domain blocked · www.dept.example (source-abc123)"
+    assert "redirect outside registrable domain" in blocked["detail"]
+    assert "redirects: www.dept.example → www.portal.example" in blocked["detail"]
+    assert "allowed: dept.example" in blocked["detail"]
+    jstrip = next(s for s in m["strips"] if s["kind"] == "checkpoint_fail" and "procure.example" in s["title"])
+    assert "egress blocked: procure.example" in jstrip["detail"] and "invalid" not in jstrip["detail"]
+    row = next(c for c in m["cells"] if c["job_id"] == "job:egress1")
+    assert row["host"] == "procure.example"
