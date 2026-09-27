@@ -94,6 +94,8 @@ class ActResult:
     error: str | None = None
     values: dict | None = None  # extract: {field: {"value", "selector"}}
     blocked_hosts: list[str] = field(default_factory=list)
+    http_status: int | None = None  # navigate/back: the main document's final HTTP status (R36)
+    elapsed_ms: int | None = None  # navigate/back: wall time of the navigation, success or failure
 
     def as_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v not in (None, [], {})} | {"ok": self.ok}

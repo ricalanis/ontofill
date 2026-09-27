@@ -81,3 +81,21 @@ def test_is_search_form():
     assert not is_search_form({"method": "get", "input_names": ["q"], "submit_names": ["Send complaint"]})
     assert not is_search_form({"method": "get", "input_types": ["password"], "input_names": ["q"]})
     assert not is_search_form({"method": "get", "has_textarea": True, "input_names": ["q"]})
+
+
+def test_navigation_reports_status_timing_and_the_concrete_error(site, browser):
+    """R36: every navigation records the final HTTP status and elapsed time; a failure keeps Chromium's own
+    net::ERR_* line instead of a bare exception class name."""
+    ok = browser.act(Action("navigate", {"url": site.url("search.html")}))
+    assert ok.ok and ok.http_status == 200 and isinstance(ok.elapsed_ms, int)
+    assert {"http_status", "elapsed_ms"} <= set(ok.as_dict())
+    missing = browser.act(Action("navigate", {"url": site.url("no-such-page.html")}))
+    assert missing.http_status == 404
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()  # nothing listens there now
+    dead = browser.act(Action("navigate", {"url": f"http://127.0.0.1:{port}/"}))
+    assert not dead.ok and "net::ERR_CONNECTION_REFUSED" in dead.error and isinstance(dead.elapsed_ms, int)

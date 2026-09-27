@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import socket
+import time
 from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
@@ -225,6 +226,8 @@ class NativeBackend:
     def act(self, action: Action) -> ActResult:
         page = self.page
         a = action.args
+        nav: dict = {}  # R36: navigate/back report the final HTTP status and elapsed time, failed or not
+        t0 = time.monotonic()
         try:
             if action.tool == "navigate":
                 url = urljoin(page.url if page.url.startswith("http") else "", str(a.get("url", "")))
@@ -233,7 +236,9 @@ class NativeBackend:
                     if host not in self.blocked:
                         self.blocked.append(host)
                     return ActResult(False, page.url, f"blocked: {host} is not an allowed domain", blocked_hosts=[host])
-                page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+                nav = {"http_status": response.status if response else None,
+                       "elapsed_ms": int((time.monotonic() - t0) * 1000)}
             elif action.tool == "click":
                 before = dict(self._nav)
                 page.locator(self._selector(a.get("element_id"))).first.click(timeout=self.timeout_ms)
@@ -250,7 +255,9 @@ class NativeBackend:
             elif action.tool == "scroll":
                 page.mouse.wheel(0, -700 if a.get("direction") == "up" else 700)
             elif action.tool == "back":
-                page.go_back(wait_until="domcontentloaded", timeout=self.timeout_ms)
+                response = page.go_back(wait_until="domcontentloaded", timeout=self.timeout_ms)
+                nav = {"http_status": response.status if response else None,
+                       "elapsed_ms": int((time.monotonic() - t0) * 1000)}
             elif action.tool == "extract":
                 return self._extract(dict(a.get("fields") or {}))
             elif action.tool == "done":
@@ -258,12 +265,13 @@ class NativeBackend:
             else:
                 return ActResult(False, page.url, f"unknown action {action.tool!r}")
         except PlaywrightError as exc:
-            msg = str(exc).splitlines()[0][:300]
+            msg = str(exc).splitlines()[0][:300]  # the concrete net::ERR_* / "Download is starting" line
             blocked = self._drain_blocked()
             if "ERR_BLOCKED_BY_CLIENT" in msg and blocked:
                 msg = f"blocked: {', '.join(blocked)} is not an allowed domain"
-            return ActResult(False, self.page.url if self.page else None, msg, blocked_hosts=blocked)
-        return ActResult(True, self.page.url, blocked_hosts=self._drain_blocked())
+            timing = {"elapsed_ms": int((time.monotonic() - t0) * 1000)} if action.tool in ("navigate", "back") else {}
+            return ActResult(False, self.page.url if self.page else None, msg, blocked_hosts=blocked, **timing)
+        return ActResult(True, self.page.url, blocked_hosts=self._drain_blocked(), **nav)
 
     def _extract(self, fields: dict) -> ActResult:
         values: dict[str, dict] = {}
