@@ -12,6 +12,7 @@ otherwise they are reported as unknown. Nothing here writes.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import UTC, datetime, timedelta
@@ -259,6 +260,62 @@ def progress_stall(steps: list[dict], says_running: bool, now: datetime, stall_m
         "purposes": purposes,
         "text": f"{calls} model calls in {round(quiet)} min with no search, capture or source action"
         + (f" since {last_progress.strftime('%H:%M')} UTC" if last_progress else " this run"),
+    }
+
+
+PROBE_FILE = "bronze-probe.jsonl"  # PA's lake probe: {ts, objects, newest, prefix, cases?{case_id: objects}} per sample
+PROBE_MAX_AGE_H = 2.0
+
+
+def bronze_probe(root: Path | None, case_id: str, now: datetime, window_min: float) -> dict | None:
+    """Bronze growth in the last `window_min` minutes, from the lake probe's samples in the runner state dir: an
+    independent capture signal for crawls that write bronze without trace steps (live: 272 objects in 27 min, R52).
+    Per-case counts when the probe attributes them, else the bucket-wide count (suppresses for every running case).
+    None when there is no probe file or no recent sample."""
+    if root is None:
+        return None
+    try:
+        lines = (Path(root) / PROBE_FILE).read_text().splitlines()[-300:]
+    except (OSError, ValueError):
+        return None
+    samples = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        t = parse_ts(d.get("ts")) if isinstance(d, dict) else None
+        if t and (now - t).total_seconds() <= PROBE_MAX_AGE_H * 3600:
+            samples.append((t, d))
+    if not samples:
+        return None
+    samples.sort(key=lambda x: x[0])
+    t_last, last = samples[-1]
+    start = now - timedelta(minutes=window_min)
+    base = next((d for t, d in samples if t >= start), None)
+    before = [d for t, d in samples if t < start]
+    base = before[-1] if before else base
+
+    per_case = isinstance(last.get("cases"), dict) and case_id in last["cases"]
+
+    def count(d: dict) -> int | None:
+        if per_case:  # the case's own lake: compare like with like, never with the bucket-wide sum
+            v = (d.get("cases") or {}).get(case_id) if isinstance(d.get("cases"), dict) else None
+        else:
+            v = d.get("objects")
+        return v if isinstance(v, int) else None
+
+    c_last, c_base = count(last), (count(base) if base is not None else None)
+    growth = c_last - c_base if c_last is not None and c_base is not None else None
+    newest = parse_ts(last.get("newest"))
+    return {
+        "growth": growth,
+        "window_min": window_min,
+        "newest": newest.isoformat() if newest else None,
+        # newest is lake-wide: it only speaks for this case when the probe cannot attribute per case
+        "newest_recent": bool(newest and newest >= start) and not per_case,
+        "sampled_at": t_last.isoformat(),
+        "basis": "case" if per_case else "lake",
     }
 
 
@@ -698,7 +755,20 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
     steps = a.steps(rid)
     jobs = a.jobs(rid)
     lv = liveness(runner, status, steps, now, stale_min)
-    stall = progress_stall(steps, lv["says_running"], now, float(env.get("ONTOFILL_WATCH_STALL_MIN") or STALL_MIN))
+    stall_min = float(env.get("ONTOFILL_WATCH_STALL_MIN") or STALL_MIN)
+    stall = progress_stall(steps, lv["says_running"], now, stall_min)
+    capturing = None
+    if stall:
+        probe = bronze_probe(root if rover["state_dir_ok"] else None, case.id, now, stall_min)
+        if probe and ((probe["growth"] or 0) > 0 or probe["newest_recent"]):
+            n = probe["growth"]
+            where = "" if probe["basis"] == "case" else " in the lake"
+            capturing = {
+                **probe,
+                "trace_calls": stall["model_calls"],
+                "text": f"capturing ({n if n is not None else 'new'} bronze{where} in {round(stall_min)} min, untraced)",
+            }
+            stall = None  # bronze is still being written: a crawl without trace steps, not a stall
     moving = lv["says_running"] or (is_live(status, now) and runner["state"] in (None, "idle", RUNNING))
     last_step = parse_ts(lv["last_step_at"])
     anchor = now if moving else (last_step or parse_ts(status.get("updated_at")) or now)
@@ -769,6 +839,7 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
         "lake_error": case.lake_error,
         "liveness": lv,
         "stall": stall,
+        "capturing": capturing,
         "throughput": thr,
         "failures": fails,
         "spend": spend,

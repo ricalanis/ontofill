@@ -665,3 +665,68 @@ def test_definition_phases_are_model_work_not_a_stall(cases_dir, tmp_path):
     steps = [{**model_call(i, 40 - 3 * i, "phase1.prd"), "phase": 1} for i in range(12)]
     live_run(cases_dir, steps)
     assert case_of(watch.model(settings(cases_dir, root), now=NOW))["stall"] is None
+
+
+def probe(root: Path, rows) -> None:
+    write_jsonl(root / "bronze-probe.jsonl", rows)
+
+
+def test_a_crawl_writing_untraced_bronze_is_capturing_not_stalled(cases_dir, tmp_path):
+    """Live: run-fb09d5cbb4a4 wrote 272 bronze objects in 27 min while its trace showed only model calls (R52). With
+    the lake probe's samples, /watch says "capturing (N bronze in 15 min, untraced)" instead of the stall alert."""
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60))
+    steps = [step(0, 40, src="ok-src")] + [model_call(i, 36 - 3 * i) for i in range(12)]
+    live_run(cases_dir, steps)
+    probe(
+        root,
+        [
+            {"ts": ago(20), "objects": 1076, "newest": ago(21)},
+            {"ts": ago(10), "objects": 1150, "newest": ago(10)},
+            {"ts": ago(1), "objects": 1244, "newest": ago(1)},
+        ],
+    )
+    m = watch.model(settings(cases_dir, root), now=NOW)
+    c = case_of(m)
+    assert c["stall"] is None and c["capturing"]["growth"] == 168 and c["capturing"]["basis"] == "lake"
+    assert c["capturing"]["text"] == "capturing (168 bronze in the lake in 15 min, untraced)"
+    assert not any(a["text"].startswith("MOVING BUT") for a in m["attention"])
+
+
+def test_per_case_probe_counts_and_a_flat_lake_still_stalls(cases_dir, tmp_path):
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60))
+    steps = [step(0, 40, src="ok-src")] + [model_call(i, 36 - 3 * i) for i in range(12)]
+    live_run(cases_dir, steps)
+    probe(
+        root,
+        [
+            {"ts": ago(20), "objects": 900, "newest": ago(30), "cases": {"libraries": 500}},
+            {"ts": ago(1), "objects": 950, "newest": ago(30), "cases": {"libraries": 500}},
+        ],
+    )
+    c = case_of(watch.model(settings(cases_dir, root), now=NOW))
+    assert c["capturing"] is None and c["stall"] is not None  # the lake grew, but not for this case
+
+
+def test_per_case_growth_with_the_live_probe_shape(cases_dir, tmp_path):
+    """PA's probe (2fba610): cases{} is each case's own lake; objects sums the lakes; newest is lake-wide."""
+    root = tmp_path / "runner"
+    runner_case(root, "libraries", state="running", run_id=LIVE_RID, running_since=ago(60))
+    live_run(cases_dir, [step(0, 40, src="ok-src")] + [model_call(i, 36 - 3 * i) for i in range(12)])
+    probe(
+        root,
+        [
+            {"ts": ago(16), "objects": 1300, "newest": ago(16), "prefix": "bronze/", "cases": {"libraries": 80}},
+            {
+                "ts": ago(2),
+                "objects": 1366,
+                "newest": ago(2),
+                "prefix": "bronze/",
+                "cases": {"libraries": 90, "other": 1276},
+            },
+        ],
+    )
+    c = case_of(watch.model(settings(cases_dir, root), now=NOW))
+    assert c["stall"] is None and c["capturing"]["growth"] == 10 and c["capturing"]["basis"] == "case"
+    assert c["capturing"]["text"] == "capturing (10 bronze in 15 min, untraced)"
