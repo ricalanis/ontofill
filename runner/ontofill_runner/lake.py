@@ -71,6 +71,21 @@ class CaseLake:
             return None
         return (self._json(f"runs/{self.case_id}/latest.json") or {}).get("run_id")
 
+    def active_run_id(self) -> str | None:
+        """The run the runner should follow: the latest one, unless it has finished (done/failed/killed) while an
+        older run of the same case is still paused at a checkpoint — e.g. a separate proof run was written into a
+        scratch lake after the case paused. Then the most recently updated paused run."""
+        latest = self.latest_run_id()
+        st = (self.status(latest) if latest else None) or {}
+        if latest and st.get("state") not in ("done", "failed", "killed", None):
+            return latest
+        paused = []
+        for rid in self.run_ids():
+            s = self.status(rid) or {}
+            if s.get("state") == "paused" and s.get("checkpoint_pending"):
+                paused.append((str(s.get("updated_at") or s.get("started_at") or ""), rid))
+        return max(paused)[1] if paused else latest
+
     def run_ids(self) -> list[str]:
         return self.backend.list_dirs(f"runs/{self.case_id}") if self.case_id else []
 
