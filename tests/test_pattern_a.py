@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p5_execute import execute_objective
@@ -163,6 +164,20 @@ def test_html_p5_repairs_against_bronze_and_promotes_macro_into_feed(tmp_path: P
     manifest = json.loads((macro / "manifest.json").read_text())
     assert manifest["code_key"] == repairs[-1]["repair"]["code_key"]
     assert manifest["test"] == {"pages": 1, "precision": 1.0, "coverage": 1.0}
+
+    repair_jobs = [
+        job
+        for job in result.sandbox_jobs
+        if job.get("checkpoints", {}).get("task", {}).get("requested", {}).get("action")
+        == "code.test"
+    ]
+    assert [job["outcome"]["status"] for job in repair_jobs] == ["failed", "completed"]
+    assert all(
+        set(job["checkpoints"]) == {"host", "task", "where", "isolation", "secrets", "teardown"}
+        for job in repair_jobs
+    )
+    for job in repair_jobs:
+        validate_document("jobs", job)
 
     feed = RunFeed(lake, "synthetic-case", run_id, provenance, start_heartbeat=False)
     feed.update_status(state="running", phase=5)
