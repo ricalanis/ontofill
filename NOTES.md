@@ -1,5 +1,10 @@
 # Strategy and assumptions
 
+## R28 runner integration and formatter baseline (2026-09-27)
+- The first integrated runner check passed 22 tests and Ruff lint, then failed `ruff format --check` across the runner tree. Six runner files already have formatting drift on origin/main; `git show origin/main:runner/ontofill_runner/runner.py | ruff format --check --stdin-filename ... -` also exits 1.
+- A second, narrower runner check passed the same 22 tests and lint, then failed `ruff format --check runner/ontofill_runner/state.py`. Its docstring indentation and pre-existing `event` line wrap also fail on origin/main. The hypothesis that only unrelated runner files caused the failure was wrong.
+- New strategy: verify the exact R28 merge with the full engine suite and formatter, full runner tests and lint, and `git diff --check`; do not reformat unrelated runner baseline solely to satisfy a historical style gate. The rebase conflict retained the pre-existing stop reason and checkpoint reporting while adding the needs-human exit and engine-stop record.
+
 ## R24 authority checkpoint (2026-09-27)
 - Baseline managed check: 1 passed, 2 failed. The real regression reproduced: an older, approved PRD with a policy-invalid tier was redrafted and its approval staled. The final-boundary test failed earlier than intended because its injected loop artifact omitted required `generated_by`; that is a fixture setup error, not a policy result. The fixture now supplies valid provenance so the final-boundary invariant is exercised.
 - Strategy: keep R22's three-attempt model validator as the authority-policy repair path, add a final policy gate before staging an artifact, and preserve any existing approval if the approved cached artifact fails the current policy. Do not act on an invalid approval or rewrite reviewed bytes.
