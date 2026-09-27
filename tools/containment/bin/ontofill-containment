@@ -1,13 +1,16 @@
 #!/bin/sh
-# Run the containment command with the engine's own environment.
+# Run the containment command from this tool's own environment.
 #
 #   tools/containment/bin/ontofill-containment --case <case_dir> --run-id <id>
 #
-# The engine package must already be installed (or `uv sync` run) in the checkout that
-# contains this script. Set the engine's env first (never print values):
+# The tool reuses the engine package from the parent checkout via a uv path dependency,
+# so `uv sync --extra dev` in tools/containment is enough (see README). Set the engine's
+# env first (never print values):
 #   set -a; . /opt/ontofill/engine.env; set +a
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 TOOL=$(dirname "$HERE")
-export PYTHONPATH="${TOOL}/src${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m ontofill_containment.cli "$@"
+if [ -x "$TOOL/.venv/bin/python" ]; then
+  exec "$TOOL/.venv/bin/python" -m ontofill_containment.cli "$@"
+fi
+exec uv run --project "$TOOL" --extra dev ontofill-containment "$@"

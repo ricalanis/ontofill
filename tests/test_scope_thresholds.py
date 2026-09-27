@@ -1,12 +1,13 @@
 """PRD targets identify their source and ungrounded numbers stay proposed."""
 
+import hashlib
 import json
 from copy import deepcopy
 
 import httpx
 import pytest
 
-from ontofill.case.checkpoints import require_approval
+from ontofill.case.checkpoints import load_verified_approval, require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
 from ontofill.phases.p1_scope.phase import (
     _apply_human_authority_revisions,
@@ -770,3 +771,84 @@ def test_failed_denial_regeneration_preserves_prd_pending_and_approval(tmp_path)
         draft_prd(tmp_path, UnavailableDecision())
     assert {name: (scope / name).read_bytes() for name in names} == before
     assert not (scope / "revisions").exists()
+
+
+def test_budget_change_keeps_the_prd_fingerprint_and_approval(tmp_path) -> None:
+    """R20: the run budget informs feasibility text but must not change the artifact's identity."""
+    (tmp_path / "brief.md").write_text(
+        "Find 5 reading rooms, with 80% of required fields per room.", encoding="utf-8"
+    )
+    decision = RecordedDecisionClient({"phase1.prd": [_prd_response()]})
+    first = draft_prd(tmp_path, decision, budget_usd=1.0)
+    scope = tmp_path / "01-scope"
+    fingerprint = (scope / "prd.input.sha256").read_text(encoding="utf-8").strip()
+
+    # a different budget with the same brief and revisions: same fingerprint, no redraft
+    second = draft_prd(tmp_path, decision, budget_usd=9.0)
+    assert second == first
+    assert len(decision.calls) == 1, "a budget change must not redraft the PRD"
+    assert (scope / "prd.input.sha256").read_text(encoding="utf-8").strip() == fingerprint
+
+    # an approval written for the first draft survives the budget change
+    (scope / "APPROVED").write_text(
+        json.dumps(
+            bind_approval(
+                tmp_path,
+                ["01-scope/prd.json"],
+                {"approver": "Test Reviewer", "date": "2026-09-26", "checkpoint": "prd"},
+            )
+        ),
+        encoding="utf-8",
+    )
+    assert not require_approval(
+        scope,
+        phase=1,
+        checkpoint="prd",
+        artifact_paths=["01-scope/prd.json"],
+        generated_by=first["generated_by"],
+    )
+    assert (scope / "APPROVED").exists()
+    assert not (scope / f"APPROVED.stale.{fingerprint[:12]}").exists()
+    assert (
+        load_verified_approval(scope / "APPROVED", tmp_path, ["01-scope/prd.json"], "prd")[
+            "checkpoint"
+        ]
+        == "prd"
+    )
+
+
+def test_legacy_budget_fingerprint_migrates_without_invalidating_approval(tmp_path) -> None:
+    """A pending pre-R20 draft adopts the content key before budgets are changed."""
+    brief = "Find 5 reading rooms, with 80% of required fields per room."
+    (tmp_path / "brief.md").write_text(brief, encoding="utf-8")
+    decision = RecordedDecisionClient({"phase1.prd": [_prd_response()]})
+    first = draft_prd(tmp_path, decision, budget_usd=1.0)
+    scope = tmp_path / "01-scope"
+    prd_bytes = (scope / "prd.json").read_bytes()
+    content_digest = (scope / "prd.input.sha256").read_text(encoding="utf-8").strip()
+    legacy_digest = hashlib.sha256(
+        json.dumps([brief, [], 1.0, "prd-steering-v4"], ensure_ascii=False).encode()
+    ).hexdigest()
+    (scope / "prd.input.sha256").write_text(legacy_digest + "\n", encoding="utf-8")
+    (scope / "APPROVED").write_text(
+        json.dumps(
+            bind_approval(
+                tmp_path,
+                ["01-scope/prd.json"],
+                {"approver": "Test Reviewer", "date": "2026-09-26", "checkpoint": "prd"},
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert draft_prd(tmp_path, decision, budget_usd=1.0) == first
+    assert (scope / "prd.input.sha256").read_text(encoding="utf-8").strip() == content_digest
+    assert draft_prd(tmp_path, decision, budget_usd=9.0) == first
+    assert len(decision.calls) == 1
+    assert (scope / "prd.json").read_bytes() == prd_bytes
+    assert (
+        load_verified_approval(scope / "APPROVED", tmp_path, ["01-scope/prd.json"], "prd")[
+            "checkpoint"
+        ]
+        == "prd"
+    )
