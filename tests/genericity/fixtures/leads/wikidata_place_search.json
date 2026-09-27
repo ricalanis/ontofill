@@ -1,0 +1,7 @@
+{
+  "search": [
+    {"id": "Q900010", "label": "Example City", "match": {"type": "label", "language": "en", "text": "Example City"}},
+    {"id": "Q900011", "label": "Example City Harbor", "match": {"type": "label", "language": "en", "text": "Example City Harbor"}}
+  ],
+  "success": 1
+}

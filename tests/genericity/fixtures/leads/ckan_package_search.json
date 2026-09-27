@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "result": {
+    "count": 2,
+    "results": [
+      {
+        "name": "library-branches-hours",
+        "title": "Library branches and opening hours",
+        "notes": "Synthetic dataset: branch names, opening hours and free internet flags.",
+        "organization": {"title": "Example City Library Office"},
+        "resources": [{"format": "CSV", "url": "https://data.example.test/files/branches.csv"}]
+      },
+      {
+        "name": "../escape",
+        "title": "Malformed package name",
+        "notes": "Must be ignored",
+        "resources": []
+      }
+    ]
+  }
+}

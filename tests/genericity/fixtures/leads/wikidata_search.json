@@ -1,0 +1,8 @@
+{
+  "searchinfo": {"search": "Example City Library Office"},
+  "search": [
+    {"id": "Q900001", "label": "Example City Library Office", "match": {"type": "label", "language": "en", "text": "Example City Library Office"}},
+    {"id": "Q900002", "label": "Example City Library Office Annex", "match": {"type": "label", "language": "en", "text": "Example City Library Office Annex"}}
+  ],
+  "success": 1
+}

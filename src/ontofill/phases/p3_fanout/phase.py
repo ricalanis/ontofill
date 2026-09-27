@@ -191,7 +191,15 @@ def discover_objectives(
     gaps: tuple[str, ...] | None = None,
     max_sources: int = 4,
 ) -> dict:
-    """Accumulate objectives across gap rounds and review unrecognized authorities."""
+    """Accumulate objectives across gap rounds and review unrecognized authorities.
+
+    A client that runs the bounded discovery loop (``discover_sources``) owns the
+    whole round: lead providers, sandbox confirmation and authority review.
+    """
+    if callable(getattr(search_client, "discover_sources", None)):
+        return search_client.discover_sources(
+            case_dir, ontology, decision, gaps=gaps, max_sources=max_sources
+        )
     allowed = {item["id"] for item in ontology["properties"]}
     gaps = tuple(dict.fromkeys(gaps or _dod_properties(ontology)))
     if not gaps or any(field not in allowed for field in gaps):

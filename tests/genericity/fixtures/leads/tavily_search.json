@@ -1,0 +1,28 @@
+{
+  "query": "Free internet Libraries Example City",
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Branch directory - Example City Library Office",
+      "url": "https://libraries.example.test/branches",
+      "content": "Opening hours and free internet at every Example City branch.",
+      "score": 0.91
+    },
+    {
+      "title": "Community notes about Example City branches",
+      "url": "https://forum.example.test/thread/42",
+      "content": "Residents discuss which branch has free internet.",
+      "score": 0.62
+    },
+    {
+      "title": "Not a web page",
+      "url": "ftp://files.example.test/list",
+      "content": "Unsupported scheme",
+      "score": 0.4
+    }
+  ],
+  "response_time": 0.5,
+  "usage": {"credits": 1},
+  "request_id": "synthetic-request"
+}

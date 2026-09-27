@@ -1,0 +1,18 @@
+{
+  "entities": {
+    "Q900010": {
+      "id": "Q900010",
+      "labels": {"en": {"language": "en", "value": "Example City"}},
+      "claims": {
+        "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q515"}}}}],
+        "P17": [{"mainsnak": {"datavalue": {"value": {"id": "Q900020"}}}}]
+      }
+    },
+    "Q900020": {
+      "id": "Q900020",
+      "labels": {"en": {"language": "en", "value": "Examplestan"}},
+      "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q6256"}}}}]}
+    }
+  },
+  "success": 1
+}

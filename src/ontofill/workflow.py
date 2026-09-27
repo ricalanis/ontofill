@@ -23,9 +23,12 @@ from ontofill.case.checkpoints import (
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
 from ontofill.lake import FileLake, lake_for_case
 from ontofill.outer_gap import decide_outer_gap, outer_trace_step, prior_reopens
+from ontofill.phase_loop import LoopBudget
 from ontofill.phases.p1_scope.phase import PrdDraftUnavailable, draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
 from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
+from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop
+from ontofill.phases.p3_fanout.leads import default_lead_providers
 from ontofill.phases.p3_fanout.phase import discover_objectives
 from ontofill.phases.p3_fanout.search import (
     ProviderSearchClient,
@@ -41,6 +44,7 @@ from ontofill.sandbox import (
     SandboxLimitExceeded,
     append_job_record,
     build_job_record,
+    capture_url,
 )
 
 
@@ -642,7 +646,15 @@ def run_case(
                         SandboxWebSearchProvider("duckduckgo_html", lake, run_id, provenance),
                     ]
                 )
-                search_client = ProviderSearchClient(providers)
+                # Bounded P3 loop: lead-only providers, sandbox confirmation, authority check.
+                search_client = DiscoveryLoop(
+                    default_lead_providers(decision, search_client=ProviderSearchClient(providers)),
+                    capture=capture or capture_url,
+                    lake=lake,
+                    run_id=run_id,
+                    provenance=provenance,
+                    budget=LoopBudget(max_iterations=3, max_usd=budget_usd, wall_seconds=900),
+                )
             decision_start = len(getattr(decision, "call_log", []))
             trace_before = len(getattr(search_client, "trace", []))
             jobs_before = len(getattr(search_client, "jobs", []))

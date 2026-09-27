@@ -1,0 +1,17 @@
+{
+  "head": {"vars": ["item", "itemLabel", "site"]},
+  "results": {
+    "bindings": [
+      {
+        "item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q900001"},
+        "itemLabel": {"type": "literal", "value": "Example City Library Office"},
+        "site": {"type": "uri", "value": "https://libraries.example.test/"}
+      },
+      {
+        "item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q900002"},
+        "itemLabel": {"type": "literal", "value": "Example City Library Office Annex"},
+        "site": {"type": "literal", "value": "not a url"}
+      }
+    ]
+  }
+}
