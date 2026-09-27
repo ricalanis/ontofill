@@ -745,9 +745,9 @@ class CkanLeadProvider(LeadProvider):
         return payload
 
     def leads(self, context: LeadContext) -> list[Lead]:
-        queries = _ckan_search_queries(context)
+        themes = _ckan_theme_queries(context)
         if self.fetch_json is None:
-            for query in queries:
+            for query in themes:
                 self._attempt(
                     query.text,
                     "unavailable: sandbox fetch_json callback is not configured",
@@ -759,6 +759,15 @@ class CkanLeadProvider(LeadProvider):
             for domain in self.portal_domains(context.policy, context.open_data_portals)
             if domain not in self._unsupported
         ]
+        if not domains:
+            return []
+        if self.max_calls is None:
+            anchor_limit = max(0, 5 - len(themes))
+        else:
+            remaining = max(0, self.max_calls - self.calls)
+            per_portal_capacity = remaining // len(domains)
+            anchor_limit = min(max(0, 5 - len(themes)), max(0, per_portal_capacity - len(themes)))
+        queries = _ckan_search_queries(context, anchor_limit=anchor_limit)
         found: list[Lead] = []
         for query_index, query in enumerate(queries):
             for domain_index, domain in enumerate(domains):
@@ -788,9 +797,20 @@ class CkanLeadProvider(LeadProvider):
         return found
 
 
-def _ckan_search_queries(context: LeadContext) -> tuple[LeadQuery, ...]:
-    """Search primary entity gaps with short ontology-derived CKAN anchors first."""
-    queries = tuple(dict.fromkeys(context.queries))
+def _ckan_theme_queries(context: LeadContext) -> tuple[LeadQuery, ...]:
+    """Preserve each P3 theme while removing its redundant portal-domain filter."""
+    themes = []
+    for query in context.queries:
+        text = re.sub(r"(?:^|\s)site:\S+", " ", query.text, flags=re.IGNORECASE)
+        text = " ".join(text.split())[:360]
+        if text:
+            themes.append(LeadQuery(query.property_id, text))
+    return tuple(dict.fromkeys(themes))[:5]
+
+
+def _ckan_search_queries(context: LeadContext, *, anchor_limit: int = 0) -> tuple[LeadQuery, ...]:
+    """Send P3 themes first, then a cap-bounded rotation of primary entity anchors."""
+    queries = _ckan_theme_queries(context)
     ontology = context.ontology
     primary_id = ontology.get("primary_class")
     properties = {
@@ -804,7 +824,7 @@ def _ckan_search_queries(context: LeadContext) -> tuple[LeadQuery, ...]:
         if isinstance(item, Mapping) and isinstance(item.get("id"), str)
     }
     primary = classes.get(primary_id)
-    if not isinstance(primary_id, str) or not isinstance(primary, Mapping):
+    if anchor_limit <= 0 or not isinstance(primary_id, str) or not isinstance(primary, Mapping):
         return queries
 
     entity_gaps: dict[str, LeadQuery] = {}
@@ -862,14 +882,17 @@ def _ckan_search_queries(context: LeadContext) -> tuple[LeadQuery, ...]:
                 f"system {relation_text or class_label} API {plural} {gap} {identity_text}",
             )
 
+    starting_variant = (context.iteration - 1) % _CKAN_QUERY_VARIANTS
     anchored = [
         LeadQuery(
             query.property_id, f"{variants[property_id][variant]} {jurisdiction}".strip()[:360]
         )
-        for variant in range(_CKAN_QUERY_VARIANTS)
+        for offset in range(_CKAN_QUERY_VARIANTS)
+        for variant in ((starting_variant + offset) % _CKAN_QUERY_VARIANTS,)
         for property_id, query in entity_gaps.items()
     ]
-    return tuple(dict.fromkeys((*anchored, *other_queries)))
+    anchors = [query for query in anchored if query not in queries][:anchor_limit]
+    return tuple(dict.fromkeys((*queries, *anchors)))
 
 
 def _ckan_tokens(values: Sequence[str]) -> set[str]:
