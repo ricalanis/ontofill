@@ -75,3 +75,57 @@ def test_relation_criterion_reads_as_words():
         }
     )
     assert dod.criterion_label(ours, "dod1", d) == "Suppliers with a “awarded a contract” link"
+
+
+ONTO = {
+    "primary_class": "branch",
+    "classes": [{"id": "branch", "label": "Branch"}],
+    "properties": [
+        {"id": "address", "domain": "branch", "dod": True},
+        {"id": "hours", "domain": "branch", "dod": True},
+    ],
+    "relations": [{"id": "held_by", "domain": "branch", "range": "branch"}],
+}
+GOLD = {"status": "gold", "value": "x", "evidence": [{"url": "https://a.example/"}]}
+
+
+def _branch(complete: bool, linked: bool) -> dict:
+    return {
+        "class": "branch",
+        "properties": {"address": GOLD, "hours": GOLD if complete else {"status": "missing"}},
+        "links": [{"property": "held_by", "target": "b"}] if linked else [],
+    }
+
+
+BRANCHES = [_branch(True, True), _branch(False, True), _branch(True, False), _branch(True, False)]
+RELATION_COUNT = {
+    "criterion_id": "linked",
+    "aggregate": "count_entities_with_relation",
+    "class_id": "branch",
+    "relation_id": "held_by",
+    "target": 1,
+    "operator": ">=",
+}
+
+
+def test_completeness_shares_match_the_engine_export():
+    """As the engine's export: a fractional completeness target is a share of the linked entities (a legacy query
+    resolves the case's single relation count), an explicit share with no relation measures every entity, and a
+    relation count with measure=share is linked / all. Before, the console returned a count for all of these."""
+    d = Domain.from_ontology(ONTO)
+    legacy = {
+        "criterion_id": "c",
+        "aggregate": "entities_meeting_completeness",
+        "class": "branch",
+        "properties": "dod",
+        "min_ratio": 1.0,
+        "target": 0.8,
+        "operator": ">=",
+    }
+    assert dod.evaluate_query(legacy, BRANCHES, d, [RELATION_COUNT, legacy]) == 0.5  # 1 of the 2 linked
+    explicit = {**legacy, "measure": "share", "target": 1}
+    assert dod.evaluate_query(explicit, BRANCHES, d, [RELATION_COUNT, explicit]) == 0.75  # 3 of all 4
+    assert dod.evaluate_query({**explicit, "relation_id": "held_by"}, BRANCHES, d) == 0.5
+    assert dod.evaluate_query({**explicit, "measure": "count", "target": 2}, BRANCHES, d) == 3
+    assert dod.evaluate_query({**RELATION_COUNT, "measure": "share"}, BRANCHES, d) == 0.5
+    assert dod.evaluate_query(RELATION_COUNT, BRANCHES, d) == 2

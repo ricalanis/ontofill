@@ -146,8 +146,29 @@ def _condition(entity: dict, cond: dict) -> bool:
     return (value == cond.get("value")) if cond.get("operator") == "eq" else (value != cond.get("value"))
 
 
-def evaluate_query(query: dict, entities: list[dict], domain: Domain) -> float:
-    """Exact value of one declarative DoD query over the gold entities."""
+def _linked(e: dict, relation: str | None) -> bool:
+    return any(isinstance(link, dict) and link.get("property") == relation for link in e.get("links") or [])
+
+
+def _share_relation(query: dict, queries: list[dict] | None, cls: str | None) -> str | None:
+    """The relation a completeness share is measured over, as the engine's export resolves it: the query's own
+    relation_id; for a legacy query (no `measure`) the case's single relation-count query on the same class; an
+    explicit share with no relation measures every entity (None)."""
+    if query.get("relation_id") or query.get("measure") == "share":
+        return query.get("relation_id")
+    found = {
+        q.get("relation_id")
+        for q in queries or []
+        if isinstance(q, dict)
+        and q.get("aggregate") == "count_entities_with_relation"
+        and (q.get("class_id") or q.get("class") or cls) == cls
+    }
+    return found.pop() if len(found) == 1 else None
+
+
+def evaluate_query(query: dict, entities: list[dict], domain: Domain, queries: list[dict] | None = None) -> float:
+    """Exact value of one declarative DoD query over the gold entities (the engine export's semantics). `queries`
+    are the case's other DoD queries, used to resolve a legacy completeness share's relation."""
     cls = query.get("class_id") or query.get("class")
     if query.get("aggregate") == "entities_meeting_completeness":
         cls = cls or domain.primary_class
@@ -163,14 +184,20 @@ def evaluate_query(query: dict, entities: list[dict], domain: Domain) -> float:
             values = e.get("properties") or {}
             return sum(is_filled(values.get(n)) for n in names) / len(names) if names else 0.0
 
+        target = query.get("target")
+        measure = query.get("measure")
+        if measure == "share" or (measure is None and isinstance(target, (int, float)) and target < 1):
+            rel = _share_relation(query, queries, cls)
+            linked = [e for e in pool if _linked(e, rel)] if rel else pool
+            return sum(share(e) >= ratio - 1e-9 for e in linked) / len(linked) if linked else 0.0
         return sum(share(e) >= ratio - 1e-9 for e in pool)
     if agg == "count_entities":
         return len(pool)
     if agg == "count_entities_with_relation":  # as the engine's export: entities with a link of that relation
-        rel = query.get("relation_id")
-        return sum(
-            any(isinstance(link, dict) and link.get("property") == rel for link in e.get("links") or []) for e in pool
-        )
+        linked = sum(_linked(e, query.get("relation_id")) for e in pool)
+        if query.get("measure") == "share":  # the share of the counted class that carries the relation
+            return linked / len(pool) if pool else 0.0
+        return linked
     if agg == "count_entities_with_properties":
         return sum(
             all(is_filled((e.get("properties") or {}).get(p)) for p in query.get("properties") or []) for e in pool
@@ -262,7 +289,7 @@ def criteria(
         note = None
         if declared is not None and entities is not None:
             try:
-                ours = evaluate_query(declared, entities, domain)
+                ours = evaluate_query(declared, entities, domain, list(by_id.values()))
             except ValueError as exc:  # an aggregate this console does not know: show the row, never fail the page
                 ours, note = None, f"not computed here ({exc})"
             met_ours = (
