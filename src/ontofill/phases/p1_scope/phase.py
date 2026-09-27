@@ -476,7 +476,7 @@ def draft_prd(
         output.parent, "prd", artifact_names, archive_denial=False, case_dir=case_dir
     )
     digest = hashlib.sha256(
-        json.dumps([brief, revisions, budget_usd, "prd-steering-v4"], ensure_ascii=False).encode()
+        json.dumps([brief, revisions, "prd-steering-v4"], ensure_ascii=False).encode()
     ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
     if output.exists():
