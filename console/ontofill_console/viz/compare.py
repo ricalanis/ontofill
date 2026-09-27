@@ -215,7 +215,7 @@ def runs_model(case, domain_of, run_a: str | None = None, run_b: str | None = No
 def install(ctx: VizContext) -> None:
     app, render, settings = ctx.app, ctx.render, ctx.settings
     ctx.global_view("compare", "/compare", "Compare", ORDER)
-    ctx.case_view("compare", "compare", "Compare runs", ORDER)
+    ctx.case_view("compare-runs", "compare", "Compare runs", ORDER)
 
     @app.get("/compare", response_class=HTMLResponse)
     def compare_cases(request: Request, a: str | None = None, b: str | None = None):
@@ -229,7 +229,7 @@ def install(ctx: VizContext) -> None:
     def compare_runs(request: Request, case_id: str, run_a: str | None = None, run_b: str | None = None):
         case = ctx.get_case(case_id)
         m = runs_model(case, ctx.case_domain, run_a, run_b)
-        return render(request, "viz/compare_runs.html", nav="compare", case=case, m=m, backend=m["backend"])
+        return render(request, "viz/compare_runs.html", nav="compare-runs", case=case, m=m, backend=m["backend"])
 
     @app.get("/cases/{case_id}/api/viz/compare")
     def compare_runs_api(case_id: str, run_a: str | None = None, run_b: str | None = None) -> dict:

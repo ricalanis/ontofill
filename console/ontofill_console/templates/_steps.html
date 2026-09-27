@@ -5,7 +5,7 @@
 {% set KILL_LABELS = {"timeout": "wall-clock timeout", "memory": "memory cap", "pids": "process cap", "max_steps": "step cap"} %}
 {% for it in items %}{% if it.thread %}{% set t = it.thread %}{% include "_loop_thread.html" %}{% else %}{% set s = it.step %}{% set d = s.detail or {} %}
 {% if s.kind == "loop" and d.role == "decide" and d.phase == "outer" %}
-<li class="step step--reopen" data-step="{{ s.step_id }}">
+<li class="step step--reopen" id="{{ s.step_id }}" id="{{ s.step_id }}" data-step="{{ s.step_id }}">
   <span class="step__time mono">{{ (s.ts or "")[11:19] }}</span>
   <span class="mode-badge mode-badge--{{ s.mode }}" title="{{ MODE_NAMES.get(s.mode, s.mode) }}">{{ s.mode }}</span>
   <div class="step__body">
@@ -15,7 +15,7 @@
   </div>
 </li>
 {% else %}
-<li class="step{% if s.event %} step--{{ s.event }}{% endif %}{% if s.kind == 'verify' %} step--verdict-{{ d.verdict }}{% endif %}" data-step="{{ s.step_id }}">
+<li class="step{% if s.event %} step--{{ s.event }}{% endif %}{% if s.kind == 'verify' %} step--verdict-{{ d.verdict }}{% endif %}" id="{{ s.step_id }}" data-step="{{ s.step_id }}">
   <span class="step__time mono">{{ (s.ts or "")[11:19] }}</span>
   <span class="mode-badge mode-badge--{{ s.mode }}" title="{{ MODE_NAMES.get(s.mode, s.mode) }}">{{ s.mode }}</span>
   <div class="step__body">

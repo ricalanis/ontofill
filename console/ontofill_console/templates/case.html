@@ -13,7 +13,7 @@
   ("failures", "What went wrong, and what was contained?", "Failures, stops, quarantines, limit kills, six checkpoints"),
   ("cost", "What did it cost, and where did the money go?", "By phase, model, mode and source; per gold value"),
   ("learning", "Did it get better or cheaper over time?", "Repairs, promoted macros, share of code-only steps"),
-  ("compare", "How does it compare?", "Run vs run here; case vs case across the console"),
+  ("compare", "Same engine, another question: how do two cases compare?", "Case vs case side by side; runs of this case under Compare runs"),
 ] %}
 {% set slugs = case_views|map(attribute="slug")|list %}
 {% block main %}
@@ -44,7 +44,7 @@
     <h2 class="section-h" id="ask-h">Ask the engine</h2>
     <ol class="questions">
       {% for slug, q, what in QUESTIONS %}
-      <li>{% set href = ("/compare" if slug == "compare" and slug not in slugs else base ~ "/" ~ slug) %}
+      <li>{% set href = ("/compare?a=" ~ case.id) if slug == "compare" else base ~ "/" ~ slug %}
         {% if slug in slugs or slug == "compare" %}<a href="{{ href }}"><b>{{ q }}</b><small>{{ what }}</small></a>
         {% else %}<span class="questions__off"><b>{{ q }}</b><small>{{ what }} · view not installed</small></span>{% endif %}
       </li>
