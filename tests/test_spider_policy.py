@@ -111,6 +111,41 @@ def test_crawl_page_cap_settles_unfetched_edges() -> None:
     assert pending["reason"] == "page_cap"
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_status_stops_queued_urls_and_preserves_response_body(status: int) -> None:
+    seed = "https://catalog.example.invalid/"
+    auth_url = "https://catalog.example.invalid/records/1"
+    queued_url = "https://catalog.example.invalid/records/2"
+    auth_body = "Authentication required for this page."
+    requested: list[str] = []
+
+    def fetch(url: str) -> dict:
+        requested.append(url)
+        if url.endswith("/robots.txt"):
+            return {"status": 404, "final_url": url, "body": b""}
+        if url == seed:
+            return _response(url, '<a href="/records/1">One</a><a href="/records/2">Two</a>')
+        if url == auth_url:
+            return _response(url, auth_body, status=status)
+        return _response(url, "This page must not be fetched")
+
+    result = crawl_site(
+        seed,
+        policy=CrawlPolicy(allowed_domain="example.invalid", page_cap=5),
+        fetch=fetch,
+        sleep=lambda _: None,
+    )
+
+    assert requested == ["https://catalog.example.invalid/robots.txt", seed, auth_url]
+    assert result["stop_reason"] == "login_or_captcha"
+    auth_page = result["pages"][1]
+    assert auth_page["status"] == status
+    assert auth_page["body"] == auth_body.encode()
+    assert auth_page["blocked_reason"] == "login_or_captcha"
+    pending_edge = next(edge for edge in result["edges"] if edge["to_url"] == queued_url)
+    assert pending_edge["followed"] is False
+
+
 def test_redirects_are_followed_only_inside_the_allowed_domain() -> None:
     seed = "https://catalog.example.invalid/"
     inside = "https://catalog.example.invalid/records"

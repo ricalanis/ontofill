@@ -648,6 +648,7 @@ def run_case(
                     run_id=run_id,
                     provenance=provenance,
                     budget=LoopBudget(max_iterations=3, max_usd=budget_usd, wall_seconds=900),
+                    spider_capture=(capture or capture_url) if not mock else None,
                 )
             decision_start = len(getattr(decision, "call_log", []))
             trace_before = len(getattr(search_client, "trace", []))
@@ -833,6 +834,11 @@ def run_case(
                 pending = "ontology"
             elif outer.reopen == 3:
                 _reopen_discovery(case_dir, outer.iteration)
+                if not mock and isinstance(search_client, DiscoveryLoop):
+                    missing_property_ids = {
+                        property_id for gap in outer.gaps for property_id in gap.properties
+                    }
+                    search_client.request_site_graph_refresh(missing_property_ids)
                 reopen_phase = 3
             elif outer.reopen == 4:
                 _reopen_local_scope(case_dir, objective, outer.iteration)

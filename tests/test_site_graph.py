@@ -9,6 +9,7 @@ from jsonschema import Draft202012Validator
 from ontofill.case.checkpoints import write_json
 from ontofill.contracts import validate_document
 from ontofill.lake import FileLake
+from ontofill.runfeed import RunFeed
 from ontofill.phases.p3_fanout.site_graph import (
     build_site_graph,
     rank_objectives_by_site_graph,
@@ -283,18 +284,37 @@ def test_site_graph_publishes_ontology_labeled_pages_and_keeps_unfetched_links_i
     decision = FakeDecision()
     lake = FileLake(tmp_path / "lake")
     capture_result = _capture_result(lake)
+    graph_trace: list[dict] = []
     envelope = build_site_graph(
         case_dir=tmp_path / "case",
         objective=OBJECTIVE,
         ontology=ONTOLOGY,
         decision=decision,
         lake=lake,
-        run_id="synthetic-run",
+        run_id="mock-synthetic-run",
         capture_result=capture_result,
+        trace_out=graph_trace,
     )
 
     validate_document("site-graph", envelope)
     assert envelope["schema_version"] == "1.0.3"
+    assert envelope["generated_by"]["backend"] == decision.backend
+    assert envelope["generated_by"]["model"] == decision.model
+    assert isinstance(envelope["generated_by"]["at"], str)
+    feed = RunFeed(
+        lake,
+        "synthetic-case",
+        "mock-synthetic-run",
+        envelope["generated_by"],
+        start_heartbeat=False,
+    )
+    for step in graph_trace:
+        validate_document("trace-step", step)
+        feed.append_step(step)
+    feed.close()
+    assert len(
+        lake.read_key("runs/synthetic-case/mock-synthetic-run/trace.live.jsonl").splitlines()
+    ) == len(graph_trace)
     graph = envelope["graph"]
     assert len(graph["types"]) == 3
     assert {item["label"]["kind"] for item in graph["types"]} == {
@@ -329,6 +349,55 @@ def test_site_graph_publishes_ontology_labeled_pages_and_keeps_unfetched_links_i
     assert envelope["bronze_key"] not in expected_payload.decode()
     artifact_path = tmp_path / "case/03-fanout/surface-map/source-synthetic/site-graph.json"
     assert json.loads(artifact_path.read_text(encoding="utf-8")) == envelope
+
+
+def test_site_graph_failure_traces_are_valid_run_feed_steps(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    source_dir = case_dir / "03-fanout/sources" / SOURCE_ID
+    write_json(
+        source_dir / "candidate.json",
+        {
+            "fingerprint": FINGERPRINT,
+            "capture_key": OBJECTIVE["confirmed_bronze_key"],
+            "covers": ["record_id", "name"],
+            "authority": "auto",
+        },
+    )
+    lake = FileLake(tmp_path / "lake")
+    decision = FakeDecision()
+
+    def fail_capture(url: str, **kwargs: dict) -> dict:
+        raise OSError("synthetic spider failure")
+
+    def invalid_capture(url: str, **kwargs: dict) -> dict:
+        return {"job_id": kwargs["job_id"], "pages": []}
+
+    feed = RunFeed(
+        lake,
+        "synthetic-case",
+        "mock-synthetic-run",
+        PROVENANCE,
+        start_heartbeat=False,
+    )
+    for capture in (fail_capture, invalid_capture):
+        result = run_confirmed_source_spiders(
+            case_dir=case_dir,
+            objectives=OBJECTIVES,
+            ontology=ONTOLOGY,
+            decision=decision,
+            lake=lake,
+            run_id="mock-synthetic-run",
+            capture=capture,
+            provenance=PROVENANCE,
+        )
+        assert len(result["trace"]) == 1
+        step = result["trace"][0]
+        validate_document("trace-step", step)
+        feed.append_step(step)
+    feed.close()
+    assert len(
+        lake.read_key("runs/synthetic-case/mock-synthetic-run/trace.live.jsonl").splitlines()
+    ) == 2
 
 
 def test_p4_uses_site_graph_as_bounded_starting_context(tmp_path: Path) -> None:
@@ -393,22 +462,26 @@ def test_confirmed_source_spider_runner_uses_bounded_policy_and_ranks_objectives
         }
 
     decision = FakeDecision()
+    decision.backend = "vultr"
+    live_provenance = {**PROVENANCE, "backend": "vultr"}
     result = run_confirmed_source_spiders(
         case_dir=case_dir,
         objectives=OBJECTIVES,
         ontology=ONTOLOGY,
         decision=decision,
         lake=lake,
-        run_id="synthetic-run",
+        run_id="run-synthetic-site-graph",
         capture=capture,
-        provenance=PROVENANCE,
+        provenance=live_provenance,
     )
 
     assert len(calls) == 1
     assert calls[0]["url"] == SOURCE_URL
     assert calls[0]["allowed_domains"] == ["example.invalid"]
+    assert calls[0]["generated_by"] == live_provenance
     assert calls[0]["spider_options"]["max_depth"] == 2
     assert calls[0]["spider_options"]["page_cap"] == 30
+    assert calls[0]["spider_options"]["delay_seconds"] >= 0
     assert calls[0]["job_id"].startswith("job:")
     graph = result["graphs"][SOURCE_ID]["graph"]
     assert graph["job_ids"] == [calls[0]["job_id"]]

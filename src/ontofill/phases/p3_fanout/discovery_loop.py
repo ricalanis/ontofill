@@ -19,7 +19,7 @@ import re
 import subprocess
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -219,6 +219,15 @@ class DiscoveryLoop:
         self.result: LoopResult | None = None
         self._page_texts: dict[str, str] = {}
         self._page_evidence: dict[str, dict[str, dict]] = {}
+        self._pending_spider_gap_properties: set[str] = set()
+
+    def request_site_graph_refresh(self, property_ids: Iterable[str]) -> None:
+        """Request bounded recrawls for confirmed sources that may cover these gaps."""
+        self._pending_spider_gap_properties.update(
+            property_id
+            for property_id in property_ids
+            if isinstance(property_id, str) and property_id
+        )
 
     # ------------------------------------------------------------------ trace
     def _step(self, requested: dict, executed: dict, evaluated: dict, **extra: object) -> dict:
@@ -939,7 +948,18 @@ class DiscoveryLoop:
     ) -> dict:
         if self.spider_capture is None:
             return objectives
-        from ontofill.phases.p3_fanout.site_graph import run_confirmed_source_spiders
+        from ontofill.phases.p3_fanout.site_graph import (
+            run_confirmed_source_spiders,
+            sources_needing_spider,
+        )
+
+        force_source_ids = (
+            sources_needing_spider(
+                case_dir, objectives, self._pending_spider_gap_properties
+            )
+            if self._pending_spider_gap_properties
+            else []
+        )
 
         result = run_confirmed_source_spiders(
             case_dir=case_dir,
@@ -950,7 +970,9 @@ class DiscoveryLoop:
             run_id=self.run_id,
             capture=self.spider_capture,
             provenance=self.provenance,
+            force_source_ids=force_source_ids,
         )
+        self._pending_spider_gap_properties.clear()
         self.trace.extend(result["trace"])
         self.jobs.extend(result["jobs"])
         return result["objectives"]

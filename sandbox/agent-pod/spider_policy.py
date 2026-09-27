@@ -348,6 +348,8 @@ def crawl_site(
             blocked_reason = "response_too_large"
         if status is None:
             blocked_reason = blocked_reason or str(final_response.get("error") or "network_error")
+        elif status in {401, 403}:
+            blocked_reason = blocked_reason or "login_or_captcha"
         page = {
             "requested_url": requested_url,
             "final_url": final_url,
@@ -377,6 +379,9 @@ def crawl_site(
         if status is None or not 200 <= status < 300 or blocked_reason:
             if status is None:
                 stop_reason = "network_error"
+                break
+            if status in {401, 403}:
+                stop_reason = "login_or_captcha"
                 break
             continue
         if not content_type.casefold().startswith(("text/html", "application/xhtml+xml")):

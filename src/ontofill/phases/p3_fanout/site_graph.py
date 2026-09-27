@@ -232,7 +232,6 @@ def _classify_page_type(
         "value_ids": [],
         "ts": provenance["at"],
         "generated_by": provenance,
-        "event": "site_graph.page_type",
     }
     page_type = {
         "type_id": type_id,
@@ -650,7 +649,6 @@ def run_confirmed_source_spiders(
                     "value_ids": [],
                     "ts": datetime.now(UTC).isoformat(),
                     "generated_by": dict(provenance),
-                    "event": "site_graph.capture_failed",
                 }
             )
             continue
@@ -698,7 +696,6 @@ def run_confirmed_source_spiders(
                     "value_ids": [],
                     "ts": datetime.now(UTC).isoformat(),
                     "generated_by": dict(provenance),
-                    "event": "site_graph.publish_failed",
                 }
             )
             continue

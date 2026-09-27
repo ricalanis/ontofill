@@ -789,3 +789,102 @@ def test_workflow_publishes_loop_and_outer_reopen_skips_known_sources(tmp_path) 
     assert objectives["objectives"][0]["discovered_by"]["provider"] == "synthetic"
     ledger = json.loads((scratch / "03-fanout/surface-map/discovery.json").read_text())
     assert [round_["mode"] for round_ in ledger["rounds"]] == ["loop", "loop"]
+
+
+def test_gap_targeted_site_graph_refresh_forces_only_uncovered_confirmed_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ontofill.phases.p3_fanout import site_graph
+
+    case_dir = tmp_path / "case"
+    objectives = {
+        "objectives": [
+            {"source_id": "source-incomplete", "target_fields": ["record_id"]},
+            {"source_id": "source-covered", "target_fields": ["record_id"]},
+            {"source_id": "source-unrelated", "target_fields": ["name"]},
+        ]
+    }
+    for source_id, uncovered in (
+        ("source-incomplete", ["record_id"]),
+        ("source-covered", []),
+    ):
+        graph_path = (
+            case_dir / "03-fanout/surface-map" / source_id / "site-graph.json"
+        )
+        graph_path.parent.mkdir(parents=True, exist_ok=True)
+        graph_path.write_text(
+            json.dumps({"graph": {"coverage": {"uncovered_property_ids": uncovered}}}),
+            encoding="utf-8",
+        )
+
+    calls: list[list[str]] = []
+
+    def fake_spider_runner(**kwargs: dict) -> dict:
+        calls.append(list(kwargs["force_source_ids"]))
+        return {"objectives": kwargs["objectives"], "trace": [], "jobs": []}
+
+    monkeypatch.setattr(site_graph, "run_confirmed_source_spiders", fake_spider_runner)
+    loop, _ = _loop(
+        tmp_path,
+        [StaticProvider("synthetic", _all_urls(("record_id",)))],
+        {},
+    )
+    loop.spider_capture = lambda *_args, **_kwargs: {}
+    loop.request_site_graph_refresh(["record_id"])
+
+    loop._site_graphs(case_dir, {"version": "synthetic"}, library_decisions(), objectives)
+    loop._site_graphs(case_dir, {"version": "synthetic"}, library_decisions(), objectives)
+
+    assert calls == [["source-incomplete"], []]
+
+
+def test_recorded_run_case_confirms_lead_without_starting_live_spider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ontofill import workflow
+
+    captured: dict[str, object] = {}
+    capture_calls: list[str] = []
+    url = "https://libraries.example.test/branches"
+    real_discovery_loop = DiscoveryLoop
+
+    class CaptureAwareDiscoveryLoop(real_discovery_loop):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["spider_capture"] = kwargs.get("spider_capture")
+            super().__init__(*args, **kwargs)
+
+    def capture_lead(lead_url: str, **kwargs: object) -> dict:
+        capture_calls.append(lead_url)
+        assert lead_url == url
+        lake = kwargs["lake"]
+        return FakeCapture(lake, {url: PAGE.format(title="Branches")})(lead_url, **kwargs)
+
+    monkeypatch.setattr(workflow, "DiscoveryLoop", CaptureAwareDiscoveryLoop)
+    monkeypatch.setattr(
+        workflow,
+        "default_lead_providers",
+        lambda *_args, **_kwargs: [
+            StaticProvider("synthetic", _all_urls(("name", "free_internet", "opening_hours")))
+        ],
+    )
+    monkeypatch.delenv("ONTOFILL_CATALOG_URL", raising=False)
+
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "brief.md").write_text(BRIEF.read_text(encoding="utf-8"), encoding="utf-8")
+    run_id = f"mock-{uuid.uuid4().hex[:16]}"
+    result = workflow.run_case(
+        case,
+        run_id=run_id,
+        to_phase=3,
+        decision=library_decisions(),
+        preview_past_checkpoints=True,
+        capture=capture_lead,
+    )
+
+    scratch, _ = workflow._scratch_case(case, run_id)
+    assert result == 3  # recorded previews cannot clear human checkpoints
+    assert capture_calls == [url]  # the lead was confirmed in the sandbox double
+    assert (scratch / "03-fanout/objectives.json").is_file()
+    assert not list((scratch / "03-fanout/surface-map").glob("*/site-graph.json"))
+    assert captured["spider_capture"] is None
