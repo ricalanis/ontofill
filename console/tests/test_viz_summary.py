@@ -327,3 +327,13 @@ def test_partial_metrics_without_gold(cases_dir):
     assert m["receipts"] == [] and m["receipts_empty"]["row"] == "R2"
     assert m["produced"]["n_values"] > 0  # value_ids emitted in the trace
     assert c.get(f"/cases/libraries/summary?run={rid}").status_code == 200
+
+
+def test_inference_line_for_a_run_before_gateway_logging():
+    from ontofill_console.viz.summary import _inference_text
+
+    im = {"n_calls": 0, "n_model_steps": 5, "pct_vultr": None, "unattributed": {"n": 12}}
+    text = _inference_text(im)
+    assert "no reasoning calls" not in text and "5 model steps" in text and "12 unattributed" in text
+    im = {"n_calls": 8, "n_model_steps": 6, "pct_vultr": 100.0, "unattributed": {"n": 0}}
+    assert _inference_text(im) == "8 gateway calls · 100% of reasoning on Vultr · 0 unattributed"

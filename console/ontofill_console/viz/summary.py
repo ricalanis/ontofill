@@ -266,15 +266,23 @@ def cost_section(case, cm: dict, im: dict, rid: str | None) -> dict:
                           "n_reasoning": im["n_reasoning"] if mounted else None, "pct_vultr": im["pct_vultr"],
                           "unattributed": im["unattributed"]["n"], "n_model_steps": im["n_model_steps"],
                           "usd": im["usd_total"],
-                          "text": (f"{im['n_calls']} gateway calls · "
-                                   + (f"{im['pct_vultr']:g}% of reasoning on Vultr" if im["pct_vultr"] is not None
-                                      else "no reasoning calls")
-                                   + f" · {im['unattributed']['n']} unattributed") if mounted else
+                          "text": _inference_text(im) if mounted else
                                   f"gateway log not mounted · {im['n_model_steps']} model steps in the trace, "
                                   "share on Vultr and unattributed calls unknown",
                           "href": f"/cases/{case.id}/inference" + (f"?run={quote(rid)}" if rid else "")},
             "href": f"/cases/{case.id}/cost" + (f"?run={quote(rid)}" if rid else ""),
             "empty": cm["empty"] if not cm["has_cost"] and cm["loops_total"] is None else None}
+
+
+def _inference_text(im: dict) -> str:
+    """One honest line. A run that predates gateway logging has model steps but no gateway records: say that, rather
+    than "no reasoning calls" next to a cost-by-model table."""
+    n_calls, n_steps, un = im["n_calls"], im["n_model_steps"], im["unattributed"]["n"]
+    if not n_calls and n_steps:
+        return (f"{n_steps} model steps in the trace, none matched in the gateway log (a run before gateway logging, "
+                f"or engine calls without a step id) · {un} unattributed")
+    share = f"{im['pct_vultr']:g}% of reasoning on Vultr" if im["pct_vultr"] is not None else "no reasoning calls"
+    return f"{n_calls} gateway calls · {share} · {un} unattributed"
 
 
 # 6 · key receipts ---------------------------------------------------------------------------------------------------
