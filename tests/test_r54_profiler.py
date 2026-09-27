@@ -189,6 +189,30 @@ def test_entity_rows_exclude_aggregate_tables() -> None:
     assert profile["tables"][1]["granularity"] == "aggregate"
 
 
+def test_pdf_table_yields_refiner_rows_with_page_receipts() -> None:
+    pdf = make_pdf(
+        [
+            [
+                "RFC              NOMBRE                  IMPORTE",
+                "XAXX010101000    ACME SA DE CV           1000.50",
+            ],
+            [
+                "RFC              NOMBRE                  IMPORTE",
+                "AAAA010101AAA    OTRA SA DE CV            300.00",
+            ],
+        ]
+    )
+
+    profile = profile_bytes(pdf, jurisdictions=("MX",))
+    entity = entity_rows(profile)
+
+    assert [row["RFC"] for row in entity] == ["XAXX010101000", "AAAA010101AAA"]
+    assert entity[0]["receipt"]["page"] == 1
+    assert entity[1]["receipt"]["row_number"] == 3
+    assert "table spans pages [1, 2]" in profile["tables"][0]["notes"]
+    assert profile["row_receipts"] == 2
+
+
 def test_pod_runner_emits_the_profile_beside_rows(tmp_path: Path) -> None:
     runner = _load_pod_runner()
     xlsx = make_xlsx(

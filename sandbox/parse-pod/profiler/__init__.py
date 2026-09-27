@@ -24,10 +24,13 @@ def profile_bytes(
     if patterns is not None:
         register_patterns(patterns)
     fmt, tables, structure = extract_tables(data)
-    document = profile_document(tables, jurisdictions=jurisdictions)
+    page_spans = structure.get("page_span") if isinstance(structure, dict) else None
+    document = profile_document(tables, jurisdictions=jurisdictions, page_spans=page_spans)
     return {
         "format": fmt,
         "structure": structure,
         "table_count": document["table_count"],
+        "row_receipts": document["row_receipts"],
+        "row_receipts_truncated": document["row_receipts_truncated"],
         "tables": document["tables"],
     }

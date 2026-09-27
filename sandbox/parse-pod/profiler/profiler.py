@@ -235,6 +235,7 @@ def profile_document(
     tables: list[tuple[str | None, int | None, list[list[Any]]]],
     *,
     jurisdictions: tuple[str, ...] = (),
+    page_spans: dict[str, list[int]] | None = None,
 ) -> dict:
     """Profile every table found in a document, capped and fingerprinted."""
     profiles = []
@@ -244,6 +245,8 @@ def profile_document(
         profile = profile_table(rows, sheet=sheet, page=page, jurisdictions=jurisdictions)
         if profile is None:
             continue
+        if page_spans and sheet in page_spans:
+            profile.notes.append(f"table spans pages {page_spans[sheet]}")
         budget = max(0, MAX_PROFILE_TOTAL_ROWS - total_rows)
         if len(profile.rows) > budget:
             profile.rows = profile.rows[:budget]

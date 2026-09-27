@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -76,6 +76,7 @@ class ParseResult:
     trace: tuple[dict[str, Any], ...]
     job_record: dict[str, Any]
     challenge_detected: bool = False
+    profile: dict[str, Any] = field(default_factory=dict)
 
     def as_parsed_file(self) -> Any:
         """Rebuild the safe parsed-file value object without reopening bronze bytes."""
@@ -441,10 +442,12 @@ class DockerParseExecutor:
         pod_directory = assets / "parse-pod"
         if not pod_directory.is_dir():
             pod_directory = _POD_DIRECTORY
+        # Include the profiler sub-package so the tag changes when it changes.
+        files = sorted(
+            path for path in pod_directory.rglob("*") if path.is_file() and "__pycache__" not in path.parts
+        )
         digest = hashlib.sha256(
-            b"".join(
-                path.read_bytes() for path in sorted(pod_directory.iterdir()) if path.is_file()
-            )
+            b"".join(path.read_bytes() for path in files)
         ).hexdigest()[:12]
         image = f"{cls.image_prefix}:{digest}"
         with _IMAGE_LOCK:
@@ -755,6 +758,9 @@ def _result(
     table_headers = output.get("table_headers", [])
     skeleton_hash = output.get("dom_skeleton_hash")
     challenge_detected = output.get("challenge_detected", False)
+    profile = output.get("profile", {})
+    if not isinstance(profile, dict):
+        profile = {}
     if (
         not isinstance(page_text, str)
         or len(page_text) > 200_000
@@ -818,6 +824,7 @@ def _result(
         trace=(),
         job_record={},
         challenge_detected=challenge_detected if task_ok else False,
+        profile=profile if task_ok else {},
     )
     request = {
         "tool": "file.parse",
