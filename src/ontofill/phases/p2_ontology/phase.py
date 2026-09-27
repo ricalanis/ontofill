@@ -53,19 +53,11 @@ TAXONOMY_SCHEMA = {
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
-                            "required": ["id", "label", "level", "critic_label"],
+                            "required": ["id", "label", "level"],
                             "properties": {
                                 "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
                                 "label": {"type": "string", "minLength": 1},
                                 "level": {"const": 1},
-                                "critic_label": {
-                                    "enum": [
-                                        "Good-Overlapping",
-                                        "Good-Exclusive",
-                                        "Redundant",
-                                        "Bad",
-                                    ]
-                                },
                             },
                         },
                     },
@@ -75,10 +67,94 @@ TAXONOMY_SCHEMA = {
     },
 }
 
+# The generator proposes nodes; a separate critic (another model family) grades them.
+NODE_LABELS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["labels"],
+    "properties": {
+        "labels": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["factor_id", "node_id", "critic_label"],
+                "properties": {
+                    "factor_id": {"type": "string", "minLength": 1},
+                    "node_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+                    "critic_label": {
+                        "enum": [
+                            "Good-Overlapping",
+                            "Good-Exclusive",
+                            "Redundant",
+                            "Bad",
+                        ]
+                    },
+                },
+            },
+        }
+    },
+}
+
+_GOOD_LABELS = {"Good-Overlapping", "Good-Exclusive"}
+_TAXONOMY_ALGORITHM_VERSION = "r10-separate-critic-v1"
+
 
 def _digest(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def label_taxonomy_nodes(decision: DecisionClient, taxonomies: list[dict]) -> list[dict]:
+    """Grade every proposed node with a separate critic from another model family.
+
+    The generator proposes the tree; this critic supplies each node's `critic_label`. Returns the
+    taxonomies with `critic_label` set, plus `soundness` (share of Good-* nodes) and a null `coverage`
+    (coverage is unknown until entities are classified in refine).
+    """
+    nodes = [
+        {"factor_id": tax["factor_id"], "node_id": child["id"], "label": child["label"]}
+        for tax in taxonomies
+        for child in tax["children"]
+    ]
+    prompt = (
+        "You are an independent taxonomy critic. Grade every proposed node with exactly one label: "
+        "Good-Exclusive (distinct and non-overlapping), Good-Overlapping (useful but overlaps a sibling), "
+        "Redundant (says nothing new), or Bad (wrong or unusable). Use only the node's factor, id and label; "
+        "do not add, drop or rename nodes. Return one label per proposed node. "
+        f"Proposed nodes: {json.dumps(nodes, ensure_ascii=False)}"
+    )
+    response = decision.complete_json("critic.phase2.taxonomy_nodes", prompt, NODE_LABELS_SCHEMA)
+    Draft202012Validator(NODE_LABELS_SCHEMA).validate(response)
+    label_keys = [(item["factor_id"], item["node_id"]) for item in response["labels"]]
+    if len(label_keys) != len(set(label_keys)):
+        raise ValueError("the taxonomy critic returned duplicate node labels")
+    expected_keys = [(item["factor_id"], item["node_id"]) for item in nodes]
+    if len(expected_keys) != len(set(expected_keys)):
+        raise ValueError("proposed taxonomy nodes must have unique factor and node IDs")
+    labels = {
+        key: item["critic_label"] for key, item in zip(label_keys, response["labels"], strict=True)
+    }
+    expected = set(expected_keys)
+    if set(labels) != expected:
+        raise ValueError("the taxonomy critic must label every proposed node exactly once")
+    graded = []
+    for tax in taxonomies:
+        children = [
+            {**child, "critic_label": labels[(tax["factor_id"], child["id"])]}
+            for child in tax["children"]
+        ]
+        good = sum(child["critic_label"] in _GOOD_LABELS for child in children)
+        graded.append(
+            {
+                **tax,
+                "children": children,
+                "soundness": good / len(children),
+                "coverage": None,
+            }
+        )
+    return graded
 
 
 def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
@@ -172,7 +248,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         ["ontology.json", "ontology.md", "ontology.input.sha256", "dod-queries.json", "shapes.ttl"],
         case_dir=case_dir,
     )
-    digest = _digest([prd, chosen, revisions])
+    digest = _digest([prd, chosen, revisions, _TAXONOMY_ALGORITHM_VERSION])
     fingerprint = path.with_suffix(".input.sha256")
     if path.exists():
         ontology = load_json(path)
@@ -192,8 +268,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
                 return ontology
     prompt = (
         "Expand each approved factor to exactly one taxonomy level. Use stable snake_case IDs. "
-        "Give each child level=1 and a critic_label from Good-Overlapping, Good-Exclusive, "
-        "Redundant, Bad. Return one taxonomy per factor and do not assert observed data. "
+        "Give each child level=1. Return one taxonomy per factor and do not assert observed data. "
         f"Human revisions override prior proposals: {json.dumps(revisions, ensure_ascii=False)}. "
         f"Approved factors: {chosen}. PRD: {prd}"
     )
@@ -205,7 +280,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         verdict = review(
             "phase2.taxonomies",
             response,
-            "Every approved factor has one taxonomy; children are mutually coherent, grounded in approved factors, and critic labels identify overlaps or bad nodes honestly",
+            "Every approved factor has one taxonomy; children are mutually coherent and grounded in approved factors",
         )
         if verdict["accepted"]:
             break
@@ -216,19 +291,8 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
     factor_ids = {factor["id"] for factor in chosen}
     if {tax["factor_id"] for tax in response["taxonomies"]} != factor_ids:
         raise ValueError("taxonomies must cover exactly the approved factors")
-    taxonomies = []
-    for taxonomy in response["taxonomies"]:
-        children = taxonomy["children"]
-        good = sum(
-            child["critic_label"] in {"Good-Overlapping", "Good-Exclusive"} for child in children
-        )
-        taxonomies.append(
-            {
-                **taxonomy,
-                "soundness": good / len(children),
-                "coverage": good / len(children),
-            }
-        )
+    # The generator never grades itself: a separate critic labels each proposed node.
+    taxonomies = label_taxonomy_nodes(decision, response["taxonomies"])
     proposal = _schema_proposal()
     case_spec = {
         "question": (case_dir / "brief.md").read_text(encoding="utf-8")[:3000],

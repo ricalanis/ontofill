@@ -23,6 +23,9 @@ from ontofill.refiner.core import (
     _signal_definitions,
     stable_value_id,
 )
+from ontofill.refiner.core import (
+    taxonomy_levels as _taxonomy_levels,
+)
 from ontofill.refiner.provenance import validate_generated_by, validate_run_provenance
 
 
@@ -390,6 +393,7 @@ def _metrics(
     generated_by: dict[str, str],
     preview: bool,
     decisions_by_backend: dict[str, int] | None,
+    coverage_basis: str = "none",
 ) -> dict:
     classes, properties = _ontology_declarations(ontology)
     relations, _ = _signal_definitions(ontology, classes, properties)
@@ -435,12 +439,39 @@ def _metrics(
         if value["status"] == "gold"
     ]
     covered = {node for entity in entities for node in entity["classified_as"]}
+    classified = coverage_basis == "classification"
     level_ratio = {
         taxonomy: [
-            len(covered.intersection(level)) / len(set(level)) if level else 0.0 for level in levels
+            (len(covered.intersection(level)) / len(set(level)) if level else 0.0)
+            if classified
+            else None
+            for level in levels
         ]
         for taxonomy, levels in taxonomy_levels.items()
     }
+    taxonomy_metrics = []
+    for taxonomy, levels in taxonomy_levels.items():
+        nodes = {node for level in levels for node in level}
+        soundness = next(
+            (
+                item.get("soundness")
+                for item in ontology.get("taxonomies", [])
+                if item["factor_id"] == taxonomy
+            ),
+            None,
+        )
+        taxonomy_metrics.append(
+            {
+                "factor_id": taxonomy,
+                "nodes": len(nodes),
+                "soundness": soundness,
+                "soundness_basis": "critic",
+                "coverage": len(covered.intersection(nodes)) / len(nodes)
+                if classified and nodes
+                else None,
+                "coverage_basis": coverage_basis,
+            }
+        )
     mode_count = Counter(step["mode"] for step in trace if step.get("event") != "loop")
     loops = [
         {
@@ -534,6 +565,7 @@ def _metrics(
         ),
         "values_without_evidence": sum(not value["evidence"] for value in gold_values),
         "level_ratio_coverage": level_ratio,
+        "taxonomy_metrics": taxonomy_metrics,
         "mode_counts": {mode: mode_count[mode] for mode in ("D0", "D1", "S1", "S2")},
         "jobs": jobs or {"ok": len(completed_jobs), "failed_by_reason": {}},
         "generated_by": generated_by.copy(),
@@ -560,6 +592,7 @@ def export_run(
     preview: bool = False,
     decisions_by_backend: dict[str, int] | None = None,
     taxonomy_levels: Mapping[str, Sequence[Sequence[str]]] | None = None,
+    taxonomy_classified: bool = False,
     jobs: dict | None = None,
 ) -> dict:
     """Write schema-valid generic gold, then move the latest pointer last."""
@@ -602,11 +635,12 @@ def export_run(
         ontology,
         dod_queries,
         sorted_trace,
-        taxonomy_levels or {},
+        taxonomy_levels if taxonomy_levels is not None else _taxonomy_levels(ontology),
         jobs,
         run_provenance,
         preview,
         decisions_by_backend,
+        coverage_basis="classification" if taxonomy_classified else "none",
     )
     validators["metrics"].validate(metrics)
     prefix = f"gold/{case_id}/{run_id}"

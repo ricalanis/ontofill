@@ -23,7 +23,14 @@
     "values_without_evidence": {"type": "integer", "minimum": 0},
     "level_ratio_coverage": {
       "type": "object",
-      "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/ratio"}}
+      "additionalProperties": {
+        "type": "array",
+        "items": {"oneOf": [{"$ref": "#/$defs/ratio"}, {"type": "null"}]}
+      }
+    },
+    "taxonomy_metrics": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/taxonomy_metric"}
     },
     "mode_counts": {
       "type": "object", "additionalProperties": false,
@@ -73,6 +80,18 @@
       "type": "object", "additionalProperties": {"type": "integer", "minimum": 0}
     },
     "ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "taxonomy_metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["factor_id", "nodes", "soundness", "soundness_basis", "coverage", "coverage_basis"],
+      "properties": {
+        "factor_id": {"type": "string", "minLength": 1},
+        "nodes": {"type": "integer", "minimum": 0},
+        "soundness": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "soundness_basis": {"enum": ["critic", "none"]},
+        "coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "coverage_basis": {"enum": ["classification", "none"]}
+      }
+    },
     "dod_result": {
       "type": "object", "additionalProperties": false,
       "required": ["criterion_id", "query", "target", "actual", "met"],
