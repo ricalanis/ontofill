@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -26,6 +27,7 @@ from ontofill.sandbox.jobs import validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
 ParseFormat = Literal["csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"]
+ParseMode = Literal["full", "preview"]
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SUPPORTED_FORMATS = frozenset({"csv", "xls", "xlsx", "xlsm", "html", "json", "pdf", "zip", "auto"})
 _MAX_NON_PDF_INPUT_BYTES = 8 * 1024 * 1024
@@ -79,6 +81,7 @@ class ParseResult:
     job_record: dict[str, Any]
     challenge_detected: bool = False
     profile: dict[str, Any] = field(default_factory=dict)
+    preview: dict[str, Any] | None = None
 
     def as_parsed_file(self) -> Any:
         """Rebuild the safe parsed-file value object without reopening bronze bytes."""
@@ -146,6 +149,7 @@ class ParseExecutor(Protocol):
         *,
         kind: str,
         format: str,
+        mode: ParseMode = "full",
         max_rows: int,
         base_url: str,
         limits: SandboxLimits,
@@ -159,6 +163,7 @@ class ParseExecutor(Protocol):
         max_bytes: int,
         kind: str,
         format: str,
+        mode: ParseMode = "full",
         max_rows: int,
         base_url: str,
         limits: SandboxLimits,
@@ -176,6 +181,7 @@ class DockerParseExecutor:
         *,
         kind: str,
         format: str,
+        mode: ParseMode = "full",
         max_rows: int,
         base_url: str,
         limits: SandboxLimits,
@@ -187,6 +193,7 @@ class DockerParseExecutor:
             max_input_bytes=_MAX_INPUT_BYTES,
             kind=kind,
             format=format,
+            mode=mode,
             max_rows=max_rows,
             base_url=base_url,
             limits=limits,
@@ -200,6 +207,7 @@ class DockerParseExecutor:
         max_bytes: int,
         kind: str,
         format: str,
+        mode: ParseMode = "full",
         max_rows: int,
         base_url: str,
         limits: SandboxLimits,
@@ -212,6 +220,7 @@ class DockerParseExecutor:
             max_input_bytes=max_bytes,
             kind=kind,
             format=format,
+            mode=mode,
             max_rows=max_rows,
             base_url=base_url,
             limits=limits,
@@ -226,6 +235,7 @@ class DockerParseExecutor:
         max_input_bytes: int,
         kind: str,
         format: str,
+        mode: ParseMode = "full",
         max_rows: int,
         base_url: str,
         limits: SandboxLimits,
@@ -298,6 +308,7 @@ class DockerParseExecutor:
                 envelope_data = {
                     "kind": kind,
                     "format": format,
+                    "mode": mode,
                     "max_rows": max_rows,
                     "max_input_bytes": max_input_bytes,
                     "base_url": base_url,
@@ -520,6 +531,7 @@ def _dispatch_parse(
     *,
     kind: str,
     format: str,
+    mode: ParseMode,
     max_rows: int,
     max_bytes: int,
     base_url: str,
@@ -528,21 +540,34 @@ def _dispatch_parse(
 ) -> ParseExecution:
     runner = executor or DockerParseExecutor()
     file_dispatch = getattr(runner, "run_from_file", None)
+
+    def dispatch_file(
+        path: Path,
+        *,
+        expected_sha256: str,
+    ) -> ParseExecution:
+        arguments = {
+            "expected_sha256": expected_sha256,
+            "max_bytes": max_bytes,
+            "kind": kind,
+            "format": format,
+            "max_rows": max_rows,
+            "base_url": base_url,
+            "limits": limits,
+        }
+        if mode == "preview":
+            arguments["mode"] = mode
+        return file_dispatch(path, **arguments)
+
     if isinstance(lake, FileLake):
         path = lake.bronze_path(bronze_key)
         if path.stat().st_size > max_bytes:
             return _input_too_large_execution()
         if not callable(file_dispatch):
             raise TypeError("FileLake parsing requires an executor that stages bronze by path")
-        return file_dispatch(
+        return dispatch_file(
             path,
             expected_sha256=bronze_key.removeprefix("sha256:"),
-            max_bytes=max_bytes,
-            kind=kind,
-            format=format,
-            max_rows=max_rows,
-            base_url=base_url,
-            limits=limits,
         )
 
     if not callable(file_dispatch):
@@ -563,15 +588,9 @@ def _dispatch_parse(
                 _empty_teardown(),
                 error="bronze_digest_mismatch",
             )
-        return file_dispatch(
+        return dispatch_file(
             path,
             expected_sha256=expected_sha256,
-            max_bytes=max_bytes,
-            kind=kind,
-            format=format,
-            max_rows=max_rows,
-            base_url=base_url,
-            limits=limits,
         )
 
 
@@ -580,6 +599,7 @@ def parse_bronze(
     bronze_key: str,
     *,
     format: ParseFormat,
+    mode: ParseMode = "full",
     max_rows: int = 300,
     max_bytes: int = _MAX_INPUT_BYTES,
     base_url: str | None = None,
@@ -603,6 +623,8 @@ def parse_bronze(
     raises `SandboxParseError` with its job proof.
     """
     kind = _format(format)
+    if mode not in {"full", "preview"}:
+        raise ValueError(f"unsupported parse mode: {mode!r}")
     _validate_limits(max_rows=max_rows, max_bytes=max_bytes)
     budget = _parse_limits(limits)
     context = _job_context(
@@ -620,6 +642,7 @@ def parse_bronze(
         bronze_key,
         kind=kind,
         format=kind,
+        mode=mode,
         max_rows=max_rows,
         max_bytes=max_bytes,
         base_url=safe_base_url,
@@ -631,6 +654,7 @@ def parse_bronze(
         bronze_key=bronze_key,
         format=kind,
         kind=kind,
+        mode=mode,
         max_rows=max_rows,
         max_bytes=max_bytes,
         limits=budget,
@@ -672,6 +696,7 @@ def parse_bronze_json(
         bronze_key,
         kind="json_document",
         format="json",
+        mode="full",
         max_rows=1,
         max_bytes=max_bytes,
         base_url=base_url,
@@ -683,6 +708,7 @@ def parse_bronze_json(
         bronze_key=bronze_key,
         format="json",
         kind="json_document",
+        mode="full",
         max_rows=1,
         max_bytes=max_bytes,
         limits=budget,
@@ -717,6 +743,7 @@ def _result(
     bronze_key: str,
     format: str,
     kind: str,
+    mode: ParseMode,
     max_rows: int,
     max_bytes: int,
     limits: SandboxLimits,
@@ -763,6 +790,27 @@ def _result(
     profile = output.get("profile", {})
     if not isinstance(profile, dict):
         profile = {}
+    preview = output.get("preview") if mode == "preview" else None
+    if mode == "preview" and task_ok:
+        if (
+            rows
+            or text
+            or page_text
+            or links
+            or forms
+            or table_headers
+            or skeleton_hash is not None
+            or challenge_detected is not False
+            or profile
+            or detected_kind not in {"csv", "xls"}
+            or not _valid_preview(preview, expected_format=detected_kind)
+        ):
+            task_ok = False
+            reason = "parse_pod_returned_invalid_preview"
+            preview = None
+    elif mode == "full" and task_ok and "preview" in output:
+        task_ok = False
+        reason = "parse_pod_returned_unrequested_preview"
     if (
         not isinstance(page_text, str)
         or len(page_text) > 200_000
@@ -812,6 +860,7 @@ def _result(
         forms = []
         table_headers = []
         skeleton_hash = None
+        preview = None
     result = ParseResult(
         bronze_key=bronze_key,
         format=result_format,
@@ -827,6 +876,7 @@ def _result(
         job_record={},
         challenge_detected=challenge_detected if task_ok else False,
         profile=profile if task_ok else {},
+        preview=preview if task_ok and mode == "preview" else None,
     )
     request = {
         "tool": "file.parse",
@@ -838,6 +888,17 @@ def _result(
     }
     if base_url:
         request["url"] = base_url
+    if mode == "preview":
+        request["mode"] = mode
+        sheets = preview.get("sheets", []) if isinstance(preview, dict) else []
+        result_preview = {
+            "sheet_count": len(sheets),
+            "source_row_counts": [sheet["source_row_count"] for sheet in sheets],
+            "sample_counts": [len(sheet["sample_rows"]) for sheet in sheets],
+            "sample_truncated": [sheet["sample_truncated"] for sheet in sheets],
+        }
+    else:
+        result_preview = None
     record, trace = _job_and_trace(
         execution,
         context=context,
@@ -856,6 +917,7 @@ def _result(
             "form_count": len(result.forms),
             "table_header_rows": len(result.table_headers),
             "dom_skeleton_hash": result.dom_skeleton_hash,
+            **({"preview": result_preview} if result_preview is not None else {}),
         },
         limits=limits,
         diagnostic=diagnostic,
@@ -879,6 +941,7 @@ def _result(
         job_record=record,
         challenge_detected=result.challenge_detected,
         profile=result.profile,
+        preview=result.preview,
     )
 
 
@@ -940,6 +1003,95 @@ def _valid_table_headers(value: object) -> bool:
             for row in value
         )
     )
+
+
+def _valid_preview(value: object, *, expected_format: str) -> bool:
+    if not isinstance(value, dict) or set(value) != {"format", "sheets"}:
+        return False
+    sheets = value.get("sheets")
+    if value.get("format") != expected_format or not isinstance(sheets, list) or len(sheets) > 40:
+        return False
+    if expected_format == "csv" and len(sheets) != 1:
+        return False
+    if expected_format == "xls" and not sheets:
+        return False
+    total_source_rows = 0
+    sampled_cells = 0
+    for sheet in sheets:
+        if not isinstance(sheet, dict) or set(sheet) != {
+            "sheet",
+            "headers",
+            "sample_rows",
+            "source_row_count",
+            "header_row_number",
+            "sample_truncated",
+        }:
+            return False
+        name = sheet.get("sheet")
+        headers = sheet.get("headers")
+        samples = sheet.get("sample_rows")
+        source_rows = sheet.get("source_row_count")
+        header_row = sheet.get("header_row_number")
+        if (
+            (name is not None and (not isinstance(name, str) or len(name) > 128))
+            or (expected_format == "csv" and name is not None)
+            or (expected_format == "xls" and not name)
+            or not isinstance(headers, list)
+            or len(headers) > 16_384
+            or any(
+                not isinstance(header, str) or not header or len(header) > 100_000
+                for header in headers
+            )
+            or type(source_rows) is not int
+            or not 0 <= source_rows <= 1_000_000
+            or (
+                header_row is not None
+                and (type(header_row) is not int or not 1 <= header_row <= source_rows)
+            )
+            or type(sheet.get("sample_truncated")) is not bool
+            or not isinstance(samples, list)
+            or len(samples) > 5
+            or (header_row is None and (headers or samples or sheet["sample_truncated"]))
+            or (header_row is not None and not headers)
+        ):
+            return False
+        total_source_rows += source_rows
+        if total_source_rows > 1_000_000:
+            return False
+        expected_sample_count = min(5, source_rows - header_row) if header_row is not None else 0
+        if len(samples) != expected_sample_count or sheet["sample_truncated"] != (
+            header_row is not None and source_rows - header_row > 5
+        ):
+            return False
+        previous_row = header_row or 0
+        sampled_cells += len(headers)
+        for sample in samples:
+            if not isinstance(sample, dict) or set(sample) != {"row_number", "values"}:
+                return False
+            row_number = sample.get("row_number")
+            values = sample.get("values")
+            if (
+                type(row_number) is not int
+                or row_number != previous_row + 1
+                or row_number > source_rows
+                or not isinstance(values, list)
+                or len(values) > len(headers)
+                or any(
+                    value is not None
+                    and not isinstance(value, (str, int, float, bool))
+                    or isinstance(value, float)
+                    and not math.isfinite(value)
+                    or isinstance(value, str)
+                    and len(value) > 100_000
+                    for value in values
+                )
+            ):
+                return False
+            previous_row = row_number
+            sampled_cells += len(values)
+            if sampled_cells > 100_000:
+                return False
+    return True
 
 
 def _job_and_trace(

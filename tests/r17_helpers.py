@@ -44,14 +44,20 @@ _TEARDOWN = {"pod_gone": True, "proxy_gone": True, "network_removed": True, "ver
 class SyntheticParseExecutor:
     """Exercise caller wiring while the pod parser supplies deterministic outputs."""
 
-    def run(self, payload, *, kind, format, max_rows, base_url, limits):
+    def run(self, payload, *, kind, format, mode="full", max_rows, base_url, limits):
         if kind == "auto":
             kind = _PARSER._detect_document_format(payload)
-        rows, text, page_text, links, skeleton, challenge = _PARSER._parse(
-            payload, kind, max_rows, base_url
-        )
-        forms = _PARSER._parse_forms(payload) if kind == "html" else []
-        table_headers = _PARSER._parse_table_headers(payload) if kind == "html" else []
+        preview = None
+        if mode == "preview":
+            preview = _PARSER._preview(payload, kind)
+            rows, text, page_text, links, skeleton, challenge = [], "", "", [], None, False
+            forms, table_headers = [], []
+        else:
+            rows, text, page_text, links, skeleton, challenge = _PARSER._parse(
+                payload, kind, max_rows, base_url
+            )
+            forms = _PARSER._parse_forms(payload) if kind == "html" else []
+            table_headers = _PARSER._parse_table_headers(payload) if kind == "html" else []
         return ParseExecution(
             output={
                 "ok": True,
@@ -66,6 +72,7 @@ class SyntheticParseExecutor:
                 "challenge_detected": challenge,
                 "truncated": False,
                 "error": None,
+                **({"preview": preview} if mode == "preview" else {}),
             },
             host=_HOST,
             pod=_POD,
@@ -85,6 +92,7 @@ class SyntheticParseExecutor:
         max_bytes,
         kind,
         format,
+        mode="full",
         max_rows,
         base_url,
         limits,
@@ -92,11 +100,13 @@ class SyntheticParseExecutor:
         payload = path.read_bytes()
         if len(payload) > max_bytes or hashlib.sha256(payload).hexdigest() != expected_sha256:
             raise ValueError("synthetic pod rejected bronze input")
-        return self.run(
-            payload,
-            kind=kind,
-            format=format,
-            max_rows=max_rows,
-            base_url=base_url,
-            limits=limits,
-        )
+        arguments = {
+            "kind": kind,
+            "format": format,
+            "max_rows": max_rows,
+            "base_url": base_url,
+            "limits": limits,
+        }
+        if mode == "preview":
+            arguments["mode"] = mode
+        return self.run(payload, **arguments)

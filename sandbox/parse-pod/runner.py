@@ -31,6 +31,9 @@ MAX_PDF_INPUT_BYTES = 32 * 1024 * 1024
 MAX_INPUT_BYTES = MAX_PDF_INPUT_BYTES
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 10_000
+MAX_PREVIEW_ROWS = 1_000_000
+MAX_PREVIEW_SAMPLE_ROWS = 5
+MAX_PREVIEW_HEADER_SCAN_ROWS = 10
 MAX_DOCUMENT_ITEMS = 100_000
 MAX_JSON_DEPTH = 64
 MAX_PAGE_TEXT_CHARS = 200_000
@@ -250,6 +253,191 @@ def _parse_xls(data: bytes, max_rows: int) -> list[dict[str, Any]]:
     finally:
         workbook.release_resources()
     return rows
+
+
+def _preview_header_row(rows: list[list[Any]]) -> int | None:
+    """Choose a likely header from the first ten source rows, as the profiler does."""
+    first_non_empty: int | None = None
+    for index, row in enumerate(rows[:MAX_PREVIEW_HEADER_SCAN_ROWS]):
+        cells = [" ".join(str(value).split()) if value is not None else "" for value in row]
+        non_empty = [cell for cell in cells if cell]
+        if not non_empty:
+            continue
+        if first_non_empty is None:
+            first_non_empty = index
+        width = len(non_empty)
+        fill = width / max(1, len(row))
+        texty = sum(not re.fullmatch(r"[\d.,%$\s-]+", cell) for cell in non_empty) / width
+        if width >= 2 and fill >= 0.6 and texty >= 0.6:
+            return index
+    return first_non_empty
+
+
+def _preview_header_values(values: list[Any]) -> list[str]:
+    headers = [" ".join(str(value).split()) if value is not None else "" for value in values]
+    while headers and not headers[-1]:
+        headers.pop()
+    return [value or f"column_{index + 1}" for index, value in enumerate(headers)]
+
+
+def _preview_sheet(
+    *,
+    sheet: str | None,
+    rows: list[list[Any]],
+    source_row_count: int,
+) -> dict[str, Any]:
+    header_index = _preview_header_row(rows)
+    if header_index is None:
+        return {
+            "sheet": sheet,
+            "headers": [],
+            "sample_rows": [],
+            "source_row_count": source_row_count,
+            "header_row_number": None,
+            "sample_truncated": False,
+        }
+
+    headers = _preview_header_values(rows[header_index])
+    samples: list[dict[str, Any]] = []
+    for offset, values in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        if len(samples) == MAX_PREVIEW_SAMPLE_ROWS:
+            break
+        samples.append({"row_number": offset, "values": values[: len(headers)]})
+    return {
+        "sheet": sheet,
+        "headers": headers,
+        "sample_rows": samples,
+        "source_row_count": source_row_count,
+        "header_row_number": header_index + 1,
+        "sample_truncated": source_row_count - (header_index + 1) > len(samples),
+    }
+
+
+def _preview_csv(data: bytes) -> dict[str, Any]:
+    sample_text = data[:4096].decode("utf-8-sig", errors="ignore")
+    try:
+        dialect = csv.Sniffer().sniff(sample_text)
+    except csv.Error:
+        dialect = csv.excel
+
+    probe_rows: list[list[Any]] = []
+    header_index: int | None = None
+    headers: list[str] = []
+    samples: list[dict[str, Any]] = []
+    source_row_count = 0
+
+    def consume_data_row(row_number: int, values: list[Any]) -> None:
+        if len(samples) < MAX_PREVIEW_SAMPLE_ROWS:
+            samples.append({"row_number": row_number, "values": list(values)[: len(headers)]})
+
+    with io.TextIOWrapper(io.BytesIO(data), encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream, dialect)
+        for values in reader:
+            source_row_count += 1
+            if source_row_count > MAX_PREVIEW_ROWS:
+                raise ParseFailure("preview_row_limit_exceeded")
+            if source_row_count <= MAX_PREVIEW_HEADER_SCAN_ROWS:
+                probe_rows.append(list(values))
+                if source_row_count == MAX_PREVIEW_HEADER_SCAN_ROWS:
+                    header_index = _preview_header_row(probe_rows)
+                    if header_index is not None:
+                        headers = _preview_header_values(probe_rows[header_index])
+                        for index, probe in enumerate(
+                            probe_rows[header_index + 1 :], start=header_index + 2
+                        ):
+                            consume_data_row(index, probe)
+            elif header_index is not None:
+                consume_data_row(source_row_count, list(values))
+        if source_row_count < MAX_PREVIEW_HEADER_SCAN_ROWS:
+            header_index = _preview_header_row(probe_rows)
+            if header_index is not None:
+                headers = _preview_header_values(probe_rows[header_index])
+                for index, probe in enumerate(
+                    probe_rows[header_index + 1 :], start=header_index + 2
+                ):
+                    consume_data_row(index, probe)
+
+    table = {
+        "sheet": None,
+        "headers": headers,
+        "sample_rows": samples,
+        "source_row_count": source_row_count,
+        "header_row_number": header_index + 1 if header_index is not None else None,
+        "sample_truncated": bool(
+            header_index is not None and source_row_count - (header_index + 1) > len(samples)
+        ),
+    }
+    return {"format": "csv", "sheets": [table]}
+
+
+def _xls_cell_values(sheet: Any, row_index: int, xlrd: Any, datemode: int) -> list[Any]:
+    values: list[Any] = []
+    for cell in sheet.row(row_index):
+        if cell.ctype in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}:
+            value = None
+        elif cell.ctype == xlrd.XL_CELL_DATE:
+            value = xlrd.xldate_as_datetime(cell.value, datemode)
+        elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+            value = bool(cell.value)
+        elif cell.ctype == xlrd.XL_CELL_ERROR:
+            value = xlrd.error_text_from_code.get(int(cell.value), "#ERROR!")
+        else:
+            value = cell.value
+        values.append(_json_cell(value))
+    return values
+
+
+def _preview_xls(data: bytes) -> dict[str, Any]:
+    try:
+        xlrd, workbook = _open_xls(data)
+    except Exception as exc:  # noqa: BLE001 - malformed BIFF stays inside the pod
+        raise ParseFailure("invalid_xls", message=_xls_failure_message("open", exc)) from None
+
+    sheets: list[dict[str, Any]] = []
+    total_rows = 0
+    sampled_cells = 0
+    try:
+        if workbook.nsheets > MAX_TABLES:
+            raise ParseFailure("max_tables_exceeded")
+        for sheet_index in range(workbook.nsheets):
+            sheet = workbook.sheet_by_index(sheet_index)
+            total_rows += sheet.nrows
+            if total_rows > MAX_PREVIEW_ROWS:
+                raise ParseFailure("preview_row_limit_exceeded")
+            decode_rows = min(
+                sheet.nrows,
+                MAX_PREVIEW_HEADER_SCAN_ROWS + MAX_PREVIEW_SAMPLE_ROWS,
+            )
+            sampled_cells += decode_rows * sheet.ncols
+            if sampled_cells > MAX_DOCUMENT_ITEMS:
+                raise ParseFailure("document_item_limit")
+            rows = [
+                _xls_cell_values(sheet, row_index, xlrd, workbook.datemode)
+                for row_index in range(decode_rows)
+            ]
+            table = _preview_sheet(sheet=sheet.name, rows=rows, source_row_count=sheet.nrows)
+            # XLS metadata provides the full row count, while only the first fifteen rows
+            # were decoded. This is enough for header detection and the five sample rows.
+            table["sample_truncated"] = bool(
+                table["header_row_number"] is not None
+                and sheet.nrows - table["header_row_number"] > len(table["sample_rows"])
+            )
+            sheets.append(table)
+    except ParseFailure:
+        raise
+    except Exception as exc:  # noqa: BLE001 - malformed BIFF must fail closed in the pod
+        raise ParseFailure("invalid_xls", message=_xls_failure_message("decode", exc)) from None
+    finally:
+        workbook.release_resources()
+    return {"format": "xls", "sheets": sheets}
+
+
+def _preview(data: bytes, kind: str) -> dict[str, Any]:
+    if kind == "csv":
+        return _preview_csv(data)
+    if kind == "xls":
+        return _preview_xls(data)
+    raise ParseFailure("preview_unsupported_format")
 
 
 def _parse_html(
@@ -695,6 +883,8 @@ def run(input_path: Path, output_path: Path) -> None:
     forms: list[dict[str, Any]] = []
     table_headers: list[list[str]] = []
     profile: dict[str, Any] = {}
+    preview: dict[str, Any] | None = None
+    mode = "full"
     skeleton_hash: str | None = None
     challenge_detected = False
     error: dict[str, str] | None = None
@@ -703,6 +893,9 @@ def run(input_path: Path, output_path: Path) -> None:
     try:
         envelope = json.loads(input_path.read_text(encoding="utf-8"))
         kind = str(envelope.get("kind", ""))
+        mode = envelope.get("mode", "full")
+        if not isinstance(mode, str) or mode not in {"full", "preview"}:
+            raise ParseFailure("invalid_parse_mode")
         max_rows = envelope.get("max_rows")
         if type(max_rows) is not int or not 1 <= max_rows <= MAX_ROWS:
             raise ParseFailure("invalid_row_limit")
@@ -736,17 +929,22 @@ def run(input_path: Path, output_path: Path) -> None:
                 raise ParseFailure("bronze_digest_mismatch")
         else:
             payload = base64.b64decode(envelope.get("payload", ""), validate=True)
+        if mode == "preview" and len(payload) > MAX_NON_PDF_INPUT_BYTES:
+            raise ParseFailure("input_too_large")
         if kind == "auto":
             kind = _detect_document_format(payload)
-        rows, text, page_text, links, skeleton_hash, challenge_detected = _parse(
-            payload, kind, max_rows, base_url
-        )
-        if kind == "html":
-            forms = _parse_forms(payload)
-            table_headers = _parse_table_headers(payload)
-        profile = _safe_profile(payload, kind, envelope)
-        if kind == "zip" and not profile.get("table_count"):
-            raise ParseFailure("zip_no_supported_tables")
+        if mode == "preview":
+            preview = _preview(payload, kind)
+        else:
+            rows, text, page_text, links, skeleton_hash, challenge_detected = _parse(
+                payload, kind, max_rows, base_url
+            )
+            if kind == "html":
+                forms = _parse_forms(payload)
+                table_headers = _parse_table_headers(payload)
+            profile = _safe_profile(payload, kind, envelope)
+            if kind == "zip" and not profile.get("table_count"):
+                raise ParseFailure("zip_no_supported_tables")
     except ParseFailure as exc:
         error = {"code": exc.code}
         if exc.message is not None:
@@ -781,6 +979,8 @@ def run(input_path: Path, output_path: Path) -> None:
             "steps": 1,
         },
     }
+    if mode == "preview":
+        document["preview"] = preview if error is None else None
     encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     if len(encoded.encode("utf-8")) > MAX_OUTPUT_BYTES:
         document.update(
@@ -794,6 +994,7 @@ def run(input_path: Path, output_path: Path) -> None:
                 "table_headers": [],
                 "profile": {},
                 "dom_skeleton_hash": None,
+                "preview": None,
                 "error": {"code": "output_too_large"},
             }
         )

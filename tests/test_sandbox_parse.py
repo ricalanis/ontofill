@@ -100,12 +100,13 @@ class FakeExecutor:
         self.calls: list[dict] = []
         self.file_calls: list[dict] = []
 
-    def run(self, payload, *, kind, format, max_rows, base_url, limits):
+    def run(self, payload, *, kind, format, mode="full", max_rows, base_url, limits):
         self.calls.append(
             {
                 "payload": payload,
                 "kind": kind,
                 "format": format,
+                "mode": mode,
                 "max_rows": max_rows,
                 "base_url": base_url,
                 "limits": limits,
@@ -133,6 +134,7 @@ class FakeExecutor:
         max_bytes,
         kind,
         format,
+        mode="full",
         max_rows,
         base_url,
         limits,
@@ -149,6 +151,80 @@ class FakeExecutor:
             payload,
             kind=kind,
             format=format,
+            mode=mode,
+            max_rows=max_rows,
+            base_url=base_url,
+            limits=limits,
+        )
+
+
+class RunnerBackedExecutor:
+    """Exercise the JSON envelope and pod runner without starting Docker."""
+
+    def __init__(self, parser, workdir: Path) -> None:
+        self.parser = parser
+        self.workdir = workdir
+
+    def run(
+        self,
+        payload,
+        *,
+        kind,
+        format,
+        mode="full",
+        max_rows,
+        base_url,
+        limits,
+    ):
+        input_path = self.workdir / "parse-input.json"
+        output_path = self.workdir / "parse-output.json"
+        input_path.write_text(
+            json.dumps(
+                {
+                    "kind": kind,
+                    "format": format,
+                    "mode": mode,
+                    "max_rows": max_rows,
+                    "base_url": base_url,
+                    "payload": base64.b64encode(payload).decode("ascii"),
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.parser.run(input_path, output_path)
+        return ParseExecution(
+            output=json.loads(output_path.read_text(encoding="utf-8")),
+            host=HOST,
+            pod=POD,
+            isolation=ISOLATION,
+            secrets=SECRETS,
+            teardown=TEARDOWN,
+            peak_memory_mb=24.0,
+            wall_s=0.02,
+            steps=1,
+        )
+
+    def run_from_file(
+        self,
+        path,
+        *,
+        expected_sha256,
+        max_bytes,
+        kind,
+        format,
+        mode="full",
+        max_rows,
+        base_url,
+        limits,
+    ):
+        payload = path.read_bytes()
+        if len(payload) > max_bytes or hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise ValueError("synthetic pod rejected bronze input")
+        return self.run(
+            payload,
+            kind=kind,
+            format=format,
+            mode=mode,
             max_rows=max_rows,
             base_url=base_url,
             limits=limits,
@@ -387,13 +463,14 @@ def test_malformed_biff_diagnostic_is_bounded_and_recorded_without_payload_text(
     )
 
     class MalformedBiffExecutor(FakeExecutor):
-        def run(self, payload_bytes, *, kind, format, max_rows, base_url, limits):
+        def run(self, payload_bytes, *, kind, format, mode="full", max_rows, base_url, limits):
             input_path = tmp_path / "parse-input.json"
             output_path = tmp_path / "parse-output.json"
             input_path.write_text(
                 json.dumps(
                     {
                         "kind": kind,
+                        "mode": mode,
                         "max_rows": max_rows,
                         "base_url": base_url,
                         "payload": base64.b64encode(payload_bytes).decode("ascii"),
@@ -407,6 +484,7 @@ def test_malformed_biff_diagnostic_is_bounded_and_recorded_without_payload_text(
                 payload_bytes,
                 kind=kind,
                 format=format,
+                mode=mode,
                 max_rows=max_rows,
                 base_url=base_url,
                 limits=limits,
@@ -470,6 +548,7 @@ def test_file_lake_uses_docker_file_staging_without_python_byte_reads(tmp_path: 
             b"",
             kind=kwargs["kind"],
             format=kwargs["format"],
+            mode=kwargs.get("mode", "full"),
             max_rows=kwargs["max_rows"],
             base_url=kwargs["base_url"],
             limits=kwargs["limits"],
@@ -835,6 +914,7 @@ def test_docker_executor_uses_runsc_network_none_and_opaque_stdin(monkeypatch) -
         b"synthetic bytes",
         kind="csv",
         format="csv",
+        mode="preview",
         max_rows=10,
         base_url="https://synthetic.example.test/data.csv",
         limits=SandboxLimits(memory_mb=256, pids=32, timeout_s=5, max_steps=1),
@@ -849,8 +929,216 @@ def test_docker_executor_uses_runsc_network_none_and_opaque_stdin(monkeypatch) -
     staged = next(kwargs["input_text"] for args, kwargs in calls if "input_text" in kwargs)
     envelope = json.loads(staged)
     assert base64.b64decode(envelope["payload"]) == b"synthetic bytes"
+    assert envelope["mode"] == "preview"
     assert "AWS_SECRET_ACCESS_KEY" not in staged
     assert result.teardown["verified"] is True
+
+
+def _large_fake_xls(monkeypatch, row_count: int) -> None:
+    from types import SimpleNamespace
+
+    from tests.r17_helpers import _PARSER
+
+    class Sheet:
+        name = "Synthetic records"
+        nrows = row_count
+        ncols = 2
+
+        def row(self, row_index: int):
+            values = (
+                ("record_id", "name")
+                if row_index == 0
+                else (f"SYN-{row_index:05d}", f"Example {row_index:05d}")
+            )
+            return [SimpleNamespace(ctype=1, value=value) for value in values]
+
+    class Workbook:
+        nsheets = 1
+        datemode = 0
+
+        def sheet_by_index(self, index: int):
+            assert index == 0
+            return Sheet()
+
+        def release_resources(self) -> None:
+            pass
+
+    xlrd = SimpleNamespace(
+        XL_CELL_EMPTY=0,
+        XL_CELL_BLANK=6,
+        XL_CELL_DATE=3,
+        XL_CELL_BOOLEAN=4,
+        XL_CELL_ERROR=5,
+        error_text_from_code={},
+        xldate_as_datetime=lambda value, _datemode: value,
+    )
+    monkeypatch.setattr(_PARSER, "_open_xls", lambda _data: (xlrd, Workbook()))
+
+
+def test_large_csv_preview_counts_all_source_rows_and_returns_only_five_samples(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+
+    source_rows = 14_501
+    payload = b"record_id,name\n" + b"".join(
+        f"SYN-{number:05d},Example {number:05d}\n".encode() for number in range(1, source_rows)
+    )
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(payload, {"content_type": "text/csv"})
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="csv",
+        mode="preview",
+        max_rows=10_000,
+        executor=RunnerBackedExecutor(_PARSER, tmp_path),
+    )
+
+    assert result.rows == ()
+    assert result.text == ""
+    assert result.preview == {
+        "format": "csv",
+        "sheets": [
+            {
+                "sheet": None,
+                "headers": ["record_id", "name"],
+                "sample_rows": [
+                    {
+                        "row_number": number + 1,
+                        "values": [f"SYN-{number:05d}", f"Example {number:05d}"],
+                    }
+                    for number in range(1, 6)
+                ],
+                "source_row_count": source_rows,
+                "header_row_number": 1,
+                "sample_truncated": True,
+            }
+        ],
+    }
+    assert len(result.trace) == 6
+    assert result.job_record["checkpoints"]["task"]["ok"] is True
+
+
+def test_large_xls_preview_uses_sheet_metadata_and_bounded_samples(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    source_rows = 14_501
+    _large_fake_xls(monkeypatch, source_rows)
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"synthetic legacy workbook", {"content_type": "application/vnd.ms-excel"})
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="xls",
+        mode="preview",
+        max_rows=10_000,
+        executor=RunnerBackedExecutor(_PARSER, tmp_path),
+    )
+
+    assert result.rows == ()
+    assert result.text == ""
+    assert result.preview == {
+        "format": "xls",
+        "sheets": [
+            {
+                "sheet": "Synthetic records",
+                "headers": ["record_id", "name"],
+                "sample_rows": [
+                    {
+                        "row_number": number + 1,
+                        "values": [f"SYN-{number:05d}", f"Example {number:05d}"],
+                    }
+                    for number in range(1, 6)
+                ],
+                "source_row_count": source_rows,
+                "header_row_number": 1,
+                "sample_truncated": True,
+            }
+        ],
+    }
+    assert len(result.trace) == 6
+    assert result.job_record["checkpoints"]["task"]["ok"] is True
+
+
+def test_preview_rejects_unsupported_formats_with_six_checkpoint_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"<html><p>Unsupported preview input</p></html>")
+
+    with pytest.raises(SandboxParseError, match="preview_unsupported_format") as raised:
+        parse_bronze(
+            lake,
+            key,
+            format="html",
+            mode="preview",
+            executor=RunnerBackedExecutor(_PARSER, tmp_path),
+        )
+
+    assert raised.value.job_record["checkpoints"]["task"]["ok"] is False
+    assert raised.value.job_record["checkpoints"]["task"]["result"]["row_count"] == 0
+    assert len(raised.value.job_record["checkpoints"]) == 6
+    assert len(raised.value.trace) == 6
+
+
+@pytest.mark.parametrize("format", ["csv", "xls"])
+def test_default_full_mode_still_refuses_inputs_over_ten_thousand_rows(
+    monkeypatch, tmp_path: Path, format: str
+) -> None:
+    from tests.r17_helpers import _PARSER
+
+    monkeypatch.setattr(
+        _PARSER,
+        "_proof",
+        lambda: {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+    )
+    if format == "csv":
+        payload = b"record_id,name\n" + b"".join(
+            f"SYN-{number:05d},Example {number:05d}\n".encode() for number in range(1, 10_002)
+        )
+    else:
+        _large_fake_xls(monkeypatch, 14_501)
+        payload = b"synthetic legacy workbook"
+
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(payload)
+
+    with pytest.raises(SandboxParseError, match="max_rows_exceeded") as raised:
+        parse_bronze(
+            lake,
+            key,
+            format=format,
+            max_rows=10_000,
+            executor=RunnerBackedExecutor(_PARSER, tmp_path),
+        )
+
+    assert raised.value.job_record["checkpoints"]["task"]["ok"] is False
+    assert raised.value.job_record["checkpoints"]["task"]["result"]["row_count"] == 0
+    assert len(raised.value.job_record["checkpoints"]) == 6
+    assert len(raised.value.trace) == 6
 
 
 def test_docker_executor_cleans_up_after_runtime_start_timeout(monkeypatch) -> None:
