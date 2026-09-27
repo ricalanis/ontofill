@@ -705,7 +705,12 @@ def draft_ontology(
                 _validate_ontology(ontology)
                 _validate_primary_dod_presence(prd, ontology)
                 if approved:
-                    _validate_queries(prd, ontology, cached_queries)
+                    _validate_queries(
+                        prd,
+                        ontology,
+                        cached_queries,
+                        allow_legacy_completeness=True,
+                    )
                 else:
                     relation_counts = _review_ontology_semantics(prd, ontology, decision)
                     _validate_queries(
@@ -966,9 +971,7 @@ def _validate_ontology(ontology: dict) -> None:
         raise OntologyProposalErrors(rule_errors, relation_errors)
 
 
-def _review_model_json(
-    decision: DecisionClient, purpose: str, prompt: str, schema: dict
-) -> dict:
+def _review_model_json(decision: DecisionClient, purpose: str, prompt: str, schema: dict) -> dict:
     """Obtain a typed P2 semantic review through the separate critic model family."""
     try:
         response = decision.complete_json(f"critic.phase2.{purpose}", prompt, schema)
@@ -1006,18 +1009,14 @@ def _class_named_by_criterion(criterion: dict, classes: list[dict]) -> str | Non
 
 def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionClient) -> None:
     completeness_criteria = [
-        item
-        for item in prd.get("definition_of_done", [])
-        if item.get("min_ratio") is not None
+        item for item in prd.get("definition_of_done", []) if item.get("min_ratio") is not None
     ]
     if not completeness_criteria:
         return
 
     primary_class = ontology["primary_class"]
     primary_dod = [
-        item
-        for item in ontology["properties"]
-        if item["domain"] == primary_class and item["dod"]
+        item for item in ontology["properties"] if item["domain"] == primary_class and item["dod"]
     ]
     if not primary_dod:
         raise ValueError(
@@ -1043,10 +1042,14 @@ def _review_core_field_bindings(prd: dict, ontology: dict, decision: DecisionCli
         f"Primary class: {primary_class}. Properties: "
         f"{json.dumps(ontology['properties'], ensure_ascii=False)}"
     )
-    response = _review_model_json(decision, "core_field_bindings", prompt, _CORE_FIELD_REVIEW_SCHEMA)
+    response = _review_model_json(
+        decision, "core_field_bindings", prompt, _CORE_FIELD_REVIEW_SCHEMA
+    )
     received_ids = [item["requirement_id"] for item in response["requirements"]]
     if len(received_ids) != len(set(received_ids)) or set(received_ids) != set(requirement_ids):
-        raise ValueError("core field critic must assess every approved PRD requirement exactly once")
+        raise ValueError(
+            "core field critic must assess every approved PRD requirement exactly once"
+        )
 
     properties = {item["id"]: item for item in ontology["properties"]}
     bindings_seen = set()
@@ -1097,9 +1100,7 @@ def _validate_primary_dod_presence(prd: dict, ontology: dict) -> None:
     if not any(item.get("min_ratio") is not None for item in prd.get("definition_of_done", [])):
         return
     primary_class = ontology["primary_class"]
-    if not any(
-        item["domain"] == primary_class and item["dod"] for item in ontology["properties"]
-    ):
+    if not any(item["domain"] == primary_class and item["dod"] for item in ontology["properties"]):
         raise ValueError(
             f"completeness requires primary class `{primary_class}` to own at least one "
             "`dod: true` property for its core PRD fields"
@@ -1134,7 +1135,9 @@ def _review_relation_count_semantics(
     assessments = response["assessments"]
     received_ids = [item["criterion_id"] for item in assessments]
     if len(received_ids) != len(set(received_ids)) or set(received_ids) != set(criterion_ids):
-        raise ValueError("relation-count critic must assess every approved DoD criterion exactly once")
+        raise ValueError(
+            "relation-count critic must assess every approved DoD criterion exactly once"
+        )
 
     classes = {item["id"]: item for item in ontology["classes"]}
     relations = {item["id"]: item for item in ontology["relations"]}
@@ -1191,9 +1194,7 @@ def _review_rule_semantics(ontology: dict, decision: DecisionClient) -> None:
         f"Executable rules: {json.dumps(rules, ensure_ascii=False)}. "
         f"Declared properties: {json.dumps(ontology['properties'], ensure_ascii=False)}"
     )
-    response = _review_model_json(
-        decision, "rule_semantics", prompt, _RULE_SEMANTICS_REVIEW_SCHEMA
-    )
+    response = _review_model_json(decision, "rule_semantics", prompt, _RULE_SEMANTICS_REVIEW_SCHEMA)
     expected_ids = {item["id"] for item in rules}
     received_ids = [item["rule_id"] for item in response["assessments"]]
     if len(received_ids) != len(set(received_ids)) or set(received_ids) != expected_ids:
@@ -1438,6 +1439,10 @@ def _draft_dod_queries(
         "query. Use only ontology class/property/relation IDs and the supported aggregate/condition operators. "
         "For a per-entity completeness criterion, use entities_meeting_completeness with "
         "class equal to the primary class, properties='dod', and min_ratio copied from the PRD. "
+        "When its approved target is fractional (less than 1), measure the share of primary-class "
+        "entities linked by the chosen primary-domain relation that meet min_ratio; set measure="
+        "'share' and include that relation_id explicitly. Use measure='count' only for whole-entity "
+        "count targets. "
         "For each criterion the separate relation-count critic marked as counting related "
         "entities, use count_entities_with_relation with the exact reviewed relation_id and "
         "class_id. The relation domain must be the class named by that criterion. Do not use the "
@@ -1480,12 +1485,47 @@ def _draft_dod_queries(
     }
 
 
+def _legacy_completeness_relation_id(
+    query: dict,
+    queries: list[dict],
+    relations: dict[str, dict],
+    primary_class: str,
+) -> str:
+    """Resolve an approved pre-measure query from its unique primary relation count."""
+    relation_id = query.get("relation_id")
+    if relation_id is not None:
+        return relation_id
+
+    matching_relation_ids = []
+    for candidate in queries:
+        if candidate["aggregate"] != "count_entities_with_relation":
+            continue
+        candidate_relation = relations.get(candidate.get("relation_id"))
+        if candidate_relation is None or candidate_relation["domain"] != primary_class:
+            continue
+        named_classes = {
+            value for value in (candidate.get("class_id"), candidate.get("class")) if value
+        }
+        if len(named_classes) > 1 or (named_classes and named_classes != {primary_class}):
+            continue
+        matching_relation_ids.append(candidate["relation_id"])
+
+    unique_relation_ids = set(matching_relation_ids)
+    if len(unique_relation_ids) != 1:
+        raise ValueError(
+            "legacy completeness share needs exactly one matching primary-class relation-count "
+            "query; add relation_id explicitly"
+        )
+    return unique_relation_ids.pop()
+
+
 def _validate_queries(
     prd: dict,
     ontology: dict,
     document: dict,
     *,
     relation_count_assessments: dict[str, dict] | None = None,
+    allow_legacy_completeness: bool = False,
 ) -> None:
     criteria = {item["id"]: item for item in prd["definition_of_done"]}
     queries = document["queries"]
@@ -1525,6 +1565,30 @@ def _validate_queries(
                     f"completeness query's primary class `{ontology['primary_class']}` has no "
                     "`dod: true` properties to measure"
                 )
+            measure = query.get("measure")
+            target = query["target"]
+            if measure == "count" and target < 1:
+                raise ValueError("fractional completeness target requires `measure: share`")
+            is_share = measure == "share" or (measure is None and target < 1)
+            if is_share:
+                if measure is None and not allow_legacy_completeness:
+                    raise ValueError("fractional completeness target requires `measure: share`")
+                if target > 1:
+                    raise ValueError("completeness share target must be at most 1")
+                relation_id = query.get("relation_id")
+                if relation_id is None and allow_legacy_completeness and measure is None:
+                    relation_id = _legacy_completeness_relation_id(
+                        query, queries, relations, ontology["primary_class"]
+                    )
+                relation = relations.get(relation_id)
+                if relation is None:
+                    raise ValueError(
+                        "completeness share requires a known primary-domain relation_id"
+                    )
+                if relation["domain"] != ontology["primary_class"]:
+                    raise ValueError(
+                        "completeness share relation_id must have the primary class as its domain"
+                    )
         class_id = query.get("class_id", query.get("class"))
         if query["aggregate"] == "count_entities_with_relation":
             relation = relations.get(query["relation_id"])

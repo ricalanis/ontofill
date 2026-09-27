@@ -491,7 +491,45 @@ def _matches(entity: dict, query: dict) -> bool:
     return True
 
 
-def _query_actual(entities: Sequence[dict], query: dict) -> int:
+def _completeness_relation_id(
+    query: dict,
+    queries: Sequence[dict],
+    relations: Mapping[str, dict],
+    class_id: str,
+) -> str:
+    relation_id = query.get("relation_id")
+    if relation_id is not None:
+        relation = relations.get(relation_id)
+        if relation is None:
+            raise ValueError(f"completeness query has unknown relation: {relation_id}")
+        if relation["domain"] != class_id:
+            raise ValueError("completeness share relation domain must equal its primary class")
+        return relation_id
+
+    matching_relation_ids = []
+    for candidate in queries:
+        if candidate.get("aggregate") != "count_entities_with_relation":
+            continue
+        candidate_relation = relations.get(candidate.get("relation_id"))
+        if candidate_relation is None or candidate_relation["domain"] != class_id:
+            continue
+        named_classes = {
+            value for value in (candidate.get("class_id"), candidate.get("class")) if value
+        }
+        if len(named_classes) > 1 or (named_classes and named_classes != {class_id}):
+            continue
+        matching_relation_ids.append(candidate["relation_id"])
+
+    unique_relation_ids = set(matching_relation_ids)
+    if len(unique_relation_ids) != 1:
+        raise ValueError(
+            "legacy completeness share needs exactly one matching primary-class relation-count "
+            "query; add relation_id explicitly"
+        )
+    return unique_relation_ids.pop()
+
+
+def _query_actual(entities: Sequence[dict], query: dict) -> int | float:
     selected = [entity for entity in entities if _matches(entity, query)]
     aggregate = query["aggregate"]
     property_ids = query.get("properties", [])
@@ -518,6 +556,32 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int:
             raise ValueError("completeness query needs ontology DoD properties")
         if not dod_properties:
             return 0
+        measure = query.get("measure")
+        target = query.get("target", 1)
+        if measure == "count" and target < 1:
+            raise ValueError("fractional completeness target requires measure=share")
+        if measure == "share" or (measure is None and target < 1):
+            relation_id = query.get("_linked_relation_id", query.get("relation_id"))
+            if relation_id is None:
+                raise ValueError("completeness share needs its linked primary-class relation_id")
+            linked = [
+                entity
+                for entity in selected
+                if any(link.get("property") == relation_id for link in entity.get("links", []))
+            ]
+            if not linked:
+                return 0.0
+            complete = sum(
+                sum(
+                    (field := entity["properties"].get(property_id, {})).get("status") == "gold"
+                    and bool(field.get("evidence"))
+                    for property_id in dod_properties
+                )
+                / len(dod_properties)
+                >= query["min_ratio"]
+                for entity in linked
+            )
+            return complete / len(linked)
         return sum(
             sum(
                 (field := entity["properties"].get(property_id, {})).get("status") == "gold"
@@ -542,7 +606,7 @@ def _query_actual(entities: Sequence[dict], query: dict) -> int:
     raise ValueError(f"unsupported DoD aggregate: {aggregate}")
 
 
-def _compare(actual: int, target: float, operator: str) -> bool:
+def _compare(actual: int | float, target: float, operator: str) -> bool:
     operations = {
         ">=": actual >= target,
         ">": actual > target,
@@ -683,6 +747,18 @@ def _metrics(
             and class_id != ontology["primary_class"]
         ):
             raise ValueError("completeness query must use the primary class")
+        completeness_share_relation_id = None
+        if query["aggregate"] == "entities_meeting_completeness":
+            measure = query.get("measure")
+            target = query["target"]
+            if measure == "count" and target < 1:
+                raise ValueError("fractional completeness target requires measure=share")
+            if measure == "share" and target > 1:
+                raise ValueError("completeness share target must be at most 1")
+            if measure == "share" or (measure is None and target < 1):
+                completeness_share_relation_id = _completeness_relation_id(
+                    query, dod_queries["queries"], relations, class_id
+                )
         listed = query.get("properties", [])
         listed = [] if listed == "dod" else listed
         validation_class_id = class_id
@@ -705,6 +781,11 @@ def _metrics(
         if query["aggregate"] == "entities_meeting_completeness":
             evaluation_query = {
                 **query,
+                **(
+                    {"_linked_relation_id": completeness_share_relation_id}
+                    if completeness_share_relation_id is not None
+                    else {}
+                ),
                 "_dod_properties": [
                     key
                     for key, prop in properties.items()
@@ -714,9 +795,21 @@ def _metrics(
         actual = _query_actual(entities, evaluation_query)
         readable = query["aggregate"]
         arguments = []
-        for key in ("class_id", "class", "relation_id", "properties", "min_ratio", "conditions"):
+        for key in (
+            "class_id",
+            "class",
+            "relation_id",
+            "measure",
+            "properties",
+            "min_ratio",
+            "conditions",
+        ):
             if query.get(key):
                 arguments.append(f"{key}={_canonical(query[key])}")
+        if completeness_share_relation_id is not None and query.get("relation_id") is None:
+            arguments.append(f"relation_id={_canonical(completeness_share_relation_id)}")
+        if completeness_share_relation_id is not None and query.get("measure") is None:
+            arguments.append("measure=share")
         if arguments:
             readable += f"({', '.join(arguments)})"
         dod.append(

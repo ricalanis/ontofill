@@ -7,6 +7,7 @@ import json
 import pytest
 
 from ontofill.case.checkpoints import write_json
+from ontofill.contracts import validate_document
 from ontofill.inference import ModelValidationExhausted, RecordedDecisionClient
 from ontofill.phases.p2_ontology.phase import (
     OntologyDraftUnavailable,
@@ -360,7 +361,10 @@ def test_p2_retries_named_ontology_defects_and_query_class_without_rewriting_prd
     assert "relation `has_event` is oriented `event` → `record`" in combined_schema_error
     assert "rule `record_active_check` label/checks do not match" in combined_schema_error
     assert "future completion date" in combined_schema_error
-    assert "DoD criterion `linked-records` must count the named class `record`" in validation_errors[1][2]
+    assert (
+        "DoD criterion `linked-records` must count the named class `record`"
+        in validation_errors[1][2]
+    )
     assert validation_errors[1][2] in query_prompts[1]
     assert [item[:2] for item in validation_errors] == [
         ("phase2.schema", 1),
@@ -400,7 +404,11 @@ def test_invalid_cached_core_field_semantics_are_reviewed_before_cache_reuse(tmp
     ontology_path = tmp_path / "02-ontology/ontology.json"
     ontology = json.loads(ontology_path.read_text(encoding="utf-8"))
     ontology["properties"][
-        next(index for index, item in enumerate(ontology["properties"]) if item["id"] == "record_name")
+        next(
+            index
+            for index, item in enumerate(ontology["properties"])
+            if item["id"] == "record_name"
+        )
     ]["dod"] = False
     ontology_path.write_text(json.dumps(ontology), encoding="utf-8")
 
@@ -440,9 +448,23 @@ def test_invalid_cached_core_field_semantics_are_reviewed_before_cache_reuse(tmp
 def test_digest_verified_approved_ontology_reuses_without_semantic_critics(tmp_path) -> None:
     (tmp_path / "brief.md").write_text("Describe generic public records.", encoding="utf-8")
     prd = _prd()
-    generation_decision = _decision([_schema()])
+    completeness_criterion = next(
+        item for item in prd["definition_of_done"] if item["id"] == "record-completeness"
+    )
+    completeness_criterion["target"] = 0.8
+    # The shared synthetic critic rejects the first rule proposal before
+    # accepting a corrected retry; supply both schema responses for setup.
+    generation_decision = _decision([_schema(), _schema()])
     generation_decision.backend = "vultr"
+    generation_queries = generation_decision.responses["phase2.dod_queries"][1]
+    generation_queries["queries"][1].update(measure="share", relation_id="has_event", target=0.8)
     ontology = draft_ontology(tmp_path, prd, _factors(), generation_decision)
+    queries_path = tmp_path / "02-ontology/dod-queries.json"
+    cached_queries = json.loads(queries_path.read_text(encoding="utf-8"))
+    # Simulate a previously digest-approved legacy query without changing its PRD input digest.
+    cached_queries["queries"][1].pop("measure")
+    cached_queries["queries"][1].pop("relation_id")
+    write_json(queries_path, cached_queries)
 
     approval_path = tmp_path / "02-ontology/APPROVED"
     write_json(
@@ -488,9 +510,7 @@ def test_digest_verified_approved_ontology_reuses_without_semantic_critics(tmp_p
 
     assert reused == ontology
     assert decision.calls == []
-    assert {
-        relative: (tmp_path / relative).read_bytes() for relative in before
-    } == before
+    assert {relative: (tmp_path / relative).read_bytes() for relative in before} == before
 
 
 def test_query_validator_rejects_secondary_class_dod_placement() -> None:
@@ -527,3 +547,51 @@ def test_query_validator_rejects_secondary_class_dod_placement() -> None:
 
     with pytest.raises(ValueError, match="no `dod: true` properties to measure"):
         _validate_queries(prd, ontology, query)
+
+
+def test_completeness_query_measures_share_of_linked_primary_entities() -> None:
+    prd = _prd()
+    completeness_criterion = next(
+        item for item in prd["definition_of_done"] if item["id"] == "record-completeness"
+    )
+    completeness_criterion["target"] = 0.8
+    query = _query()
+    completeness_query = query["queries"][1]
+    completeness_query["target"] = 0.8
+
+    with pytest.raises(
+        ValueError, match="fractional completeness target requires `measure: share`"
+    ):
+        _validate_queries(prd, _schema(), query)
+
+    completeness_query["measure"] = "share"
+    completeness_query["relation_id"] = "has_event"
+    _validate_queries(prd, _schema(), query)
+    validate_document(
+        "dod-queries",
+        {
+            **query,
+            "generated_by": _RECORDED,
+            "prd_path": "01-scope/prd.json",
+            "ontology_version": "synthetic-v1",
+        },
+    )
+    legacy_query = {
+        **query,
+        "queries": [
+            {key: value for key, value in item.items() if key not in {"measure", "relation_id"}}
+            if item["criterion_id"] == "record-completeness"
+            else item
+            for item in query["queries"]
+        ],
+    }
+    _validate_queries(prd, _schema(), legacy_query, allow_legacy_completeness=True)
+    validate_document(
+        "dod-queries",
+        {
+            **legacy_query,
+            "generated_by": _RECORDED,
+            "prd_path": "01-scope/prd.json",
+            "ontology_version": "synthetic-v1",
+        },
+    )

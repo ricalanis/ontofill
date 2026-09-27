@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
 from ontofill.refiner import (
@@ -17,7 +18,7 @@ from ontofill.refiner import (
     stable_value_id,
 )
 from ontofill.refiner.core import classify_entities
-from ontofill.refiner.export import _query_actual
+from ontofill.refiner.export import _compare, _metrics, _query_actual
 
 RUN_ID = "mock-books"
 SOURCE_ID = "synthetic-catalog"
@@ -439,6 +440,133 @@ def test_dod_property_count_requires_all_and_completeness_uses_approved_ratio() 
         )
         == 1
     )
+
+
+def test_completeness_share_uses_only_entities_linked_by_its_relation() -> None:
+    def field(present: bool) -> dict:
+        return {
+            "value": "synthetic" if present else None,
+            "status": "gold" if present else "missing",
+            "evidence": [{"id": "evidence-1"}] if present else [],
+        }
+
+    entities = [
+        {
+            "class": "Record",
+            "properties": {
+                "record_key": field(True),
+                "record_name": field(index == 0),
+            },
+            "links": [{"property": "has_event", "target": f"event-{index}"}],
+        }
+        for index in range(10)
+    ]
+    entities.append(
+        {
+            "class": "Record",
+            "properties": {"record_key": field(True), "record_name": field(True)},
+            "links": [{"property": "other_relation", "target": "unrelated"}],
+        }
+    )
+
+    query = {
+        "aggregate": "entities_meeting_completeness",
+        "class": "Record",
+        "measure": "share",
+        "relation_id": "has_event",
+        "properties": "dod",
+        "min_ratio": 0.8,
+        "target": 0.8,
+        "operator": ">=",
+        "_dod_properties": ["record_key", "record_name"],
+    }
+
+    actual = _query_actual(entities, query)
+
+    assert actual == pytest.approx(0.1)
+    assert _compare(actual, query["target"], query["operator"]) is False
+    legacy_query = {key: value for key, value in query.items() if key != "measure"}
+    assert _query_actual(entities, legacy_query) == pytest.approx(0.1)
+    assert _query_actual([entities[-1]], legacy_query) == 0.0
+
+
+def test_legacy_completeness_share_resolves_relation_and_zero_denominator() -> None:
+    model = ontology()
+    model["relations"].append(
+        {
+            "id": "authored_by",
+            "label": "Authored by",
+            "domain": "Book",
+            "range": "Library",
+            "symmetric": False,
+        }
+    )
+    queries = {
+        "queries": [
+            {
+                "criterion_id": "linked_books",
+                "aggregate": "count_entities_with_relation",
+                "class_id": "Book",
+                "relation_id": "held_by",
+                "target": 10,
+                "operator": ">=",
+            },
+            {
+                "criterion_id": "complete_books",
+                "aggregate": "entities_meeting_completeness",
+                "class": "Book",
+                "properties": "dod",
+                "min_ratio": 0.8,
+                "target": 0.8,
+                "operator": ">=",
+            },
+        ]
+    }
+
+    def book(index: int, *, complete: bool, relation_id: str) -> dict:
+        def field(present: bool) -> dict:
+            return {
+                "value": f"value-{index}" if present else None,
+                "status": "gold" if present else "missing",
+                "evidence": [{"source_type": "catalog"}] if present else [],
+            }
+
+        values = {
+            prop["id"]: field(prop["id"] in {"book_id", "title", "copies"} and complete)
+            for prop in model["properties"]
+            if prop["domain"] == "Book"
+        }
+        values["book_id"] = field(True)
+        return {
+            "class": "Book",
+            "properties": values,
+            "classified_as": [],
+            "links": [{"property": relation_id, "target": f"library-{index}"}],
+        }
+
+    linked = [book(index, complete=index == 0, relation_id="held_by") for index in range(10)]
+    unrelated = book(10, complete=True, relation_id="authored_by")
+    arguments = {
+        "run_id": RUN_ID,
+        "ontology": model,
+        "dod_queries": queries,
+        "trace": [],
+        "taxonomy_levels": {},
+        "jobs": None,
+        "generated_by": RECORDED,
+        "preview": False,
+        "decisions_by_backend": None,
+    }
+
+    result = _metrics(entities=[*linked, unrelated], **arguments)
+    assert result["dod"][1]["actual"] == pytest.approx(0.1)
+    assert isinstance(result["dod"][1]["actual"], float)
+    assert _compare(result["dod"][1]["actual"], 0.8, ">=") is False
+    validate_document("metrics", result)
+
+    empty = _metrics(entities=[unrelated], **arguments)
+    assert empty["dod"][1]["actual"] == 0.0
+    validate_document("metrics", empty)
 
 
 def test_export_applies_per_entity_min_ratio_from_approved_query(tmp_path: Path) -> None:

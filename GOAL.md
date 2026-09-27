@@ -1,4 +1,13 @@
-# Current goal: R40/R41 reviewed document downloads
+# Current goal: R32 P2 structural guards and DoD share
+
+Require per-entity completeness with approved target 0.8 to measure the share of primary entities linked by the intended relation that meet `min_ratio`, not a raw count. New queries name that relation explicitly; legacy approved queries derive it from their unique matching relation-count query. Keep the core-field class, relation-count class/direction, and rule-label guards, and preserve digest-approved artifact reuse.
+
+DONE (failing on this base): `agent-progress run --task r32-dod-share --paths src/ontofill/phases/p2_ontology/phase.py,src/ontofill/refiner/export.py,schemas/dod-queries.schema.json,tests/test_r32_p2_guards.py,tests/test_refiner.py --check share-focused --strategy linked-primary-completeness-ratio --hypothesis 'Completeness target is the share of primary entities linked by a declared primary-domain relation that meet the approved per-entity min_ratio; a single complete entity among many must not pass.' -- sh -c 'uv run pytest -q tests/test_r32_p2_guards.py tests/test_r31_ontology_salvage.py tests/test_refiner.py && uv run ruff check src/ontofill/phases/p2_ontology/phase.py src/ontofill/refiner/export.py tests/test_r32_p2_guards.py tests/test_refiner.py && uv run ruff format --check src/ontofill/phases/p2_ontology/phase.py src/ontofill/refiner/export.py tests/test_r32_p2_guards.py tests/test_refiner.py && python3 -m json.tool schemas/dod-queries.schema.json >/dev/null && git diff --check'`.
+
+Constraints: own only P2, refiner/export, DoD query schema, synthetic tests and task notes. Do not modify case artifacts or `APPROVED`, push or deploy. Preserve digest-approved ontology/query reuse and the existing structural guard feedback.
+
+
+# Prior goal: R40/R41 reviewed document downloads
 
 Pause P5 on off-domain document links from a trusted page; bind each source decision to its exact candidate digest; fetch only an approved exact host; parse legacy `.xls` BIFF from bronze inside the networkless, resource-capped runsc parser pod. Keep same-host GET behavior and six-checkpoint job proof.
 
