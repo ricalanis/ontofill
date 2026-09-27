@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p5_execute import execute_objectives
 from ontofill.refiner import MemorySilverStore
+from ontofill.sandbox.capture import CaptureError, CaptureIntegrityError
 from tests.r17_helpers import SyntheticParseExecutor
 
 _BAD_MAPPING = {
@@ -38,6 +41,8 @@ def _run(
     mappings: list[dict],
     source_ids: list[str],
     selections: list[dict] | None = None,
+    fetch_fail_sources: set[str] | None = None,
+    fetch_failure_type: type[CaptureError] = CaptureError,
 ):
     objectives = [_source(source_id) for source_id in source_ids]
     ontology = {
@@ -105,6 +110,8 @@ def _run(
     def fetch(url: str, **kwargs) -> dict:
         source_id = kwargs["source_id"]
         objective_id = kwargs["objective_id"]
+        if source_id in (fetch_fail_sources or set()):
+            raise fetch_failure_type("fetch pod failed: temporary name resolution failure")
         key = lake.put_bytes(payload)
         return {
             "url": url,
@@ -130,6 +137,35 @@ def _run(
         parse_executor=SyntheticParseExecutor(),
     )
     return results, decision
+
+
+def test_fetch_transport_failure_fails_only_its_source_and_keeps_page_receipt(tmp_path) -> None:
+    results, _decision = _run(
+        tmp_path,
+        [_GOOD_MAPPING],
+        ["source-failed", "source-next"],
+        fetch_fail_sources={"source-failed"},
+    )
+
+    failed, succeeded = results
+    assert failed.failed is True
+    assert "temporary name resolution failure" in failed.failure_reason
+    assert failed.observations == []
+    assert any(step["step_id"] == "page-source-failed" for step in failed.trace)
+    assert any(step["evaluated"].get("status") == "source_failed" for step in failed.trace)
+    assert succeeded.failed is False
+    assert [item.value for item in succeeded.observations] == ["record-1"]
+
+
+def test_fetch_containment_failure_still_stops_the_batch(tmp_path) -> None:
+    with pytest.raises(CaptureIntegrityError, match="fetch pod failed"):
+        _run(
+            tmp_path,
+            [],
+            ["source-failed", "source-next"],
+            fetch_fail_sources={"source-failed"},
+            fetch_failure_type=CaptureIntegrityError,
+        )
 
 
 def _mapping_steps(result) -> list[dict]:

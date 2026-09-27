@@ -70,6 +70,10 @@ class CaptureBlocked(CaptureError):
         self.trace = trace
 
 
+class CaptureIntegrityError(CaptureError):
+    """A containment proof failed; a source retry must not mask it."""
+
+
 class DockerTimeout(CaptureError):
     """The Docker CLI exceeded an enforced controller deadline."""
 
@@ -1769,15 +1773,15 @@ def fetch_url(
             assert pod_identity is not None
             assert isolation is not None and secrets is not None
             if not isolation["blocked"]:
-                raise CaptureError(f"sandbox isolation proof failed: {isolation}")
+                raise CaptureIntegrityError(f"sandbox isolation proof failed: {isolation}")
             if not secrets["ok"]:
-                raise CaptureError("sandbox secret hygiene proof failed")
+                raise CaptureIntegrityError("sandbox secret hygiene proof failed")
             final_url = result["url"]
             if not _allowed_host(final_url, domains) or (
                 exact is not None
                 and (urlsplit(final_url).hostname or "").lower().rstrip(".") not in exact
             ):
-                raise CaptureError("fetch redirected outside the TDD allowlist")
+                raise CaptureBlocked("fetch redirected outside the TDD allowlist", trace_rows or [])
             content = (output / "payload.bin").read_bytes()
             captured_at = datetime.now(UTC).isoformat()
             bronze_key = lake.put_bytes(
@@ -1917,4 +1921,4 @@ def fetch_url(
                 "failure_reason": limit_error.reason,
             }
         if not teardown["verified"]:
-            raise CaptureError("sandbox teardown proof failed", trace_rows)
+            raise CaptureIntegrityError("sandbox teardown proof failed", trace_rows)

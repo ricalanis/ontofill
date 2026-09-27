@@ -188,3 +188,9 @@ When malformed legacy BIFF reaches the isolated parser pod, preserve its stable 
 DONE (passed): `agent-progress run --task r40-parse-error --paths sandbox/parse-pod/runner.py,src/ontofill/sandbox/parse.py,tests/test_sandbox_parse.py --check malformed-biff-diagnostic --strategy bounded-stage-diagnostic-without-payload-text --hypothesis 'A malformed synthetic BIFF workbook keeps invalid_xls as its stable task reason and emits bounded safe diagnostic text in its six-checkpoint job and task trace, without leaking raw bytes or secret-like text.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && git diff --check'` passed: 26 passed, 2 skipped; Ruff lint, format, and diff checks clean. Attempt 1 was the expected red baseline at the missing diagnostic field.
 
 Constraints: own only the parse-pod runner, sandbox parse adapter, focused synthetic tests, and task notes. Do not touch P5/source review, R36 TLS, PA-owned files, real case/APPROVED, secrets, VM, or deployment. Commit locally; root integrates.
+
+## Current task: R47 source-contained D0 fetch
+
+Keep a failed D0 document fetch attached to its source and preserve sandbox receipts, so the next source can run. Containment failures remain hard stops.
+
+DONE: a recorded failed fetch followed by a successful objective passes, the proxy route has a focused test, and the full pytest and Ruff gates pass before release.

@@ -3,6 +3,7 @@
 from ontofill.sandbox.capture import (
     CaptureBlocked,
     CaptureError,
+    CaptureIntegrityError,
     SandboxLimitExceeded,
     capture_url,
     fetch_url,
@@ -23,6 +24,7 @@ from ontofill.sandbox.parse import (
 __all__ = [
     "CaptureBlocked",
     "CaptureError",
+    "CaptureIntegrityError",
     "CellError",
     "CellManager",
     "DockerParseExecutor",

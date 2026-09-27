@@ -455,3 +455,10 @@ FORMAT: Ruff format for changed Python files.
 
 Managed check: `agent-progress run --task r40-parse-error --paths sandbox/parse-pod/runner.py,src/ontofill/sandbox/parse.py,tests/test_sandbox_parse.py --check malformed-biff-diagnostic --strategy bounded-stage-diagnostic-without-payload-text --hypothesis 'A malformed synthetic BIFF workbook keeps invalid_xls as its stable task reason and emits bounded safe diagnostic text in its six-checkpoint job and task trace, without leaking raw bytes or secret-like text.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && git diff --check'`
 Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2 passed 26 tests, skipped 2 containment tests, and passed Ruff lint, format, and `git diff --check`.
+
+## R47 source-contained D0 fetch
+
+1. [x] Reproduce one fetch CaptureError followed by a successful objective.
+2. [x] Contain D0 transport CaptureError, preserving the prior page trace and leaving safety errors fatal.
+3. [ ] Integrate the proxy pod fix and its focused test.
+4. [ ] Run the full gate and pre-push scan, push, and deploy in the authorized zero-engine window.

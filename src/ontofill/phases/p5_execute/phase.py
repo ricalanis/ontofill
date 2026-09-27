@@ -38,7 +38,16 @@ from ontofill.refiner import Observation, SilverStore
 from ontofill.repair import repair_html_extractor
 from ontofill.repair.runner import RepairExecutor
 from ontofill.runfeed import RunFeed
-from ontofill.sandbox import SandboxParseError, capture_url, fetch_url, parse_bronze
+from ontofill.sandbox import (
+    CaptureBlocked,
+    CaptureError,
+    CaptureIntegrityError,
+    SandboxLimitExceeded,
+    SandboxParseError,
+    capture_url,
+    fetch_url,
+    parse_bronze,
+)
 from ontofill.sandbox.parse import ParseExecutor
 
 Capture = Callable[..., dict]
@@ -1116,7 +1125,40 @@ def execute_objective(
             # Approval is for this candidate only; it must not widen browser/P4 domains.
             fetch_kwargs["allowed_domains"] = [exact_host]
             fetch_kwargs["exact_hosts"] = [exact_host]
-        downloaded = fetch(selected_url, include_bytes=False, **fetch_kwargs)
+        try:
+            downloaded = fetch(selected_url, include_bytes=False, **fetch_kwargs)
+        except (CaptureBlocked, CaptureIntegrityError, SandboxLimitExceeded):
+            raise
+        except CaptureError as exc:
+            traces.extend(exc.trace)
+            if isinstance(exc.result, dict):
+                jobs.append(exc.result)
+            reason = (
+                re.sub(r"https?://[^\s;,]+", "[redacted-url]", " ".join(str(exc).split()))[:300]
+                or "document fetch failed"
+            )
+            traces.append(
+                {
+                    "step_id": f"step:{uuid.uuid4().hex}",
+                    "run_id": run_id,
+                    "phase": 5,
+                    "source_id": source_id,
+                    "objective_id": objective_id,
+                    "tdd_path": tdd_path,
+                    "mode": "D0",
+                    "observed": {"host": urlsplit(selected_url).hostname},
+                    "requested": {"tool": "source.fetch", "method": "GET"},
+                    "executed": {"network_request": True},
+                    "evaluated": {"status": "source_failed", "reason": reason},
+                    "parent_step_id": traces[-1]["step_id"] if traces else None,
+                    "value_ids": [],
+                    "ts": datetime.now(UTC).isoformat(),
+                    "generated_by": provenance,
+                }
+            )
+            return ExecutionResult(
+                [], traces, jobs, _format(selected_url) or "unknown", True, reason
+            )
         traces.extend(downloaded["trace"])
         jobs.append(downloaded)
         try:
