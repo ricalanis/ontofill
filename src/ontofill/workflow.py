@@ -897,6 +897,11 @@ def _remaining_budget_usd(decision: object, total_budget: float | None) -> float
 
 
 def _unmet_dod_criterion_ids(metrics: Mapping) -> list[str]:
+    # Recorded preview runs already pause at their checkpoints; their DoD rows
+    # are necessarily unmet and must not turn that checkpoint exit into a
+    # live needs-human failure.
+    if metrics.get("preview") or metrics.get("inference_backend") == "recorded":
+        return []
     return sorted(
         {
             row["criterion_id"]
