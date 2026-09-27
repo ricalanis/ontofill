@@ -80,6 +80,7 @@ class Settings:
     groups_header: str = "X-NetBird-Groups"  # sso-group: the proxy's verified group membership
     approver_group: str = "approvers"
     direct_deny: tuple = ()  # ip networks (our own mesh peers) whose direct requests may not decide
+    public_origins: tuple[str, ...] = ()  # "scheme://host[:port]" the browser uses behind a reverse proxy (CSRF check)
     runner_state: Path = runner_state.DEFAULT_STATE  # shared with the ontofill-runner service (R18)
     cases_root: Path | None = None  # ONTOFILL_CASES_ROOT: the data-driven case registry (v1.0.6); None = env only
     env_cases: dict[str, Case] = field(default_factory=dict)  # from ONTOFILL_CONSOLE_CASES (read-only fallback)
@@ -118,6 +119,19 @@ def parse_cases(spec: str, env: dict[str, str] | None = None) -> dict[str, Case]
     return cases
 
 
+def parse_origins(spec: str) -> tuple[str, ...]:
+    """`https://console.example,https://other.example:8443` -> normalized "scheme://host[:port]" origins."""
+    origins = []
+    for part in (p.strip() for p in (spec or "").split(",")):
+        if not part:
+            continue
+        u = urlsplit(part)
+        if u.scheme not in ("http", "https") or not u.netloc or u.path not in ("", "/") or u.query or u.fragment:
+            raise ValueError(f"ONTOFILL_CONSOLE_PUBLIC_ORIGINS: {part!r} is not an origin like https://host[:port]")
+        origins.append(f"{u.scheme}://{u.netloc}".lower())
+    return tuple(origins)
+
+
 def settings_from_env(env: dict[str, str] | None = None) -> Settings:
     env = dict(os.environ if env is None else env)
     headers = tuple(h.strip() for h in env.get("ONTOFILL_CONSOLE_IDENTITY_HEADER", "").split(",") if h.strip())
@@ -131,6 +145,7 @@ def settings_from_env(env: dict[str, str] | None = None) -> Settings:
         groups_header=env.get("ONTOFILL_CONSOLE_GROUPS_HEADER", "").strip() or "X-NetBird-Groups",
         approver_group=env.get("ONTOFILL_CONSOLE_APPROVER_GROUP", "").strip() or "approvers",
         direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")),
+        public_origins=parse_origins(env.get("ONTOFILL_CONSOLE_PUBLIC_ORIGINS", "")),
         runner_state=runner_state.state_dir(env),
     )
     sync_registry(settings, env)
@@ -309,9 +324,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return templates.TemplateResponse(request, name, ctx)
 
     def check_origin(request: Request) -> None:
+        """CSRF guard: a decision's Origin/Referer must be this console. Behind a reverse proxy the Host header is the
+        upstream address, so the public origins the browser uses are configured (ONTOFILL_CONSOLE_PUBLIC_ORIGINS);
+        forwarded-host headers are never trusted."""
         host = request.headers.get("host")
         for header in (request.headers.get("origin"), request.headers.get("referer")):
-            if header and urlsplit(header).netloc != host:
+            if not header:
+                continue
+            parts = urlsplit(header)
+            if parts.netloc != host and f"{parts.scheme}://{parts.netloc}".lower() not in settings.public_origins:
                 raise HTTPException(403, "cross-origin decision refused")
 
     def authorize(request: Request, form: dict) -> tuple[str, str, dict | None]:

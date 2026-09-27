@@ -38,6 +38,10 @@ What the sign-in proxy actually proves, and what it does not:
   proxies; a peer on our own mesh could reach the console's NetBird IP directly and send its own header. Requests whose
   TCP peer address is in `ONTOFILL_CONSOLE_DIRECT_DENY` (our peers' IPs or CIDRs; forwarded-for headers are never
   trusted) get 403 "decisions must come through the NetBird proxy".
+- **Same-origin decisions behind the proxy.** Every write checks that its `Origin`/`Referer` is this console. The
+  proxy sends the upstream address as `Host`, so set `ONTOFILL_CONSOLE_PUBLIC_ORIGINS` to the public URL(s), e.g.
+  `https://ontofill-console.<domain>`; anything else is refused (403 "cross-origin decision refused"), and
+  `X-Forwarded-Host` is never trusted.
 - `sso` mode (a per-user header) remains for proxies that forward one; `local` (typed name) is development only.
 - **`readonly` is a public viewing instance** (e.g. a second NetBird service with a shared password): every page
   renders, and every non-GET request is refused with 403 before any route runs, whatever headers arrive, so no
@@ -48,7 +52,7 @@ What the sign-in proxy actually proves, and what it does not:
 
 Env: `ONTOFILL_CONSOLE_IDENTITY` (`sso-group` | `sso` | `readonly` | `local`), `ONTOFILL_CONSOLE_GROUPS_HEADER` (default
 `X-NetBird-Groups`), `ONTOFILL_CONSOLE_APPROVER_GROUP` (default `approvers`), `ONTOFILL_CONSOLE_DIRECT_DENY`,
-`ONTOFILL_CONSOLE_IDENTITY_HEADER` (sso mode).
+`ONTOFILL_CONSOLE_IDENTITY_HEADER` (sso mode), `ONTOFILL_CONSOLE_PUBLIC_ORIGINS`.
 
 ## Cases: a data-driven registry (CONTRACT v1.0.6)
 
