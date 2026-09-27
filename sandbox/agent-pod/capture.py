@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 _SECRET_ENV = re.compile(
@@ -189,8 +190,33 @@ async def capture() -> None:
 
             await context.route("**/*", read_only)
             page = await context.new_page()
+            navigation_chain: list[str] = []
+
+            def record_navigation(request) -> None:
+                if (
+                    request.is_navigation_request()
+                    and request.frame == page.main_frame
+                    and (not navigation_chain or navigation_chain[-1] != request.url)
+                ):
+                    navigation_chain.append(request.url)
+
+            page.on("request", record_navigation)
             budget.take()
-            response = await page.goto(target, wait_until="load", timeout=30000)
+            try:
+                response = await page.goto(target, wait_until="load", timeout=30000)
+            except PlaywrightError as exc:
+                write_result(
+                    output,
+                    {
+                        "url": page.url,
+                        "redirect_chain": navigation_chain or [target],
+                        "navigation_error": type(exc).__name__,
+                        **preflight,
+                        "steps": budget.steps,
+                        "peak_memory_mb": peak_memory_mb(),
+                    },
+                )
+                return
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()
             budget.take()
@@ -202,6 +228,7 @@ async def capture() -> None:
                 output,
                 {
                     "url": page.url,
+                    "redirect_chain": navigation_chain or [target],
                     "status": response.status if response else None,
                     **preflight,
                     "steps": budget.steps,

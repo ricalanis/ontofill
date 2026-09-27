@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -41,6 +42,78 @@ def validate_trace_rows(rows: list[dict]) -> None:
     )
     for row in rows:
         validator.validate(row)
+
+
+def _mock_capture_runtime(
+    monkeypatch, *, target: str, final_url: str, events: list[dict] | None = None
+) -> list[dict]:
+    module = importlib.import_module("ontofill.sandbox.capture")
+    events = events or [{"host": "blocked.invalid", "decision": "block"}]
+    monkeypatch.setattr(module, "_images", lambda: ("agent-image", "egress-image"))
+    monkeypatch.setattr(
+        module,
+        "_host_check",
+        lambda: ({"runtime": "runsc", "runtime_available": True}, []),
+    )
+    monkeypatch.setattr(module, "_denied_probe_host", lambda domains: "blocked.invalid")
+    monkeypatch.setattr(module, "_wait_proxy", lambda name: None)
+    monkeypatch.setattr(module, "_container_network_ip", lambda name, network: "172.25.0.2")
+    monkeypatch.setattr(module, "_events", lambda name: events)
+    monkeypatch.setattr(
+        module,
+        "_cleanup_and_verify",
+        lambda proxy, pod, network: {
+            "pod_gone": True,
+            "proxy_gone": True,
+            "network_removed": True,
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_docker",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+
+    def fake_agent(name, output, *args, limits=None):
+        (output / "result.json").write_text(
+            json.dumps(
+                {
+                    "url": final_url,
+                    "status": 200,
+                    "redirect_chain": [target, final_url] if target != final_url else [target],
+                    "pod_identity": {
+                        "hostname": "synthetic-pod",
+                        "uname": {"system": "Linux"},
+                        "cpu_virtualization_flags": [],
+                        "dev_kvm_present": False,
+                    },
+                    "isolation_probes": {
+                        "network": {"host": "blocked.invalid", "blocked": True, "status": 403},
+                        "writes": {
+                            "outside_pod": {"blocked": True},
+                            "outside_writable_mount": {"blocked": True},
+                        },
+                    },
+                    "secret_probes": {
+                        "env_keys_found": 0,
+                        "files_with_keys": 0,
+                        "metadata_ip": "BLOCKED",
+                        "mesh": "BLOCKED",
+                    },
+                    "steps": 2,
+                    "peak_memory_mb": 50,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (output / "page.html").write_text("<html><body>synthetic</body></html>", encoding="utf-8")
+        (output / "a11y.txt").write_text("synthetic accessibility", encoding="utf-8")
+        (output / "screenshot.png").write_bytes(b"synthetic screenshot")
+        return subprocess.CompletedProcess(["docker", "run", name], 0, "", "")
+
+    monkeypatch.setattr(module, "_run_agent_pod", fake_agent)
+    return events
 
 
 class SyntheticPage(BaseHTTPRequestHandler):
@@ -104,6 +177,88 @@ def test_allowlist_matches_only_full_hosts() -> None:
     assert _allowed_host("https://source.example.invalid/path", ["example.invalid"])
     assert not _allowed_host("https://example.invalid.evil.invalid/", ["example.invalid"])
     assert not _allowed_host("file:///etc/passwd", ["example.invalid"])
+
+
+def test_cross_domain_redirect_is_blocked_with_sandbox_proof(tmp_path, monkeypatch) -> None:
+    target = "https://dept.example.co.uk/branches"
+    redirected = "https://other.co.uk/branches"
+    events = _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=redirected,
+        events=[
+            {"host": "blocked.invalid", "decision": "block"},
+            {"host": "other.co.uk", "decision": "block"},
+        ],
+    )
+
+    with pytest.raises(CaptureBlocked) as raised:
+        capture_url(
+            target,
+            allowed_domains=["example.co.uk"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+            redirect_domain="example.co.uk",
+        )
+
+    assert raised.value.result is not None
+    assert raised.value.result["proof"]["dispatch_result"]["redirect_chain"] == [
+        target,
+        redirected,
+    ]
+    assert raised.value.result["egress_events"] == events
+    assert any(
+        event["host"] == "other.co.uk" and event["decision"] == "block"
+        for event in raised.value.result["egress_events"]
+    )
+    assert raised.value.result["proof"]["isolation_probe"]["blocked"] is True
+    assert raised.value.trace[0]["evaluated"]["reason"] == "redirect_outside_registrable_domain"
+    assert raised.value.trace[-1]["evaluated"]["proof_checkpoint"] == "teardown"
+    validate_trace_rows(raised.value.trace)
+
+
+def test_same_registrable_domain_redirect_is_captured_and_logged(tmp_path, monkeypatch) -> None:
+    target = "https://dept.example.co.uk/branches"
+    redirected = "https://www.example.co.uk/libraries"
+    _mock_capture_runtime(monkeypatch, target=target, final_url=redirected)
+
+    result = capture_url(
+        target,
+        allowed_domains=["example.co.uk"],
+        lake=FileLake(tmp_path / "lake"),
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id=None,
+        tdd_path="03-fanout/discovery-loop.json",
+        phase=3,
+        redirect_domain="example.co.uk",
+    )
+
+    assert result["url"] == redirected
+    assert result["proof"]["dispatch_result"]["redirect_chain"] == [target, redirected]
+
+
+def test_legacy_exact_subdomain_allowlist_without_redirect_boundary_still_captures(
+    tmp_path, monkeypatch
+) -> None:
+    target = "https://www.example.com/branches"
+    _mock_capture_runtime(monkeypatch, target=target, final_url=target)
+
+    result = capture_url(
+        target,
+        allowed_domains=["www.example.com"],
+        lake=FileLake(tmp_path / "lake"),
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id=None,
+        tdd_path="04-local/synthetic-tdd.json",
+    )
+
+    assert result["status"] == 200
+    assert result["proof"]["dispatch_result"]["redirect_chain"] == [target]
 
 
 def test_disallowed_target_fails_before_browser(tmp_path) -> None:

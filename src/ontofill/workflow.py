@@ -33,7 +33,6 @@ from ontofill.phases.p3_fanout.phase import discover_objectives
 from ontofill.phases.p3_fanout.search import (
     ProviderSearchClient,
     SandboxSearchClient,
-    SandboxWebSearchProvider,
 )
 from ontofill.phases.p4_local_scoping.phase import draft_local_scope
 from ontofill.phases.p5_execute import execute_objective
@@ -640,15 +639,10 @@ def run_case(
                     providers.append(
                         SandboxSearchClient(lake, run_id, provenance, endpoint=catalog)
                     )
-                providers.extend(
-                    [
-                        SandboxWebSearchProvider("bing_html", lake, run_id, provenance),
-                        SandboxWebSearchProvider("duckduckgo_html", lake, run_id, provenance),
-                    ]
-                )
+                lead_search = ProviderSearchClient(providers) if providers else None
                 # Bounded P3 loop: lead-only providers, sandbox confirmation, authority check.
                 search_client = DiscoveryLoop(
-                    default_lead_providers(decision, search_client=ProviderSearchClient(providers)),
+                    default_lead_providers(decision, search_client=lead_search),
                     capture=capture or capture_url,
                     lake=lake,
                     run_id=run_id,

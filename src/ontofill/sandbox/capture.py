@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ontofill.lake import FileLake, S3Lake
+from ontofill.sandbox.domains import registrable_domain, same_registrable_domain
 from ontofill.sandbox.limits import SandboxLimits
 
 _DOMAIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
@@ -28,16 +29,22 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 class CaptureError(RuntimeError):
     """Browser or proxy execution failed."""
 
-    def __init__(self, message: str, trace: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        trace: list[dict] | None = None,
+        result: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.trace = trace or []
+        self.result = result
 
 
 class CaptureBlocked(CaptureError):
     """A URL was outside the TDD allowlist before browser execution."""
 
-    def __init__(self, message: str, trace: list[dict]) -> None:
-        super().__init__(message)
+    def __init__(self, message: str, trace: list[dict], result: dict | None = None) -> None:
+        super().__init__(message, trace, result)
         self.trace = trace
 
 
@@ -493,6 +500,7 @@ def capture_url(
     phase: int = 5,
     generated_by: dict | None = None,
     limits: SandboxLimits | Mapping[str, object] | None = None,
+    redirect_domain: str | None = None,
 ) -> dict:
     """Capture a public page; only the proxy container can leave the internal network."""
     domains = _domains(allowed_domains)
@@ -523,6 +531,25 @@ def capture_url(
             generated_by=provenance,
         )
         raise CaptureBlocked("URL domain is not allowed by the TDD", [row])
+    if redirect_domain is not None:
+        redirect_domain = registrable_domain(redirect_domain)
+        request["redirect_domain"] = redirect_domain
+        if redirect_domain not in domains or not same_registrable_domain(url, redirect_domain):
+            row = _trace(
+                step_id=step_id,
+                run_id=run_id,
+                phase=phase,
+                source_id=source_id,
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                observed={"url": url},
+                requested=request,
+                executed={"network_request": False},
+                evaluated={"status": "blocked", "reason": "redirect_policy_invalid"},
+                ts=timestamp,
+                generated_by=provenance,
+            )
+            raise CaptureBlocked("redirect domain must be the URL's registrable domain", [row])
 
     agent_image, egress_image = _images()
     host, runtime_args = _host_check()
@@ -534,6 +561,7 @@ def capture_url(
     trace_rows: list[dict] | None = None
     proof: dict = {}
     job_result: dict | None = None
+    capture_error: CaptureError | None = None
     limit_error: SandboxLimitExceeded | None = None
     pod_identity: dict | None = None
     isolation: dict | None = None
@@ -637,84 +665,190 @@ def capture_url(
             if not secrets["ok"]:
                 raise CaptureError("sandbox secret hygiene proof failed")
             final_url = result["url"]
-            captured_at = datetime.now(UTC).isoformat()
-            metadata = {
-                "url": final_url,
-                "captured_at": captured_at,
-                "source_id": source_id,
-                "step_id": step_id,
-            }
-            html_bytes = (output / "page.html").read_bytes()
-            html_key = lake.put_bytes(html_bytes, {**metadata, "content_type": "text/html"})
-            a11y_key = lake.put_bytes(
-                (output / "a11y.txt").read_bytes(),
-                {**metadata, "content_type": "text/plain"},
+            redirect_chain = result.get("redirect_chain")
+            if not isinstance(redirect_chain, list) or not all(
+                isinstance(item, str) for item in redirect_chain
+            ):
+                redirect_chain = [url]
+            elif not redirect_chain or redirect_chain[0] != url:
+                redirect_chain = [url, *redirect_chain]
+            navigation_error = result.get("navigation_error")
+            invalid_redirect = redirect_domain is not None and any(
+                not _allowed_host(item, domains) or not same_registrable_domain(url, item)
+                for item in [*redirect_chain, final_url]
             )
-            screenshot_key = lake.put_bytes(
-                (output / "screenshot.png").read_bytes(),
-                {**metadata, "content_type": "image/png"},
-            )
-            keys = {"html_key": html_key, "a11y_key": a11y_key, "screenshot_key": screenshot_key}
-            row = _trace(
-                step_id=step_id,
-                run_id=run_id,
-                phase=phase,
-                source_id=source_id,
-                objective_id=objective_id,
-                tdd_path=tdd_path,
-                observed={"url": final_url, "status": result["status"]},
-                requested=request,
-                executed={"network_request": True, **keys},
-                evaluated={
-                    "status": "captured",
-                    "bronze_objects": 3,
-                    "proof_checkpoint": "dispatch_result",
-                },
-                ts=captured_at,
-                generated_by=provenance,
-            )
-            row["screenshot_key"] = screenshot_key
-            trace_rows = [
-                row,
-                *_proof_rows(
+            if navigation_error or invalid_redirect:
+                blocked = invalid_redirect
+                reason = (
+                    "redirect_outside_registrable_domain" if blocked else "sandbox_navigation_error"
+                )
+                status = result.get("status")
+                status = int(status) if isinstance(status, int) else 0
+                captured_at = datetime.now(UTC).isoformat()
+                redirect_result = {
+                    "url": final_url,
+                    "status": status,
+                    "redirect_chain": redirect_chain,
+                    "navigation_error": navigation_error,
+                    "reason": reason,
+                    "egress_events": events,
+                }
+                row = _trace(
                     step_id=step_id,
                     run_id=run_id,
                     phase=phase,
                     source_id=source_id,
                     objective_id=objective_id,
                     tdd_path=tdd_path,
-                    mode="S1",
+                    observed={"url": final_url, "redirect_chain": redirect_chain},
+                    requested=request,
+                    executed={"network_request": True},
+                    evaluated={
+                        "status": "blocked" if blocked else "failed",
+                        "reason": reason,
+                        "proof_checkpoint": "dispatch_result",
+                    },
+                    ts=captured_at,
                     generated_by=provenance,
-                    host=host,
-                    pod=pod_identity,
-                    isolation=isolation,
-                    secrets=secrets,
-                ),
-            ]
-            proof = {
-                "dispatch_result": {"url": final_url, "status": result["status"], **keys},
-                "host_check": host,
-                "pod_identity": pod_identity,
-                "isolation_probe": isolation,
-                "secrets": secrets,
-            }
-            job_result = {
-                **keys,
-                "html": html_bytes.decode("utf-8"),
-                "url": final_url,
-                "status": result["status"],
-                "trace": trace_rows,
-                "egress_events": events,
-                "proof": proof,
-                "started_at": timestamp,
-                "limits": budget.as_dict(),
-                "usage": {
-                    "peak_memory_mb": result.get("peak_memory_mb", 0),
-                    "wall_s": 0,
-                    "steps": result["steps"],
-                },
-            }
-            return job_result
+                    event="hard_stop" if blocked else None,
+                )
+                trace_rows = [
+                    row,
+                    *_proof_rows(
+                        step_id=step_id,
+                        run_id=run_id,
+                        phase=phase,
+                        source_id=source_id,
+                        objective_id=objective_id,
+                        tdd_path=tdd_path,
+                        mode="S1",
+                        generated_by=provenance,
+                        host=host,
+                        pod=pod_identity,
+                        isolation=isolation,
+                        secrets=secrets,
+                    ),
+                ]
+                proof = {
+                    "dispatch_result": redirect_result,
+                    "host_check": host,
+                    "pod_identity": pod_identity,
+                    "isolation_probe": isolation,
+                    "secrets": secrets,
+                }
+                job_result = {
+                    "url": final_url,
+                    "status": status,
+                    "redirect_chain": redirect_chain,
+                    "trace": trace_rows,
+                    "egress_events": events,
+                    "proof": proof,
+                    "started_at": timestamp,
+                    "limits": budget.as_dict(),
+                    "usage": {
+                        "peak_memory_mb": peak_memory_mb,
+                        "wall_s": 0,
+                        "steps": pod_steps,
+                    },
+                }
+                message = (
+                    "redirect left the registrable domain"
+                    if blocked
+                    else "sandbox navigation failed"
+                )
+                capture_error = CaptureBlocked(message, trace_rows, job_result)
+            else:
+                captured_at = datetime.now(UTC).isoformat()
+                metadata = {
+                    "url": final_url,
+                    "captured_at": captured_at,
+                    "source_id": source_id,
+                    "step_id": step_id,
+                }
+                html_bytes = (output / "page.html").read_bytes()
+                html_key = lake.put_bytes(html_bytes, {**metadata, "content_type": "text/html"})
+                a11y_key = lake.put_bytes(
+                    (output / "a11y.txt").read_bytes(),
+                    {**metadata, "content_type": "text/plain"},
+                )
+                screenshot_key = lake.put_bytes(
+                    (output / "screenshot.png").read_bytes(),
+                    {**metadata, "content_type": "image/png"},
+                )
+                keys = {
+                    "html_key": html_key,
+                    "a11y_key": a11y_key,
+                    "screenshot_key": screenshot_key,
+                }
+                row = _trace(
+                    step_id=step_id,
+                    run_id=run_id,
+                    phase=phase,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    observed={
+                        "url": final_url,
+                        "status": result["status"],
+                        "redirect_chain": redirect_chain,
+                    },
+                    requested=request,
+                    executed={"network_request": True, **keys},
+                    evaluated={
+                        "status": "captured",
+                        "bronze_objects": 3,
+                        "proof_checkpoint": "dispatch_result",
+                    },
+                    ts=captured_at,
+                    generated_by=provenance,
+                )
+                row["screenshot_key"] = screenshot_key
+                trace_rows = [
+                    row,
+                    *_proof_rows(
+                        step_id=step_id,
+                        run_id=run_id,
+                        phase=phase,
+                        source_id=source_id,
+                        objective_id=objective_id,
+                        tdd_path=tdd_path,
+                        mode="S1",
+                        generated_by=provenance,
+                        host=host,
+                        pod=pod_identity,
+                        isolation=isolation,
+                        secrets=secrets,
+                    ),
+                ]
+                proof = {
+                    "dispatch_result": {
+                        "url": final_url,
+                        "status": result["status"],
+                        "redirect_chain": redirect_chain,
+                        **keys,
+                    },
+                    "host_check": host,
+                    "pod_identity": pod_identity,
+                    "isolation_probe": isolation,
+                    "secrets": secrets,
+                }
+                job_result = {
+                    **keys,
+                    "html": html_bytes.decode("utf-8"),
+                    "url": final_url,
+                    "status": result["status"],
+                    "redirect_chain": redirect_chain,
+                    "trace": trace_rows,
+                    "egress_events": events,
+                    "proof": proof,
+                    "started_at": timestamp,
+                    "limits": budget.as_dict(),
+                    "usage": {
+                        "peak_memory_mb": result.get("peak_memory_mb", 0),
+                        "wall_s": 0,
+                        "steps": result["steps"],
+                    },
+                }
     except SandboxLimitExceeded as exc:
         limit_error = exc
         trace_rows = exc.trace
@@ -750,6 +884,8 @@ def capture_url(
                 )
             )
         if job_result is not None:
+            job_result["proof"] = proof
+            job_result["trace"] = trace_rows
             job_result["ended_at"] = datetime.now(UTC).isoformat()
             job_result["usage"]["wall_s"] = round(time.monotonic() - started_monotonic, 3)
         if limit_error is not None:
@@ -775,6 +911,12 @@ def capture_url(
             }
         if not teardown["verified"]:
             raise CaptureError("sandbox teardown proof failed", trace_rows)
+    if capture_error is not None:
+        capture_error.trace = trace_rows or []
+        capture_error.result = job_result
+        raise capture_error
+    assert job_result is not None
+    return job_result
 
 
 def fetch_url(
