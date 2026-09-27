@@ -8,6 +8,9 @@ The engine accepts a **case** from an application repo and runs the same five ph
 different subjects. [Proveedor Abierto](https://github.com/ricalanis/proveedor-abierto/tree/main/case)
 is the reference case used to exercise the engine.
 
+**For judges:** [Live, read-only Ontofill Console](https://ontofill-console-judges.eu1.netbird.services).
+The password is linked from [Proveedor Abierto's For judges section](https://github.com/ricalanis/proveedor-abierto#for-judges).
+
 ## How it works
 
 The engine turns a question into a reviewed PRD, an inferred ontology, confirmed sources,

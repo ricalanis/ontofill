@@ -1,5 +1,16 @@
 # Work list
 
+## R21 generic schemas and judges pointer
+- [x] Remove legacy case-domain schemas and identifiers from `schemas/`.
+- [x] Make the genericity guard scan schema filenames and contents.
+- [x] Keep legacy app tests on app-owned historical schemas in a separate handoff branch.
+- [x] Link the read-only judges console without copying its password.
+- [x] Run the full engine gate; finish the pre-push scan, main push, and control VM update.
+FILES: `schemas/`, `tests/test_no_case_vocabulary.py`, `tests/test_schemas.py`, `README.md`.
+TASK: finish R21 without bringing case vocabulary back into the engine.
+DONE: full engine test and Ruff gate plus clean public pre-push scan.
+FORMAT: Ruff check and format on engine Python.
+
 ## R22 model validation retries (priority before R21)
 - [x] Add bounded validator-error feedback with one trace record per attempt in the typed decision path.
 - [x] Make P2 prerequisites pause on exhausted validation without changing approved artifacts.

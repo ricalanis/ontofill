@@ -24,7 +24,6 @@ directory with `kind: file`; both use `bronze/sha256/<hex>` for the object and
 | `approval-pending.schema.json` | Structured metadata rendered in `APPROVAL_PENDING.md` |
 | `approved.schema.json` | JSON content of the `APPROVED` marker (approver and date) |
 | `entity.schema.json` | One generic gold entity row |
-| `supplier.schema.json`, `contract.schema.json` | Legacy case-specific rows, superseded by entities |
 | `trace-step.schema.json` | One trace step row, with optional inference usage |
 | `run-status.schema.json` | Live run status and partial metric snapshot |
 | `metrics.schema.json` | Generic class, property, source, and DoD metrics snapshot |

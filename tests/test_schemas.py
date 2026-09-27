@@ -54,45 +54,6 @@ def field(name: str, value: str | float | bool) -> dict:
     }
 
 
-def supplier() -> dict:
-    fields = {
-        "legal_name": field("name", "Proveedor Ejemplo 01"),
-        "tax_id": field("tax", "FAKE010101AAA"),
-        "address": field("address", "Calle Ejemplo 1"),
-        "founding_date": field("founded", "2001-01-01"),
-        "tax_list_status": field("tax-status", "unknown"),
-        "sanction_status": {
-            "value": None,
-            "confidence": 0,
-            "status": "missing",
-            "evidence": [],
-            "generated_by": dict(PROVENANCE),
-        },
-    }
-    return {
-        "id": "sup:example-1",
-        "generated_by": dict(PROVENANCE),
-        "classified_as": ["taxonomy:example"],
-        "fields": fields,
-        "flags": [
-            {
-                "rule_id": "sample-rule",
-                "label": "Example flag",
-                "explanation": "Synthetic example only",
-                "evidence_value_ids": ["val:name-1"],
-            }
-        ],
-        "links": [
-            {
-                "type": "shared_address",
-                "target": "sup:example-2",
-                "via_value_id": "val:address-1",
-            }
-        ],
-        "contract_ids": ["con:example-1"],
-    }
-
-
 def entity() -> dict:
     return {
         "id": "LibraryBranch:example-1",
@@ -159,17 +120,6 @@ EXAMPLES = {
         "requested_at": "2026-01-01T00:00:00Z",
         "reason": "Review the generated requirements",
         "artifact_paths": ["01-scope/prd.json"],
-    },
-    "contract": {
-        "id": "con:example-1",
-        "title": "Synthetic contract",
-        "amount": 100,
-        "currency": "MXN",
-        "date": "2026-01-01",
-        "buyer": "Example Buyer",
-        "procedure_type": "example procedure",
-        "supplier_ids": ["sup:example-1"],
-        "evidence": [evidence()],
     },
     "dod-queries": {
         "prd_path": "01-scope/prd.json",
@@ -392,7 +342,6 @@ EXAMPLES = {
             "per_property_completeness": {"LibraryBranch": {"name": 0.5}},
         },
     },
-    "supplier": supplier(),
     "tdd": {
         "source_id": "source-example",
         "objective_id": "objective-example",
@@ -444,7 +393,6 @@ EXAMPLES = {
 
 for artifact_name in (
     "approval-pending",
-    "contract",
     "dod-queries",
     "factors",
     "global-prd",
@@ -484,24 +432,24 @@ def test_tdd_accepts_announced_membership_shape_only_when_complete() -> None:
 
 
 def test_gold_value_without_bronze_evidence_is_rejected() -> None:
-    record = supplier()
-    record["fields"]["legal_name"]["evidence"] = []
+    record = entity()
+    record["properties"]["name"]["evidence"] = []
     with pytest.raises(ValidationError):
-        validate("supplier", record)
+        validate("entity", record)
 
 
 def test_bad_bronze_key_is_rejected() -> None:
-    record = supplier()
-    record["fields"]["legal_name"]["evidence"][0]["bronze_key"] = "sha256:not-a-hash"
+    record = entity()
+    record["properties"]["name"]["evidence"][0]["bronze_key"] = "sha256:not-a-hash"
     with pytest.raises(ValidationError):
-        validate("supplier", record)
+        validate("entity", record)
 
 
-def test_missing_core_field_is_rejected() -> None:
-    record = supplier()
-    del record["fields"]["tax_id"]
+def test_missing_entity_properties_are_rejected() -> None:
+    record = entity()
+    del record["properties"]
     with pytest.raises(ValidationError):
-        validate("supplier", record)
+        validate("entity", record)
 
 
 def test_unapproved_execution_mode_is_rejected() -> None:
@@ -645,6 +593,15 @@ def test_lake_pointer_requires_case_id() -> None:
         validate("lake-pointer", pointer)
 
 
+def test_lake_pointer_accepts_case_defined_export_format() -> None:
+    pointer = copy.deepcopy(EXAMPLES["lake-pointer"])
+    pointer["gold"]["export"].append("case-format-v1")
+    validate("lake-pointer", pointer)
+    pointer["gold"]["export"].append("../unsafe")
+    with pytest.raises(ValidationError):
+        validate("lake-pointer", pointer)
+
+
 def test_bronze_sidecar_requires_step_id() -> None:
     sidecar = copy.deepcopy(EXAMPLES["bronze-sidecar"])
     del sidecar["step_id"]
@@ -725,7 +682,6 @@ def test_run_status_accepts_partial_metrics_but_rejects_bad_health() -> None:
     "name",
     (
         "approval-pending",
-        "contract",
         "dod-queries",
         "entity",
         "factors",
@@ -735,7 +691,6 @@ def test_run_status_accepts_partial_metrics_but_rejects_bad_health() -> None:
         "objectives",
         "ontology",
         "run-status",
-        "supplier",
         "tdd",
         "trace-step",
     ),
@@ -747,11 +702,11 @@ def test_engine_artifact_requires_generated_by(name: str) -> None:
         validate(name, artifact)
 
 
-def test_each_supplier_field_requires_generated_by() -> None:
-    artifact = supplier()
-    del artifact["fields"]["legal_name"]["generated_by"]
+def test_each_entity_property_requires_generated_by() -> None:
+    artifact = entity()
+    del artifact["properties"]["name"]["generated_by"]
     with pytest.raises(ValidationError):
-        validate("supplier", artifact)
+        validate("entity", artifact)
 
 
 def test_generated_by_has_bounded_backend_and_valid_timestamp() -> None:

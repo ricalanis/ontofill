@@ -3,8 +3,6 @@
   "$id": "https://ontofill.dev/schemas/common.schema.json",
   "title": "Ontofill shared contract types",
   "$defs": {
-    "supplier_id": {"type": "string", "pattern": "^sup:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
-    "contract_id": {"type": "string", "pattern": "^con:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
     "value_id": {"type": "string", "pattern": "^val:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
     "bronze_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "nonempty": {"type": "string", "minLength": 1},

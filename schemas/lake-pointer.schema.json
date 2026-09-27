@@ -23,7 +23,7 @@
         "rdf_store_url_env": {"$ref": "#/$defs/env_name"},
         "export": {
           "type": "array", "uniqueItems": true, "minItems": 1,
-          "items": {"enum": ["jsonl", "csv", "rdf", "ocds-json"]}
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
         }
       }
     }
