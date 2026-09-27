@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox.domains import registrable_domain, same_registrable_domain
+from ontofill.sandbox.jobs import normalize_egress_events, normalize_navigation_attempts
 from ontofill.sandbox.limits import SandboxLimits
 
 _DOMAIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
@@ -30,12 +31,14 @@ _IMAGE_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _REMOTE_OUTPUT_LIMIT = 32 * 1024 * 1024
 _REMOTE_OUTPUT_NAME = re.compile(
-    r"(?:result\.json|page\.html|a11y\.txt|screenshot\.png|page-\d{4}\.(?:html|bin)|robots-\d{4}\.txt)\Z"
+    r"(?:result\.json|page\.html|a11y\.txt|screenshot\.png|document\.bin|page-\d{4}\.(?:html|bin)|robots-\d{4}\.txt)\Z"
 )
+_DOCUMENT_FILE = re.compile(r"document\.bin\Z")
+_CONTENT_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z", re.IGNORECASE)
 _REMOTE_OUTPUT_SCRIPT = """\
 import base64, io, pathlib, re, sys, zipfile
 root = pathlib.Path('/out')
-allowed = re.compile(r'(?:result\\.json|page\\.html|a11y\\.txt|screenshot\\.png|page-\\d{4}\\.(?:html|bin)|robots-\\d{4}\\.txt)\\Z')
+allowed = re.compile(r'(?:result\\.json|page\\.html|a11y\\.txt|screenshot\\.png|document\\.bin|page-\\d{4}\\.(?:html|bin)|robots-\\d{4}\\.txt)\\Z')
 buffer = io.BytesIO()
 with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(root.iterdir()):
@@ -177,6 +180,25 @@ def _navigation_chain(url: str, chain: object, final_url: object) -> list[str]:
     ):
         normalized.append(final_url)
     return normalized
+
+
+def _capture_reason(result: Mapping, events: list[dict], redirect_chain: list[str]) -> str | None:
+    explicit = result.get("capture_reason")
+    explicit = (
+        explicit
+        if isinstance(explicit, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", explicit)
+        else None
+    )
+    if not result.get("navigation_error") and explicit not in {None, "document_request_error"}:
+        return explicit
+    hosts = {(urlsplit(item).hostname or "").lower().rstrip(".") for item in redirect_chain}
+    for event in reversed(normalize_egress_events(events)):
+        if event["decision"] == "block" and event["host"] in hosts:
+            if event["reason"] in {"dns_failed", "address_rejected", "domain_not_allowed"}:
+                return event["reason"]
+    if explicit:
+        return explicit
+    return None
 
 
 def _domains(allowed_domains: list[str]) -> list[str]:
@@ -557,6 +579,39 @@ def _safe_output_file(output: Path, name: object, pattern: re.Pattern) -> Path |
         return None
     path = output / name
     return path if path.is_file() else None
+
+
+def _validated_document_capture(output: Path, result: Mapping) -> dict | None:
+    document = result.get("document")
+    if document is None:
+        return None
+    if not isinstance(document, Mapping):
+        raise CaptureError("browser pod returned invalid document metadata")
+    document_path = _safe_output_file(output, document.get("file_name"), _DOCUMENT_FILE)
+    content_type = document.get("content_type")
+    declared_size = document.get("size_bytes")
+    status = document.get("status")
+    if (
+        document_path is None
+        or not isinstance(content_type, str)
+        or len(content_type) > 128
+        or not _CONTENT_TYPE.fullmatch(content_type)
+        or type(declared_size) is not int
+        or not 0 < declared_size <= 24 * 1024 * 1024
+        or type(status) is not int
+        or not 200 <= status <= 299
+        or result.get("status") != status
+    ):
+        raise CaptureError("browser pod returned invalid document metadata")
+    content = document_path.read_bytes()
+    if not content or len(content) != declared_size:
+        raise CaptureError("browser pod document size did not match its receipt")
+    return {
+        "content": content,
+        "content_type": content_type,
+        "size_bytes": declared_size,
+        "status": status,
+    }
 
 
 def _persist_spider_output(
@@ -1167,11 +1222,27 @@ def capture_url(
                     and urlsplit(raw_final_url).scheme in {"http", "https"}
                     else redirect_chain[-1]
                 )
-                navigation_error = result.get("navigation_error")
+                document = _validated_document_capture(output, result)
+                navigation_error = None if document is not None else result.get("navigation_error")
                 invalid_redirect = any(not _allowed_host(item, domains) for item in redirect_chain)
-                if navigation_error or invalid_redirect:
+                navigation_attempts = normalize_navigation_attempts(
+                    result.get("navigation_attempts"),
+                    legacy_error=navigation_error,
+                    fallback_http_status=result.get("status"),
+                )
+                safe_egress_events = normalize_egress_events(events)
+                capture_reason = (
+                    None
+                    if document is not None
+                    else _capture_reason(result, events, redirect_chain)
+                )
+                if navigation_error or invalid_redirect or capture_reason:
                     blocked = invalid_redirect
-                    reason = "redirect_outside_allowlist" if blocked else "sandbox_navigation_error"
+                    reason = (
+                        "redirect_outside_allowlist"
+                        if blocked
+                        else capture_reason or "sandbox_navigation_error"
+                    )
                     final_url = next(
                         (
                             item
@@ -1189,8 +1260,10 @@ def capture_url(
                         "redirect_chain": redirect_chain,
                         "allowed_domains": domains,
                         "navigation_error": navigation_error,
+                        **({"capture_reason": capture_reason} if capture_reason else {}),
                         "reason": reason,
-                        "egress_events": events,
+                        "navigation_attempts": navigation_attempts,
+                        "egress_events": safe_egress_events,
                     }
                     row = _trace(
                         step_id=step_id,
@@ -1205,6 +1278,9 @@ def capture_url(
                         evaluated={
                             "status": "blocked" if blocked else "failed",
                             "reason": reason,
+                            **({"capture_reason": capture_reason} if capture_reason else {}),
+                            "navigation_attempts": navigation_attempts,
+                            "egress_events": safe_egress_events,
                             "redirect_chain": redirect_chain,
                             "allowed_domains": domains,
                             "proof_checkpoint": "dispatch_result",
@@ -1244,7 +1320,9 @@ def capture_url(
                         "allowed_domains": domains,
                         "reason": reason,
                         "trace": trace_rows,
-                        "egress_events": events,
+                        **({"capture_reason": capture_reason} if capture_reason else {}),
+                        "navigation_attempts": navigation_attempts,
+                        "egress_events": safe_egress_events,
                         "proof": proof,
                         "started_at": timestamp,
                         "limits": budget.as_dict(),
@@ -1268,92 +1346,185 @@ def capture_url(
                         "source_id": source_id,
                         "step_id": step_id,
                     }
-                    html_bytes = (output / "page.html").read_bytes()
-                    html_key = lake.put_bytes(html_bytes, {**metadata, "content_type": "text/html"})
-                    a11y_key = lake.put_bytes(
-                        (output / "a11y.txt").read_bytes(),
-                        {**metadata, "content_type": "text/plain"},
-                    )
-                    screenshot_key = lake.put_bytes(
-                        (output / "screenshot.png").read_bytes(),
-                        {**metadata, "content_type": "image/png"},
-                    )
-                    keys = {
-                        "html_key": html_key,
-                        "a11y_key": a11y_key,
-                        "screenshot_key": screenshot_key,
-                    }
-                    row = _trace(
-                        step_id=step_id,
-                        run_id=run_id,
-                        phase=phase,
-                        source_id=source_id,
-                        objective_id=objective_id,
-                        tdd_path=tdd_path,
-                        observed={
-                            "url": final_url,
-                            "status": result["status"],
-                            "redirect_chain": redirect_chain,
-                        },
-                        requested=request,
-                        executed={"network_request": True, **keys},
-                        evaluated={
-                            "status": "captured",
-                            "bronze_objects": 3,
-                            "proof_checkpoint": "dispatch_result",
-                        },
-                        ts=captured_at,
-                        generated_by=provenance,
-                    )
-                    row["screenshot_key"] = screenshot_key
-                    trace_rows = [
-                        row,
-                        *_proof_rows(
+                    if document is not None:
+                        document_bytes = document["content"]
+                        content_type = document["content_type"]
+                        declared_size = document["size_bytes"]
+                        document_key = lake.put_bytes(
+                            document_bytes,
+                            {**metadata, "content_type": content_type},
+                        )
+                        document_fields = {
+                            "artifact_kind": "download",
+                            "document_key": document_key,
+                            "document_content_type": content_type,
+                            "document_size_bytes": declared_size,
+                        }
+                        row = _trace(
                             step_id=step_id,
                             run_id=run_id,
                             phase=phase,
                             source_id=source_id,
                             objective_id=objective_id,
                             tdd_path=tdd_path,
-                            mode="S1",
+                            observed={
+                                "url": final_url,
+                                "status": document["status"],
+                                "redirect_chain": redirect_chain,
+                            },
+                            requested=request,
+                            executed={"network_request": True, "document_key": document_key},
+                            evaluated={
+                                "status": "captured",
+                                "bronze_objects": 1,
+                                "proof_checkpoint": "dispatch_result",
+                                **document_fields,
+                                "navigation_attempts": navigation_attempts,
+                                "egress_events": safe_egress_events,
+                            },
+                            ts=captured_at,
                             generated_by=provenance,
-                            host=host,
-                            pod=pod_identity,
-                            isolation=isolation,
-                            secrets=secrets,
-                        ),
-                    ]
-                    proof = {
-                        "dispatch_result": {
+                        )
+                        trace_rows = [
+                            row,
+                            *_proof_rows(
+                                step_id=step_id,
+                                run_id=run_id,
+                                phase=phase,
+                                source_id=source_id,
+                                objective_id=objective_id,
+                                tdd_path=tdd_path,
+                                mode="S1",
+                                generated_by=provenance,
+                                host=host,
+                                pod=pod_identity,
+                                isolation=isolation,
+                                secrets=secrets,
+                            ),
+                        ]
+                        proof = {
+                            "dispatch_result": {
+                                "url": final_url,
+                                "status": document["status"],
+                                "redirect_chain": redirect_chain,
+                                "allowed_domains": domains,
+                                **document_fields,
+                            },
+                            "host_check": host,
+                            "pod_identity": pod_identity,
+                            "isolation_probe": isolation,
+                            "secrets": secrets,
+                        }
+                        job_result = {
+                            **document_fields,
+                            "url": final_url,
+                            "status": document["status"],
+                            "redirect_chain": redirect_chain,
+                            "allowed_domains": domains,
+                            "trace": trace_rows,
+                            "navigation_attempts": navigation_attempts,
+                            "egress_events": safe_egress_events,
+                            "proof": proof,
+                            "started_at": timestamp,
+                            "limits": budget.as_dict(),
+                            "usage": {
+                                "peak_memory_mb": result.get("peak_memory_mb", 0),
+                                "wall_s": 0,
+                                "steps": result["steps"],
+                            },
+                        }
+                    if document is None:
+                        html_bytes = (output / "page.html").read_bytes()
+                        html_key = lake.put_bytes(
+                            html_bytes, {**metadata, "content_type": "text/html"}
+                        )
+                        a11y_key = lake.put_bytes(
+                            (output / "a11y.txt").read_bytes(),
+                            {**metadata, "content_type": "text/plain"},
+                        )
+                        screenshot_key = lake.put_bytes(
+                            (output / "screenshot.png").read_bytes(),
+                            {**metadata, "content_type": "image/png"},
+                        )
+                        keys = {
+                            "html_key": html_key,
+                            "a11y_key": a11y_key,
+                            "screenshot_key": screenshot_key,
+                        }
+                        row = _trace(
+                            step_id=step_id,
+                            run_id=run_id,
+                            phase=phase,
+                            source_id=source_id,
+                            objective_id=objective_id,
+                            tdd_path=tdd_path,
+                            observed={
+                                "url": final_url,
+                                "status": result["status"],
+                                "redirect_chain": redirect_chain,
+                            },
+                            requested=request,
+                            executed={"network_request": True, **keys},
+                            evaluated={
+                                "status": "captured",
+                                "bronze_objects": 3,
+                                "proof_checkpoint": "dispatch_result",
+                                "navigation_attempts": navigation_attempts,
+                                "egress_events": safe_egress_events,
+                            },
+                            ts=captured_at,
+                            generated_by=provenance,
+                        )
+                        row["screenshot_key"] = screenshot_key
+                        trace_rows = [
+                            row,
+                            *_proof_rows(
+                                step_id=step_id,
+                                run_id=run_id,
+                                phase=phase,
+                                source_id=source_id,
+                                objective_id=objective_id,
+                                tdd_path=tdd_path,
+                                mode="S1",
+                                generated_by=provenance,
+                                host=host,
+                                pod=pod_identity,
+                                isolation=isolation,
+                                secrets=secrets,
+                            ),
+                        ]
+                        proof = {
+                            "dispatch_result": {
+                                "url": final_url,
+                                "status": result["status"],
+                                "redirect_chain": redirect_chain,
+                                "allowed_domains": domains,
+                                **keys,
+                            },
+                            "host_check": host,
+                            "pod_identity": pod_identity,
+                            "isolation_probe": isolation,
+                            "secrets": secrets,
+                        }
+                        job_result = {
+                            **keys,
+                            "html": html_bytes.decode("utf-8"),
                             "url": final_url,
                             "status": result["status"],
                             "redirect_chain": redirect_chain,
                             "allowed_domains": domains,
-                            **keys,
-                        },
-                        "host_check": host,
-                        "pod_identity": pod_identity,
-                        "isolation_probe": isolation,
-                        "secrets": secrets,
-                    }
-                    job_result = {
-                        **keys,
-                        "html": html_bytes.decode("utf-8"),
-                        "url": final_url,
-                        "status": result["status"],
-                        "redirect_chain": redirect_chain,
-                        "allowed_domains": domains,
-                        "trace": trace_rows,
-                        "egress_events": events,
-                        "proof": proof,
-                        "started_at": timestamp,
-                        "limits": budget.as_dict(),
-                        "usage": {
-                            "peak_memory_mb": result.get("peak_memory_mb", 0),
-                            "wall_s": 0,
-                            "steps": result["steps"],
-                        },
-                    }
+                            "trace": trace_rows,
+                            "navigation_attempts": navigation_attempts,
+                            "egress_events": safe_egress_events,
+                            "proof": proof,
+                            "started_at": timestamp,
+                            "limits": budget.as_dict(),
+                            "usage": {
+                                "peak_memory_mb": result.get("peak_memory_mb", 0),
+                                "wall_s": 0,
+                                "steps": result["steps"],
+                            },
+                        }
     except SandboxLimitExceeded as exc:
         limit_error = exc
         trace_rows = exc.trace

@@ -52,15 +52,37 @@ def _mock_capture_runtime(
     events: list[dict] | None = None,
     redirect_chain: list[str] | None = None,
     navigation_error: str | None = None,
+    capture_reason: str | None = None,
+    navigation_attempts: list[dict] | None = None,
+    egress_events: list[dict] | None = None,
+    status: int | None = 200,
     limit_reason: str | None = None,
+    document: dict | None = None,
 ) -> list[dict]:
     module = importlib.import_module("ontofill.sandbox.capture")
-    events = events or [{"host": "blocked.invalid", "decision": "block"}]
+    events = events or [
+        *(egress_events or []),
+        {
+            "host": "blocked.invalid",
+            "method": "GET",
+            "decision": "block",
+            "reason": "domain_not_allowed",
+        },
+    ]
     monkeypatch.setattr(module, "_images", lambda: ("agent-image", "egress-image"))
     monkeypatch.setattr(
         module,
         "_host_check",
-        lambda: ({"runtime": "runsc", "runtime_available": True}, []),
+        lambda: (
+            {
+                "docker_host": "synthetic-host",
+                "runtime": "runsc",
+                "runtime_available": True,
+                "cpu_virtualization_flags": [],
+                "dev_kvm_present": False,
+            },
+            [],
+        ),
     )
     monkeypatch.setattr(module, "_denied_probe_host", lambda domains: "blocked.invalid")
     monkeypatch.setattr(module, "_wait_proxy", lambda name: None)
@@ -87,14 +109,22 @@ def _mock_capture_runtime(
             json.dumps(
                 {
                     "url": final_url,
-                    "status": 200,
+                    "status": status,
                     "redirect_chain": redirect_chain
                     or ([target, final_url] if target != final_url else [target]),
                     **({"navigation_error": navigation_error} if navigation_error else {}),
+                    **({"capture_reason": capture_reason} if capture_reason else {}),
+                    **({"navigation_attempts": navigation_attempts} if navigation_attempts else {}),
+                    **({"egress_events": egress_events} if egress_events else {}),
+                    **({"document": document} if document else {}),
                     **({"limit_reason": limit_reason} if limit_reason else {}),
                     "pod_identity": {
                         "hostname": "synthetic-pod",
-                        "uname": {"system": "Linux"},
+                        "uname": {
+                            "system": "Linux",
+                            "release": "synthetic-release",
+                            "machine": "x86_64",
+                        },
                         "cpu_virtualization_flags": [],
                         "dev_kvm_present": False,
                     },
@@ -120,10 +150,12 @@ def _mock_capture_runtime(
         (output / "page.html").write_text("<html><body>synthetic</body></html>", encoding="utf-8")
         (output / "a11y.txt").write_text("synthetic accessibility", encoding="utf-8")
         (output / "screenshot.png").write_bytes(b"synthetic screenshot")
+        if document:
+            (output / "document.bin").write_bytes(b"%PDF synthetic bytes")
         return subprocess.CompletedProcess(["docker", "run", name], 0, "", "")
 
     monkeypatch.setattr(module, "_run_agent_pod", fake_agent)
-    return events
+    return module.normalize_egress_events(events)
 
 
 class SyntheticPage(BaseHTTPRequestHandler):
@@ -281,6 +313,274 @@ def test_allowlisted_cross_domain_redirect_is_captured_and_logged(tmp_path, monk
         "dept.example.test",
     ]
     assert "redirect_domain" not in result["trace"][0]["requested"]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message", "http_status", "event_reason", "event_host"),
+    [
+        (
+            "Error",
+            "net::ERR_NAME_NOT_RESOLVED at https://dept.example.test/branches?token=synthetic-secret",
+            None,
+            "dns_failed",
+            "dept.example.test",
+        ),
+        (
+            "Error",
+            "net::ERR_CERT_AUTHORITY_INVALID at https://dept.example.test/branches?token=synthetic-secret",
+            None,
+            "domain_allowed",
+            "dept.example.test",
+        ),
+        (
+            "TimeoutError",
+            "Navigation timeout at https://dept.example.test/branches?token=synthetic-secret",
+            None,
+            "domain_allowed",
+            "dept.example.test",
+        ),
+        (
+            "Error",
+            "net::ERR_BLOCKED_BY_CLIENT at https://identity.unknown.test/landing?token=synthetic-secret",
+            302,
+            "domain_not_allowed",
+            "identity.unknown.test",
+        ),
+    ],
+)
+def test_navigation_failure_details_reach_job_and_trace_without_query_leaks(
+    tmp_path, monkeypatch, error_type, message, http_status, event_reason, event_host
+) -> None:
+    target = "https://dept.example.test/branches?token=synthetic-secret"
+    redirect_chain = [target]
+    if event_reason == "domain_not_allowed":
+        redirect_chain.append("https://identity.unknown.test/landing?token=synthetic-secret")
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=redirect_chain[-1],
+        redirect_chain=redirect_chain,
+        navigation_error=error_type,
+        status=http_status,
+        navigation_attempts=[
+            {
+                "http_status": http_status,
+                "elapsed_ms": 23,
+                "error": {"type": error_type, "message": message},
+            }
+        ],
+        egress_events=[
+            {
+                "host": event_host,
+                "method": "CONNECT",
+                "decision": "block" if event_reason != "domain_allowed" else "allow",
+                "reason": event_reason,
+            }
+        ],
+    )
+
+    with pytest.raises(CaptureBlocked) as raised:
+        capture_url(
+            target,
+            allowed_domains=["dept.example.test"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+
+    result = raised.value.result
+    assert result is not None
+    attempt = result["navigation_attempts"][0]
+    assert attempt["http_status"] == http_status
+    assert attempt["elapsed_ms"] == 23
+    assert attempt["error"]["type"] == error_type
+    assert "synthetic-secret" not in attempt["error"]["message"]
+    assert "?token=" not in attempt["error"]["message"]
+    assert "egress_events" not in attempt
+    row = raised.value.trace[0]
+    assert row["evaluated"]["navigation_attempts"] == result["navigation_attempts"]
+    assert row["evaluated"]["egress_events"][0]["reason"] == event_reason
+    assert "synthetic-secret" not in json.dumps([attempt, row["evaluated"]["egress_events"]])
+    job = build_job_record(result)
+    assert job["outcome"]["status"] == "navigation_error"
+    assert job["outcome"]["navigation_attempts"] == result["navigation_attempts"]
+    assert job["outcome"]["egress_events"][0]["reason"] == event_reason
+    if event_reason == "dns_failed":
+        assert result["capture_reason"] == "dns_failed"
+        assert row["evaluated"]["capture_reason"] == "dns_failed"
+        assert job["outcome"]["capture_reason"] == "dns_failed"
+
+
+def test_http_403_is_a_response_outcome_with_timing_and_no_navigation_error(
+    tmp_path, monkeypatch
+) -> None:
+    target = "https://dept.example.test/forbidden"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=target,
+        status=403,
+        navigation_attempts=[{"http_status": 403, "elapsed_ms": 17, "error": None}],
+        egress_events=[
+            {
+                "host": "dept.example.test",
+                "method": "CONNECT",
+                "decision": "allow",
+                "reason": "domain_allowed",
+            }
+        ],
+    )
+
+    result = capture_url(
+        target,
+        allowed_domains=["dept.example.test"],
+        lake=FileLake(tmp_path / "lake"),
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id=None,
+        tdd_path="04-local/synthetic-tdd.json",
+    )
+    job = build_job_record(result)
+
+    assert result["trace"][0]["evaluated"]["navigation_attempts"] == [
+        {"http_status": 403, "elapsed_ms": 17, "error": None}
+    ]
+    assert job["outcome"]["status"] == "refused"
+    assert job["outcome"]["http_status"] == 403
+    assert job["outcome"]["navigation_attempts"][0]["error"] is None
+
+
+def test_proxy_dns_502_keeps_http_status_and_exposes_capture_reason(tmp_path, monkeypatch) -> None:
+    target = "http://dept.example.test/records"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=target,
+        status=502,
+        navigation_attempts=[{"http_status": 502, "elapsed_ms": 19, "error": None}],
+        egress_events=[
+            {
+                "host": "dept.example.test",
+                "method": "GET",
+                "decision": "block",
+                "reason": "dns_failed",
+            }
+        ],
+    )
+    with pytest.raises(CaptureBlocked) as raised:
+        capture_url(
+            target,
+            allowed_domains=["dept.example.test"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+
+    result = raised.value.result
+    assert result["status"] == 502
+    assert result["capture_reason"] == "dns_failed"
+    assert result["trace"][0]["observed"]["redirect_chain"] == [target]
+    job = build_job_record(result)
+    assert job["outcome"]["http_status"] == 502
+    assert job["outcome"]["capture_reason"] == "dns_failed"
+
+
+def test_document_follow_on_redirect_is_retained_as_a_blocked_lead(tmp_path, monkeypatch) -> None:
+    target = "https://dept.example.test/annex"
+    download_url = "https://dept.example.test/download"
+    follow_on = "https://identity.unknown.test/file"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=follow_on,
+        redirect_chain=[target, download_url, follow_on],
+        capture_reason="document_redirect_not_followed",
+        status=302,
+        navigation_attempts=[
+            {"http_status": 200, "elapsed_ms": 12, "error": None},
+            {"http_status": 302, "elapsed_ms": 4, "error": None},
+        ],
+    )
+
+    with pytest.raises(CaptureBlocked) as raised:
+        capture_url(
+            target,
+            allowed_domains=["dept.example.test"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+
+    result = raised.value.result
+    assert result["redirect_chain"] == [target, download_url, follow_on]
+    assert result["reason"] == "redirect_outside_allowlist"
+    assert result["capture_reason"] == "document_redirect_not_followed"
+    assert "document_key" not in result
+    assert result["trace"][0]["evaluated"]["status"] == "blocked"
+
+
+def test_pdf_download_is_saved_to_bronze_without_html_artifact_keys(tmp_path, monkeypatch) -> None:
+    target = "https://dept.example.test/annex.pdf"
+    payload = b"%PDF synthetic bytes"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=target,
+        navigation_error="PlaywrightError",
+        status=200,
+        navigation_attempts=[
+            {
+                "http_status": 200,
+                "elapsed_ms": 10,
+                "error": {"type": "PlaywrightError", "message": "Download is starting"},
+            },
+            {"http_status": 200, "elapsed_ms": 8, "error": None},
+        ],
+        egress_events=[
+            {
+                "host": "dept.example.test",
+                "method": "GET",
+                "decision": "allow",
+                "reason": "domain_allowed",
+            }
+        ],
+        document={
+            "file_name": "document.bin",
+            "content_type": "application/pdf",
+            "status": 200,
+            "size_bytes": len(payload),
+        },
+    )
+    lake = FileLake(tmp_path / "lake")
+    result = capture_url(
+        target,
+        allowed_domains=["dept.example.test"],
+        lake=lake,
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id=None,
+        tdd_path="04-local/synthetic-tdd.json",
+    )
+
+    assert result["artifact_kind"] == "download"
+    assert result["document_content_type"] == "application/pdf"
+    assert result["document_size_bytes"] == len(payload)
+    assert lake.read_key(result["document_key"]) == payload
+    assert not any(key in result for key in ("html_key", "a11y_key", "screenshot_key"))
+    assert result["trace"][0]["evaluated"]["document_key"] == result["document_key"]
+    assert result["trace"][0]["evaluated"]["navigation_attempts"] == result["navigation_attempts"]
+    assert result["navigation_attempts"][0]["error"]["message"] == "Download is starting"
+    assert len(result["trace"]) == 6
+    validate_trace_rows(result["trace"])
+    job = build_job_record(result)
+    assert job["outcome"]["artifact_kind"] == "download"
+    assert job["outcome"]["document_key"] == result["document_key"]
 
 
 def test_capture_limit_trace_retains_requested_url_and_policy(tmp_path, monkeypatch) -> None:

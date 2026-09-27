@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import uuid
@@ -122,6 +123,50 @@ def test_proxy_rejects_metadata_mesh_and_rebound_addresses(monkeypatch) -> None:
     )
     assert module._resolved_address("host.docker.internal", 80) == "172.17.0.1"
     assert module._resolved_address("other.example", 80) is None
+
+
+def test_proxy_diagnostics_distinguish_dns_from_rejected_addresses_and_hide_ip_literals(
+    monkeypatch, capsys
+) -> None:
+    path = Path(__file__).resolve().parents[1] / "sandbox/egress/proxy.py"
+    spec = importlib.util.spec_from_file_location("sandbox_egress_proxy_diagnostics", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def unresolved(*_args, **_kwargs):
+        raise module.socket.gaierror("synthetic DNS failure")
+
+    monkeypatch.setattr(module.socket, "getaddrinfo", unresolved)
+    assert module._resolve_address_detail("allowed.example", 443) == (None, "dns_failed")
+
+    monkeypatch.setattr(
+        module.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("169.254.169.254", 443))],
+    )
+    assert module._resolve_address_detail("allowed.example", 443) == (None, "address_rejected")
+
+    handler = object.__new__(module.ProxyHandler)
+    module.ProxyHandler.decision(
+        handler, "block", "203.0.113.8", "CONNECT", reason="address_rejected"
+    )
+    event = json.loads(capsys.readouterr().out)
+    assert event == {
+        "decision": "block",
+        "host": "ip-address",
+        "method": "CONNECT",
+        "reason": "address_rejected",
+    }
+    assert "203.0.113.8" not in json.dumps(event)
+
+    statuses = []
+    handler = object.__new__(module.ProxyHandler)
+    handler.command = "GET"
+    handler.decision = lambda *args, **kwargs: None
+    handler.send_error = lambda status, message: statuses.append((status, message))
+    module.ProxyHandler.reject(handler, "unresolved.example", "dns_failed")
+    assert statuses == [(502, "DNS resolution failed")]
 
 
 @pytest.mark.skipif(

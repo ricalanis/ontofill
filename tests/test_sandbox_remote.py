@@ -25,6 +25,7 @@ def test_remote_pod_copies_outputs_before_teardown(monkeypatch, tmp_path) -> Non
             with zipfile.ZipFile(buffer, "w") as archive:
                 archive.writestr("result.json", '{"status": 200}')
                 archive.writestr("page-0001.html", "<html>public</html>")
+                archive.writestr("document.bin", b"%PDF synthetic")
             encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
             return subprocess.CompletedProcess(args, 0, encoded, "")
         return subprocess.CompletedProcess(args, 0, "container-id\n", "")
@@ -35,6 +36,7 @@ def test_remote_pod_copies_outputs_before_teardown(monkeypatch, tmp_path) -> Non
     assert result.returncode == 0
     assert (tmp_path / "result.json").exists()
     assert (tmp_path / "page-0001.html").read_text() == "<html>public</html>"
+    assert (tmp_path / "document.bin").read_bytes() == b"%PDF synthetic"
     assert [row[0] for row in calls] == ["run", "exec", "exec", "exec", "wait", "logs"]
     assert "-v" not in calls[0]
     assert "--tmpfs" in calls[0]

@@ -29,6 +29,7 @@ HOP_HEADERS = {
 }
 MESH = ipaddress.ip_network("100.64.0.0/10")
 DEPLOYMENT_VPC = ipaddress.ip_network("10.42.0.0/24")
+MAX_RESPONSE_BYTES = 24 * 1024 * 1024
 
 
 def _forbidden_ip(address: str) -> bool:
@@ -48,6 +49,11 @@ def _forbidden_ip(address: str) -> bool:
 
 def _resolved_address(host: str, port: int) -> str | None:
     """Pin a DNS result and refuse hosts with any protected address."""
+    return _resolve_address_detail(host, port)[0]
+
+
+def _resolve_address_detail(host: str, port: int) -> tuple[str | None, str | None]:
+    """Return a pinned public address or the reason DNS could not authorize it."""
     test_host_ip = None
     if host == "host.docker.internal" and host in ALLOWED:
         # One-shot local Docker tests explicitly add this host-gateway mapping.
@@ -71,12 +77,18 @@ def _resolved_address(host: str, port: int) -> str | None:
     try:
         addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
-        return None
-    if not addresses or any(
-        _forbidden_ip(item[4][0]) and item[4][0] != test_host_ip for item in addresses
-    ):
-        return None
-    return addresses[0][4][0]
+        return None, "dns_failed"
+    if not addresses:
+        return None, "dns_failed"
+    try:
+        rejected = any(
+            _forbidden_ip(item[4][0]) and item[4][0] != test_host_ip for item in addresses
+        )
+    except (IndexError, ValueError):
+        return None, "invalid_request"
+    if rejected:
+        return None, "address_rejected"
+    return addresses[0][4][0], None
 
 
 def allowed(host: str | None) -> bool:
@@ -94,12 +106,54 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # The structured decision line below is the log consumed by the controller.
         pass
 
-    def decision(self, outcome: str, host: str, method: str) -> None:
-        print(json.dumps({"decision": outcome, "host": host, "method": method}), flush=True)
+    def decision(self, outcome: str, host: str, method: str, *, reason: str | None = None) -> None:
+        normalized_host = host.strip().lower().rstrip(".")
+        try:
+            ipaddress.ip_address(normalized_host.strip("[]"))
+            normalized_host = "ip-address"
+        except ValueError:
+            if (
+                not normalized_host
+                or len(normalized_host) > 253
+                or any(marker in normalized_host for marker in ("/", "?", "#", "@"))
+            ):
+                normalized_host = "unknown-host"
+        if reason is None:
+            reason = "domain_allowed" if outcome == "allow" else "domain_not_allowed"
+        if reason not in {
+            "domain_allowed",
+            "domain_not_allowed",
+            "dns_failed",
+            "address_rejected",
+            "write_method_blocked",
+            "invalid_request",
+        }:
+            reason = "invalid_request"
+        clean_method = "".join(character for character in method.upper() if character.isalpha())[
+            :16
+        ]
+        print(
+            json.dumps(
+                {
+                    "decision": "allow" if outcome == "allow" else "block",
+                    "host": normalized_host,
+                    "method": clean_method or "OTHER",
+                    "reason": reason,
+                }
+            ),
+            flush=True,
+        )
 
-    def reject(self, host: str) -> None:
-        self.decision("block", host, self.command)
-        self.send_error(403, "domain is not allowed by the TDD")
+    def reject(self, host: str, reason: str = "domain_not_allowed") -> None:
+        self.decision("block", host, self.command, reason=reason)
+        status, message = {
+            "domain_not_allowed": (403, "domain is not allowed by the TDD"),
+            "dns_failed": (502, "DNS resolution failed"),
+            "address_rejected": (403, "resolved address is not allowed"),
+            "write_method_blocked": (405, "write methods are disabled"),
+            "invalid_request": (400, "invalid proxy request"),
+        }.get(reason, (403, "domain is not allowed by the TDD"))
+        self.send_error(status, message)
 
     def do_CONNECT(self) -> None:
         authority = urlsplit("//" + self.path)
@@ -109,12 +163,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.send_error(400, "invalid port")
             return
-        if authority.username or authority.password or not allowed(host) or port != 443:
-            self.reject(host)
+        if authority.username or authority.password or port != 443:
+            self.reject(host, "invalid_request")
             return
-        address = _resolved_address(host, port)
+        if not allowed(host):
+            self.reject(host, "domain_not_allowed")
+            return
+        address, resolve_reason = _resolve_address_detail(host, port)
         if address is None:
-            self.reject(host)
+            self.reject(host, resolve_reason or "invalid_request")
             return
         try:
             upstream = socket.create_connection((address, port), timeout=20)
@@ -152,7 +209,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.forward()
 
     def do_POST(self) -> None:
-        self.decision("block", urlsplit(self.path).hostname or "", self.command)
+        self.decision(
+            "block",
+            urlsplit(self.path).hostname or "",
+            self.command,
+            reason="write_method_blocked",
+        )
         self.send_error(405, "write methods are disabled")
 
     do_PUT = do_POST
@@ -162,17 +224,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def forward(self) -> None:
         parsed = urlsplit(self.path)
         host = parsed.hostname or ""
-        if parsed.scheme != "http" or parsed.username or parsed.password or not allowed(host):
-            self.reject(host)
+        if parsed.scheme != "http" or parsed.username or parsed.password:
+            self.reject(host, "invalid_request")
+            return
+        if not allowed(host):
+            self.reject(host, "domain_not_allowed")
             return
         try:
             port = parsed.port or 80
         except ValueError:
             self.send_error(400, "invalid port")
             return
-        address = _resolved_address(host, port)
+        address, resolve_reason = _resolve_address_detail(host, port)
         if address is None:
-            self.reject(host)
+            self.reject(host, resolve_reason or "invalid_request")
             return
         path = parsed.path or "/"
         if parsed.query:
@@ -185,7 +250,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             upstream = http.client.HTTPConnection(address, port, timeout=20)
             upstream.request(self.command, path, headers=headers)
             response = upstream.getresponse()
-            body = response.read()
+            content_length = response.getheader("Content-Length")
+            if self.command != "HEAD" and content_length:
+                try:
+                    if int(content_length) > MAX_RESPONSE_BYTES:
+                        self.send_error(413, "upstream response exceeds the capture limit")
+                        return
+                except ValueError:
+                    pass
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                self.send_error(413, "upstream response exceeds the capture limit")
+                return
         except (OSError, http.client.HTTPException):
             self.send_error(502, "upstream request failed")
             return

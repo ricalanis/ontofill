@@ -123,12 +123,23 @@ def test_site_refusal_is_an_outcome_not_a_failed_sandbox_checkpoint() -> None:
     result = _capture_result()
     result["status"] = 403
     result["proof"]["dispatch_result"]["status"] = 403
+    result["navigation_attempts"] = [{"http_status": 403, "elapsed_ms": 17, "error": None}]
+    result["egress_events"] = [
+        {
+            "host": "example.invalid",
+            "method": "CONNECT",
+            "decision": "allow",
+            "reason": "domain_allowed",
+        }
+    ]
     record = build_job_record(result)
 
     assert record["outcome"] == {
         "status": "refused",
         "reason": "http_403",
         "http_status": 403,
+        "navigation_attempts": result["navigation_attempts"],
+        "egress_events": result["egress_events"],
     }
     assert record["checkpoints"]["task"]["ok"] is True
     assert all(
@@ -136,6 +147,61 @@ def test_site_refusal_is_an_outcome_not_a_failed_sandbox_checkpoint() -> None:
     )
     assert record["checkpoints"]["teardown"]["ok"] is True
     validate_job_record(record)
+
+
+def test_navigation_error_is_distinct_from_an_http_response_and_schema_bounded() -> None:
+    result = _capture_result()
+    result["status"] = None
+    result["navigation_error"] = "PlaywrightError"
+    result["navigation_attempts"] = [
+        {
+            "http_status": 302,
+            "elapsed_ms": 33,
+            "error": {
+                "type": "PlaywrightError",
+                "message": "net::ERR_BLOCKED_BY_CLIENT",
+            },
+        }
+    ]
+    result["egress_events"] = [
+        {
+            "host": "identity.example.invalid",
+            "method": "CONNECT",
+            "decision": "block",
+            "reason": "domain_not_allowed",
+        }
+    ]
+    record = build_job_record(result)
+
+    assert record["outcome"] == {
+        "status": "navigation_error",
+        "reason": "PlaywrightError",
+        "http_status": 302,
+        "navigation_attempts": result["navigation_attempts"],
+        "egress_events": result["egress_events"],
+    }
+    _validate("jobs", record)
+
+    record["outcome"]["navigation_attempts"][0]["elapsed_ms"] = 120001
+    with pytest.raises(ValidationError):
+        _validate("jobs", record)
+
+
+def test_navigation_error_without_http_response_still_has_a_job_outcome() -> None:
+    result = _capture_result()
+    result["status"] = None
+    result["navigation_error"] = "PlaywrightError"
+    result["navigation_attempts"] = [
+        {
+            "http_status": None,
+            "elapsed_ms": 12,
+            "error": {"type": "PlaywrightError", "message": "net::ERR_NAME_NOT_RESOLVED"},
+        }
+    ]
+    record = build_job_record(result)
+    assert record["outcome"]["status"] == "navigation_error"
+    assert "http_status" not in record["outcome"]
+    assert record["outcome"]["navigation_attempts"][0]["http_status"] is None
 
 
 def test_jobs_outcome_is_optional_for_existing_rows() -> None:

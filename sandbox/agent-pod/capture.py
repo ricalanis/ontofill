@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import http.client
 import json
 import os
 import platform
 import re
 import resource
 import socket
+import ssl
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.parse import urljoin, urlsplit
+from urllib.request import (
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
@@ -25,10 +33,22 @@ _SECRET_ENV = re.compile(
     r"AWS_ACCESS_KEY|VULTR_|NETBIRD_SETUP|JEV_)",
     re.IGNORECASE,
 )
+_MAX_DOCUMENT_BYTES = 24 * 1024 * 1024
+_CONTENT_TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z", re.IGNORECASE)
+_ERROR_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:access[-_]?token|api[-_]?key|secret|password|credential|private[-_]?key|"
+    r"access[-_]?key|authorization|token)\b(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
 
 
 class StepLimitReached(RuntimeError):
     """The pod's local action counter reached its configured cap."""
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class StepBudget:
@@ -141,6 +161,192 @@ def write_result(output: Path, result: dict) -> None:
     temporary.replace(output / "result.json")
 
 
+def _response_headers(response) -> dict[str, str]:
+    headers = (
+        response.get("headers", {})
+        if isinstance(response, dict)
+        else getattr(response, "headers", {})
+    )
+    return {str(name).lower(): str(value) for name, value in headers.items()}
+
+
+def _document_content_type(headers: dict[str, str]) -> str:
+    content_type = headers.get("content-type", "application/octet-stream")
+    content_type = content_type.split(";", 1)[0].strip().lower()
+    if not _CONTENT_TYPE.fullmatch(content_type):
+        return "application/octet-stream"
+    return content_type[:128]
+
+
+def _is_document_response(response, *, download: bool = False) -> bool:
+    headers = _response_headers(response)
+    status = (
+        response.get("status") if isinstance(response, dict) else getattr(response, "status", None)
+    )
+    if type(status) is not int or not 200 <= status <= 299:
+        return False
+    disposition = headers.get("content-disposition", "").lower()
+    content_type = _document_content_type(headers)
+    if download or "attachment" in disposition:
+        return True
+    if content_type in {
+        "application/json",
+        "application/problem+json",
+        "application/xml",
+        "application/xhtml+xml",
+        "application/javascript",
+        "text/html",
+        "text/plain",
+        "text/xml",
+    }:
+        return False
+    if content_type in {"text/csv", "text/tab-separated-values"}:
+        return True
+    return content_type.startswith(("application/", "audio/", "font/", "image/", "video/"))
+
+
+def _safe_error_url(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    trailing = ""
+    while raw and raw[-1] in ".,;)]}":
+        trailing = raw[-1] + trailing
+        raw = raw[:-1]
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        if not hostname:
+            return "<url>" + trailing
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme.lower()}://{host}{port}{parsed.path}" + trailing
+    except ValueError:
+        return "<url>" + trailing
+
+
+def _safe_error_message(error: Exception) -> str:
+    first_line = str(error).splitlines()[0] if str(error).splitlines() else "Navigation failed"
+    clean = "".join(
+        character if character >= " " and character != "\x7f" else " " for character in first_line
+    )
+    clean = _ERROR_URL.sub(_safe_error_url, clean)
+    clean = _SECRET_ASSIGNMENT.sub(r"\1<redacted>", clean)
+    return " ".join(clean.split())[:512] or "Navigation failed"
+
+
+def _navigation_attempt(started: float, status: object, error: Exception | None = None) -> dict:
+    http_status = status if type(status) is int and 100 <= status <= 599 else None
+    detail = None
+    if error is not None:
+        detail = {"type": type(error).__name__[:128], "message": _safe_error_message(error)}
+    return {
+        "http_status": http_status,
+        "elapsed_ms": max(0, min(120_000, round((time.monotonic() - started) * 1000))),
+        "error": detail,
+    }
+
+
+async def _capture_document(
+    context, url: str, output: Path, *, proxy_url: str, download: bool = False
+) -> dict:
+    """Stream one observed document through the same proxy without following redirects."""
+    started = time.monotonic()
+    try:
+        cookies = await context.cookies(url)
+        headers = {}
+        if cookies:
+            headers["Cookie"] = "; ".join(
+                f"{cookie['name']}={cookie['value']}" for cookie in cookies
+            )
+        request = Request(url, headers=headers, method="GET")
+        response = await asyncio.to_thread(_read_document_response, request, proxy_url)
+    except (
+        OSError,
+        URLError,
+        ssl.SSLError,
+        ValueError,
+        PlaywrightError,
+        http.client.HTTPException,
+    ) as exc:
+        return {
+            "attempt": _navigation_attempt(started, None, exc),
+            "capture_reason": "document_request_error",
+        }
+    status = response["status"]
+    location = response["location"]
+    content_type = response["content_type"]
+    size_bytes = response["size_bytes"]
+    body = response["body"]
+    attempt = _navigation_attempt(started, status)
+    if type(status) is int and 300 <= status <= 399:
+        return {
+            "attempt": attempt,
+            "capture_reason": "document_redirect_not_followed",
+            "redirect_target": urljoin(url, location) if location else None,
+        }
+    if type(status) is not int or not 200 <= status <= 299:
+        return {"attempt": attempt, "capture_reason": f"http_{status}"}
+    if not _is_document_response(response, download=download):
+        return {"attempt": attempt, "capture_reason": "not_a_document_response"}
+    if not body or len(body) > _MAX_DOCUMENT_BYTES:
+        return {"attempt": attempt, "capture_reason": "document_too_large"}
+    (output / "document.bin").write_bytes(body)
+    return {
+        "attempt": attempt,
+        "document": {
+            "file_name": "document.bin",
+            "content_type": content_type,
+            "status": status,
+            "size_bytes": size_bytes,
+        },
+    }
+
+
+def _read_document_response(request: Request, proxy_url: str) -> dict:
+    """Read no more than one byte over the pod document limit, even over HTTPS."""
+    opener = build_opener(
+        ProxyHandler({"http": proxy_url, "https": proxy_url}),
+        _NoRedirectHandler(),
+        HTTPSHandler(context=ssl.create_default_context()),
+    )
+    try:
+        response = opener.open(request, timeout=30)
+    except HTTPError as error:
+        response = error
+    try:
+        status = response.getcode()
+        headers = {str(name).lower(): str(value) for name, value in response.headers.items()}
+        content_type = _document_content_type(headers)
+        location = headers.get("location")
+        body = b""
+        size_bytes = 0
+        if type(status) is int and 200 <= status <= 299:
+            declared_length = headers.get("content-length")
+            if declared_length:
+                try:
+                    if int(declared_length) > _MAX_DOCUMENT_BYTES:
+                        return {
+                            "status": status,
+                            "location": location,
+                            "content_type": content_type,
+                            "size_bytes": 0,
+                            "body": b"",
+                        }
+                except ValueError:
+                    pass
+            body = response.read(_MAX_DOCUMENT_BYTES + 1)
+            size_bytes = len(body)
+        return {
+            "status": status,
+            "location": location,
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "body": body,
+            "headers": headers,
+        }
+    finally:
+        response.close()
+
+
 def wait_for_copy_ack() -> None:
     """Keep remote /out tmpfs mounted until the control plane copies it."""
     if os.environ.get("CAPTURE_WAIT_FOR_COPY") != "1":
@@ -182,10 +388,16 @@ async def capture() -> None:
             args=["--no-sandbox"],
         )
         try:
-            context = await browser.new_context(ignore_https_errors=False, service_workers="block")
+            context = await browser.new_context(
+                ignore_https_errors=False,
+                service_workers="block",
+                proxy={"server": proxy_url, "bypass": "<-loopback>"},
+            )
             page = await context.new_page()
             navigation_chain: list[str] = []
             redirect_location_reads: list[asyncio.Task] = []
+            main_frame_responses: list[object] = []
+            download_urls: list[str] = []
 
             def record_navigation(request) -> None:
                 try:
@@ -231,10 +443,21 @@ async def capture() -> None:
                     await asyncio.gather(*redirect_location_reads, return_exceptions=True)
 
             def observe_response(response) -> None:
+                try:
+                    request = response.request
+                    if request.is_navigation_request() and request.frame == page.main_frame:
+                        main_frame_responses.append(response)
+                except PlaywrightError:
+                    pass
                 if response.status in {300, 301, 302, 303, 307, 308}:
                     redirect_location_reads.append(
                         asyncio.create_task(record_redirect_location(response))
                     )
+
+            def observe_download(download) -> None:
+                download_url = getattr(download, "url", None)
+                if isinstance(download_url, str) and download_url:
+                    download_urls.append(download_url)
 
             async def read_only(route) -> None:
                 # Route callbacks run before the request reaches the egress proxy.
@@ -250,17 +473,80 @@ async def capture() -> None:
 
             page.on("request", record_navigation)
             page.on("response", observe_response)
+            page.on("download", observe_download)
             budget.take()
+            navigation_started = time.monotonic()
             try:
                 response = await page.goto(target, wait_until="load", timeout=30000)
             except PlaywrightError as exc:
                 await flush_redirect_locations()
+                last_response = main_frame_responses[-1] if main_frame_responses else None
+                http_status = (
+                    last_response.status
+                    if last_response is not None
+                    and type(getattr(last_response, "status", None)) is int
+                    and 100 <= last_response.status <= 599
+                    else None
+                )
+                navigation_attempt = _navigation_attempt(navigation_started, http_status, exc)
+                navigation_attempts = [navigation_attempt]
+                document_url = download_urls[-1] if download_urls else None
+                is_download = document_url is not None
+                if (
+                    document_url is None
+                    and last_response is not None
+                    and _is_document_response(last_response)
+                ):
+                    document_url = getattr(last_response, "url", None)
+                if isinstance(document_url, str) and document_url:
+                    if not navigation_chain or navigation_chain[-1] != document_url:
+                        navigation_chain.append(document_url)
+                    document_result = await _capture_document(
+                        context, document_url, output, proxy_url=proxy_url, download=is_download
+                    )
+                    navigation_attempts.append(document_result["attempt"])
+                    redirect_target = document_result.get("redirect_target")
+                    if isinstance(redirect_target, str) and redirect_target:
+                        if not navigation_chain or navigation_chain[-1] != redirect_target:
+                            navigation_chain.append(redirect_target)
+                    document = document_result.get("document")
+                    if document is not None:
+                        write_result(
+                            output,
+                            {
+                                "url": document_url,
+                                "redirect_chain": navigation_chain or [target],
+                                "status": document["status"],
+                                "navigation_attempts": navigation_attempts,
+                                "document": document,
+                                **preflight,
+                                "steps": budget.steps,
+                                "peak_memory_mb": peak_memory_mb(),
+                            },
+                        )
+                        return
+                    result = {
+                        "url": document_url,
+                        "redirect_chain": navigation_chain or [target],
+                        "navigation_error": type(exc).__name__,
+                        "status": document_result["attempt"]["http_status"] or http_status,
+                        "navigation_attempts": navigation_attempts,
+                        **preflight,
+                        "steps": budget.steps,
+                        "peak_memory_mb": peak_memory_mb(),
+                    }
+                    if document_result.get("capture_reason"):
+                        result["capture_reason"] = document_result["capture_reason"]
+                    write_result(output, result)
+                    return
                 write_result(
                     output,
                     {
                         "url": page.url,
                         "redirect_chain": navigation_chain or [target],
                         "navigation_error": type(exc).__name__,
+                        "status": http_status,
+                        "navigation_attempts": navigation_attempts,
                         **preflight,
                         "steps": budget.steps,
                         "peak_memory_mb": peak_memory_mb(),
@@ -268,6 +554,58 @@ async def capture() -> None:
                 )
                 return
             await flush_redirect_locations()
+            http_status = (
+                response.status
+                if response is not None
+                and type(getattr(response, "status", None)) is int
+                and 100 <= response.status <= 599
+                else None
+            )
+            navigation_attempt = _navigation_attempt(navigation_started, http_status)
+            document_url = download_urls[-1] if download_urls else None
+            is_download = document_url is not None
+            if document_url is None and response is not None and _is_document_response(response):
+                document_url = getattr(response, "url", None)
+            if isinstance(document_url, str) and document_url:
+                if not navigation_chain or navigation_chain[-1] != document_url:
+                    navigation_chain.append(document_url)
+                document_result = await _capture_document(
+                    context, document_url, output, proxy_url=proxy_url, download=is_download
+                )
+                navigation_attempts = [navigation_attempt, document_result["attempt"]]
+                redirect_target = document_result.get("redirect_target")
+                if isinstance(redirect_target, str) and redirect_target:
+                    if not navigation_chain or navigation_chain[-1] != redirect_target:
+                        navigation_chain.append(redirect_target)
+                document = document_result.get("document")
+                if document is not None:
+                    write_result(
+                        output,
+                        {
+                            "url": document_url,
+                            "redirect_chain": navigation_chain or [target],
+                            "status": document["status"],
+                            "navigation_attempts": navigation_attempts,
+                            "document": document,
+                            **preflight,
+                            "steps": budget.steps,
+                            "peak_memory_mb": peak_memory_mb(),
+                        },
+                    )
+                    return
+                failed_result = {
+                    "url": document_url,
+                    "redirect_chain": navigation_chain or [target],
+                    "status": document_result["attempt"]["http_status"] or http_status,
+                    "navigation_attempts": navigation_attempts,
+                    **preflight,
+                    "steps": budget.steps,
+                    "peak_memory_mb": peak_memory_mb(),
+                }
+                if document_result.get("capture_reason"):
+                    failed_result["capture_reason"] = document_result["capture_reason"]
+                write_result(output, failed_result)
+                return
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()
             budget.take()
@@ -280,7 +618,8 @@ async def capture() -> None:
                 {
                     "url": page.url,
                     "redirect_chain": navigation_chain or [target],
-                    "status": response.status if response else None,
+                    "status": http_status,
+                    "navigation_attempts": [navigation_attempt],
                     **preflight,
                     "steps": budget.steps,
                     "peak_memory_mb": peak_memory_mb(),

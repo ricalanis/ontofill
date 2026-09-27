@@ -6,6 +6,59 @@
     "value_id": {"type": "string", "pattern": "^val:[A-Za-z0-9][A-Za-z0-9._:-]*$"},
     "bronze_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "nonempty": {"type": "string", "minLength": 1},
+    "navigation_attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http_status", "elapsed_ms", "error"],
+      "properties": {
+        "http_status": {"type": ["integer", "null"], "minimum": 100, "maximum": 599},
+        "elapsed_ms": {"type": "integer", "minimum": 0, "maximum": 120000},
+        "error": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "message"],
+              "properties": {
+                "type": {"type": "string", "minLength": 1, "maxLength": 128},
+                "message": {"type": "string", "minLength": 1, "maxLength": 512}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "navigation_attempts": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/navigation_attempt"}
+    },
+    "egress_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "method", "decision", "reason"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1, "maxLength": 253},
+        "method": {"type": "string", "minLength": 1, "maxLength": 16},
+        "decision": {"enum": ["allow", "block"]},
+        "reason": {
+          "enum": [
+            "domain_allowed",
+            "domain_not_allowed",
+            "dns_failed",
+            "address_rejected",
+            "write_method_blocked",
+            "invalid_request"
+          ]
+        }
+      }
+    },
+    "egress_events": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/egress_event"}
+    },
     "revision": {
       "type": "object", "additionalProperties": false,
       "required": ["n", "decision", "reason", "approver", "date"],

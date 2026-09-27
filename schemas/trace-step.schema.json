@@ -57,7 +57,28 @@
         "stop_reason": {"enum": ["checks_passed", "budget", "human", "max_iterations"]}
       }
     },
-    "log_item": {"oneOf": [{"type": "object"}, {"type": "string", "minLength": 1}]},
+    "log_item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "capture_reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "navigation_attempts": {"$ref": "common.schema.json#/$defs/navigation_attempts"},
+            "egress_events": {"$ref": "common.schema.json#/$defs/egress_events"},
+            "artifact_kind": {"enum": ["page", "download"]},
+            "document_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+            "document_content_type": {"type": "string", "minLength": 1, "maxLength": 128},
+            "document_size_bytes": {"type": "integer", "minimum": 1, "maximum": 25165824}
+          }
+        },
+        {"type": "string", "minLength": 1}
+      ]
+    },
     "screen": {
       "type": "object", "additionalProperties": false,
       "required": ["flagged", "jev_choice", "jev_confidence", "safety_verdict", "reason", "by"],

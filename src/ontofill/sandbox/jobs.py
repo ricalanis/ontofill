@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 import threading
 import uuid
@@ -10,6 +11,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
@@ -18,6 +20,23 @@ from ontofill.lake import FileLake, S3Lake
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _VALUE_ID = re.compile(r"val:[A-Za-z0-9][A-Za-z0-9._:-]*\Z")
+_MAX_NAVIGATION_ATTEMPTS = 16
+_MAX_EGRESS_EVENTS = 32
+_MAX_DOCUMENT_BYTES = 24 * 1024 * 1024
+_ERROR_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:access[-_]?token|api[-_]?key|secret|password|credential|private[-_]?key|"
+    r"access[-_]?key|authorization|token)\b(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_EGRESS_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
+_EGRESS_REASON = {
+    "domain_allowed",
+    "domain_not_allowed",
+    "dns_failed",
+    "address_rejected",
+    "write_method_blocked",
+    "invalid_request",
+}
 _JOBS_LOCK = threading.Lock()
 
 
@@ -66,6 +85,190 @@ def outcome_for_http_status(http_status: object) -> dict[str, Any] | None:
     outcome: dict[str, Any] = {"status": status, "http_status": http_status}
     if http_status >= 400:
         outcome["reason"] = f"http_{http_status}"
+    return outcome
+
+
+def _valid_http_status(value: object) -> int | None:
+    if type(value) is int and 100 <= value <= 599:
+        return value
+    return None
+
+
+def _safe_error_url(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    trailing = ""
+    while raw and raw[-1] in ".,;)]}":
+        trailing = raw[-1] + trailing
+        raw = raw[:-1]
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        if not hostname:
+            return "<url>" + trailing
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        safe = f"{parsed.scheme.lower()}://{host}{port}{parsed.path}"
+    except ValueError:
+        return "<url>" + trailing
+    return safe + trailing
+
+
+def _safe_error_message(value: object) -> str:
+    raw = str(value)
+    text = raw.splitlines()[0] if raw.splitlines() else "Navigation failed"
+    text = "".join(
+        character if character >= " " and character != "\x7f" else " " for character in text
+    )
+    text = _ERROR_URL.sub(_safe_error_url, text)
+    text = _SECRET_ASSIGNMENT.sub(r"\1<redacted>", text)
+    return " ".join(text.split())[:512] or "Navigation failed"
+
+
+def _safe_error_type(value: object) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_.-]", "", str(value))[:128]
+    return candidate or "NavigationError"
+
+
+def normalize_navigation_attempts(
+    value: object,
+    *,
+    legacy_error: object = None,
+    fallback_http_status: object = None,
+) -> list[dict[str, Any]]:
+    """Bound and sanitize untrusted browser-attempt receipts before persistence."""
+    raw_attempts = value if isinstance(value, list) else []
+    attempts: list[dict[str, Any]] = []
+    for item in raw_attempts[:_MAX_NAVIGATION_ATTEMPTS]:
+        if not isinstance(item, Mapping):
+            continue
+        status = _valid_http_status(item.get("http_status"))
+        raw_elapsed = item.get("elapsed_ms")
+        elapsed = raw_elapsed if type(raw_elapsed) is int else 0
+        elapsed = min(max(elapsed, 0), 120_000)
+        raw_error = item.get("error")
+        error = None
+        if raw_error is not None:
+            if isinstance(raw_error, Mapping):
+                error_type = raw_error.get("type", "NavigationError")
+                message = raw_error.get("message", error_type)
+            else:
+                error_type = type(raw_error).__name__
+                message = raw_error
+            error = {
+                "type": _safe_error_type(error_type),
+                "message": _safe_error_message(message),
+            }
+        attempts.append({"http_status": status, "elapsed_ms": elapsed, "error": error})
+
+    if not attempts and legacy_error:
+        status = _valid_http_status(fallback_http_status)
+        error_type = _safe_error_type(legacy_error)
+        attempts.append(
+            {
+                "http_status": status,
+                "elapsed_ms": 0,
+                "error": {"type": error_type, "message": _safe_error_message(legacy_error)},
+            }
+        )
+    return attempts
+
+
+def normalize_egress_events(value: object) -> list[dict[str, str]]:
+    """Keep the most recent bounded proxy decisions without URL or IP literals."""
+    if not isinstance(value, list):
+        return []
+    events: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        decision = item.get("decision")
+        if not isinstance(decision, str) or decision not in {"allow", "block"}:
+            continue
+        raw_host = item.get("host")
+        if not isinstance(raw_host, str):
+            continue
+        host = raw_host.strip().lower().rstrip(".")
+        if not host or len(host) > 253 or any(mark in host for mark in ("/", "?", "#", "@")):
+            continue
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+            host = "ip-address"
+        except ValueError:
+            if not _EGRESS_HOST.fullmatch(host):
+                continue
+        raw_method = item.get("method")
+        method = re.sub(r"[^A-Za-z]", "", str(raw_method).upper())[:16] or "OTHER"
+        reason = item.get("reason")
+        if reason == "dns_unresolved":
+            reason = "dns_failed"
+        if not isinstance(reason, str) or reason not in _EGRESS_REASON:
+            reason = "domain_allowed" if decision == "allow" else "domain_not_allowed"
+        events.append({"host": host, "method": method, "decision": decision, "reason": reason})
+    return events[-_MAX_EGRESS_EVENTS:]
+
+
+def _diagnostic_outcome(capture_result: Mapping[str, Any]) -> dict[str, Any] | None:
+    attempts = normalize_navigation_attempts(
+        capture_result.get("navigation_attempts"),
+        legacy_error=capture_result.get("navigation_error"),
+        fallback_http_status=capture_result.get("status"),
+    )
+    events = normalize_egress_events(capture_result.get("egress_events"))
+    raw_capture_reason = capture_result.get("capture_reason")
+    capture_reason = (
+        raw_capture_reason
+        if isinstance(raw_capture_reason, str)
+        and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", raw_capture_reason)
+        else None
+    )
+    has_navigation_error = any(attempt["error"] is not None for attempt in attempts)
+    is_saved_download = isinstance(capture_result.get("document_key"), str)
+    if has_navigation_error and not is_saved_download:
+        last_status = next(
+            (attempt["http_status"] for attempt in reversed(attempts) if attempt["http_status"]),
+            None,
+        )
+        error = next(attempt["error"] for attempt in reversed(attempts) if attempt["error"])
+        outcome: dict[str, Any] = {
+            "status": "navigation_error",
+            "reason": capture_reason or error["type"],
+        }
+        if last_status is not None:
+            outcome["http_status"] = last_status
+    else:
+        outcome = outcome_for_http_status(capture_result.get("status")) or {}
+        if capture_reason and (not outcome or outcome.get("status") == "completed"):
+            outcome = {"status": "navigation_error", "reason": capture_reason}
+            status = _valid_http_status(capture_result.get("status"))
+            if status is not None:
+                outcome["http_status"] = status
+    if not outcome:
+        return None
+    if capture_reason:
+        outcome["capture_reason"] = capture_reason
+    if attempts:
+        outcome["navigation_attempts"] = attempts
+    if events:
+        outcome["egress_events"] = events
+    document_key = capture_result.get("document_key")
+    content_type = capture_result.get("document_content_type")
+    size_bytes = capture_result.get("document_size_bytes")
+    if (
+        isinstance(document_key, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", document_key)
+        and isinstance(content_type, str)
+        and 0 < len(content_type) <= 128
+        and type(size_bytes) is int
+        and 1 <= size_bytes <= _MAX_DOCUMENT_BYTES
+    ):
+        outcome.update(
+            {
+                "artifact_kind": "download",
+                "document_key": document_key,
+                "document_content_type": content_type,
+                "document_size_bytes": size_bytes,
+            }
+        )
     return outcome
 
 
@@ -161,6 +364,17 @@ def _failed_job_record(
             "teardown": {"ok": bool(teardown["verified"]), "detail": teardown},
         },
     }
+    failed_outcome = record["outcome"]
+    attempts = normalize_navigation_attempts(
+        capture_result.get("navigation_attempts"),
+        legacy_error=capture_result.get("navigation_error"),
+        fallback_http_status=capture_result.get("status"),
+    )
+    events = normalize_egress_events(capture_result.get("egress_events"))
+    if attempts:
+        failed_outcome["navigation_attempts"] = attempts
+    if events:
+        failed_outcome["egress_events"] = events
     validate_job_record(record)
     return record
 
@@ -195,7 +409,7 @@ def build_job_record(
     isolation = proof["isolation_probe"]
     secrets = proof["secrets"]
     teardown = proof["teardown"]
-    http_outcome = outcome_for_http_status(capture_result.get("status"))
+    http_outcome = _diagnostic_outcome(capture_result)
     record = {
         "job_id": job_id or capture_result.get("job_id") or f"job:{uuid.uuid4().hex}",
         "run_id": first["run_id"],

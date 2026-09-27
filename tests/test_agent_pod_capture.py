@@ -11,6 +11,28 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 
+def _import_capture_module(monkeypatch):
+    class PlaywrightError(Exception):
+        pass
+
+    playwright_package = types.ModuleType("playwright")
+    playwright_package.__path__ = []
+    async_api = types.ModuleType("playwright.async_api")
+    async_api.Error = PlaywrightError
+    async_api.async_playwright = lambda: None
+    monkeypatch.setitem(sys.modules, "playwright", playwright_package)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", async_api)
+    pod_dir = Path(__file__).resolve().parents[1] / "sandbox" / "agent-pod"
+    monkeypatch.syspath_prepend(str(pod_dir))
+    spec = importlib.util.spec_from_file_location(
+        "synthetic_agent_pod_capture_helpers", pod_dir / "capture.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_redirect_location_is_retained_when_navigation_raises_before_target_request(
     tmp_path, monkeypatch
 ) -> None:
@@ -53,7 +75,10 @@ def test_redirect_location_is_retained_when_navigation_raises_before_target_requ
             self.handlers["request"](request)
             self.handlers["response"](FakeResponse(request))
             # Chromium fails before emitting the redirected request event.
-            raise PlaywrightError("blocked redirected navigation")
+            raise PlaywrightError(
+                "net::ERR_BLOCKED_BY_CLIENT at https://catalog.example.test/start?token=synthetic-secret\n"
+                "second line contains secret=do-not-copy"
+            )
 
     page = FakePage()
 
@@ -127,3 +152,104 @@ def test_redirect_location_is_retained_when_navigation_raises_before_target_requ
     result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert result["navigation_error"] == "PlaywrightError"
     assert result["redirect_chain"] == [target, blocked_target]
+    assert len(result["navigation_attempts"]) == 1
+    attempt = result["navigation_attempts"][0]
+    assert attempt["http_status"] == 302
+    assert attempt["elapsed_ms"] >= 0
+    assert attempt["error"]["type"] == "PlaywrightError"
+    assert "ERR_BLOCKED_BY_CLIENT" in attempt["error"]["message"]
+    assert "synthetic-secret" not in attempt["error"]["message"]
+    assert "second line" not in attempt["error"]["message"]
+
+
+def test_document_rescue_rejects_403_and_bounds_unknown_length_responses(tmp_path, monkeypatch):
+    module = _import_capture_module(monkeypatch)
+
+    class Context:
+        async def cookies(self, url):
+            return []
+
+    class Response:
+        status = 403
+        headers = {"content-type": "text/plain"}
+
+    assert not module._is_document_response(Response())
+
+    class CsvResponse:
+        status = 200
+        headers = {"content-type": "text/csv; charset=utf-8"}
+
+    assert module._is_document_response(CsvResponse())
+
+    module._MAX_DOCUMENT_BYTES = 4
+
+    class NoLengthResponse:
+        headers = {"content-type": "application/pdf"}
+
+        def __init__(self):
+            self.read_limit = None
+
+        def getcode(self):
+            return 200
+
+        def read(self, limit):
+            self.read_limit = limit
+            return b"12345"
+
+        def close(self):
+            pass
+
+    response = NoLengthResponse()
+
+    class Opener:
+        def open(self, request, timeout):
+            assert timeout == 30
+            return response
+
+    monkeypatch.setattr(module, "build_opener", lambda *handlers: Opener())
+    result = asyncio.run(
+        module._capture_document(
+            Context(),
+            "https://catalog.example.test/annex.pdf",
+            tmp_path,
+            proxy_url="http://egress:8888",
+        )
+    )
+    assert result["capture_reason"] == "document_too_large"
+    assert result["attempt"]["http_status"] == 200
+    assert response.read_limit == 5
+    assert not (tmp_path / "document.bin").exists()
+
+
+def test_document_rescue_retains_one_follow_on_redirect_without_fetching_it(tmp_path, monkeypatch):
+    module = _import_capture_module(monkeypatch)
+    target = "https://catalog.example.test/download"
+    follow_on = "https://identity.example.test/file?token=synthetic-secret"
+
+    class Context:
+        async def cookies(self, url):
+            return []
+
+    monkeypatch.setattr(
+        module,
+        "_read_document_response",
+        lambda request, proxy: {
+            "status": 302,
+            "location": follow_on,
+            "content_type": "application/pdf",
+            "size_bytes": 0,
+            "body": b"",
+            "headers": {"content-type": "application/pdf", "location": follow_on},
+        },
+    )
+    result = asyncio.run(
+        module._capture_document(
+            Context(), target, tmp_path, proxy_url="http://egress:8888", download=True
+        )
+    )
+    assert result["capture_reason"] == "document_redirect_not_followed"
+    assert result["redirect_target"] == follow_on
+    assert result["attempt"]["http_status"] == 302
+    assert not (tmp_path / "document.bin").exists()
+    handler = module._NoRedirectHandler()
+    assert handler.redirect_request(None, None, 302, "found", {}, follow_on) is None
