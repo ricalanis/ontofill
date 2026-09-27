@@ -1,6 +1,13 @@
 <section class="block" aria-labelledby="factors-h">
   <h2 id="factors-h">Factors of variation</h2>
   <p class="muted note">The dimensions the engine will expand into taxonomies. Only accepted factors are expanded. Grounded factors come from published records; conceptual ones come from how practitioners describe the domain.</p>
+  {% if not a.approved and identity_mode != "readonly" %}
+  {% set fs = docs.factors.factors %}
+  {% set pre_reject = fs|selectattr("kind", "equalto", "grounded")|rejectattr("evidence")|list %}
+  {% if pre_reject %}
+  <p class="notice factors__preselect" role="note"><b>Preselected: {{ fs|length - pre_reject|length }} accept, {{ pre_reject|length }} reject.</b> A grounded factor with no evidence attached starts at Reject; approving as-is expands only the accepted factors into taxonomies. Set each one deliberately.</p>
+  {% endif %}
+  {% endif %}
   <ol class="factors">
   {% for f in docs.factors.factors %}{% set decided = (a.approved.decisions or {}).get(f.id) if a.approved else none %}
     <li class="factor">
@@ -8,7 +15,7 @@
         <h3>{{ f.label }} <span class="kind kind--{{ f.kind }}">{{ f.kind }}</span> <span class="mono muted">{{ f.id }}</span></h3>
         <p>{{ f.description }}</p>
         {% if f.evidence %}<p class="note">Evidence: {% for e in f.evidence %}{% if safe_url(e.url) %}<a href="{{ e.url }}" target="_blank" rel="noopener noreferrer nofollow">{{ e.description }}</a>{% else %}{{ e.description }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}</p>
-        {% else %}<p class="note factor__noev">No evidence attached.</p>{% endif %}
+        {% else %}<p class="note factor__noev">No evidence attached.{% if not a.approved and f.kind == "grounded" and identity_mode != "readonly" %} <b class="factor__prereject">Preselected: reject</b>{% endif %}</p>{% endif %}
       </div>
       {% if a.approved %}
         <p class="factor__decided factor__decided--{{ decided or 'none' }}">{{ decided or "no decision recorded" }}</p>
