@@ -14,7 +14,10 @@ services:
     environment:
       # id=/path/in/container[:/local/lake],… ; a case without :lake reads <case parent>/lake.yaml (mounted below)
       ONTOFILL_CONSOLE_CASES: ${ONTOFILL_CONSOLE_CASES:-}
-      ONTOFILL_CONSOLE_IDENTITY: sso
+      ONTOFILL_CONSOLE_IDENTITY: ${ONTOFILL_CONSOLE_IDENTITY:-sso-group}   # NetBird Cloud forwards groups, not the user
+      ONTOFILL_CONSOLE_GROUPS_HEADER: ${ONTOFILL_CONSOLE_GROUPS_HEADER:-X-NetBird-Groups}
+      ONTOFILL_CONSOLE_APPROVER_GROUP: ${ONTOFILL_CONSOLE_APPROVER_GROUP:-approvers}
+      ONTOFILL_CONSOLE_DIRECT_DENY: ${ONTOFILL_CONSOLE_DIRECT_DENY:-}   # our own mesh peers' IPs/CIDRs
       ONTOFILL_CONSOLE_IDENTITY_HEADER: ${ONTOFILL_CONSOLE_IDENTITY_HEADER:-X-NetBird-User}
       ONTOFILL_CONSOLE_SPEND_HISTORY: /evidence/spend-history.jsonl
       ONTOFILL_CONSOLE_EVIDENCE_DIR: /evidence

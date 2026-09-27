@@ -22,6 +22,30 @@ Proveedor Abierto app (same author, same license), which keeps only its consumer
   The marker (atomic rename) and the log line (O_APPEND + fsync) land together or not at all; a second decision on
   the same checkpoint is 409. Cross-origin POSTs are 403.
 
+## Identity
+
+What the sign-in proxy actually proves, and what it does not:
+
+- **NetBird Cloud forwards group membership, not the user.** Behind a NetBird Cloud reverse-proxy service with SSO,
+  the console receives `X-NetBird-Groups` (comma-separated group names, client copies stripped by the proxy) and no
+  user or email header (`X-NetBird-User` is only stamped for NetBird-Only private services). So the deployed mode is
+  `ONTOFILL_CONSOLE_IDENTITY=sso-group`: a decision is allowed only when that header contains
+  `ONTOFILL_CONSOLE_APPROVER_GROUP` (default `approvers`).
+- **The name is self-declared.** The approver types a display name. APPROVED and `decisions.jsonl` record
+  `approver: "group:<group>"`, `unverified_name: "<name>"`, `identity_source: "sso-group"` and
+  `verified: {"group": "<group>", "via": "NetBird SSO (x-netbird-groups)"}`; the pages label the name "self-declared".
+- **Direct mesh access cannot decide.** The proxy strips client-supplied identity headers only on requests it
+  proxies; a peer on our own mesh could reach the console's NetBird IP directly and send its own header. Requests whose
+  TCP peer address is in `ONTOFILL_CONSOLE_DIRECT_DENY` (our peers' IPs or CIDRs; forwarded-for headers are never
+  trusted) get 403 "decisions must come through the NetBird proxy".
+- `sso` mode (a per-user header) remains for proxies that forward one; `local` (typed name) is development only.
+- `/whoami` shows header names, whether the groups header is present and contains the approver group, and whether the
+  request came from a denied direct address; never a header value or an address.
+
+Env: `ONTOFILL_CONSOLE_IDENTITY` (`sso-group` | `sso` | `local`), `ONTOFILL_CONSOLE_GROUPS_HEADER` (default
+`X-NetBird-Groups`), `ONTOFILL_CONSOLE_APPROVER_GROUP` (default `approvers`), `ONTOFILL_CONSOLE_DIRECT_DENY`,
+`ONTOFILL_CONSOLE_IDENTITY_HEADER` (sso mode).
+
 ## Run it
 
 ```bash

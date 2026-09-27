@@ -68,6 +68,10 @@ def test_open_goal_is_reached(site, tmp_path):
     assert len(gates) == 4 and all(g["gate"]["outcome"] == "allowed" for g in gates)
     # verify steps chain to the action step they check
     by_id = {s["step_id"]: s for s in steps}
+    # CONTRACT v1.0.5 (proposed): each extracted value cites the extract step that captured it
+    for item in result["extracted"].values():
+        cited = by_id[item["step_id"]]
+        assert cited["requested"]["tool"] == "extract" and item["captured_at"] == cited["ts"] and item["selector"]
     for v in verifies:
         assert by_id[v["parent_step_id"]]["requested"]["tool"] in {"navigate", "type", "click"}
     m = closed["metrics"]
@@ -253,3 +257,4 @@ def test_not_achieved_retries_then_gives_up(tmp_path):
     session.close()
     assert result["status"] == "not_achieved"
     assert "check: not_achieved" in gw.planner_prompts[1]  # the planner was told about the failed check
+

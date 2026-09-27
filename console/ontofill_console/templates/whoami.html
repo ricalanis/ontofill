@@ -7,7 +7,14 @@
 </section>
 <section class="block" aria-labelledby="who-h">
   <h2 id="who-h">Signing as</h2>
-  {% if w.identity_mode == "local" %}<p>Local mode: decisions take a typed name (development only).</p>
+  {% if w.identity_mode == "sso-group" %}<p>Group mode: the proxy verifies membership, not the person; the name is self-declared.</p>
+  <ul class="plain">
+    <li>Groups header <span class="mono">{{ w.groups_header }}</span> present: {{ "yes" if w.groups_header_present else "no" }}</li>
+    <li>Contains <span class="mono">{{ w.approver_group }}</span>: {{ "yes" if w.in_approver_group else "no" }}</li>
+    <li>Request from a direct mesh address (refused for decisions): {{ "yes" if w.direct_denied else "no" }}</li>
+    <li>Decisions enabled: {{ "yes" if w.group_verified else "no" }}</li>
+  </ul>
+  {% elif w.identity_mode == "local" %}<p>Local mode: decisions take a typed name (development only).</p>
   {% elif w.identity_detected %}<p>Signing as: (identity detected, value hidden), from <span class="mono">{{ w.used_header }}</span>.</p>
   {% else %}<p class="signer--none">No usable identity header: decisions are disabled.</p>{% endif %}
 </section>
