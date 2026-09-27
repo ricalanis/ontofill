@@ -1741,9 +1741,12 @@ def _is_cross_check(relation_id: str | None, ontology: dict) -> bool:
 
 
 def _full_share(criterion: dict) -> bool:
-    """A criterion that asks for all of something: `>= 1` on a share (it declares a per-entity min_ratio, or its
-    target is exactly 1 with `>=`)."""
-    return criterion.get("operator") == ">=" and criterion.get("target") == 1
+    """A digest-approved full share; a bare count target of one is not equivalent."""
+    return (
+        criterion.get("operator") == ">="
+        and criterion.get("target") == 1
+        and criterion.get("min_ratio") is not None
+    )
 
 
 def _zero_count_equivalent(query: dict, criterion: dict) -> bool:
