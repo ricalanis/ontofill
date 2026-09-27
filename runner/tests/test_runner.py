@@ -299,3 +299,44 @@ def test_global_spend_is_published_every_tick(setup, tmp_path):
     r.poll_once()
     st = r.state.status("c1")
     assert st["spent_usd_global"] == 0.25 and "gateway call log" in st["spent_usd_global_basis"]
+
+
+def test_a_failure_after_a_resume_clears_the_checkpoint_and_says_why(setup, monkeypatch):
+    """Found live: after a resume the status kept checkpoint "ontology" through a phase-3 failure."""
+    monkeypatch.setenv("FAKE_MODE", "fail_phase:3")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    r.poll_once()
+    running = r.state.status("c1")
+    assert running["state"] == "running" and running["checkpoint"] is None
+    assert running["resumed_from_checkpoint"] == "prd" and running["engine_stop"] is None
+    run_until_idle(r)
+    st = r.state.status("c1")
+    assert st["state"] == "failed" and st["checkpoint"] is None
+    assert st["reason"].startswith("engine exited 1 in phase 3: RuntimeError: fan-out loop stopped")
+    stop = st["engine_stop"]
+    assert stop["exit_code"] == 1 and stop["state"] == "failed" and stop["phase"] == 3
+    assert "abc123secretvalue" not in json.dumps(st) and "<redacted>" in stop["reason"]
+
+
+def test_a_pause_records_the_engines_reason(setup, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "pause:prd:model validation exhausted")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    st = r.state.status("c1")
+    assert st["state"] == "waiting_approval" and st["checkpoint"] == "prd"
+    # it paused again at the checkpoint just decided; the runner says so AND keeps the engine's reason
+    assert st["reason"] == "the engine paused again at this checkpoint after the decision: model validation exhausted"
+    assert st["engine_stop"]["reason"] == "model validation exhausted" and st["engine_stop"]["exit_code"] == 3
+    assert "(engine: model validation exhausted)" in events(setup)[-1]["detail"]
+
+
+def test_a_clean_pause_has_no_reason_and_no_stale_stop(setup, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "pause:factors")
+    approve(setup)
+    r = Runner(setup["cfg"], env=dict(os.environ))
+    run_until_idle(r)
+    st = r.state.status("c1")
+    assert st["reason"] is None and st["checkpoint"] == "factors"
+    assert st["engine_stop"]["checkpoint_pending"] == "factors" and st["engine_stop"]["state"] == "paused"

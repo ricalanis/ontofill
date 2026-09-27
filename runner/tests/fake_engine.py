@@ -1,6 +1,7 @@
 """Stands in for `ontofill run`: writes the run feed like the engine, then exits per FAKE_MODE.
 
-FAKE_MODE: pause:<checkpoint> (exit 3) | done (exit 0) | fail (noisy stderr, exit 1) | sleep (wait for a signal)
+FAKE_MODE: pause:<checkpoint>[:<reason>] (exit 3) | done (exit 0) | fail (noisy stderr, exit 1)
+  | fail_phase:<n> (engine-like failure, exit 1) | sleep (wait for a signal)
 FAKE_USD: est_usd to record in this run's trace (for budget tests).
 """
 import argparse
@@ -29,8 +30,17 @@ if os.environ.get("FAKE_USD"):
         fh.write(json.dumps({"step_id": "s", "usage": {"est_usd": float(os.environ["FAKE_USD"])}}) + "\n")
 mode = os.environ.get("FAKE_MODE", "done")
 if mode.startswith("pause:"):
-    (run / "status.json").write_text(json.dumps({"state": "paused", "checkpoint_pending": mode.split(":", 1)[1]}))
+    cp, _, reason = mode.split(":", 1)[1].partition(":")
+    (run / "status.json").write_text(json.dumps({"state": "paused", "checkpoint_pending": cp,
+                                                 **({"reason": reason} if reason else {})}))
+    print(f"state=paused checkpoint_pending={cp} reason={reason or 'awaiting approval'}")
     sys.exit(3)
+if mode.startswith("fail_phase:"):  # like the engine: status failed + phase, the exception message last on stderr
+    (run / "status.json").write_text(json.dumps({"state": "failed", "phase": int(mode.split(":")[1]),
+                                                 "checkpoint_pending": None}))
+    print("Traceback (most recent call last):\n  ...", file=sys.stderr)
+    print("RuntimeError: fan-out loop stopped at the iteration cap token=abc123secretvalue", file=sys.stderr)
+    sys.exit(1)
 if mode == "done":
     (run / "status.json").write_text(json.dumps({"state": "done"}))
     sys.exit(0)

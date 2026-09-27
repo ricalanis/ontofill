@@ -46,6 +46,17 @@ def tail(path: Path, n: int = 20) -> str:
     return redact("\n".join(lines))
 
 
+def last_reason_line(path: Path) -> str | None:
+    """The engine's own last word: its `state=… reason=…` line if it printed one, else its last non-empty log line
+    (an exception's message), redacted and bounded."""
+    text = tail(path, 60)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if ln.startswith("state=") and " reason=" in ln:
+            return ln.split(" reason=", 1)[1][:300] or None
+    return lines[-1][:300] if lines else None
+
+
 def load_env_file(path: Path | None) -> dict[str, str]:
     out: dict[str, str] = {}
     if not path:
@@ -215,8 +226,10 @@ class Runner:
             if status.get("last_trigger") == key:  # already resumed for this exact decision
                 if status.get("state") == "failed":
                     return  # a failed resume stays failed until a new decision or a console "resume"
+                again = "the engine paused again at this checkpoint after the decision"
                 self._transition(cid, "waiting_approval", run_id=run_id, checkpoint=cp,
-                                 reason="the engine paused again at this checkpoint after the decision; see the run")
+                                 reason=f"{again}: {lstatus['reason']}" if lstatus.get("reason")
+                                 else f"{again}; see the run")
                 return
             trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.case_to_phase(cid), "last_trigger": key,
                        "checkpoint": cp}
@@ -275,8 +288,10 @@ class Runner:
         os.write(lock_fd, str(proc.pid).encode())
         self.children[cid] = Child(proc, run_id, trigger["kind"], lock_fd, log_path)
         at = now()
+        # while it runs no checkpoint is pending: the one just decided is kept apart (resumed_from_checkpoint)
         fields = {"run_id": run_id, "pid": proc.pid, "reason": None, "spent_usd_case": round(spent, 4),
-                  "spent_usd_global": None if glob is None else round(glob, 4), "checkpoint": trigger.get("checkpoint")}
+                  "spent_usd_global": None if glob is None else round(glob, 4), "checkpoint": None,
+                  "resumed_from_checkpoint": trigger.get("checkpoint"), "engine_stop": None}
         fields["last_resumed_at" if trigger["kind"] == "resumed" else "last_started_at"] = at
         for key in ("last_trigger", "handled_start_at"):
             if trigger.get(key):
@@ -324,23 +339,36 @@ class Runner:
         finally:
             os.close(child.lock_fd)
         run_id = child.run_id
+        try:
+            lstatus = self.lake(cid).status(run_id) or {}
+        except Exception:  # noqa: BLE001 - an unreadable lake must not hide how the engine stopped
+            lstatus = {}
+        why = lstatus.get("reason") or last_reason_line(child.log_path)
+        # how the engine stopped, from its run status and its own last line; replaces any earlier record
+        stop = {"exit_code": rc, "at": now(), "state": lstatus.get("state"), "phase": lstatus.get("phase"),
+                "checkpoint_pending": lstatus.get("checkpoint_pending"), "reason": why}
         if child.stop_reason == "killed":  # interrupted, not answered: lifting the switch resumes it
-            self._transition(cid, "killed", "stopped by the kill switch", run_id=run_id, pid=None, last_trigger=None)
+            self._transition(cid, "killed", "stopped by the kill switch", run_id=run_id, pid=None, last_trigger=None,
+                             checkpoint=None, engine_stop=stop)
         elif child.stop_reason == "budget_stop":
             self._usd_cache.pop((cid, run_id), None)  # the run just grew: re-read its trace for the final spend
             self._transition(cid, "budget_stop", "stopped: budget reached", run_id=run_id, pid=None,
-                             reason="budget reached while running", last_trigger=None,
-                             spent_usd_case=round(self.case_spent(cid, run_id), 4))
+                             reason="budget reached while running", last_trigger=None, checkpoint=None,
+                             engine_stop=stop, spent_usd_case=round(self.case_spent(cid, run_id), 4))
         elif rc == PAUSED_EXIT:
-            lstatus = self.lake(cid).status(run_id) or {}
             cp = lstatus.get("checkpoint_pending")
-            self.state.set_status(cid, state="waiting_approval", run_id=run_id, checkpoint=cp, pid=None, reason=None)
-            self.state.event(cid, "paused_at_checkpoint", f"waiting for the {cp} decision", run_id=run_id)
+            self.state.set_status(cid, state="waiting_approval", run_id=run_id, checkpoint=cp, pid=None,
+                                  reason=lstatus.get("reason"), engine_stop=stop)
+            self.state.event(cid, "paused_at_checkpoint", f"waiting for the {cp} decision"
+                             + (f" (engine: {lstatus['reason']})" if lstatus.get("reason") else ""), run_id=run_id)
         elif rc == 0:
-            self._transition(cid, "done", "the run finished", run_id=run_id, pid=None, checkpoint=None)
+            self._transition(cid, "done", "the run finished", run_id=run_id, pid=None, checkpoint=None,
+                             engine_stop=stop)
         else:
             detail = f"engine exited {rc}\n{tail(child.log_path)}"
-            self.state.set_status(cid, state="failed", run_id=run_id, pid=None, reason=f"engine exited {rc}")
+            where = f" in phase {lstatus['phase']}" if lstatus.get("phase") else ""
+            self.state.set_status(cid, state="failed", run_id=run_id, pid=None, checkpoint=None, engine_stop=stop,
+                                  reason=f"engine exited {rc}{where}" + (f": {why}" if why else ""))
             self.state.event(cid, "failed", detail, run_id=run_id)
 
     def shutdown(self) -> None:
