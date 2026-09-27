@@ -5,7 +5,7 @@
     <tr><td class="mono">{{ (d.ts or "")[:16]|replace("T", " ") }}</td>
       <td><span class="mono">{{ d.phase_dir }}</span>{% if d.checkpoint %} · {{ d.checkpoint }}{% endif %}{% if d.run_id %}<span class="sub mono">{{ d.run_id }}</span>{% endif %}</td>
       <td>{% if d.decision == "deny" %}<span class="approval__state--denied">denied</span>{% else %}approved{% endif %}</td>
-      <td>{{ d.approver }}<span class="sub muted">{{ "SSO" if d.identity_source == "sso" else "local" }}</span></td>
+      <td>{% if d.unverified_name %}{{ d.unverified_name }} <span class="muted">(self-declared)</span>{% else %}{{ d.approver }}{% endif %}<span class="sub muted">{% if d.identity_source == "sso-group" %}{{ d.approver }} via NetBird SSO{% elif d.identity_source == "sso" %}SSO{% else %}local{% endif %}</span></td>
       <td>{{ d.reason or "—" }}</td>
       <td>{% for rel, h in (d.artifact_sha256 or {}).items() %}<span class="sub mono" title="{{ h }}">{{ rel.rsplit("/", 1)[-1] }} {{ (h or "")[:10] }}</span>{% endfor %}</td></tr>
   {% endfor %}</tbody>

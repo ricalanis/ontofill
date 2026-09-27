@@ -8,6 +8,7 @@ the `APPROVED` marker the engine reads, and one line in the case's append-only `
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -272,6 +273,47 @@ def clean_identity(value: str | None) -> str | None:
     return value
 
 
+DISPLAY_NAME_MAX = 100
+IDENTITY_SOURCES = ("sso", "sso-group", "local")
+
+
+def clean_display_name(value: str | None) -> str | None:
+    """A self-declared display name (sso-group mode): trimmed, at most 100 chars, no control characters."""
+    if value is None:
+        return None
+    value = value.strip()
+    if not value or _CONTROL.search(value) or len(value) > DISPLAY_NAME_MAX:
+        return None
+    return value
+
+
+def groups_contain(header_value: str | None, group: str) -> bool:
+    """True if a comma-separated groups header (as the SSO proxy sends it) contains `group` exactly."""
+    if not header_value or not group:
+        return False
+    return group in {g.strip() for g in header_value.split(",") if g.strip()}
+
+
+def parse_networks(spec: str | None) -> tuple:
+    """`ip or CIDR,…` → ip_network tuple (invalid entries raise ValueError: a typo must not silently open access)."""
+    nets = []
+    for part in (p.strip() for p in (spec or "").split(",")):
+        if part:
+            nets.append(ipaddress.ip_network(part, strict=False))
+    return tuple(nets)
+
+
+def address_denied(host: str | None, networks: tuple) -> bool:
+    """True if the TCP peer address falls in any denied network. A host that is not an IP address is not in any."""
+    if not host or not networks:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in net for net in networks)
+
+
 def pending(case: CaseDir, phase_dir: str) -> Approval | None:
     """The checkpoint at `phase_dir` if it is still waiting for a decision (request present, no APPROVED)."""
     return next((a for a in approvals(case) if a.phase_dir == phase_dir and a.approved is None), None)
@@ -314,13 +356,14 @@ def decisions_log(case: CaseDir) -> list[dict]:
 
 def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_source: str,
            seen_digests: dict[str, str], today: date | None = None, decisions: dict[str, str] | None = None,
-           decision: str | None = None, reason: str | None = None, run_id: str | None = None) -> dict:
+           decision: str | None = None, reason: str | None = None, run_id: str | None = None,
+           extra: dict | None = None) -> dict:
     """Validate and record one decision: the APPROVED marker (atomic) and one decisions.jsonl line, both or neither.
 
     Raises DecisionError(status=409) when the checkpoint is no longer pending or the artifact changed since the
     page was rendered (`seen_digests` must name every reviewed artifact with the digest shown), and
     DecisionError(400) for an invalid request (see `build_record`)."""
-    if identity_source not in ("sso", "local"):
+    if identity_source not in IDENTITY_SOURCES:
         raise DecisionError("unknown identity source", 400)
     with _WRITE_LOCK:
         item = pending(case, phase_dir)
@@ -332,6 +375,8 @@ def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_
             raise DecisionError(STALE_MESSAGE, 409)
         record = build_record(case, item, approver, today, decisions, decision, reason)
         record["identity_source"] = identity_source
+        for key, value in (extra or {}).items():  # e.g. sso-group: unverified_name + verified
+            record[key] = value
         record["artifact_sha256"] = dict(sorted(current.items()))
         run_id = run_id_for(case, item, run_id)
         if run_id:
@@ -349,7 +394,7 @@ def decide(case: CaseDir, case_id: str, phase_dir: str, approver: str, identity_
         line = {"ts": datetime.now(UTC).isoformat(timespec="seconds"), "case_id": case_id,
                 "checkpoint": record.get("checkpoint"), "phase_dir": phase_dir,
                 "decision": record.get("decision", "approve"), **({"reason": record["reason"]} if record.get("reason") else {}),
-                "approver": record["approver"], "identity_source": identity_source,
+                "approver": record["approver"], "identity_source": identity_source, **(extra or {}),
                 "artifact_sha256": record["artifact_sha256"], **({"run_id": run_id} if run_id else {})}
         try:
             fd = os.open(case.root / "decisions.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)

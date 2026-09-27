@@ -16,8 +16,8 @@
   {% include "_decisions.html" %}
 </section>
 {% endif %}
-{% if a.approved and a.decision == "deny" %}<p class="notice notice--error" role="status">Denied by {{ a.approved.approver }}{% if a.approved.date %} on <span class="mono">{{ a.approved.date }}</span>{% endif %}{% if a.approved.reason %}: {{ a.approved.reason }}{% endif %}.</p>
-{% elif a.approved %}<p class="notice" role="status">Approved by {{ a.approved.approver }}{% if a.approved.date %} on <span class="mono">{{ a.approved.date }}</span>{% endif %}.{% if a.approved.decisions %} Factor decisions: {% for k, v in a.approved.decisions.items() %}<span class="mono">{{ k }}</span> {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}</p>{% endif %}
+{% if a.approved and a.decision == "deny" %}<p class="notice notice--error" role="status">Denied by {% if a.approved.unverified_name %}{{ a.approved.unverified_name }} (self-declared, {{ a.approved.approver }}){% else %}{{ a.approved.approver }}{% endif %}{% if a.approved.date %} on <span class="mono">{{ a.approved.date }}</span>{% endif %}{% if a.approved.reason %}: {{ a.approved.reason }}{% endif %}.</p>
+{% elif a.approved %}<p class="notice" role="status">Approved by {% if a.approved.unverified_name %}{{ a.approved.unverified_name }} (self-declared, {{ a.approved.approver }}){% else %}{{ a.approved.approver }}{% endif %}{% if a.approved.date %} on <span class="mono">{{ a.approved.date }}</span>{% endif %}.{% if a.approved.decisions %} Factor decisions: {% for k, v in a.approved.decisions.items() %}<span class="mono">{{ k }}</span> {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}</p>{% endif %}
 
 {% if history or drafts %}
 <section class="block revisions" aria-labelledby="revisions-h">

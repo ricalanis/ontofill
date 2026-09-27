@@ -70,12 +70,15 @@ class Case:
 @dataclass
 class Settings:
     cases: dict[str, Case] = field(default_factory=dict)
-    identity_mode: str = "sso"  # sso | local (dev only, explicit)
+    identity_mode: str = "sso"  # sso | sso-group | local (dev only, explicit)
     identity_headers: tuple[str, ...] = DEFAULT_IDENTITY_HEADERS
+    groups_header: str = "X-NetBird-Groups"  # sso-group: the proxy's verified group membership
+    approver_group: str = "approvers"
+    direct_deny: tuple = ()  # ip networks (our own mesh peers) whose direct requests may not decide
 
     def __post_init__(self) -> None:
-        if self.identity_mode not in ("sso", "local"):
-            raise ValueError(f"ONTOFILL_CONSOLE_IDENTITY must be sso or local, got {self.identity_mode!r}")
+        if self.identity_mode not in ("sso", "sso-group", "local"):
+            raise ValueError(f"ONTOFILL_CONSOLE_IDENTITY must be sso, sso-group or local, got {self.identity_mode!r}")
 
 
 def parse_cases(spec: str, env: dict[str, str] | None = None) -> dict[str, Case]:
@@ -107,7 +110,10 @@ def settings_from_env(env: dict[str, str] | None = None) -> Settings:
     headers = tuple(h.strip() for h in env.get("ONTOFILL_CONSOLE_IDENTITY_HEADER", "").split(",") if h.strip())
     return Settings(cases=parse_cases(env.get("ONTOFILL_CONSOLE_CASES", ""), env),
                     identity_mode=env.get("ONTOFILL_CONSOLE_IDENTITY", "sso").strip() or "sso",
-                    identity_headers=headers or DEFAULT_IDENTITY_HEADERS)
+                    identity_headers=headers or DEFAULT_IDENTITY_HEADERS,
+                    groups_header=env.get("ONTOFILL_CONSOLE_GROUPS_HEADER", "").strip() or "X-NetBird-Groups",
+                    approver_group=env.get("ONTOFILL_CONSOLE_APPROVER_GROUP", "").strip() or "approvers",
+                    direct_deny=ap.parse_networks(env.get("ONTOFILL_CONSOLE_DIRECT_DENY")))
 
 
 def brief(value, limit: int = 240) -> str:
@@ -157,6 +163,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return value
         return None
 
+    def direct_denied(request: Request) -> bool:
+        """The TCP peer (never X-Forwarded-For / X-Real-IP, which a direct client can forge) is one of our own mesh
+        peers: its headers did not come through the proxy, so it may not decide."""
+        return ap.address_denied(request.client.host if request.client else None, settings.direct_deny)
+
+    def group_verified(request: Request) -> bool:
+        """sso-group: the proxy-supplied groups header names the approver group, and the request came via the proxy."""
+        return (settings.identity_mode == "sso-group" and not direct_denied(request)
+                and ap.groups_contain(request.headers.get(settings.groups_header), settings.approver_group))
+
     # helpers ----------------------------------------------------------------------------------------------------
     def get_case(case_id: str) -> Case:
         case = settings.cases.get(case_id) if CASE_ID.match(case_id or "") else None
@@ -192,6 +208,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ctx.setdefault("synthetic", bool(case and case.synthetic))
         ctx.setdefault("identity", identity(request))
         ctx.setdefault("identity_mode", settings.identity_mode)
+        ctx.setdefault("approver_group", settings.approver_group)
+        ctx.setdefault("group_verified", group_verified(request))
         ctx.setdefault("live_run_id", None)
         return templates.TemplateResponse(request, name, ctx)
 
@@ -206,8 +224,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                "usable": usable})
             if usable and used is None and settings.identity_mode == "sso":
                 used = name
+        groups_raw = request.headers.get(settings.groups_header)
         return {"identity_mode": settings.identity_mode, "header_names": names, "candidates": candidates,
-                "used_header": used, "identity_detected": used is not None}
+                "used_header": used, "identity_detected": used is not None,
+                "groups_header": settings.groups_header, "groups_header_present": groups_raw is not None,
+                "approver_group": settings.approver_group,
+                "in_approver_group": ap.groups_contain(groups_raw, settings.approver_group),
+                "direct_denied": direct_denied(request), "group_verified": group_verified(request)}
 
     @app.get("/whoami", response_class=HTMLResponse)
     def whoami(request: Request):
@@ -340,7 +363,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         shot = item.meta.get("screenshot_key") if item.checkpoint == "action" else None
         has_screenshot = bool(shot) and case.store.bronze(str(shot)) is not None
         who = identity(request)
-        can_decide = item.approved is None and (settings.identity_mode == "local" or bool(who))
+        can_decide = item.approved is None and (settings.identity_mode == "local" or bool(who)
+                                                or group_verified(request))
         log = [d for d in ap.decisions_log(case.dir) if d.get("phase_dir") == item.phase_dir]
         response = render(request, "approval.html", nav="approvals", case=case, a=item, docs=docs, paths=paths,
                           error=error, gen=gen, backend=(gen or {}).get("backend"), taxonomy_stats=ap.taxonomy_stats,
@@ -372,10 +396,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(403, "cross-origin decision refused")
         form = {k: v[0] for k, v in parse_qs((await request.body()).decode(errors="replace")).items()}
         phase_dir = form.get("phase_dir", "")
+        extra = None
         if settings.identity_mode == "sso":
             who, source = identity(request), "sso"
             if not who:
                 raise HTTPException(403, "no signed-in identity: open the console through its sign-in URL")
+        elif settings.identity_mode == "sso-group":
+            if direct_denied(request):
+                raise HTTPException(403, "decisions must come through the NetBird proxy")
+            if not ap.groups_contain(request.headers.get(settings.groups_header), settings.approver_group):
+                raise HTTPException(403, f"not signed in as a member of {settings.approver_group}")
+            name = ap.clean_display_name(form.get("display_name"))
+            if not name:
+                raise HTTPException(400, "enter your name (self-declared, at most 100 characters)")
+            who, source = f"group:{settings.approver_group}", "sso-group"
+            extra = {"unverified_name": name,
+                     "verified": {"group": settings.approver_group, "via": "NetBird SSO (x-netbird-groups)"}}
         else:
             who, source = form.get("approver", ""), "local"
         seen = {k.removeprefix("artifact_sha256."): v for k, v in form.items() if k.startswith("artifact_sha256.")}
@@ -386,7 +422,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hint = rid if item and status.get("checkpoint_pending") in (item.checkpoint, item.phase_dir) else None
         try:
             ap.decide(case.dir, case.id, phase_dir, who, source, seen, decisions=decisions or None,
-                      decision=form.get("decision"), reason=form.get("reason"), run_id=hint)
+                      decision=form.get("decision"), reason=form.get("reason"), run_id=hint, extra=extra)
         except ap.DecisionError as exc:
             if item is None:
                 raise HTTPException(exc.status, str(exc)) from exc
