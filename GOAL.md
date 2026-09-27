@@ -1,4 +1,10 @@
-# Current goal: R29 run observability
+# Current goal: R31 P2 schema salvage
+
+Give phase 2 actionable per-rule and per-relation validation feedback, and after three semantically invalid rule/relation proposals save a schema-valid ontology plus unresolved recommendations.
+
+DONE: `agent-progress run --task r31-p2-valid-relation --paths src/ontofill/phases/p2_ontology/phase.py,src/ontofill/phases/p2_ontology/README.md,schemas/ontology-recommendations.schema.json,schemas/README.md,tests/test_r31_ontology_salvage.py,tests/test_r6_signals.py,tests/test_r10_taxonomy.py,tests/test_definition_phases.py,tests/test_r22_validation.py,tests/test_schemas.py --check r31-p2-retained-valid-relation --strategy valid-relation-preservation-and-compact-feedback --hypothesis "After bounded retries, set-aside invalid proposals retain all valid typed relations and rules, compact feedback still names every offender, and the standard ontology checkpoint contains validated artifacts." -- sh -c 'uv run pytest -q tests/test_r31_ontology_salvage.py tests/test_r6_signals.py tests/test_r10_taxonomy.py tests/test_definition_phases.py tests/test_r22_validation.py tests/test_schemas.py && uv run ruff check src/ontofill/phases/p2_ontology/phase.py tests/test_r31_ontology_salvage.py && uv run ruff format --check src/ontofill/phases/p2_ontology/phase.py tests/test_r31_ontology_salvage.py && python3 -m json.tool schemas/ontology-recommendations.schema.json >/dev/null && git diff --check'` passes: 107 selected tests, Ruff lint/format, JSON schema parse, and diff check.
+
+## Prior R29 goal
 
 Attribute every gateway inference request to its engine run and trace step; separate sandbox task outcomes from proof integrity; show source labels/hosts and a stop reason in live run status. Existing artifacts remain valid.
 

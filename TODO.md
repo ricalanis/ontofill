@@ -1,4 +1,18 @@
-# Work list
+# R31 P2 schema salvage
+
+- `FILES`: `src/ontofill/phases/p2_ontology/phase.py`, `src/ontofill/phases/p2_ontology/README.md`, `schemas/ontology-recommendations.schema.json`, `schemas/README.md`, `tests/test_r31_ontology_salvage.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+- `TASK`: name all semantically invalid schema proposals in repair feedback; after retry exhaustion set aside only invalid rules/relations, then revalidate and write the valid ontology and unresolved recommendation artifact.
+- `DONE`: the retained-relation managed gate in `GOAL.md` passed with 107 selected tests, Ruff lint/format, JSON schema parse, and `git diff --check`.
+- `FORMAT`: `uv run ruff format` for changed Python files; `python3 -m json.tool` for the added schema.
+
+1. [x] Add a recorded failing test using generic class/property IDs for cross-class rules ×3, precise prompt feedback, valid-schema salvage, and set-aside provenance.
+   - `DONE`: the managed red baseline failed both new regressions with current P2 exhausting after attempt 3; no ontology artifact existed.
+2. [x] Add stable diagnostics and narrow retry-exhaustion salvage for invalid rule/relation proposals; write schema-validated unresolved recommendations only after ontology and DoD queries validate.
+   - `DONE`: recorded tests prove invalid rules/relations are set aside, valid rules and typed relations survive, and an unrelated class/property defect still raises without artifacts.
+3. Validate the focused P2 contract, formatting, and schemas; record results here and commit this isolated branch.
+   - `DONE`: managed focused pytest, Ruff lint/format, JSON schema checks, and `git diff --check` pass; branch commit is pending.
+
+# Prior task work
 
 ## R29 current slice
 - [x] Review and integrate independent inference-header and sandbox-outcome lanes.

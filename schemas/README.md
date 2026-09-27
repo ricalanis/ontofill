@@ -17,6 +17,7 @@ directory with `kind: file`; both use `bronze/sha256/<hex>` for the object and
 | `global-prd.schema.json` | Phase 1 PRD, including publisher authority policy |
 | `factors.schema.json` | Phase 2 proposed factors with kind and evidence |
 | `ontology.schema.json` | Phase 2 taxonomies, classes, properties, relations, rules, and SHACL path |
+| `ontology-recommendations.schema.json` | Phase 2 schema rules or relations set aside after bounded semantic retries |
 | `dod-queries.schema.json` | Safe declarative queries compiled from PRD criteria |
 | `objectives.schema.json` | Phase 3 discovered source objectives |
 | `local-prd.schema.json` | Phase 4 requirements for a source and objective |
@@ -52,8 +53,9 @@ include `screenshot_key`. `status.json` uses `run-status.schema.json`: its
 `metrics` object may contain any subset of the final metrics while work is in
 progress. `runs/<case_id>/latest.json` uses `latest.schema.json`.
 
-Engine-written PRD, factors, ontology, DoD queries, objectives, local PRD,
-TDD, entities, trace, metrics, status, and approval-pending metadata include
+Engine-written PRD, factors, ontology, unresolved ontology recommendations,
+DoD queries, objectives, local PRD, TDD, entities, trace, metrics, status, and
+approval-pending metadata include
 `generated_by: {backend, model, at}`. Each entity property includes it as well,
 including a missing property. `at` is an ISO-8601 timestamp. Final metrics
 require `inference_backend` (`recorded` or `vultr`), which must match

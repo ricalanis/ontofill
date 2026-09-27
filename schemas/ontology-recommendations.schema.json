@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/ontology-recommendations.schema.json",
+  "title": "Unresolved Phase 2 ontology proposals",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ontology_path", "generated_by", "unresolved"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "ontology_path": {"const": "02-ontology/ontology.json"},
+    "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"},
+    "unresolved": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/unresolved"}
+    }
+  },
+  "$defs": {
+    "unresolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "reason", "proposal"],
+      "properties": {
+        "kind": {"enum": ["rule", "relation"]},
+        "id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "proposal": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "rule"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "proposal": {"$ref": "ontology.schema.json#/$defs/rule"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "relation"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "proposal": {"$ref": "ontology.schema.json#/$defs/relation"}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

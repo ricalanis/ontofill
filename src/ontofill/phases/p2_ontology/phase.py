@@ -7,6 +7,7 @@ import json
 import math
 import re
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -101,8 +102,46 @@ NODE_LABELS_SCHEMA = {
 
 _GOOD_LABELS = {"Good-Overlapping", "Good-Exclusive"}
 _TAXONOMY_ALGORITHM_VERSION = "r10-separate-critic-v1"
+_ALLOWED_RELATION_MATCH = (
+    "Relation endpoint classes must be honored. Allowed relation matches: use `same_value` "
+    "with one declared property from the relation's domain class and one from its range class; "
+    "both properties must have the same datatype. Use a separate typed relation to connect "
+    "classes; relation-path predicates are unsupported."
+)
+_ALLOWED_RULE_PREDICATES = (
+    "Allowed rule predicates: use nonempty `predicate.all` with `same_value` "
+    "(`left_property`, `right_property`), `equals` (`property`, `value`), or `date_before` "
+    "(`earlier_property`, `later_property`) terms. Every referenced property across one "
+    "rule must belong to the same declared class. Split cross-class checks into separate "
+    "class-local rules and use a declared typed relation to connect those classes; "
+    "relation-path rule predicates are unsupported."
+)
+
+
+class OntologyProposalErrors(ValueError):
+    """Semantic defects confined to proposed executable rules or relations."""
+
+    def __init__(self, rule_errors: dict[str, str], relation_errors: dict[str, str]) -> None:
+        self.rule_errors = rule_errors
+        self.relation_errors = relation_errors
+        messages = []
+        if relation_errors:
+            messages.extend(
+                reason.split(". Relation endpoint classes must be honored.", 1)[0][:280]
+                for reason in relation_errors.values()
+            )
+            messages.append(_ALLOWED_RELATION_MATCH)
+        if rule_errors:
+            messages.extend(
+                reason.split(". Allowed rule predicates:", 1)[0][:280]
+                for reason in rule_errors.values()
+            )
+            messages.append(_ALLOWED_RULE_PREDICATES)
+        super().__init__("; ".join(messages))
+
+
 _VALIDATION_ATTEMPTS = 3
-_VALIDATION_ERROR_LIMIT = 600
+_VALIDATION_ERROR_LIMIT = 10000
 
 
 class OntologyDraftUnavailable(RuntimeError):
@@ -133,10 +172,12 @@ def _complete_validated_json(
     schema: dict,
     validate: Callable[[dict], None],
     on_validation_error: ValidationErrorCallback | None = None,
+    on_exhaustion: Callable[[dict, Exception], dict | None] | None = None,
 ) -> dict:
     """Run a P2 model step with bounded JSON Schema and semantic repair feedback."""
     current_prompt = prompt
     for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
+        structurally_valid_response = None
         try:
             response = decision.complete_json(purpose, current_prompt, schema)
         except ModelValidationExhausted as exc:
@@ -149,6 +190,7 @@ def _complete_validated_json(
         else:
             try:
                 Draft202012Validator(schema).validate(response)
+                structurally_valid_response = response
                 validate(response)
             except ModelValidationExhausted as exc:
                 reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
@@ -164,6 +206,16 @@ def _complete_validated_json(
         if on_validation_error is not None:
             on_validation_error(purpose, attempt, reason)
         if attempt == _VALIDATION_ATTEMPTS:
+            if on_exhaustion is not None and structurally_valid_response is not None:
+                recovered = on_exhaustion(structurally_valid_response, validation_error)
+                if recovered is not None:
+                    try:
+                        Draft202012Validator(schema).validate(recovered)
+                        validate(recovered)
+                    except (ValidationError, ValueError) as exc:
+                        reason = _bounded_validation_error(exc)
+                        raise OntologyDraftUnavailable(purpose, attempt, reason) from exc
+                    return recovered
             raise OntologyDraftUnavailable(purpose, attempt, reason) from validation_error
         current_prompt += (
             f"\nThe previous response failed validation on attempt {attempt}. "
@@ -491,6 +543,37 @@ def draft_ontology(
         validate_document("ontology", ontology)
         _validate_ontology(ontology)
 
+    unresolved: list[dict] = []
+
+    def salvage_invalid_proposals(candidate: dict, error: Exception) -> dict | None:
+        if not isinstance(error, OntologyProposalErrors):
+            return None
+        recovered = deepcopy(candidate)
+        set_aside = []
+        for kind, field, errors in (
+            ("relation", "relations", error.relation_errors),
+            ("rule", "rules", error.rule_errors),
+        ):
+            retained = []
+            for proposal in recovered[field]:
+                reason = errors.get(proposal["id"])
+                if reason is None:
+                    retained.append(proposal)
+                else:
+                    set_aside.append(
+                        {
+                            "kind": kind,
+                            "id": proposal["id"],
+                            "reason": reason,
+                            "proposal": deepcopy(proposal),
+                        }
+                    )
+            recovered[field] = retained
+        if not set_aside:
+            return None
+        unresolved.extend(set_aside)
+        return recovered
+
     proposed = _complete_validated_json(
         decision,
         "phase2.schema",
@@ -498,6 +581,7 @@ def draft_ontology(
         proposal,
         validate_schema,
         on_validation_error,
+        salvage_invalid_proposals,
     )
     ontology = {
         "version": "1",
@@ -516,6 +600,17 @@ def draft_ontology(
         decision,
         on_validation_error=on_validation_error,
     )
+    recommendation_document = {
+        "schema_version": "1",
+        "ontology_path": "02-ontology/ontology.json",
+        "generated_by": ontology["generated_by"],
+        "unresolved": unresolved,
+    }
+    for item in recommendation_document["unresolved"]:
+        if item["id"] != item["proposal"]["id"]:
+            raise ValueError("unresolved ontology proposal ID must match its original proposal")
+    validate_document("ontology-recommendations", recommendation_document)
+    shapes = _compile_shapes(ontology)
     archived_revisions = checkpoint_revisions(
         path.parent,
         "ontology",
@@ -529,8 +624,9 @@ def draft_ontology(
         marker.rename(marker.with_name(f"APPROVED.stale.{digest[:12]}"))
     write_json(path, ontology)
     write_json(queries_path, queries)
+    write_json(path.parent / "recommendations/unresolved.json", recommendation_document)
     fingerprint.write_text(digest + "\n", encoding="utf-8")
-    (case_dir / ontology["shacl_path"]).write_text(_compile_shapes(ontology), encoding="utf-8")
+    (case_dir / ontology["shacl_path"]).write_text(shapes, encoding="utf-8")
     lines = [
         "# Ontology v1",
         "",
@@ -599,66 +695,152 @@ def _validate_ontology(ontology: dict) -> None:
     for values in (relation_ids, rule_ids, source_ids):
         if len(values) != len(set(values)) or any(not _ID.fullmatch(value) for value in values):
             raise ValueError("ontology relation, rule and source-class IDs must be unique and safe")
-    for item in ontology["relations"]:
-        if item["domain"] not in classes or item["range"] not in classes:
-            raise ValueError("relation domain and range must refer to ontology classes")
-        match = item.get("match")
-        if match is not None and item["symmetric"] and item["domain"] != item["range"]:
-            raise ValueError("symmetric relation domain and range must be the same class")
+    relation_errors = _relation_proposal_errors(ontology["relations"], classes, properties)
+    rule_errors = _rule_proposal_errors(ontology["rules"], properties)
+    if relation_errors or rule_errors:
+        raise OntologyProposalErrors(rule_errors, relation_errors)
+
+
+def _relation_proposal_errors(
+    relations: list[dict], classes: dict[str, dict], properties: dict[str, dict]
+) -> dict[str, str]:
+    errors = {}
+    for relation in relations:
+        details = []
+        domain_class = relation["domain"]
+        range_class = relation["range"]
+        if domain_class not in classes:
+            details.append(f"domain class `{domain_class}` is not declared")
+        if range_class not in classes:
+            details.append(f"range class `{range_class}` is not declared")
+        if relation["symmetric"] and domain_class != range_class:
+            details.append("a symmetric relation must have the same class at both endpoints")
+
+        match = relation.get("match")
         if match is not None:
-            domain_property = properties.get(match["domain_property"])
-            range_property = properties.get(match["range_property"])
-            if (
-                domain_property is None
-                or range_property is None
-                or domain_property["domain"] != item["domain"]
-                or range_property["domain"] != item["range"]
-            ):
-                raise ValueError("relation match properties must belong to their endpoint classes")
-            if _semantic_datatype(domain_property["datatype"]) != _semantic_datatype(
-                range_property["datatype"]
-            ):
-                raise ValueError("relation match properties must have the same datatype")
-            if item["symmetric"] and match["domain_property"] != match["range_property"]:
-                raise ValueError(
-                    "symmetric relation must match the same property on both endpoints"
+            domain_property_id = match["domain_property"]
+            range_property_id = match["range_property"]
+            domain_property = properties.get(domain_property_id)
+            range_property = properties.get(range_property_id)
+            if domain_property is None:
+                details.append(f"domain_property `{domain_property_id}` is not declared")
+            elif domain_property["domain"] != domain_class:
+                details.append(
+                    f"domain_property `{domain_property_id}` belongs to class "
+                    f"`{domain_property['domain']}`, but relation domain `{domain_class}` "
+                    f"requires a property of `{domain_class}`"
                 )
-    for item in ontology["rules"]:
-        predicate = item.get("predicate")
+            if range_property is None:
+                details.append(f"range_property `{range_property_id}` is not declared")
+            elif range_property["domain"] != range_class:
+                details.append(
+                    f"range_property `{range_property_id}` belongs to class "
+                    f"`{range_property['domain']}`, but relation range `{range_class}` "
+                    f"requires a property of `{range_class}`"
+                )
+            if (
+                domain_property is not None
+                and range_property is not None
+                and _semantic_datatype(domain_property["datatype"])
+                != _semantic_datatype(range_property["datatype"])
+            ):
+                details.append("the endpoint properties have different datatypes")
+            if relation["symmetric"] and domain_property_id != range_property_id:
+                details.append("a symmetric relation must match the same property at both ends")
+
+        if details:
+            errors[relation["id"]] = (
+                f"relation `{relation['id']}` is invalid: {'; '.join(details)}. "
+                f"{_ALLOWED_RELATION_MATCH}"
+            )
+    return errors
+
+
+def _rule_proposal_errors(rules: list[dict], properties: dict[str, dict]) -> dict[str, str]:
+    errors = {}
+    for rule in rules:
+        predicate = rule.get("predicate")
         if predicate is None:
             continue
+        details = []
         operand_domains = set()
         for term in predicate["all"]:
             operation = term["op"]
             if operation == "same_value":
-                left = properties.get(term["left_property"])
-                right = properties.get(term["right_property"])
-                operands = [left, right]
-                if any(prop is None for prop in operands):
-                    raise ValueError("rule predicate references an unknown property")
-                if _semantic_datatype(left["datatype"]) != _semantic_datatype(right["datatype"]):
-                    raise ValueError("same_value predicate properties must have the same datatype")
+                left_id = term["left_property"]
+                right_id = term["right_property"]
+                left = properties.get(left_id)
+                right = properties.get(right_id)
+                if left is None or right is None:
+                    missing = [
+                        f"`{property_id}`"
+                        for property_id, value in ((left_id, left), (right_id, right))
+                        if value is None
+                    ]
+                    details.append(f"same_value references unknown property {', '.join(missing)}")
+                if left is not None:
+                    operand_domains.add(left["domain"])
+                if right is not None:
+                    operand_domains.add(right["domain"])
+                if (
+                    left is not None
+                    and right is not None
+                    and _semantic_datatype(left["datatype"])
+                    != _semantic_datatype(right["datatype"])
+                ):
+                    details.append(
+                        "same_value properties must have the same datatype "
+                        f"( `{left_id}`: {left['datatype']}; `{right_id}`: {right['datatype']} )"
+                    )
             elif operation == "equals":
-                prop = properties.get(term["property"])
+                property_id = term["property"]
+                prop = properties.get(property_id)
                 if prop is None:
-                    raise ValueError("rule predicate references an unknown property")
-                _validate_typed_literal(term["value"], prop["datatype"])
-                operands = [prop]
+                    details.append(f"equals references unknown property `{property_id}`")
+                else:
+                    operand_domains.add(prop["domain"])
+                    try:
+                        _validate_typed_literal(term["value"], prop["datatype"])
+                    except ValueError as exc:
+                        details.append(str(exc))
             elif operation == "date_before":
-                earlier = properties.get(term["earlier_property"])
-                later = properties.get(term["later_property"])
-                operands = [earlier, later]
-                if any(prop is None for prop in operands):
-                    raise ValueError("rule predicate references an unknown property")
-                earlier_type = _semantic_datatype(earlier["datatype"])
-                later_type = _semantic_datatype(later["datatype"])
-                if earlier_type not in {"date", "datetime"} or earlier_type != later_type:
-                    raise ValueError("date_before properties must share date or datetime datatype")
+                earlier_id = term["earlier_property"]
+                later_id = term["later_property"]
+                earlier = properties.get(earlier_id)
+                later = properties.get(later_id)
+                if earlier is None or later is None:
+                    missing = [
+                        f"`{property_id}`"
+                        for property_id, value in ((earlier_id, earlier), (later_id, later))
+                        if value is None
+                    ]
+                    details.append(f"date_before references unknown property {', '.join(missing)}")
+                if earlier is not None:
+                    operand_domains.add(earlier["domain"])
+                if later is not None:
+                    operand_domains.add(later["domain"])
+                if earlier is not None and later is not None:
+                    earlier_type = _semantic_datatype(earlier["datatype"])
+                    later_type = _semantic_datatype(later["datatype"])
+                    if earlier_type not in {"date", "datetime"} or earlier_type != later_type:
+                        details.append(
+                            "date_before properties must share date or datetime datatype "
+                            f"(`{earlier_id}`: {earlier['datatype']}; "
+                            f"`{later_id}`: {later['datatype']})"
+                        )
             else:
-                raise ValueError("unsupported rule predicate operator")
-            operand_domains.update(prop["domain"] for prop in operands)
-        if len(operand_domains) != 1:
-            raise ValueError("all rule predicate properties must belong to one class")
+                details.append(f"unsupported rule predicate operator `{operation}`")
+
+        if len(operand_domains) > 1:
+            details.append(
+                "all rule predicate properties must belong to one class; "
+                f"this rule references classes {', '.join(f'`{value}`' for value in sorted(operand_domains))}"
+            )
+        if details:
+            errors[rule["id"]] = (
+                f"rule `{rule['id']}` is invalid: {'; '.join(details)}. {_ALLOWED_RULE_PREDICATES}"
+            )
+    return errors
 
 
 def _semantic_datatype(datatype: str) -> str:

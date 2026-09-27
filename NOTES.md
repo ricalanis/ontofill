@@ -1,4 +1,24 @@
-# Strategy and assumptions
+# R31 P2 schema salvage plan (2026-09-27)
+
+Scope is the P2 ontology draft/validator, its new unresolved-recommendations schema documentation, and generic recorded tests. The code must not edit case data, approvals, console, browser-agent, coordination files, or deployment targets.
+
+Selected strategy: keep the existing three-attempt model retry. Improve semantic validation to aggregate named relation/rule diagnostics and give concrete accepted grammar forms. Retain only the last structurally valid candidate. After bounded exhaustion, remove only rule/relation proposals that have semantic diagnostics; revalidate the complete remaining ontology and compile/validate DoD queries before writing any artifact. Missing classes, properties, malformed objects, and other schema errors continue to fail without an ontology checkpoint.
+
+Set-aside artifact contract requested by the orchestrator: `02-ontology/recommendations/unresolved.json`, shaped as `{schema_version: "1", ontology_path: "02-ontology/ontology.json", generated_by, unresolved: [{kind: "rule"|"relation", id, reason, proposal}]}`. `proposal` preserves the original structurally valid full schema object, and code verifies `id == proposal.id`. The JSON schema is `ontology-recommendations.schema.json`. No relation-path grammar is being introduced; executable predicates remain limited to same-class `same_value`, `equals`, and `date_before` terms, while relation matching is one typed property per declared endpoint class.
+
+Regression data uses synthetic IDs only. Test attempt sequence captures cross-class rules ×3, with valid classes/properties and a separate valid rule retained. A companion case exercises a bad relation match and endpoint-specific guidance. No live case or VM artifact is read or edited.
+
+Managed focused attempt 1 passed the cross-class salvage, stale-recommendation clearing, and ontology checkpoint cases, then failed one relation-feedback assertion: the validator named both endpoint properties/classes but did not include the test's requested phrase `endpoint classes`. Tighten the relation guidance heading to state the endpoint-class constraint explicitly; this is a wording coverage gap, not a salvage failure.
+
+The initial standalone schema syntax command used `python -m json.tool`, but this host has no `python` executable (exit 127). Use `python3 -m json.tool` in the managed final gate; no schema validation ran in that failed command.
+
+Managed final-focused attempt 1 passed all 107 selected tests, then Ruff stopped the gate on three deterministic style issues: the new `copy` import was out of order and two nested datatype checks triggered SIM102. Apply Ruff's fixes and rerun the same gate once.
+
+The automatic Ruff-fix follow-up sorted the import but left both SIM102 checks unchanged (exit 1). Dead hypothesis: Ruff auto-fix would flatten these nested conditions. Manually combine each presence and datatype predicate, then use the successor managed gate with its distinct schema-recovery strategy; do not repeat the same auto-fix path.
+
+The explicit-condition successor passed the focused behavior, Ruff lint/format, schema JSON parse, and diff checks (107 tests). A parent review then requested positive preservation coverage for valid typed relations, so the three-attempt rule fixture now carries a valid generic `record`→`event` relation and asserts it survives alongside the valid rule. The new retained-relation successor gate passed the same 107 tests and all checks. The workflow fixture reaches the regular ontology `APPROVAL_PENDING.md` with the ontology artifact present; no case-specific data or relation-count claim is involved.
+
+## Prior strategy and assumptions
 
 ## R29 integration (2026-09-27)
 - Independent inference and sandbox outcome branches were reviewed and cherry-picked on current main. Workflow now assigns a run ID before the gateway model catalog call and binds each decision call's gateway step ID to the same trace step.
