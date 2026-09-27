@@ -11,17 +11,19 @@
 {% if m.empty %}
 {{ v.empty(m.empty, "No site graph yet") }}
 {% else %}
-<p class="sg-totals mono">{{ m.n_graphs }} graph{{ "s" if m.n_graphs != 1 }} · {{ m.n_types }} page types · {{ m.n_instances }} fetched pages{% if m.n_files != m.n_graphs %} · {{ m.n_files - m.n_graphs }} unreadable file{{ "s" if m.n_files - m.n_graphs != 1 }}{% endif %}</p>
+<p class="sg-totals mono">{{ m.n_graphs }} graph{{ "s" if m.n_graphs != 1 }} · {{ m.n_types }} page types · {{ m.n_instances }} fetched pages{% if m.n_stopped %} · {{ m.n_stopped }} crawl{{ "s" if m.n_stopped != 1 }} that fetched nothing drawable{% endif %}{% if m.n_files - m.n_graphs - m.n_stopped %} · {{ m.n_files - m.n_graphs - m.n_stopped }} unreadable file{{ "s" if m.n_files - m.n_graphs - m.n_stopped != 1 }}{% endif %}</p>
 <ul class="strips sg-sources">
   {% for r in m.rows %}
   <li>
-    <a class="strip st-{{ r.stop_state if r.readable else 'block' }}" href="{{ r.href }}">
+    <a class="strip st-{{ r.stop_state if (r.readable or r.stop_reason) else 'block' }}" href="{{ r.href }}">
       <span class="strip__g" aria-hidden="true"></span>
       <span class="strip__main">
         <b class="mono">{{ r.source_id }}</b>{% if r.host %} <span class="sg-host">{{ r.host }}</span>{% endif %}
         {% if r.readable %}
         <small>{{ r.n_types }} page type{{ "s" if r.n_types != 1 }} · {{ r.n_instances }} page{{ "s" if r.n_instances != 1 }} fetched{% if r.attempted is not none %} of {{ r.attempted }} attempted{% endif %}{% if r.page_cap %} (cap {{ r.page_cap }}, depth ≤ {{ r.max_depth }}){% endif %} · {{ r.n_edges }} links: {{ r.n_followed }} followed, {{ r.n_not_followed }} not</small>
         <small>{{ r.type_labels|join(" · ") }}</small>
+        {% elif r.stop_reason %}
+        <small>no page to draw: {{ r.fetched if r.fetched is not none else "?" }} of {{ r.attempted if r.attempted is not none else "?" }} pages fetched · stop: {{ r.stop_label or r.stop_reason }}</small>
         {% else %}
         <small>{{ r.path }}: {{ r.problems|join("; ") or "no readable page types" }}</small>
         {% endif %}

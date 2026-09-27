@@ -1,0 +1,20 @@
+{# The crawl facts of one site graph: limits, pages, stop reason, robots.txt decisions (c = graph.crawl). #}
+    <section class="panel" aria-labelledby="sg-crawl-h">
+      <h2 class="section-h" id="sg-crawl-h">Crawl</h2>
+      <p><span class="chip st-{{ c.stop_state }}">stop: {{ c.stop_label or "not recorded" }}</span></p>
+      <dl class="kv">
+        <dt>Pages</dt><dd class="mono">{{ c.fetched_pages if c.fetched_pages is not none else "?" }} fetched of {{ c.attempted_pages if c.attempted_pages is not none else "?" }} attempted</dd>
+        <dt>Page cap</dt><dd class="mono">{{ c.page_cap if c.page_cap is not none else "—" }}</dd>
+        <dt>Max depth</dt><dd class="mono">{{ c.max_depth if c.max_depth is not none else "—" }}</dd>
+        <dt>Delay</dt><dd class="mono">{% if c.delay_seconds is not none %}{{ c.delay_seconds }} s between requests{% else %}—{% endif %}</dd>
+        <dt>Domain</dt><dd>{% if c.same_registrable_domain %}same registrable domain only{% elif c.same_registrable_domain is none %}not recorded{% else %}not restricted{% endif %}</dd>
+        <dt>Methods</dt><dd>GET only; SAFE or LOW links; no forms</dd>
+      </dl>
+      <h3 class="section-h">robots.txt</h3>
+      {% if c.robots %}
+      <div class="table-wrap"><table class="grid-table sg-robots">
+        <thead><tr><th scope="col">Origin</th><th scope="col">Decision</th><th scope="col" class="num">HTTP</th><th scope="col" class="num">Delay</th></tr></thead>
+        <tbody>{% for r in c.robots %}<tr><td class="mono">{{ host_of(r.origin or r.url or "") }}{% if r.href %} · <a href="{{ r.href }}">copy</a>{% endif %}</td><td>{{ r.decision_label }}</td><td class="num">{{ r.http_status if r.http_status is not none else "—" }}</td><td class="num">{{ r.crawl_delay_seconds if r.crawl_delay_seconds is not none else "—" }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      {% else %}<p class="note sg-note">No robots.txt decision recorded.</p>{% endif %}
+    </section>

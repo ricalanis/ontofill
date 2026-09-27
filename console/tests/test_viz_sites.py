@@ -388,7 +388,7 @@ def test_graph_view_model_and_render(client, graph_doc):
     assert g["crawl"]["robots"][0]["decision_label"] == "allowed" and g["crawl"]["robots"][0]["href"]
     html = _ok(client.get(f"/cases/libraries/sites/{SOURCE}"))
     for text in (
-        "Site graph · " + SOURCE,
+        "Site graph · libraries-web.example (" + SOURCE + ")",  # the host leads, the id beside it
         "Library detail page",
         "11 fetched pages",
         "17 links (10 followed, 7 not)",
@@ -526,3 +526,35 @@ def test_graph_from_another_run_is_said_not_hidden(client, cases_dir, graph_doc)
     html = _ok(client.get(f"/cases/libraries/sites/{SOURCE}", params={"run": RUN}))
     assert "This graph was built by run run-libraries-0000, not run-libraries-0001" in html
     assert client.get("/cases/libraries/sites", params={"run": "run-libraries-0000"}).status_code == 200
+
+
+def test_a_crawl_that_fetched_nothing_says_why(client, cases_dir, graph_doc):
+    """Live: robots.txt answered 403, the spider stopped conservatively and fetched 0 pages. The graph file is valid
+    but has no page types; the view says why, with the crawl record, instead of "cannot be drawn"."""
+    doc = json.loads(json.dumps(graph_doc))
+    g = doc["graph"]
+    g["types"], g["instances"], g["edges"] = [], [], []
+    g["crawl"].update(
+        attempted_pages=1,
+        fetched_pages=0,
+        stop_reason="robots",
+        robots=[
+            {
+                "origin": "https://registry.example",
+                "url": "https://registry.example/robots.txt",
+                "http_status": 403,
+                "decision": "conservative_stop",
+                "crawl_delay_seconds": None,
+            }
+        ],
+    )
+    install_graph(cases_dir, doc, source="stopped-source")
+    page = client.get("/cases/libraries/sites/stopped-source").text
+    for bad in BAD:
+        assert bad not in page
+    assert "The spider fetched 0 of 1 pages" in page and "cannot be drawn" not in page
+    assert "robots.txt at registry.example answered HTTP 403, so the spider stopped conservatively." in page
+    assert "stopped (no usable robots.txt)" in page  # the crawl panel's robots table
+    listing = client.get("/cases/libraries/sites").text
+    assert "no page to draw: 0 of 1 pages fetched · stop: robots.txt stopped the crawl" in listing
+    assert "1 crawl that fetched nothing drawable" in listing and "unreadable file" not in listing

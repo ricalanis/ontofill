@@ -567,6 +567,7 @@ def list_model(case, domain, run_id: str | None = None) -> dict:
         "backend": _backend(graphs.values()),
         "rows": rows,
         "n_graphs": len(readable),
+        "n_stopped": sum(1 for r in rows if not r["readable"] and r["stop_reason"]),
         "n_files": len(rows),
         "n_instances": sum(r["n_instances"] for r in readable),
         "n_types": sum(r["n_types"] for r in readable),
@@ -616,6 +617,10 @@ def _cov_state(t: dict, pid: str, pdom: str | None) -> str:
     return "covered" if pdom and t.get("class_id") == pdom else "hinted"
 
 
+def host_of_url(url) -> str:
+    return (urlsplit(url).hostname if isinstance(url, str) else None) or str(url or "?")
+
+
 def graph_model(
     case, domain, source: str, run_id: str | None = None, type_id: str | None = None, overlay: str | None = None
 ) -> dict:
@@ -639,6 +644,25 @@ def graph_model(
         "empty": None,
         "run_note": None,
     }
+    m["host"] = sg.get("host")
+    crawl = sg.get("crawl") or {}
+    if not sg.get("readable") and crawl.get("stop_reason"):
+        # the file is fine but the spider fetched nothing drawable: say why, with the crawl record
+        fetched, attempted = crawl.get("fetched_pages"), crawl.get("attempted_pages")
+        m["empty_title"] = (
+            f"The spider fetched {fetched if fetched is not None else '?'} of {attempted if attempted is not None else '?'} pages"
+        )
+        why = crawl.get("stop_label") or crawl.get("stop_reason")
+        refused = [r for r in crawl.get("robots") or [] if r.get("decision") in ("disallow", "conservative_stop")]
+        extra = "".join(
+            f" robots.txt at {host_of_url(r.get('url') or r.get('origin'))} answered HTTP {r['http_status']}, so the spider stopped conservatively."
+            if r.get("http_status") and r.get("decision") == "conservative_stop"
+            else f" robots.txt at {host_of_url(r.get('url') or r.get('origin'))} disallowed it."
+            for r in refused
+        )
+        m["empty"] = gap(None, f"Nothing to draw: {why}.{extra}", sg["path"])
+        m["crawl_only"] = {"crawl": crawl, "source_url": sg.get("source_url"), "source_href": sg.get("source_href")}
+        return m
     if not sg.get("readable"):
         m["empty"] = gap(
             "R15",

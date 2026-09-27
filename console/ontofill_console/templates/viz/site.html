@@ -1,14 +1,17 @@
 {% extends "base.html" %}
 {% import "viz/_macros.html" as v %}
-{% block title %}Site graph · {{ m.source_id }}{% endblock %}
+{% block title %}Site graph · {{ m.host or m.source_id }}{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/viz-sites.css"><script src="/static/viz-sites.js" defer></script>{% endblock %}
 {% block main %}
-{{ v.head("Site graph · " ~ m.source_id, "Page types the spider found on this source, sized by how many pages it fetched of each, with the links between them. Select a type to see its pages; pick a property to see which types show it.", m.sources) }}
+{{ v.head("Site graph · " ~ (m.host ~ " (" ~ m.source_id ~ ")" if m.host else m.source_id), "Page types the spider found on this source, sized by how many pages it fetched of each, with the links between them. Select a type to see its pages; pick a property to see which types show it.", m.sources) }}
 {% if m.question %}<p class="quote sg-question">{{ m.question }}</p>{% endif %}
 <p class="note sg-note"><a href="{{ m.list_href }}">All site graphs</a>{% if m.run_note %} · {{ m.run_note }}{% endif %}</p>
 
 {% if m.empty %}
-{{ v.empty(m.empty, "This graph cannot be drawn") }}
+{{ v.empty(m.empty, m.empty_title or "This graph cannot be drawn") }}
+{% if m.crawl_only %}{% set c = m.crawl_only.crawl %}
+<dl class="kv sg-kv"><dt>Source</dt><dd class="mono">{% if m.crawl_only.source_href %}<a href="{{ m.crawl_only.source_href }}" rel="noopener noreferrer" target="_blank">{{ m.crawl_only.source_url }}</a>{% else %}{{ m.crawl_only.source_url or "—" }}{% endif %}</dd></dl>
+{% include "viz/_sg_crawl.html" %}{% endif %}
 {% else %}
 {% set g = m.graph %}
 {% set L = g.layout %}
@@ -122,26 +125,7 @@
       {% endfor %}
     </section>
 
-    <section class="panel" aria-labelledby="sg-crawl-h">
-      <h2 class="section-h" id="sg-crawl-h">Crawl</h2>
-      {% set c = g.crawl %}
-      <p><span class="chip st-{{ c.stop_state }}">stop: {{ c.stop_label or "not recorded" }}</span></p>
-      <dl class="kv">
-        <dt>Pages</dt><dd class="mono">{{ c.fetched_pages if c.fetched_pages is not none else "?" }} fetched of {{ c.attempted_pages if c.attempted_pages is not none else "?" }} attempted</dd>
-        <dt>Page cap</dt><dd class="mono">{{ c.page_cap if c.page_cap is not none else "—" }}</dd>
-        <dt>Max depth</dt><dd class="mono">{{ c.max_depth if c.max_depth is not none else "—" }}</dd>
-        <dt>Delay</dt><dd class="mono">{% if c.delay_seconds is not none %}{{ c.delay_seconds }} s between requests{% else %}—{% endif %}</dd>
-        <dt>Domain</dt><dd>{% if c.same_registrable_domain %}same registrable domain only{% elif c.same_registrable_domain is none %}not recorded{% else %}not restricted{% endif %}</dd>
-        <dt>Methods</dt><dd>GET only; SAFE or LOW links; no forms</dd>
-      </dl>
-      <h3 class="section-h">robots.txt</h3>
-      {% if c.robots %}
-      <div class="table-wrap"><table class="grid-table sg-robots">
-        <thead><tr><th scope="col">Origin</th><th scope="col">Decision</th><th scope="col" class="num">HTTP</th><th scope="col" class="num">Delay</th></tr></thead>
-        <tbody>{% for r in c.robots %}<tr><td class="mono">{{ host_of(r.origin or r.url or "") }}{% if r.href %} · <a href="{{ r.href }}">copy</a>{% endif %}</td><td>{{ r.decision_label }}</td><td class="num">{{ r.http_status if r.http_status is not none else "—" }}</td><td class="num">{{ r.crawl_delay_seconds if r.crawl_delay_seconds is not none else "—" }}</td></tr>{% endfor %}</tbody>
-      </table></div>
-      {% else %}<p class="note sg-note">No robots.txt decision recorded.</p>{% endif %}
-    </section>
+    {% set c = g.crawl %}{% include "viz/_sg_crawl.html" %}
   </aside>
 </div>
 
