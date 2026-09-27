@@ -3426,6 +3426,20 @@ class DiscoveryLoop:
                 )
             ]
             if dispatch_attempts == 0 and leads_found == 0 and not pool:
+                pending_review = [
+                    lead
+                    for lead in draft["leads"].values()
+                    if (lead.get("redirect_review_required") or lead.get("source_review_required"))
+                    and isinstance(lead.get("review_source_id"), str)
+                    and isinstance(lead.get("review_fingerprint"), str)
+                    and _source_decision(
+                        case_dir,
+                        sources_dir / lead["review_source_id"],
+                        lead["review_fingerprint"],
+                        backend,
+                    )
+                    == "pending"
+                ]
                 diagnostic = (
                     "no provider call dispatched: query planner exhausted new queries "
                     f"with {len(context['gaps'])} discovery gap(s) still open"
@@ -3444,7 +3458,12 @@ class DiscoveryLoop:
                     [diagnostic],
                     iterations=iteration,
                     stop_reason="no_provider_dispatch",
-                    dispatch_diagnostic=diagnostic,
+                    review_source_ids=[lead["review_source_id"] for lead in pending_review],
+                    review_source_hosts=[
+                        urlsplit(str(lead.get("url") or "")).hostname or ""
+                        for lead in pending_review
+                    ],
+                    dispatch_diagnostic=None if pending_review else diagnostic,
                 )
             pool.sort(key=lambda lead: self._rank_lead(lead, policy, ontology), reverse=True)
             chosen: list[dict] = []
