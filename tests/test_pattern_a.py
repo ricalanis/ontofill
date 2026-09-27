@@ -172,6 +172,8 @@ def test_html_p5_repairs_against_bronze_and_promotes_macro_into_feed(tmp_path: P
         == "code.test"
     ]
     assert [job["outcome"]["status"] for job in repair_jobs] == ["failed", "completed"]
+    assert [job["step_id"] for job in repair_jobs] == [step["step_id"] for step in repairs]
+    assert all(job["checkpoints"]["task"]["ok"] for job in repair_jobs)
     assert all(
         set(job["checkpoints"]) == {"host", "task", "where", "isolation", "secrets", "teardown"}
         for job in repair_jobs
@@ -610,3 +612,13 @@ def test_escalation_steps_survive_an_s1_fallback_that_raises(tmp_path: Path) -> 
     assert [step["step_id"] for step in live] == list(
         dict.fromkeys(step["step_id"] for step in live)
     )
+    jobs = [
+        json.loads(line)
+        for line in lake.read_key(f"runs/synthetic-case/{run_id}/jobs.jsonl").splitlines()
+    ]
+    repair_steps = [step for step in live if step.get("event") == "repair"]
+    repair_jobs = [
+        job for job in jobs if job["checkpoints"]["task"]["requested"].get("action") == "code.test"
+    ]
+    assert len(repair_jobs) == len(repair_steps) == 2
+    assert [job["step_id"] for job in repair_jobs] == [step["step_id"] for step in repair_steps]

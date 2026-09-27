@@ -188,6 +188,17 @@ def test_pod_runner_executes_bytes_and_returns_error_without_expectations(tmp_pa
     assert "ValueError: broken" in result["stderr"]
 
 
+def test_pod_secret_probe_counts_named_files_without_reading_contents(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "sandbox/code-repair/runner.py"
+    spec = importlib.util.spec_from_file_location("repair_pod_runner_secret_probe", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (tmp_path / "AWS_SECRET_ACCESS_KEY").write_text("synthetic fixture")
+    (tmp_path / "ordinary.txt").write_text("synthetic fixture")
+    assert module._files_with_secret_names((tmp_path,)) == 1
+
+
 def test_rejects_invalid_budget_before_dispatch(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     cases = [_case(lake, b"item", ())]

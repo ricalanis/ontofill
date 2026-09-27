@@ -568,7 +568,9 @@ def build_repair_job_record(
         "checkpoints": {
             "host": host_checkpoint,
             "task": {
-                "ok": bool(result.get("ok")),
+                # The checkpoint proves the pod completed the requested test.
+                # Extractor quality belongs to outcome and the result receipt.
+                "ok": result.get("error") is None and failure_reason is None,
                 "requested": dict(request),
                 "result": dict(result),
                 "value_ids": [],

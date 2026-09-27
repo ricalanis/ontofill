@@ -49,6 +49,7 @@ from ontofill.sandbox import (
     fetch_url,
     parse_bronze,
 )
+from ontofill.sandbox.jobs import append_job_record, build_job_record
 from ontofill.sandbox.parse import ParseExecutor
 
 Capture = Callable[..., dict]
@@ -1381,6 +1382,13 @@ def execute_objective(
                     except Exception:
                         for step in escalation:
                             feed.append_step(step, screenshot_key=step.get("screenshot_key"))
+                        # The objective result will not return, so publish its
+                        # completed pod receipts before the workflow fails.
+                        for job in jobs:
+                            if "checkpoints" in job:
+                                append_job_record(lake, feed.case_id, job)
+                            elif "proof" in job:
+                                append_job_record(lake, feed.case_id, build_job_record(job))
                         raise
                     published = {step["step_id"] for step in escalation}
                     return ExecutionResult(

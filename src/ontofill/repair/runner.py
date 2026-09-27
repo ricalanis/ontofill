@@ -449,12 +449,13 @@ def run_code_repair(
         attempt_limit = execution.limit_reason
         if attempt_limit not in {"timeout", "memory", "pids", "max_steps"}:
             attempt_limit = None
+        repair_step_id = f"step:{uuid.uuid4().hex}"
         job_record = build_repair_job_record(
             execution,
             context={
                 "job_id": f"job:{run_id}:{source_id}:{objective_id or 'none'}:repair-{attempt}",
                 "run_id": run_id,
-                "step_id": f"step:{uuid.uuid4().hex}",
+                "step_id": repair_step_id,
                 "source_id": source_id,
                 "generated_by": provenance.copy(),
             },
@@ -477,7 +478,7 @@ def run_code_repair(
             failure_reason=attempt_limit,
         )
         repair_step = {
-            "step_id": f"step:{uuid.uuid4().hex}",
+            "step_id": repair_step_id,
             "run_id": run_id,
             "phase": 5,
             "source_id": source_id,

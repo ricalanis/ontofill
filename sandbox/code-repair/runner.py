@@ -36,6 +36,26 @@ def _probe_write(path: Path) -> bool:
     return False
 
 
+def _files_with_secret_names(
+    roots: tuple[Path, ...] = (Path("/run/secrets"), Path("/root"), Path("/home"), Path("/work")),
+) -> int:
+    """Count bounded secret-named files without opening or exposing their contents."""
+    count = 0
+    visited = 0
+    for root in roots:
+        if not root.exists():
+            continue
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [name for name in dirs if not Path(directory, name).is_symlink()]
+            for name in files:
+                visited += 1
+                if visited > 1000:
+                    return count
+                if any(marker.lower() in name.lower() for marker in _SECRET_MARKERS):
+                    count += 1
+    return count
+
+
 def _proof() -> dict:
     """Measure this pod's isolation exactly as the parse pod does."""
     env_keys = sum(any(marker in name.upper() for marker in _SECRET_MARKERS) for name in os.environ)
@@ -76,7 +96,7 @@ def _proof() -> dict:
     ]
     secrets = {
         "env_keys_found": env_keys,
-        "files_with_keys": 0,
+        "files_with_keys": _files_with_secret_names(),
         "metadata_ip": "BLOCKED" if metadata_blocked else "ALLOWED",
         "mesh": "BLOCKED" if mesh_blocked else "ALLOWED",
     }
