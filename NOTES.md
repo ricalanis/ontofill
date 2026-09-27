@@ -87,6 +87,22 @@ combined R1+R5 full managed check. With the fixture fix and digest-bound
 approvals in place, the final delivery check passed: 246 tests, 3 skips, Ruff lint and format
 clean. No live case files were touched.
 
+# R11 bronze replay strategy, 2026-09-27
+
+Read-only review found `workflow.refine_case` currently reads existing silver observations and exports them with the persisted run trace. It does not reconstruct typed values from bronze. Root owns adding replay observations and replay trace steps to that orchestration after this isolated helper lands.
+
+Selected seam: `replay_bronze_observations(case_dir, lake, run_id, trace, ontology, provenance)` returns an immutable result containing observations and deterministic replay trace steps. A replay candidate must be a completed phase-5 `fetch: bytes` trace step with a validated `sha256:` key. The helper reads local/object storage only, verifies the payload hash, reuses the trace-linked column macro for entity class and existing mappings, and adds only unambiguous current-property matches by normalized ontology ID/label versus literal header. It never resolves or fetches a URL.
+
+Trace/evidence assumptions: source/objective/TDD metadata comes from the capture trace and approved objective/TDD case artifacts; screenshot evidence comes from the nearest prior capture step for that same objective; each emitted observation points to the deterministic replay trace step, whose `parent_step_id` is the original file-capture step. Export still requires the current objective and TDD artifacts to authorize every property being emitted.
+
+Unsupported formats, truncated parses, missing/mismatched bronze objects, ambiguous header matches, absent identity columns, or absent screenshot lineage produce no replay observations for that capture. The focused export fixture will update its current ontology/objective/TDD artifacts to include the approved new property while its historical macro remains unchanged.
+
+The first managed focused attempt passed replay derivation and `export_run` lineage validation, then failed two test assertions: the fixture read the single-record `entities.jsonl` object as a list, and the CLI test looked for subcommand help text in `ontofill refine --help` although argparse displays that description in `ontofill --help`. Correct both assertions before the single remaining attempt; the engine hypothesis remains alive.
+
+Managed gate details: `agent-progress run --task r11-bronze-replay-focused --paths src/ontofill/refiner/bronze_replay.py,src/ontofill/cli/main.py,tests/test_bronze_replay.py,tests/test_cli.py --check r11-new-property-export --strategy trace-linked-offline-replay --hypothesis "Completed file-fetch steps linked to existing macros can be reparsed locally with exact unambiguous current property matching, preserving new trace evidence through the existing export lineage gate." -- uv run pytest -q tests/test_bronze_replay.py tests/test_cli.py`.
+
+Attempt 1 exited 1 with 9 passed and 2 test assertion failures: the synthetic JSONL reader treated one entity as a list, and the CLI test queried subcommand help rather than the root command listing. Attempt 2 exited 1 with 10 passed and only the CLI help assertion failing because argparse can wrap the description. The assertion now folds whitespace before matching, but this correction is unverified. Progress guard reached two attempts; no managed test or renamed equivalent may run again in this lane. Root owns the broader integration gate after wiring helper observations and trace steps into `workflow.refine_case`.
+
 <!-- agent-session-state:begin -->
 Last session end: 2026-09-27T00:52:14.923428+00:00
 Changed paths:

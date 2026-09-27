@@ -39,6 +39,17 @@ CHECK: user-authorized `agent-progress` R1+R5 full gate after the run-status reg
 - [ ] R9b: gateway-token alias is locally committed; finish screened page-content spans in P3/P5/repair prompts.
 P4 negotiation and P1 research are cut by the user. Mark each shipped row READY FOR VERIFY <sha> in the gap tracker.
 
+## R11: bronze re-refine seam
+- [x] Add a falsifying synthetic export test where an approved current ontology contains a property absent from the old column macro, but its literal column exists in a trace-referenced bronze file; replay must fill it without any browser/fetch call.
+- [x] Implement a pure replay helper that returns observations and deterministic lineage trace steps, reads only completed trace-referenced bronze keys, and preserves source, selector, screenshot, capture time, and original-step parentage.
+- [x] Keep the CLI surface accurate and expose the helper contract for root's `refine_case` integration; do not add a second persistence/refine execution path.
+- [ ] Run the managed focused check, Ruff lint/format, and `git diff --check`; commit the owned R11 slice without pushing or merging.
+FILES: `src/ontofill/cli/main.py`, `src/ontofill/refiner/bronze_replay.py`, `tests/test_bronze_replay.py`, `tests/test_cli.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Reparse current-approved ontology values from bronze bytes already captured for this run and preserve auditable export lineage without browsing.
+DONE: `uv run pytest -q tests/test_bronze_replay.py` proves a newly added property reaches gold from a trace-referenced file and passes `export_run` lineage validation.
+FORMAT: `uv run ruff check src/ontofill/cli/main.py src/ontofill/refiner/bronze_replay.py tests/test_bronze_replay.py tests/test_cli.py && uv run ruff format --check src/ontofill/cli/main.py src/ontofill/refiner/bronze_replay.py tests/test_bronze_replay.py tests/test_cli.py`.
+CHECK: `r11-bronze-replay-focused` / `r11-new-property-export`, strategy `trace-linked-offline-replay`, ran twice and returned 1 both times. Attempt 1: 9 passed, 2 test-fixture assertions failed after replay/export succeeded. Attempt 2: 10 passed, 1 CLI help assertion failed because argparse wraps text; assertion now normalizes whitespace. Progress guard reached two attempts; do not rerun without authorization. Static Ruff and diff checks pass. Root will wire helper observations and trace steps into `workflow.refine_case` and run integration.
+
 ## After 10d and P3: brief 13 spiders and site graphs
 - [ ] Start a Luna worker in `.worktrees/brief13-spiders` after P3 lands; keep console and browser-agent files PA-owned.
 - [ ] Crawl confirmed sources only inside bounded gVisor cells, with robots, depth/page/polite limits, GET-only edges and bronze/trace proof.
