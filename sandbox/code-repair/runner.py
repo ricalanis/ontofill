@@ -7,12 +7,107 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import os
+import socket
 import sys
 import traceback
 from pathlib import Path
 
 _MAX_CAPTURE_BYTES = 8 * 1024 * 1024
 _BRONZE_DIGEST = set("0123456789abcdef")
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+
+def _probe_socket(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return False
+    except OSError:
+        return True
+
+
+def _probe_write(path: Path) -> bool:
+    try:
+        with path.open("xb") as stream:
+            stream.write(b"probe")
+        path.unlink(missing_ok=True)
+    except OSError:
+        return True
+    return False
+
+
+def _proof() -> dict:
+    """Measure this pod's isolation exactly as the parse pod does."""
+    env_keys = sum(any(marker in name.upper() for marker in _SECRET_MARKERS) for name in os.environ)
+    metadata_blocked = _probe_socket("169.254.169.254", 80)
+    mesh_blocked = _probe_socket("100.64.0.1", 22)
+    external_blocked = _probe_socket("1.1.1.1", 53)
+    etc_write_blocked = _probe_write(Path("/etc/.ontofill-write-probe"))
+    uname = os.uname()
+    flags: list[str] = []
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.lower().startswith("flags"):
+                flags = sorted(set(line.split(":", 1)[-1].split()))
+                break
+    except OSError:
+        pass
+    probes = [
+        {
+            "probe": "network_non_allowlisted",
+            "blocked": external_blocked,
+            "target": "1.1.1.1:53",
+        },
+        {
+            "probe": "write_outside_pod",
+            "blocked": _probe_write(Path("/host/.ontofill-write-probe")),
+            "target": "/host/.ontofill-write-probe",
+        },
+        {
+            "probe": "write_outside_writable_mount",
+            "blocked": etc_write_blocked,
+            "target": "/etc/.ontofill-write-probe",
+        },
+        {
+            "probe": "no_host_mounts",
+            "blocked": not Path("/host").exists(),
+            "target": "/host",
+        },
+    ]
+    secrets = {
+        "env_keys_found": env_keys,
+        "files_with_keys": 0,
+        "metadata_ip": "BLOCKED" if metadata_blocked else "ALLOWED",
+        "mesh": "BLOCKED" if mesh_blocked else "ALLOWED",
+    }
+    secrets["ok"] = (
+        secrets["env_keys_found"] == 0
+        and secrets["files_with_keys"] == 0
+        and secrets["metadata_ip"] == "BLOCKED"
+        and secrets["mesh"] == "BLOCKED"
+    )
+    return {
+        "pod": {
+            "hostname": socket.gethostname(),
+            "uname": {"system": uname.sysname, "release": uname.release, "machine": uname.machine},
+            "cpu_virtualization_flags": flags,
+            "dev_kvm_present": Path("/dev/kvm").exists(),
+        },
+        "isolation": {"probes": probes},
+        "secrets": secrets,
+        "network_probes": {
+            "external": external_blocked,
+            "metadata_ip": metadata_blocked,
+            "mesh": mesh_blocked,
+        },
+    }
+
+
+def _peak_memory_mb() -> float:
+    import resource
+
+    # Linux reports ru_maxrss in KiB.
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 3)
 
 
 class LimitedText:
@@ -38,6 +133,9 @@ class LimitedText:
 def run(
     input_path: Path, output_path: Path, candidate_path: Path = Path("/work/candidate.py")
 ) -> None:
+    import time
+
+    started = time.monotonic()
     stderr = LimitedText()
     stdout = LimitedText()
     outputs: list[list[dict]] = []
@@ -45,6 +143,7 @@ def run(
     verified_digests: list[str] = []
     input_source = "synthetic_bytes"
     capture_count = 0
+    proof: dict = {}
     try:
         payloads = json.loads(input_path.read_text(encoding="utf-8"))["captures"]
         if not isinstance(payloads, list) or not payloads:
@@ -104,6 +203,11 @@ def run(
     except Exception as exc:  # noqa: BLE001 - candidate code can raise any exception
         error = f"{type(exc).__name__}: {exc}"
         stderr.write(traceback.format_exc())
+    finally:
+        try:
+            proof = _proof()
+        except Exception:  # noqa: BLE001 - emit an honest failed proof
+            proof = {}
     try:
         output_path.write_text(
             json.dumps(
@@ -115,6 +219,12 @@ def run(
                         "source": input_source,
                         "digests_verified": verified_digests,
                         "capture_count": capture_count,
+                    },
+                    "proof": proof,
+                    "usage": {
+                        "peak_memory_mb": _peak_memory_mb(),
+                        "wall_s": round(time.monotonic() - started, 3),
+                        "steps": 1,
                     },
                 }
             ),

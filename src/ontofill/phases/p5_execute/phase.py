@@ -1298,6 +1298,7 @@ def execute_objective(
                         parent_step_id=mapped[2]["step_id"],
                         executor=repair_executor,
                         parse_executor=parse_executor,
+                        target_volume=tdd.get("target_volume"),
                     )
                 except ModelValidationExhausted as exc:
                     traces.append(mapped[2])
@@ -1367,8 +1368,29 @@ def execute_objective(
                         "ts": datetime.now(UTC).isoformat(),
                         "generated_by": provenance,
                     }
-                    traces.extend([mapped[2], *repair_trace, failure_step])
-                    return controller_fallback()
+                    escalation = [mapped[2], *repair_trace, failure_step]
+                    traces.extend(escalation)
+                    if feed is None:
+                        return controller_fallback()
+                    # Persist the mapping, repair attempts and the escalation before the S1
+                    # fallback runs: if the controller call raises, the workflow's generic
+                    # handler would otherwise drop these steps entirely. On success they are
+                    # already in the feed, so do not republish them in the returned trace.
+                    try:
+                        fallback = controller_fallback()
+                    except Exception:
+                        for step in escalation:
+                            feed.append_step(step, screenshot_key=step.get("screenshot_key"))
+                        raise
+                    published = {step["step_id"] for step in escalation}
+                    return ExecutionResult(
+                        fallback.observations,
+                        [step for step in fallback.trace if step["step_id"] not in published],
+                        fallback.sandbox_jobs,
+                        fallback.format,
+                        fallback.failed,
+                        fallback.failure_reason,
+                    )
             else:
                 return controller_fallback()
         else:

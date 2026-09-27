@@ -199,6 +199,89 @@ def test_rejects_invalid_budget_before_dispatch(tmp_path: Path) -> None:
         )
 
 
+def test_each_repair_attempt_writes_a_six_checkpoint_job_record(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    cases = [_case(lake, b"<p>Alpha</p>", ({"name": "Alpha"},))]
+    host = {
+        "docker_host": "synthetic-host",
+        "runtime": "runsc",
+        "runtime_available": True,
+    }
+    pod = {
+        "hostname": "synthetic-repair-pod",
+        "uname": {"system": "Linux", "release": "synthetic", "machine": "x86_64"},
+        "cpu_virtualization_flags": [],
+        "dev_kvm_present": False,
+    }
+    isolation = {
+        "probes": [
+            {"probe": "network_non_allowlisted", "blocked": True},
+            {"probe": "write_outside_pod", "blocked": True},
+            {"probe": "write_outside_writable_mount", "blocked": True},
+            {"probe": "no_host_mounts", "blocked": True},
+        ]
+    }
+    secrets = {
+        "env_keys_found": 0,
+        "files_with_keys": 0,
+        "metadata_ip": "BLOCKED",
+        "mesh": "BLOCKED",
+        "ok": True,
+    }
+    teardown = {
+        "pod_gone": True,
+        "proxy_gone": True,
+        "network_removed": True,
+        "verified": True,
+    }
+
+    class ProofExecutor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_from_lake(self, _lake, captures, code, limits):
+            self.calls += 1
+            proof = {
+                "host_check": host,
+                "pod": pod,
+                "isolation": isolation,
+                "secrets": secrets,
+                "teardown": teardown,
+            }
+            if self.calls == 1:
+                return RepairExecution(([{"name": "Wrong"}],), "", proof=proof)
+            return RepairExecution(([{"name": "Alpha"}],), "", proof=proof)
+
+    executor = ProofExecutor()
+    outcome = run_code_repair(
+        **_args(lake, cases),
+        initial_code="first",
+        patch=lambda _feedback: "second",
+        executor=executor,
+    )
+    assert outcome.passed
+    assert [job["outcome"]["status"] for job in outcome.sandbox_jobs] == ["failed", "completed"]
+    for job in outcome.sandbox_jobs:
+        assert set(job["checkpoints"]) == {
+            "host",
+            "task",
+            "where",
+            "isolation",
+            "secrets",
+            "teardown",
+        }
+        assert job["run_id"] == "live-test"
+        assert job["source_id"] == "source-test"
+        assert job["checkpoints"]["host"]["runtime"] == "runsc"
+        assert job["checkpoints"]["where"]["hostname"] == "synthetic-repair-pod"
+        assert all(
+            probe["result"] == "BLOCKED" for probe in job["checkpoints"]["isolation"]["probes"]
+        )
+        assert job["checkpoints"]["secrets"]["ok"] is True
+        assert job["checkpoints"]["teardown"]["ok"] is True
+        validate_document("jobs", job)
+
+
 def test_missing_runsc_fails_before_creating_any_pod(monkeypatch) -> None:
     calls = []
 

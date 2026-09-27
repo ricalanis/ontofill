@@ -12,7 +12,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +20,7 @@ from typing import Protocol
 from ontofill.lake import FileLake, S3Lake
 from ontofill.refiner.provenance import validate_run_provenance
 from ontofill.sandbox.capture import DockerTimeout, _docker, _pod_exit_reason
+from ontofill.sandbox.jobs import build_repair_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -44,6 +45,8 @@ class RepairExecution:
     error: str | None = None
     limit_reason: str | None = None
     input_proof: dict | None = None
+    proof: dict | None = None
+    usage: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,8 @@ class RepairFeedback:
     diff: str
     code_diff: str
     test: dict
+    expected_row_count: int = 0
+    target_volume: int | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,7 @@ class RepairOutcome:
     attempts: int
     failure_reason: str | None = None
     outputs: tuple[list[dict], ...] = ()
+    sandbox_jobs: tuple[dict, ...] = ()
 
 
 class RepairExecutor(Protocol):
@@ -144,7 +150,16 @@ class DockerRepairExecutor:
         info = json.loads(_docker("info", "--format", "{{json .}}").stdout)
         if "runsc" not in info.get("Runtimes", {}):
             raise RuntimeError("gVisor runsc is required for code repair")
+        host = {
+            "docker_host": info.get("Name", "unknown"),
+            "operating_system": info.get("OperatingSystem", "unknown"),
+            "architecture": info.get("Architecture", "unknown"),
+            "runtime": "runsc",
+            "runtime_available": True,
+        }
+        teardown: dict = {}
         name = f"ontofill-repair-{uuid.uuid4().hex[:12]}"
+        execution = RepairExecution(())
         with tempfile.TemporaryDirectory(prefix="ontofill-repair-") as directory:
             stage = Path(directory)
             (stage / "candidate.py").write_text(code, encoding="utf-8")
@@ -207,41 +222,56 @@ class DockerRepairExecutor:
                         check=False,
                     )
                 except DockerTimeout:
-                    return RepairExecution(
+                    execution = RepairExecution(
                         (), "code.test exceeded pod wall-clock limit", limit_reason="timeout"
                     )
-                reason = _pod_exit_reason(name, result)
-                if reason:
-                    return RepairExecution(
-                        (), "code.test exceeded pod resource limit", limit_reason=reason
-                    )
-                if result.returncode:
-                    detail = (result.stderr or result.stdout)[-8192:]
-                    return RepairExecution((), detail, error=f"pod exited {result.returncode}")
-                size = _docker(
-                    "exec", name, "wc", "-c", "/work/output.json", timeout=10
-                ).stdout.split()[0]
-                if int(size) > _MAX_RESULT_BYTES:
-                    return RepairExecution(
-                        (), "runner result exceeded 8 MiB", error="result_too_large"
-                    )
-                document = json.loads(
-                    _docker("exec", name, "cat", "/work/output.json", timeout=30).stdout
-                )
-                return RepairExecution(
-                    tuple(document["outputs"]),
-                    document["stderr"],
-                    document.get("error"),
-                    input_proof=document.get("input_proof"),
-                )
+                else:
+                    reason = _pod_exit_reason(name, result)
+                    if reason:
+                        execution = RepairExecution(
+                            (), "code.test exceeded pod resource limit", limit_reason=reason
+                        )
+                    elif result.returncode:
+                        detail = (result.stderr or result.stdout)[-8192:]
+                        execution = RepairExecution(
+                            (), detail, error=f"pod exited {result.returncode}"
+                        )
+                    else:
+                        size = _docker(
+                            "exec", name, "wc", "-c", "/work/output.json", timeout=10
+                        ).stdout.split()[0]
+                        if int(size) > _MAX_RESULT_BYTES:
+                            execution = RepairExecution(
+                                (), "runner result exceeded 8 MiB", error="result_too_large"
+                            )
+                        else:
+                            document = json.loads(
+                                _docker("exec", name, "cat", "/work/output.json", timeout=30).stdout
+                            )
+                            execution = RepairExecution(
+                                tuple(document["outputs"]),
+                                document["stderr"],
+                                document.get("error"),
+                                input_proof=document.get("input_proof"),
+                                proof={"host_check": host, **(document.get("proof") or {})},
+                                usage=document.get("usage"),
+                            )
             finally:
                 _docker("rm", "-f", name, check=False, timeout=30)
                 absence = _docker("inspect", name, check=False, timeout=10)
                 detail = (absence.stderr + absence.stdout).lower()
-                if absence.returncode == 0 or not any(
+                pod_gone = absence.returncode != 0 and any(
                     marker in detail for marker in ("no such object", "no such container")
-                ):
+                )
+                teardown = {
+                    "pod_gone": pod_gone,
+                    "proxy_gone": True,
+                    "network_removed": True,
+                    "verified": pod_gone,
+                }
+                if not pod_gone:
                     raise RuntimeError("repair pod teardown could not be verified")
+        return replace(execution, proof={**(execution.proof or {}), "teardown": teardown})
 
     @staticmethod
     def _stage_local_file(path: Path, name: str, container_path: str) -> None:
@@ -341,6 +371,7 @@ def run_code_repair(
     parent_step_id: str | None = None,
     executor: RepairExecutor | None = None,
     emit_step: Callable[[dict], None] | None = None,
+    target_volume: int | None = None,
 ) -> RepairOutcome:
     """Test stored captures, ask the control plane for patches, and log every bounded attempt.
 
@@ -370,12 +401,17 @@ def run_code_repair(
             raise ValueError("expected records must be dictionaries")
     if total_bytes > _MAX_CAPTURE_BYTES:
         raise ValueError("combined captures exceed 8 MiB")
+    if target_volume is not None and (type(target_volume) is not int or target_volume < 1):
+        raise ValueError("target_volume must be a positive integer when present")
+    expected_row_count = sum(len(case.expected) for case in captures)
     runner = executor or DockerRepairExecutor()
     code = initial_code
     previous_code = ""
     trace: list[dict] = []
+    jobs: list[dict] = []
     last_key = ""
     for attempt in range(1, max_attempts + 1):
+        started_at = datetime.now(UTC).isoformat()
         code_bytes = code.encode("utf-8")
         if not code_bytes or len(code_bytes) > _MAX_CODE_BYTES:
             raise ValueError("candidate code must be 1..262144 bytes")
@@ -409,6 +445,36 @@ def run_code_repair(
             and len(execution.outputs) == len(captures)
             and test["precision"] == 1.0
             and test["coverage"] == 1.0
+        )
+        attempt_limit = execution.limit_reason
+        if attempt_limit not in {"timeout", "memory", "pids", "max_steps"}:
+            attempt_limit = None
+        job_record = build_repair_job_record(
+            execution,
+            context={
+                "job_id": f"job:{run_id}:{source_id}:{objective_id or 'none'}:repair-{attempt}",
+                "run_id": run_id,
+                "step_id": f"step:{uuid.uuid4().hex}",
+                "source_id": source_id,
+                "generated_by": provenance.copy(),
+            },
+            request={
+                "action": "code.test",
+                "attempt": attempt,
+                "capture_keys": [case.capture_key for case in captures],
+                "code_key": code_key,
+            },
+            result={
+                "ok": passed,
+                "precision": test["precision"],
+                "coverage": test["coverage"],
+                "pages": test["pages"],
+                "error": execution.error,
+            },
+            limits=budget.as_dict(),
+            started_at=started_at,
+            ended_at=datetime.now(UTC).isoformat(),
+            failure_reason=attempt_limit,
         )
         repair_step = {
             "step_id": f"step:{uuid.uuid4().hex}",
@@ -448,6 +514,7 @@ def run_code_repair(
             "generated_by": provenance.copy(),
         }
         trace.append(repair_step)
+        jobs.append(job_record)
         if emit_step is not None:
             emit_step(repair_step.copy())
         if passed:
@@ -457,6 +524,7 @@ def run_code_repair(
                 code_key,
                 attempt,
                 outputs=tuple(execution.outputs),
+                sandbox_jobs=tuple(jobs),
             )
         if execution.limit_reason:
             limit_step = {
@@ -471,17 +539,61 @@ def run_code_repair(
             trace.append(limit_step)
             if emit_step is not None:
                 emit_step(limit_step.copy())
-            return RepairOutcome(False, tuple(trace), code_key, attempt, execution.limit_reason)
+            return RepairOutcome(
+                False,
+                tuple(trace),
+                code_key,
+                attempt,
+                execution.limit_reason,
+                sandbox_jobs=tuple(jobs),
+            )
         if execution.error == "executor_error":
-            return RepairOutcome(False, tuple(trace), code_key, attempt, "executor_error")
+            return RepairOutcome(
+                False,
+                tuple(trace),
+                code_key,
+                attempt,
+                "executor_error",
+                sandbox_jobs=tuple(jobs),
+            )
         if attempt == max_attempts:
-            return RepairOutcome(False, tuple(trace), code_key, attempt, "max_attempts")
-        feedback = RepairFeedback(attempt, code, stderr[-500:], output_diff[:8192], diff, test)
+            return RepairOutcome(
+                False,
+                tuple(trace),
+                code_key,
+                attempt,
+                "max_attempts",
+                sandbox_jobs=tuple(jobs),
+            )
+        feedback = RepairFeedback(
+            attempt,
+            code,
+            stderr[-500:],
+            output_diff[:8192],
+            diff,
+            test,
+            expected_row_count=expected_row_count,
+            target_volume=target_volume,
+        )
         try:
             candidate = patch(feedback)
         except Exception:  # noqa: BLE001 - inference failures trigger the caller's safe fallback
-            return RepairOutcome(False, tuple(trace), code_key, attempt, "patch_error")
+            return RepairOutcome(
+                False,
+                tuple(trace),
+                code_key,
+                attempt,
+                "patch_error",
+                sandbox_jobs=tuple(jobs),
+            )
         if candidate is None or candidate == code:
-            return RepairOutcome(False, tuple(trace), code_key, attempt, "no_patch")
+            return RepairOutcome(
+                False,
+                tuple(trace),
+                code_key,
+                attempt,
+                "no_patch",
+                sandbox_jobs=tuple(jobs),
+            )
         previous_code, code = code, candidate
     raise AssertionError(f"unreachable after code key {last_key}")

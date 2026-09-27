@@ -130,14 +130,72 @@ def _generate_code(
     return result["code"]
 
 
-def _patch_code(decision: DecisionClient):
-    schema = _code_schema()
+def _patch_schema() -> dict:
+    """A bounded patch answer: an optional exact-string edit list, else full replacement code."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["code"],
+        "properties": {
+            "code": {"type": "string", "maxLength": _MAX_CODE_BYTES},
+            "edits": {
+                "type": "array",
+                "maxItems": 40,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["find", "replace"],
+                    "properties": {
+                        "find": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "replace": {"type": "string", "maxLength": 4000},
+                    },
+                },
+            },
+        },
+    }
 
+
+def _apply_edits(code: str, edits: list[dict]) -> str:
+    """Apply a bounded exact-string edit list; each anchor must match exactly once."""
+    result = code
+    for edit in edits:
+        anchor = edit["find"]
+        if result.count(anchor) != 1:
+            raise ValueError("each patch edit must match the current code exactly once")
+        result = result.replace(anchor, edit["replace"], 1)
+    if not result.strip():
+        raise ValueError("the patched extractor must not be empty")
+    return result
+
+
+def _patched_source(result: dict, current_code: str) -> str:
+    """Resolve a validated patch answer to replacement source (a non-empty edits list wins)."""
+    edits = result.get("edits")
+    if edits:
+        return _apply_edits(current_code, edits)
+    code = result.get("code")
+    if not isinstance(code, str) or not code.strip():
+        raise ValueError("a patch needs either a non-empty edits list or full replacement code")
+    return code
+
+
+def _patch_code(decision: DecisionClient):
     def patch(feedback: RepairFeedback) -> str | None:
         prompt = (
             "Repair this deterministic HTML extractor so it exactly matches the D1 expected rows. "
             "Keep extract(capture: bytes) and use only the Python standard library. Do not add network "
-            "access, inference, or guessed values. Current extractor source: "
+            "access, inference, or guessed values. The page must yield exactly "
+            f"{feedback.expected_row_count} expected row(s)"
+            + (
+                f" and the approved target volume is {feedback.target_volume}"
+                if feedback.target_volume
+                else ""
+            )
+            + "; do not stop at the first table, sub-table or page when the expected count is larger. "
+            "Prefer a small list of exact-string edits: each item has a find string copied "
+            "byte-for-byte from the current extractor that occurs exactly once, and its replace string. "
+            "Return the full code field only when the change cannot be expressed as a few edits. "
+            "Current extractor source: "
             + screened_page_content(feedback.code)
             + " Runner stderr: "
             + screened_page_content(feedback.stderr_excerpt)
@@ -145,10 +203,20 @@ def _patch_code(decision: DecisionClient):
             + screened_page_content(feedback.diff)
             + " Previous code diff: "
             + screened_page_content(feedback.code_diff)
-            + " Return only the complete replacement source in the code field."
+            + " Return the bounded patch object."
         )
-        result = complete_validated(decision, "phase5.repair_patch", prompt, schema)
-        return result["code"]
+
+        def applicable(answer: dict) -> None:
+            _patched_source(answer, feedback.code)
+
+        result = complete_validated(
+            decision,
+            "phase5.repair_patch",
+            prompt,
+            _patch_schema(),
+            validator=applicable,
+        )
+        return _patched_source(result, feedback.code)
 
     return patch
 
@@ -224,6 +292,7 @@ def repair_html_extractor(
     parse_executor: ParseExecutor | None = None,
     limits: SandboxLimits | None = None,
     max_attempts: int = 3,
+    target_volume: int | None = None,
 ) -> HtmlRepairResult:
     """Replay or generate an HTML extractor against this run's bronze and D1 rows."""
     if not expected:
@@ -303,6 +372,7 @@ def repair_html_extractor(
         max_attempts=max_attempts,
         parent_step_id=parent_step_id,
         executor=executor,
+        target_volume=target_volume,
     )
 
     if not outcome.passed:
@@ -311,7 +381,7 @@ def repair_html_extractor(
             (*parse_trace, *outcome.trace),
             outcome.outputs,
             failure_reason=outcome.failure_reason,
-            sandbox_jobs=sandbox_jobs,
+            sandbox_jobs=(*sandbox_jobs, *outcome.sandbox_jobs),
         )
 
     code = lake.read_key(outcome.code_key).decode("utf-8")
@@ -339,7 +409,7 @@ def repair_html_extractor(
                 tuple(trace),
                 outcome.outputs,
                 failure_reason=type(exc).__name__,
-                sandbox_jobs=sandbox_jobs,
+                sandbox_jobs=(*sandbox_jobs, *outcome.sandbox_jobs),
             )
         version = int(macro_path.name.removeprefix("v"))
         trace.append(
@@ -377,5 +447,5 @@ def repair_html_extractor(
         outcome.outputs,
         macro_path=macro_path,
         promoted=should_promote,
-        sandbox_jobs=sandbox_jobs,
+        sandbox_jobs=(*sandbox_jobs, *outcome.sandbox_jobs),
     )

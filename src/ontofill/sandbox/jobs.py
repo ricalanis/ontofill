@@ -458,6 +458,137 @@ def build_job_record(
     return record
 
 
+def build_repair_job_record(
+    execution: Mapping[str, Any] | object,
+    *,
+    context: Mapping[str, Any],
+    request: Mapping[str, Any],
+    result: Mapping[str, Any],
+    limits: Mapping[str, Any],
+    started_at: str,
+    ended_at: str,
+    failure_reason: str | None = None,
+) -> dict:
+    """Collapse one repair pod run into a six-checkpoint jobs.jsonl record.
+
+    Mirrors the parse pod's proof so repair work is visible in the sandbox feed.
+    Any missing probe yields an honest ``not_run``/false checkpoint rather than a
+    fabricated pass.
+    """
+    proof = getattr(execution, "proof", None)
+    if not isinstance(proof, dict):
+        proof = execution.get("proof") if isinstance(execution, dict) else None
+    proof = proof if isinstance(proof, dict) else {}
+    usage = getattr(execution, "usage", None)
+    if not isinstance(usage, dict):
+        usage = execution.get("usage") if isinstance(execution, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    host = proof.get("host_check")
+    pod = proof.get("pod")
+    isolation = proof.get("isolation")
+    secrets = proof.get("secrets")
+    teardown = proof.get("teardown")
+    host_checkpoint = (
+        {
+            "ok": bool(host.get("runtime_available") and host.get("runtime") == "runsc"),
+            "sandbox_host": host.get("docker_host", "unknown"),
+            "runtime": host.get("runtime", "unknown"),
+            "virt": {
+                "cpu_virtualization_flags": pod.get("cpu_virtualization_flags", []) if pod else [],
+                "dev_kvm_present": bool(pod and pod.get("dev_kvm_present")),
+            },
+        }
+        if isinstance(host, dict)
+        else {"ok": False, "not_run": True}
+    )
+    where = (
+        {
+            "ok": bool(pod.get("hostname") and pod.get("uname", {}).get("system") == "Linux"),
+            "hostname": pod.get("hostname", "unknown"),
+            "uname": pod.get("uname", {}),
+        }
+        if isinstance(pod, dict)
+        else {"ok": False, "not_run": True}
+    )
+    isolation_checkpoint = (
+        {
+            "probes": [
+                {
+                    "probe": str(item.get("probe", "unnamed")),
+                    "result": "BLOCKED" if item.get("blocked") else "ALLOWED",
+                    "detail": {
+                        str(key): value
+                        for key, value in item.items()
+                        if key not in {"probe", "blocked"}
+                        and isinstance(value, (str, int, float, bool))
+                    },
+                }
+                for item in isolation.get("probes", [])
+            ]
+        }
+        if isinstance(isolation, dict) and isolation.get("probes")
+        else {"probes": [], "not_run": True}
+    )
+    secrets_checkpoint = (
+        {
+            "env_keys_found": int(secrets.get("env_keys_found", 0)),
+            "files_with_keys": int(secrets.get("files_with_keys", 0)),
+            "metadata_ip": secrets.get("metadata_ip", "ALLOWED"),
+            "mesh": secrets.get("mesh", "ALLOWED"),
+        }
+        if isinstance(secrets, dict)
+        else {"ok": False, "not_run": True}
+    )
+    if isinstance(secrets, dict):
+        secrets_checkpoint["ok"] = bool(secrets.get("ok"))
+    teardown_detail = (
+        {
+            "pod_gone": bool(teardown.get("pod_gone")),
+            "proxy_gone": bool(teardown.get("proxy_gone")),
+            "network_removed": bool(teardown.get("network_removed")),
+            "verified": bool(teardown.get("verified")),
+        }
+        if isinstance(teardown, dict)
+        else {"pod_gone": False, "proxy_gone": False, "network_removed": False, "verified": False}
+    )
+    record = {
+        "job_id": context["job_id"],
+        "run_id": context["run_id"],
+        "step_id": context["step_id"],
+        "source_id": context["source_id"],
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "generated_by": context["generated_by"],
+        "limits": dict(limits),
+        "usage": {
+            "peak_memory_mb": max(0.0, float(usage.get("peak_memory_mb", 0.0))),
+            "wall_s": max(0.0, float(usage.get("wall_s", 0.0))),
+            "steps": max(0, int(usage.get("steps", 1))),
+        },
+        "checkpoints": {
+            "host": host_checkpoint,
+            "task": {
+                "ok": bool(result.get("ok")),
+                "requested": dict(request),
+                "result": dict(result),
+                "value_ids": [],
+            },
+            "where": where,
+            "isolation": isolation_checkpoint,
+            "secrets": secrets_checkpoint,
+            "teardown": {"ok": teardown_detail["verified"], "detail": teardown_detail},
+        },
+        "outcome": {
+            "status": "completed" if result.get("ok") else "failed",
+            **({"reason": str(failure_reason)} if failure_reason else {}),
+        },
+    }
+    if failure_reason in {"timeout", "memory", "pids", "max_steps"}:
+        record["failure_reason"] = failure_reason
+    validate_job_record(record)
+    return record
+
+
 def append_job_record(lake: FileLake | S3Lake, case_id: str, record: Mapping[str, Any]) -> str:
     """Append a verified record; consumers use the last line for each job_id."""
     validate_job_record(record)
