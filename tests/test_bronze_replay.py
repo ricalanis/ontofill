@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
+from profiler import profile_bytes
 
 from ontofill import workflow
 from ontofill.case.checkpoints import ApprovalArtifactMismatch
@@ -14,6 +16,7 @@ from ontofill.refiner import MemorySilverStore, export_run, refine_observations
 from ontofill.refiner.bronze_replay import replay_bronze_observations
 from ontofill.sandbox import parse as parse_module
 from tests.approval_support import bind_approval
+from tests.profiler_helpers import make_pdf
 from tests.r17_helpers import SyntheticParseExecutor
 from tests.test_refiner import RECORDED, SOURCE_ID, URL, dod_queries, ontology, write_lineage
 
@@ -296,6 +299,67 @@ def test_replay_fills_new_ontology_property_and_exports_trace_lineage(tmp_path) 
     exported = json.loads(lake.read_key(f"gold/library-case/{RUN_ID}/entities.jsonl"))
     assert exported["properties"]["service_zone"]["value"] == "North"
     assert exported["properties"]["service_zone"]["evidence"][0]["bronze_key"] == bronze_key
+
+
+def test_replay_complete_pdf_profile_keeps_page_and_row_receipts(tmp_path) -> None:
+    case_dir, lake, model, _queries, _old_key, _screenshot, trace = _recorded_case(tmp_path)
+    pdf = make_pdf(
+        [
+            [
+                "book_id          title             Service Zone",
+                "B-1              The First         North",
+            ]
+        ]
+    )
+    url = "https://example.invalid/catalog.pdf"
+    key = lake.put_bytes(
+        pdf,
+        {
+            "content_type": "application/pdf",
+            "url": url,
+            "captured_at": "2026-01-01T00:00:00Z",
+            "source_id": SOURCE_ID,
+            "step_id": "step:file",
+        },
+    )
+    trace[1]["observed"]["url"] = url
+    trace[1]["requested"]["url"] = url
+    trace[1]["executed"]["bronze_key"] = key
+
+    class ProfiledExecutor(SyntheticParseExecutor):
+        def run(self, payload, *, kind, format, max_rows, base_url, limits):
+            execution = super().run(
+                payload,
+                kind=kind,
+                format=format,
+                max_rows=max_rows,
+                base_url=base_url,
+                limits=limits,
+            )
+            if kind == "pdf":
+                return replace(
+                    execution, output={**execution.output, "profile": profile_bytes(payload)}
+                )
+            return execution
+
+    replay = replay_bronze_observations(
+        case_dir=case_dir,
+        lake=lake,
+        run_id=RUN_ID,
+        trace=trace,
+        ontology=model,
+        provenance=RECORDED,
+        parse_executor=ProfiledExecutor(),
+    )
+
+    assert {item.property_id: item.value for item in replay.observations} == {
+        "book_id": "B-1",
+        "title": "The First",
+        "service_zone": "North",
+    }
+    assert all("page=1:row=2" in item.evidence["selector"] for item in replay.observations)
+    assert all(item.evidence["bronze_key"] == key for item in replay.observations)
+    assert replay.trace_steps[0]["parent_step_id"] == "step:file"
 
 
 def test_replay_ignores_unreferenced_files_incomplete_fetches_and_ambiguous_headers(

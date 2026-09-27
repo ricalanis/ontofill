@@ -51,6 +51,7 @@ from ontofill.sandbox import (
 )
 from ontofill.sandbox.jobs import append_job_record, build_job_record
 from ontofill.sandbox.parse import ParseExecutor
+from ontofill.sandbox.profile_tables import profile_to_parsed_file
 
 Capture = Callable[..., dict]
 ParsedTable = tuple[str | None, tuple[str, ...], list[ParsedRow]]
@@ -228,7 +229,7 @@ def _format(url: str) -> str | None:
     parsed = urlsplit(url)
     names = [parsed.path, *parse_qs(parsed.query).get("name", [])]
     for name in names:
-        match = re.search(r"\.(csv|xls|xlsx|xlsm|json)(?:$|[?#])", name, re.IGNORECASE)
+        match = re.search(r"\.(csv|xls|xlsx|xlsm|json|pdf)(?:$|[?#])", name, re.IGNORECASE)
         if match:
             return match.group(1).lower()
     return None
@@ -1052,6 +1053,7 @@ def execute_objective(
     downloaded = None
     repair_trace: list[dict] = []
     mapped = None
+    pdf_pages: dict[tuple[str, int], int] = {}
     direct_key = page.get("document_key")
     if isinstance(direct_key, str):
         direct_format = _document_format(page["url"], str(page.get("document_content_type") or ""))
@@ -1060,7 +1062,11 @@ def execute_objective(
                 lake,
                 direct_key,
                 format=direct_format,
-                max_rows=10_000 if tdd.get("membership") else 300,
+                max_rows=10_000
+                if tdd.get("membership")
+                else 500
+                if direct_format == "pdf"
+                else 300,
                 run_id=run_id,
                 source_id=source_id,
                 step_id=f"step:{uuid.uuid4().hex}",
@@ -1079,6 +1085,11 @@ def execute_objective(
         traces.extend(parsed_result.trace)
         jobs.append(parsed_result.job_record)
         parsed = parsed_result.as_parsed_file()
+        if direct_format == "pdf":
+            adapted = None if parsed_result.truncated else profile_to_parsed_file(parsed_result)
+            if adapted is None:
+                return ExecutionResult([], traces, jobs, "pdf", True, "incomplete_pdf_profile")
+            parsed, pdf_pages = adapted
         downloaded = {
             "bronze_key": direct_key,
             "url": page["url"],
@@ -1200,7 +1211,13 @@ def execute_objective(
                 lake,
                 downloaded["bronze_key"],
                 format=_format(downloaded["url"]),
-                max_rows=10_000 if tdd.get("membership") else 300,
+                max_rows=(
+                    10_000
+                    if tdd.get("membership")
+                    else 500
+                    if _format(downloaded["url"]) == "pdf"
+                    else 300
+                ),
                 run_id=run_id,
                 source_id=source_id,
                 step_id=f"step:{uuid.uuid4().hex}",
@@ -1219,6 +1236,11 @@ def execute_objective(
         traces.extend(parsed_result.trace)
         jobs.append(parsed_result.job_record)
         parsed = parsed_result.as_parsed_file()
+        if parsed_result.format == "pdf":
+            adapted = None if parsed_result.truncated else profile_to_parsed_file(parsed_result)
+            if adapted is None:
+                return ExecutionResult([], traces, jobs, "pdf", True, "incomplete_pdf_profile")
+            parsed, pdf_pages = adapted
         evidence_url, bronze_key = downloaded["url"], downloaded["bronze_key"]
         parent_step = downloaded["trace"][0]["step_id"]
     else:
@@ -1522,7 +1544,12 @@ def execute_objective(
         timestamp = datetime.now(UTC).isoformat()
         value_ids = []
         for property_id, (value, header) in values.items():
-            selector = f"{sheet or 'table'}:{row.row_number}:{header}"
+            pdf_page = pdf_pages.get((str(sheet), row.row_number)) if sheet else None
+            selector = (
+                f"{sheet}:page={pdf_page}:row={row.row_number}:{header}"
+                if pdf_page is not None
+                else f"{sheet or 'table'}:{row.row_number}:{header}"
+            )
             evidence = {
                 "url": evidence_url,
                 "bronze_key": bronze_key,
@@ -1575,7 +1602,15 @@ def execute_objective(
                 "objective_id": objective_id,
                 "tdd_path": tdd_path,
                 "mode": execution_mode,
-                "observed": {"sheet": sheet, "row": row.row_number},
+                "observed": {
+                    "sheet": sheet,
+                    "row": row.row_number,
+                    **(
+                        {"page": pdf_pages[(str(sheet), row.row_number)]}
+                        if (str(sheet), row.row_number) in pdf_pages
+                        else {}
+                    ),
+                },
                 "requested": {"tool": "emit.observation", "properties": list(values)},
                 "executed": {"tool": "emit.observation", "count": len(value_ids)},
                 "evaluated": {"status": "ok", "literal_cells": True},

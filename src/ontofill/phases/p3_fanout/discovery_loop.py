@@ -65,6 +65,7 @@ from ontofill.phases.p3_fanout.leads import (
 from ontofill.sandbox import CaptureBlocked, SandboxLimits
 from ontofill.sandbox.domains import public_suffix, registrable_domain
 from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
+from ontofill.sandbox.profile_tables import complete_profile_tables
 
 TDD_PATH = "03-fanout/discovery-loop.json"
 _BOOLEAN_TYPES = {"boolean", "bool", "xsd:boolean"}
@@ -754,6 +755,41 @@ def _parsed_document_headers(parsed_page: object) -> list[str]:
 
 def _document_sheet_preview(parsed_page: object) -> list[dict]:
     """Keep at most four sheets, each with headers and four short entity rows."""
+    if getattr(parsed_page, "format", None) == "pdf":
+        tables = complete_profile_tables(getattr(parsed_page, "profile", None))
+        if tables is None:
+            return []
+        preview = []
+        for table in tables[:4]:
+            if table.get("granularity") == "aggregate":
+                continue
+            columns = [
+                str(header)[:160]
+                for header in table["headers"][:20]
+                if not _SENSITIVE_HEADER.search(header)
+            ]
+            if not columns:
+                continue
+            preview.append(
+                {
+                    "sheet": str(table.get("sheet") or "pdf-table")[:100],
+                    "headers": columns,
+                    "header_row_number": int(table.get("header_row") or 0),
+                    "row_count": table["row_count"],
+                    "sample_rows": [
+                        {
+                            "row_number": receipt["row_number"],
+                            "page": receipt["page"],
+                            "values": [
+                                " ".join(str(receipt["values"][header]).split())[:100]
+                                for header in columns
+                            ],
+                        }
+                        for receipt in table["rows"][:4]
+                    ],
+                }
+            )
+        return preview
     if getattr(parsed_page, "format", None) not in {"csv", "xls", "xlsx", "xlsm", "json"}:
         return []
     rows = getattr(parsed_page, "rows", ())
@@ -2099,6 +2135,7 @@ class DiscoveryLoop:
             preview["_authority_tier_suggestion"] = suggested_tier
             preview["_matched_publisher_kind"] = publisher_kind
 
+        document_sheets = _document_sheet_preview(parsed_page) if is_document else []
         document_headers = _parsed_document_headers(parsed_page)
         listing_row_count = sum(
             str(row.get("sheet") or "").startswith("html-table-") for row in parsed_page.rows
@@ -2118,7 +2155,12 @@ class DiscoveryLoop:
                 "size_bytes": document_size,
                 "format": parsed_page.format if is_document else None,
                 "headers": document_headers,
-                "row_count": len(parsed_page.rows),
+                "sheets": document_sheets,
+                "row_count": (
+                    sum(sheet["row_count"] for sheet in document_sheets)
+                    if parsed_page.format == "pdf"
+                    else len(parsed_page.rows)
+                ),
                 "text": parsed_page.text[:6000]
                 if is_document and parsed_page.format == "pdf"
                 else "",
@@ -2769,7 +2811,11 @@ class DiscoveryLoop:
                 "format": parsed_page.format if is_document else None,
                 "headers": document_headers,
                 "sheets": document_sheets,
-                "row_count": len(parsed_page.rows),
+                "row_count": (
+                    sum(sheet["row_count"] for sheet in document_sheets)
+                    if parsed_page.format == "pdf"
+                    else len(parsed_page.rows)
+                ),
                 "text": parsed_page.text[:6000]
                 if is_document and parsed_page.format == "pdf"
                 else "",

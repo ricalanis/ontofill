@@ -352,3 +352,11 @@ Discovery uses each approved authority-policy publisher's kind and exact domain 
 DONE: synthetic tests show the named publisher appears in dispatched queries and a synonym header is accepted while an uncaptured quote remains refused. Full pytest, Ruff lint/format and diff checks pass; VM deploy waits for a zero-engine window.
 
 Constraints: no case-specific vocabulary/domains, no real-case or APPROVED edits, no source admission from leads alone.
+
+# Current goal: R54 profile consumption
+
+The engine consumes a complete networkless document profile in P3 source capability and in P5 column mapping, retaining table, absolute PDF page and row receipts. Aggregate or incomplete profiles produce no observations. A source still needs the normal authority, objective, TDD and approval chain.
+
+DONE: synthetic PDF profile tests show bounded P3 headers/samples and P5 literal cells with page/row selectors; incomplete/aggregate profiles refuse. Full pytest, Ruff lint/format and diff gate pass. Public main push follows a pre-push scan; VM deployment waits for zero engine processes.
+
+Constraints: P3/P5 consumers only, no parser/profiler files (sibling owns those), no case or APPROVED edits, no historical trace invention.

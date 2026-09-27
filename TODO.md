@@ -680,3 +680,12 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, synthetic P3 tests, ta
 2. [x] Implement bounded publisher rotation and evidence-grounded semantic quote guard.
 3. [ ] Managed focused/full gate passed (691 passed, 5 skipped; Ruff clean); pre-push scan and public main push follow.
 4. [ ] Guarded VM deploy at next paused checkpoint.
+
+# R54 profile consumption
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `src/ontofill/phases/p5_execute/phase.py`, new P5 adapter and synthetic tests, task notes. TASK: use complete profile tables in P3 and P5. DONE: GOAL.md gate. FORMAT: Ruff.
+
+1. [ ] Add red synthetic PDF profile preview/adapter tests.
+2. [ ] Feed complete profile headers/samples to P3 critic; adapt PDF table receipts for P5 mapping and deterministic extraction.
+3. [ ] Compose with parser-bound worker, run managed full gate, scan and push main.
+4. [ ] Deploy only at a fresh zero-engine window and run safe live proof.

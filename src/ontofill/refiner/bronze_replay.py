@@ -20,6 +20,7 @@ from ontofill.lake import FileLake, S3Lake
 from ontofill.refiner.core import Observation
 from ontofill.refiner.provenance import observation_source_metadata
 from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
+from ontofill.sandbox.profile_tables import profile_to_parsed_file
 
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -144,8 +145,10 @@ def _screenshot_key(
 
 def _file_format(content_type: str, url: str) -> str | None:
     mime = content_type.split(";", 1)[0].strip().casefold()
-    if mime in {"text/html", "application/xhtml+xml", "application/pdf"}:
+    if mime in {"text/html", "application/xhtml+xml"}:
         return None
+    if mime == "application/pdf":
+        return "pdf"
     if mime == "text/csv" or mime == "application/csv":
         return "csv"
     if mime in {
@@ -166,6 +169,7 @@ def _file_format(content_type: str, url: str) -> str | None:
         "json": "json",
         "xlsx": "xlsx",
         "xlsm": "xlsm",
+        "pdf": "pdf",
     }.get(suffix)
 
 
@@ -332,7 +336,7 @@ def _replay_file(
             lake,
             key,
             format=format_name,
-            max_rows=10_000,
+            max_rows=500 if format_name == "pdf" else 10_000,
             base_url=file_url,
             run_id=run_id,
             source_id=source_id,
@@ -348,8 +352,14 @@ def _replay_file(
     parse_trace_steps.extend(parse_result.trace)
     parse_job_records.append(parse_result.job_record)
     parsed = parse_result.as_parsed_file()
+    pdf_pages: dict[tuple[str, int], int] = {}
     if parsed.truncated:
         return None
+    if format_name == "pdf":
+        adapted = profile_to_parsed_file(parse_result)
+        if adapted is None:
+            return None
+        parsed, pdf_pages = adapted
     table = _table(parsed)
     if table is None:
         return None
@@ -464,7 +474,12 @@ def _replay_file(
             continue
         entity_id = _entity_id(class_id, identity[0])
         for property_id, (value, header) in values.items():
-            selector = f"{sheet or 'table'}:{row.row_number}:{header}"
+            pdf_page = pdf_pages.get((str(sheet), row.row_number)) if sheet else None
+            selector = (
+                f"{sheet}:page={pdf_page}:row={row.row_number}:{header}"
+                if pdf_page is not None
+                else f"{sheet or 'table'}:{row.row_number}:{header}"
+            )
             planned.append((entity_id, property_id, value, selector))
     if not planned:
         return None
