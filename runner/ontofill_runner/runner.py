@@ -374,7 +374,7 @@ class Runner:
                 self._transition(
                     cid,
                     "needs_human",
-                    reason,
+                    f"{reason} | needs you: revise the brief or PRD authority policy, then start a new run",
                     run_id=run_id,
                     phase=3,
                     checkpoint=None,

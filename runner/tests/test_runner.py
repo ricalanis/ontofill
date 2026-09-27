@@ -192,6 +192,7 @@ def test_no_authoritative_source_exits_needs_human_and_is_not_relaunched(setup, 
     assert [event["kind"] for event in events(setup)] == ["resumed", "needs-human"]
     assert "queries:" in events(setup)[-1]["detail"]
     assert "objections:" in events(setup)[-1]["detail"]
+    assert "revise the brief or PRD authority policy" in events(setup)[-1]["detail"]
 
     r.poll_once()
     assert r.state.status("c1")["state"] == "needs_human"
