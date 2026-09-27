@@ -83,6 +83,22 @@ def _without_probes(s: dict) -> dict:
     return {**s, **{k: _drop_probes(s.get(k)) for k in ("requested", "executed", "evaluated", "observed")}}
 
 
+def block_reason(s: dict):
+    """Why the step was blocked: the step's own reason, else the first refused request's; never an allowed request's
+    'domain_allowed', which a nested lookup would find first."""
+    for field in (s.get("evaluated"), s.get("executed")):
+        f = hc.jsonish(field)
+        if isinstance(f, dict):
+            for k in ("reason", "capture_reason"):
+                if f.get(k) not in (None, ""):
+                    return f[k]
+    events = _find(s.get("evaluated"), "egress_events") or _find(s.get("executed"), "egress_events") or []
+    return next(
+        (e.get("reason") for e in events if isinstance(e, dict) and e.get("decision") == "block" and e.get("reason")),
+        None,
+    )
+
+
 def blocked_hosts(s: dict) -> list[str]:
     """Hosts the sandbox proxy refused during this step, isolation probes excluded."""
     events = _find(s.get("evaluated"), "egress_events") or _find(s.get("executed"), "egress_events") or []
@@ -216,9 +232,9 @@ def classify(s: dict) -> tuple[str, str, str] | None:
         which = next((w for w in STOP_WORDS if w in text), None) or str(evald.get("reason") or "hard stop")
         return "stop", f"Stopped: {which} · {src}", hc.text_of(s.get("evaluated")) or hc.text_of(s.get("requested"))
     if any(w in text for w in BLOCK_WORDS):
-        why = _find(s.get("evaluated"), "reason") or _find(s.get("executed"), "reason")
-        allowed = _find(s.get("requested"), "allowed_domains")
         hosts = blocked_hosts(s)
+        why = block_reason(s)
+        allowed = _find(s.get("requested"), "allowed_domains")
         stored = _find(s.get("evaluated"), "bronze_objects")
         detail = " · ".join(
             str(x)

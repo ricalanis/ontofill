@@ -297,3 +297,4 @@ def test_the_isolation_probe_is_not_a_blocked_domain(client, cases_dir):
     assert s["kind"] == "blocked_domain"
     assert s["title"].startswith("Domain blocked · cdn.thirdparty.example (from ")
     assert "the page itself was captured (3 bronze objects)" in s["detail"] and ".invalid" not in s["detail"]
+    assert s["detail"].startswith("domain not allowed") and "domain allowed" not in s["detail"]
