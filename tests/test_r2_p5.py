@@ -16,6 +16,7 @@ from ontofill.lake import FileLake
 from ontofill.outer_gap import OuterDecision
 from ontofill.phases.p5_execute import (
     ExecutionResult,
+    SourceReviewPending,
     execute_objective,
     execute_objectives,
     normalize_identifier,
@@ -475,7 +476,7 @@ def test_gap_report_routes_by_ontology_property_overlap() -> None:
     assert routed == [{"criterion_id": "hours-gap", "properties": ["name"], "iteration": 2}]
 
 
-@pytest.mark.parametrize("failure_kind", ["none", "p4", "p5"])
+@pytest.mark.parametrize("failure_kind", ["none", "p4", "p5", "p5_review"])
 def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
     tmp_path, monkeypatch, failure_kind
 ) -> None:
@@ -549,6 +550,24 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
 
     def execute_batch(**kwargs):
         batch_calls.append([item["id"] for item in kwargs["objectives"]])
+        if failure_kind == "p5_review":
+            directory = kwargs["case_dir"] / "03-fanout/sources/source-link-review"
+            directory.mkdir(parents=True)
+            (directory / "APPROVAL_PENDING.md").write_text("review a source link\n")
+            first = kwargs["objectives"][0]
+            raise SourceReviewPending(
+                directory=directory,
+                trace=_trace(
+                    kwargs["run_id"],
+                    first["source_id"],
+                    first["id"],
+                    first["source_url"],
+                    "sha256:" + "a" * 64,
+                    "step:source-link-review",
+                ),
+                sandbox_jobs=[],
+                reason="source review required for a linked download",
+            )
         ordered = [
             *[
                 item
@@ -607,6 +626,21 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
         store=MemorySilverStore(),
         lake=lake,
     )
+    if failure_kind == "p5_review":
+        assert result == 3
+        status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
+        assert status["state"] == "paused"
+        assert status["phase"] == 5
+        assert status["checkpoint_pending"] == "source"
+        assert status["reason"] == "source review required for a linked download"
+        trace = [
+            json.loads(line)
+            for line in lake.read_key(f"runs/{case.name}/{run_id}/trace.live.jsonl").splitlines()
+        ]
+        assert any(step["step_id"] == "step:source-link-review" for step in trace)
+        assert not lake.exists(f"gold/{case.name}/{run_id}/metrics.json")
+        assert batch_calls == [selected_ids]
+        return
     assert result == 0
     assert draft_calls == selected_ids
     assert batch_calls == [[item for item in selected_ids if item != failed_id]]

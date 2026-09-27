@@ -55,7 +55,7 @@ from ontofill.phases.p3_fanout.search import (
     SandboxSearchClient,
 )
 from ontofill.phases.p4_local_scoping.phase import draft_local_scope
-from ontofill.phases.p5_execute import execute_objectives
+from ontofill.phases.p5_execute import SourceReviewPending, execute_objectives
 from ontofill.refiner import Observation, export_run, refine_observations, silver_store_from_env
 from ontofill.refiner.bronze_replay import replay_bronze_observations
 from ontofill.runfeed import RunFeed
@@ -1366,6 +1366,26 @@ def run_case(
                     )
                 else:
                     print(f"state=done checkpoint_pending=none open_dod_gaps={len(outer.gaps)}")
+        except SourceReviewPending as exc:
+            fresh = [
+                step for step in exc.trace if step["step_id"] not in {s["step_id"] for s in trace}
+            ]
+            _publish_steps(feed, fresh)
+            trace.extend(fresh)
+            for job in exc.sandbox_jobs:
+                if "checkpoints" in job:
+                    append_job_record(lake, case_id, job)
+                elif "proof" in job:
+                    append_job_record(lake, case_id, build_job_record(job))
+            _publish_unreported_decisions(feed, trace, decision, run_id, 5)
+            feed.update_status(
+                state="paused",
+                phase=5,
+                checkpoint_pending="source",
+                reason=exc.reason,
+            )
+            _report_pause("source", exc.directory, mock)
+            return 3
         except SandboxLimitExceeded as exc:
             fresh = [
                 step for step in exc.trace if step["step_id"] not in {s["step_id"] for s in trace}
