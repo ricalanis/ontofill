@@ -577,6 +577,30 @@ def test_default_parser_refuses_when_runsc_is_unavailable(monkeypatch, tmp_path:
     assert calls == [("info", "--format", "{{json .}}")]
 
 
+def test_parser_docker_info_uses_configured_sandbox_host(monkeypatch) -> None:
+    monkeypatch.setenv("ONTOFILL_SANDBOX_DOCKER_HOST", "ssh://root@100.64.0.2")
+    observed = []
+
+    def fake_run(argv, **kwargs):
+        observed.append((argv, kwargs["env"].get("DOCKER_HOST")))
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps({"Name": "synthetic", "Runtimes": {"runc": {}}}), ""
+        )
+
+    monkeypatch.setattr(parse_module.subprocess, "run", fake_run)
+    result = parse_module.DockerParseExecutor().run(
+        b"synthetic bytes",
+        kind="csv",
+        format="csv",
+        max_rows=10,
+        base_url="",
+        limits=SandboxLimits(memory_mb=256, pids=32, timeout_s=5, max_steps=1),
+    )
+
+    assert result.limit_reason == "runtime_unavailable"
+    assert observed == [(["docker", "info", "--format", "{{json .}}"], "ssh://root@100.64.0.2")]
+
+
 @pytest.mark.skipif(
     os.environ.get("ONTOFILL_RUN_PARSE_CONTAINMENT") != "1" or shutil.which("docker") is None,
     reason="set ONTOFILL_RUN_PARSE_CONTAINMENT=1 to run the real runsc parser proof",

@@ -262,6 +262,21 @@ def test_bootstrap_configures_docker_ssh_identity(monkeypatch) -> None:
     assert any("docker --host ssh://root@100.64.0.2 info" in command for _, command, _ in calls)
 
 
+def test_bootstrap_persists_verified_sandbox_host_in_engine_env(monkeypatch) -> None:
+    calls = []
+
+    def fake_ssh(address, command, *, input_text="", identity_file=None):
+        calls.append((address, command, input_text))
+        return "configured"
+
+    monkeypatch.setattr(bootstrap, "ssh", fake_ssh)
+    assert bootstrap.configure_engine_docker_host("100.64.0.1", "ssh://root@100.64.0.2")
+    assert calls[0][0] == "100.64.0.1"
+    assert calls[0][2] == "ssh://root@100.64.0.2\n"
+    assert "ONTOFILL_SANDBOX_DOCKER_HOST=%s" in calls[0][1]
+    assert "chmod 600 /opt/ontofill/engine.env" in calls[0][1]
+
+
 def test_existing_firewall_with_rules_is_rejected() -> None:
     api = FakeAPI()
     api.firewalls.append(
