@@ -20,7 +20,9 @@ class Pattern:
     kind: str = "id"
 
 
-def _p(name: str, expression: str, *, jurisdictions: tuple[str, ...] | None = None, kind: str = "id"):
+def _p(
+    name: str, expression: str, *, jurisdictions: tuple[str, ...] | None = None, kind: str = "id"
+):
     return Pattern(name, re.compile(expression), jurisdictions, kind)
 
 
@@ -38,13 +40,25 @@ PATTERNS: tuple[Pattern, ...] = (
     _p("phone", r"^\+?\d[\d\s().-]{6,}\d$", kind="contact"),
     _p("integer", r"^\d+$", kind="number"),
     _p("decimal", r"^-?\d+\.\d+$", kind="number"),
-    _p("legal_suffix", r"(?i)\b(?:S\.?A\.?\s?DE\s?C\.?V\.?|S\.?A\.?|S\.?C\.?|"
-     r"S\.?DE\s?R\.?L\.?(?:\s?DE\s?C\.?V\.?)?|LLC|INC\.?|CORP\.?|GMBH|LTDA|PLC)\b"),
-    _p("address_hint", r"(?i)\b(?:calle|c\.|avenida|av\.|blvd|boulevard|street|st\.|road|rd\.|"
-     r"colonia|col\.|cp\s?\d{4,5}|suite|no\.\s?\d+)\b", kind="address"),
+    _p(
+        "legal_suffix",
+        r"(?i)\b(?:S\.?A\.?\s?DE\s?C\.?V\.?|S\.?A\.?|S\.?C\.?|"
+        r"S\.?DE\s?R\.?L\.?(?:\s?DE\s?C\.?V\.?)?|LLC|INC\.?|CORP\.?|GMBH|LTDA|PLC)\b",
+    ),
+    _p(
+        "address_hint",
+        r"(?i)\b(?:calle|c\.|avenida|av\.|blvd|boulevard|street|st\.|road|rd\.|"
+        r"colonia|col\.|cp\s?\d{4,5}|suite|no\.\s?\d+)\b",
+        kind="address",
+    ),
     _p("postal_mx", r"^\d{5}$", jurisdictions=("MX",), kind="address"),
     _p("tax_id_rfc", r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{2,3}$", jurisdictions=("MX",), kind="tax_id"),
-    _p("tax_id_curp", r"^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$", jurisdictions=("MX",), kind="tax_id"),
+    _p(
+        "tax_id_curp",
+        r"^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$",
+        jurisdictions=("MX",),
+        kind="tax_id",
+    ),
     _p("tax_id_us_ein", r"^\d{2}-\d{7}$", jurisdictions=("US",), kind="tax_id"),
     _p("postal_us", r"^\d{5}(?:-\d{4})?$", jurisdictions=("US",), kind="address"),
 )
@@ -110,5 +124,3 @@ def register_patterns(overrides: object) -> int:
 def all_patterns() -> tuple[Pattern, ...]:
     """The built-in library plus any patterns registered for this pod invocation."""
     return (*PATTERNS, *_EXTRA_PATTERNS)
-
-

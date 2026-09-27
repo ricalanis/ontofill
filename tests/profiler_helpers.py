@@ -37,7 +37,9 @@ def make_pdf(pages: list[list[str]], *, font_size: int = 10) -> bytes:
             body.append(f"({_escape(line)}) Tj")
         body.append("ET")
         stream = "\n".join(body).encode()
-        objects.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+        objects.append(
+            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
+        )
     objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>")
 
     out = bytearray(b"%PDF-1.4\n")
@@ -50,9 +52,7 @@ def make_pdf(pages: list[list[str]], *, font_size: int = 10) -> bytes:
     out += b"0000000000 65535 f \n"
     for offset in offsets:
         out += f"{offset:010d} 00000 n \n".encode()
-    out += (
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode()
-    )
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode()
     return bytes(out)
 
 
