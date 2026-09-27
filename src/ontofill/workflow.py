@@ -37,6 +37,7 @@ from ontofill.phases.p3_fanout.search import (
 from ontofill.phases.p4_local_scoping.phase import draft_local_scope
 from ontofill.phases.p5_execute import execute_objectives
 from ontofill.refiner import Observation, export_run, refine_observations, silver_store_from_env
+from ontofill.refiner.bronze_replay import replay_bronze_observations
 from ontofill.runfeed import RunFeed
 from ontofill.sandbox import (
     CaptureBlocked,
@@ -285,6 +286,36 @@ def _persisted_run_trace(
     if not lake.exists(key):
         return current
     return [json.loads(line) for line in lake.read_key(key).splitlines()]
+
+
+def _merge_bronze_replay_steps(
+    trace: list[dict], replay_steps: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    merged = list(trace)
+    by_id = {step["step_id"]: step for step in trace if isinstance(step.get("step_id"), str)}
+    additions = []
+    for replay_step in replay_steps:
+        step_id = replay_step["step_id"]
+        existing = by_id.get(step_id)
+        if existing is not None:
+            stable_existing = {key: value for key, value in existing.items() if key != "ts"}
+            stable_replay = {key: value for key, value in replay_step.items() if key != "ts"}
+            if stable_existing != stable_replay:
+                raise ValueError(f"conflicting bronze replay trace step: {step_id}")
+            continue
+        by_id[step_id] = replay_step
+        additions.append(replay_step)
+        merged.append(replay_step)
+    return merged, additions
+
+
+def _append_trace_bytes(existing: bytes, additions: list[dict]) -> bytes:
+    separator = b"\n" if existing and not existing.endswith(b"\n") else b""
+    appended = b"".join(
+        (json.dumps(step, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        for step in additions
+    )
+    return existing + separator + appended
 
 
 def _publish_steps(feed: RunFeed, trace: list[dict]) -> None:
@@ -1015,6 +1046,18 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
     store = silver_store_from_env()
     ontology = load_json(case_dir / "02-ontology/ontology.json")
     observations = store.list_for_run(run_id) or _read_silver_cache(case_id, run_id)
+    trace_key = f"runs/{case_id}/{run_id}/trace.live.jsonl"
+    previous_trace_bytes = lake.read_key(trace_key)
+    trace = [json.loads(line) for line in previous_trace_bytes.splitlines()]
+    replay = replay_bronze_observations(
+        case_dir=case_dir,
+        lake=lake,
+        run_id=run_id,
+        trace=trace,
+        ontology=ontology,
+        provenance=provenance,
+    )
+    observations.extend(replay.observations)
     if not observations:
         raise RuntimeError(f"no silver observations for {run_id}; refusing to overwrite gold")
     decision = None
@@ -1032,24 +1075,38 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
         shapes_ttl=case_dir / ontology["shacl_path"],
         decision=decision,
     )
-    key = f"runs/{case_id}/{run_id}/trace.live.jsonl"
-    trace = [json.loads(line) for line in lake.read_key(key).splitlines()]
     if decision is not None:
         with RunFeed(lake, case_id, run_id, provenance, start_heartbeat=False) as feed:
             _publish_decision_calls(feed, trace, decision, decision_start, run_id, 5)
-    export_run(
-        lake,
-        case_dir,
-        case_id,
-        run_id,
-        refined.entities,
-        ontology=ontology,
-        dod_queries=load_json(case_dir / "02-ontology/dod-queries.json"),
-        trace=trace,
-        generated_by=provenance,
-        preview=status.get("preview", False),
-        taxonomy_classified=refined.classified,
-    )
+    # Classification calls remain in the audit trail even if replay export fails.
+    # Rollback removes only replay steps that have no exported values.
+    previous_trace_bytes = lake.read_key(trace_key)
+    export_trace, replay_additions = _merge_bronze_replay_steps(trace, replay.trace_steps)
+    if replay_additions:
+        lake.write_key(trace_key, _append_trace_bytes(previous_trace_bytes, replay_additions))
+    try:
+        export_run(
+            lake,
+            case_dir,
+            case_id,
+            run_id,
+            refined.entities,
+            ontology=ontology,
+            dod_queries=load_json(case_dir / "02-ontology/dod-queries.json"),
+            trace=export_trace,
+            generated_by=provenance,
+            preview=status.get("preview", False),
+            taxonomy_classified=refined.classified,
+        )
+    except Exception:
+        if replay_additions:
+            try:
+                lake.write_key(trace_key, previous_trace_bytes)
+            except Exception as restore_error:
+                raise RuntimeError(
+                    "failed to restore trace after bronze replay export failure"
+                ) from restore_error
+        raise
     return 0
 
 

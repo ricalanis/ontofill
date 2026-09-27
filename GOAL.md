@@ -23,6 +23,15 @@ DONE C4: `uv run pytest -q && uv run ruff check src tests packages infra && uv r
 
 DONE R3: `uv run pytest -q tests/test_p5_controller.py tests/genericity && uv run ruff check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py && uv run ruff format --check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py`; a fake controller reaches P5 through S1, emits only evidence-validated target properties, and drains verify/action_gate/quarantine into `trace.jsonl`.
 
+## R11 bronze replay integration
+Have `refine_case` rebuild current-ontology observations from successful trace-referenced bronze captures, persist parented replay steps before the one gold export, and restore the prior live trace if export fails.
+
+DONE: `uv run pytest -q tests/test_bronze_replay.py tests/test_cli.py` proves a newly added property reaches gold through `refine_case`, replay lineage is persisted once without browsing, export runs once, and a failed export restores the original live trace.
+
+Status: the authorized successor managed gate passed 13 tests. The fixture now supplies the SHACL path, and the tests exercise bronze-only gold export, repeat-call trace idempotence, and trace restoration when export fails. No live case or browser run was involved.
+
+Constraints: replay only keys referenced by completed file-fetch trace steps; no network access or URL fetch; keep refiner/core.py, refiner/export.py, P5, console, browser-agent, case, and coordination files unchanged.
+
 Constraints: public pushes only after slice checks and a pre-push scan; no committed data or secrets; source discovery without hard-coded source URLs; all captures in a sandbox; local bronze uses file:// and Vultr bronze uses S3; approvals use the contract protocol.
 
 ## R2 P5 real-path closure

@@ -79,8 +79,138 @@ def _read_case_json(
     return document
 
 
+def _bronze_replay_authorizations(
+    case_dir: Path,
+    trace: Sequence[dict],
+    objective_doc: dict,
+    ontology: dict,
+    validators: dict[str, Draft202012Validator],
+    run_id: str,
+) -> dict[str, dict]:
+    """Validate the trace link that permits values outside historical targets."""
+    steps_by_id: dict[str, dict] = {}
+    positions: dict[str, int] = {}
+    for index, step in enumerate(trace):
+        step_id = step["step_id"]
+        if step_id in steps_by_id:
+            raise ValueError(f"duplicate trace step ID: {step_id}")
+        steps_by_id[step_id] = step
+        positions[step_id] = index
+
+    objectives = {(item["source_id"], item["id"]): item for item in objective_doc["objectives"]}
+    properties = {item["id"]: item for item in ontology.get("properties", [])}
+    authorizations: dict[str, dict] = {}
+    for step in trace:
+        requested = step.get("requested")
+        if not isinstance(requested, dict) or requested.get("tool") != "bronze.replay":
+            continue
+        observed = step.get("observed")
+        executed = step.get("executed")
+        evaluated = step.get("evaluated")
+        # Earlier replay traces can still ground ordinary target fields, but lack
+        # the metadata needed to authorize ontology-only values.
+        if (
+            isinstance(observed, dict)
+            and "ontology_only_properties" not in observed
+            and isinstance(executed, dict)
+            and "capture_ontology_version" not in executed
+        ):
+            continue
+        if not all(isinstance(item, dict) for item in (observed, executed, evaluated)):
+            raise ValueError(f"invalid bronze replay trace authorization: {step['step_id']}")
+        source_id = step["source_id"]
+        objective_id = step["objective_id"]
+        tdd_path = step["tdd_path"]
+        objective = objectives.get((source_id, objective_id))
+        ontology_only = observed.get("ontology_only_properties")
+        replayed_properties = observed.get("replayed_properties")
+        if (
+            objective is None
+            or step["run_id"] != run_id
+            or step["phase"] != 5
+            or tdd_path != f"04-local/{source_id}__{objective_id}/tdd.json"
+            or requested.get("ontology_version") != ontology.get("version")
+            or not isinstance(ontology_only, list)
+            or not all(isinstance(item, str) for item in ontology_only)
+            or len(ontology_only) != len(set(ontology_only))
+            or not isinstance(replayed_properties, list)
+            or not all(isinstance(item, str) for item in replayed_properties)
+            or len(replayed_properties) != len(set(replayed_properties))
+            or not set(ontology_only).issubset(replayed_properties)
+            or not step["value_ids"]
+            or evaluated.get("status") != "replayed"
+            or executed.get("capture_ontology_version") != objective_doc["ontology_version"]
+            or executed.get("bronze_key") != observed.get("bronze_key")
+        ):
+            raise ValueError(f"invalid bronze replay trace authorization: {step['step_id']}")
+
+        tdd = _read_case_json(case_dir, tdd_path, validators["tdd"])
+        if (
+            tdd["source_id"] != source_id
+            or tdd["objective_id"] != objective_id
+            or tdd["ontology_version"] != objective_doc["ontology_version"]
+            or tdd["local_prd_path"] != f"04-local/{source_id}__{objective_id}/local-prd.json"
+        ):
+            raise ValueError(f"broken historical TDD for bronze replay: {step['step_id']}")
+        local_prd = _read_case_json(case_dir, tdd["local_prd_path"], validators["local-prd"])
+        if (
+            local_prd["source_id"] != source_id
+            or local_prd["objective_id"] != objective_id
+            or local_prd["global_prd_path"] != objective_doc["prd_path"]
+            or any(
+                property_id in artifact["target_fields"]
+                for property_id in ontology_only
+                for artifact in (objective, tdd, local_prd)
+            )
+        ):
+            raise ValueError(f"invalid ontology-only target exception: {step['step_id']}")
+        if any(property_id not in properties for property_id in ontology_only):
+            raise ValueError("replay names a property absent from the approved ontology")
+
+        parent_id = step.get("parent_step_id")
+        parent = steps_by_id.get(parent_id)
+        if parent is None or positions[parent_id] >= positions[step["step_id"]]:
+            raise ValueError(f"bronze replay has no preceding capture parent: {step['step_id']}")
+        parent_requested = parent.get("requested")
+        parent_executed = parent.get("executed")
+        parent_observed = parent.get("observed")
+        parent_evaluated = parent.get("evaluated")
+        bronze_key = executed.get("bronze_key")
+        if (
+            parent["run_id"] != run_id
+            or parent["phase"] != 5
+            or parent["source_id"] != source_id
+            or parent["objective_id"] != objective_id
+            or parent["tdd_path"] != tdd_path
+            or not isinstance(parent_requested, dict)
+            or not isinstance(parent_executed, dict)
+            or not isinstance(parent_observed, dict)
+            or not isinstance(parent_evaluated, dict)
+            or parent_requested.get("fetch") != "bytes"
+            or parent_observed.get("status") != 200
+            or parent_evaluated.get("status") != "captured"
+            or parent_executed.get("bronze_key") != bronze_key
+            or parent_observed.get("bronze_key", bronze_key) != bronze_key
+            or not isinstance(parent_observed.get("url"), str)
+        ):
+            raise ValueError("bronze replay is not bound to a successful file capture")
+        authorizations[step["step_id"]] = {
+            "step": step,
+            "parent": parent,
+            "objective": objective,
+            "tdd": tdd,
+            "local_prd": local_prd,
+            "ontology_only_properties": set(ontology_only),
+            "replayed_properties": set(replayed_properties),
+            "bronze_key": bronze_key,
+            "url": parent_observed["url"],
+        }
+    return authorizations
+
+
 def _check_lineage(
     case_dir: Path,
+    run_id: str,
     entities: Sequence[dict],
     trace: Sequence[dict],
     ontology: dict,
@@ -99,9 +229,24 @@ def _check_lineage(
         raise ValueError("ontology argument differs from approved case artifact")
     if _canonical(query_doc) != _canonical(dod_queries):
         raise ValueError("DoD queries differ from approved case artifact")
-    if objective_doc["ontology_version"] != ontology_doc["version"]:
-        raise ValueError("objectives ontology version does not match ontology artifact")
-    if query_doc.get("ontology_version", ontology_doc["version"]) != ontology_doc["version"]:
+    objective_version_is_stale = objective_doc["ontology_version"] != ontology_doc["version"]
+    query_version = query_doc.get("ontology_version", ontology_doc["version"])
+    query_version_is_stale = query_version != ontology_doc["version"]
+    if query_version_is_stale and query_version != objective_doc["ontology_version"]:
+        raise ValueError("DoD query version differs from both current and historical ontology")
+    replay_authorizations = _bronze_replay_authorizations(
+        case_dir,
+        trace,
+        objective_doc,
+        ontology_doc,
+        validators,
+        run_id,
+    )
+    if (objective_version_is_stale or query_version_is_stale) and not any(
+        item["ontology_only_properties"] for item in replay_authorizations.values()
+    ):
+        if objective_version_is_stale:
+            raise ValueError("objectives ontology version does not match ontology artifact")
         raise ValueError("DoD query ontology version does not match ontology artifact")
     prd_path = objective_doc["prd_path"]
     global_prd = _read_case_json(case_dir, prd_path, validators["global-prd"])
@@ -120,12 +265,16 @@ def _check_lineage(
             raise ValueError("case lineage artifact inference backend differs from run")
     if query_doc.get("prd_path", prd_path) != prd_path:
         raise ValueError("DoD query PRD path differs from approved objectives")
+    ontology_property_domains = {
+        property_item["id"]: property_item["domain"] for property_item in ontology_doc["properties"]
+    }
     brief_path = global_prd["brief_path"]
     brief_file = (case_dir.resolve() / brief_path).resolve()
     if not brief_file.is_relative_to(case_dir.resolve()) or not brief_file.is_file():
         raise ValueError(f"missing or unsafe brief lineage artifact: {brief_path}")
     objectives = {item["id"]: item for item in objective_doc["objectives"]}
     tdd_cache: dict[str, tuple[dict, dict]] = {}
+    authorized_ontology_only_values: set[tuple[str, str]] = set()
     for entity in entities:
         for property_id, value in entity["properties"].items():
             if value["status"] == "missing":
@@ -143,6 +292,9 @@ def _check_lineage(
                     and step["objective_id"]
                     and step["tdd_path"]
                 ]
+                evidence_step_id = evidence.get("step_id")
+                if evidence_step_id is not None:
+                    matching = [step for step in matching if step["step_id"] == evidence_step_id]
                 if not matching:
                     raise ValueError(
                         f"value {value_id} lacks source/objective/TDD lineage "
@@ -184,13 +336,33 @@ def _check_lineage(
                         != f"04-local/{step['source_id']}__{step['objective_id']}/local-prd.json"
                     ):
                         raise ValueError(f"broken case lineage for value {value_id}")
-                    if any(
+                    target_artifacts = (objective, tdd, local_prd)
+                    missing_from_targets = [
                         property_id not in artifact["target_fields"]
-                        for artifact in (objective, tdd, local_prd)
-                    ):
-                        raise ValueError(
-                            f"property {property_id} is outside its approved objective/TDD"
-                        )
+                        for artifact in target_artifacts
+                    ]
+                    if any(missing_from_targets):
+                        authorization = replay_authorizations.get(step["step_id"])
+                        parent = authorization["parent"] if authorization else {}
+                        parent_ts = parent.get("ts")
+                        if not (
+                            all(missing_from_targets)
+                            and authorization is not None
+                            and property_id in authorization["ontology_only_properties"]
+                            and property_id in authorization["replayed_properties"]
+                            and ontology_property_domains.get(property_id) == entity["class"]
+                            and value_id in step["value_ids"]
+                            and evidence_step_id == step["step_id"]
+                            and evidence["source_id"] == step["source_id"]
+                            and evidence["bronze_key"] == authorization["bronze_key"]
+                            and evidence["url"] == authorization["url"]
+                            and evidence["captured_at"] == parent_ts
+                            and evidence["source_type"] == objective.get("source_type")
+                        ):
+                            raise ValueError(
+                                f"property {property_id} is outside its approved objective/TDD"
+                            )
+                        authorized_ontology_only_values.add((value_id, property_id))
                     requirement_ids = {item["id"] for item in global_prd["requirements"]}
                     if not set(local_prd["global_requirement_ids"]).issubset(requirement_ids):
                         raise ValueError(f"local PRD has unknown global requirement for {value_id}")
@@ -200,6 +372,11 @@ def _check_lineage(
                         for domain in tdd["allowed_domains"]
                     ):
                         raise ValueError(f"evidence URL is outside TDD domains for {value_id}")
+
+    if (
+        objective_version_is_stale or query_version_is_stale
+    ) and not authorized_ontology_only_values:
+        raise ValueError("stale ontology lineage has no exported ontology-only replay value")
 
 
 def _validate_entities(entities: Sequence[dict], ontology: dict, lake: GoldLake) -> None:
@@ -627,7 +804,14 @@ def export_run(
             raise ValueError("Jev trace cannot ground gold values")
     _validate_entities(sorted_entities, ontology, lake)
     _check_lineage(
-        case_dir, sorted_entities, sorted_trace, ontology, dod_queries, validators, run_provenance
+        case_dir,
+        run_id,
+        sorted_entities,
+        sorted_trace,
+        ontology,
+        dod_queries,
+        validators,
+        run_provenance,
     )
     metrics = _metrics(
         run_id,
