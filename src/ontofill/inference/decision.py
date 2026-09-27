@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -153,7 +154,7 @@ class VultrDecisionClient:
         if not key:
             raise RuntimeError("set ONTOFILL_GATEWAY_TOKEN or VULTR_INFERENCE_API_KEY")
         base_url = os.environ.get("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
-        if gateway_token and base_url.rstrip("/") == "https://api.vultrinference.com/v1":
+        if gateway_token and urlsplit(base_url).hostname == "api.vultrinference.com":
             raise RuntimeError("set VULTR_INFERENCE_BASE_URL to the screened gateway")
         transport = client or httpx.Client(timeout=120)
         response = transport.get(
