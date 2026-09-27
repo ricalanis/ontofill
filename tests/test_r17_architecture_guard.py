@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE_ROOT = ROOT / "src/ontofill"
 HTTP_METHODS = {"delete", "get", "patch", "post", "put", "request", "send", "stream"}
 HTTP_CLIENT_FACTORIES = {"httpx.Client", "httpx.AsyncClient", "requests.Session"}
+URL_OPEN_CALLS = {"urllib.request.urlopen"}
+SOCKET_CONNECT_CALLS = {"socket.create_connection"}
+NETWORK_COMMANDS = {"curl", "wget", "http", "https"}
 
 # These are deliberately call-site allowlists, not module allowlists. The named
 # clients talk to fixed public APIs, the configured inference gateway, or the
@@ -20,6 +23,11 @@ ALLOWED_API_CALLS = {
     ("src/ontofill/inference/decision.py", "VultrDecisionClient.from_env"): {"get"},
     ("src/ontofill/inference/decision.py", "VultrDecisionClient.complete_json"): {"post"},
     ("src/ontofill/browser_agent.py", "BrowserAgentClient._post"): {"post"},
+}
+ALLOWED_URL_OPEN_CALLS = {
+    ("src/ontofill/sandbox/cells.py", "_cdp_url"),
+    ("src/ontofill/sandbox/cells.py", "_cdp_page_targets"),
+    ("src/ontofill/sandbox/cells.py", "_wait_brain"),
 }
 
 BRONZE_PARSER_CALLS = {
@@ -33,6 +41,7 @@ BRONZE_PARSER_CALLS = {
     "fitz.open",
     "pypdf.PdfReader",
     "PyPDF2.PdfReader",
+    "page_snapshot",
 }
 
 
@@ -50,7 +59,8 @@ def _imports(tree: ast.Module) -> dict[str, str]:
     for node in tree.body:
         if isinstance(node, ast.Import):
             for item in node.names:
-                aliases[item.asname or item.name.split(".", 1)[0]] = item.name
+                local_name = item.asname or item.name.split(".", 1)[0]
+                aliases[local_name] = item.name if item.asname else local_name
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             for item in node.names:
@@ -106,6 +116,7 @@ class _CallSiteVisitor(ast.NodeVisitor):
         self.functions: list[str] = []
         self.network_calls: list[str] = []
         self.parser_calls: list[str] = []
+        self.bronze_reads: list[str] = []
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.classes.append(node.name)
@@ -152,28 +163,88 @@ class _CallSiteVisitor(ast.NodeVisitor):
             if method not in allowed:
                 self.network_calls.append(f"{self.path}:{node.lineno} ({self._scope()})")
 
+        if func_name in URL_OPEN_CALLS and (self.path, self._scope()) not in ALLOWED_URL_OPEN_CALLS:
+            self.network_calls.append(f"{self.path}:{node.lineno} ({self._scope()})")
+
+        if func_name in SOCKET_CONNECT_CALLS:
+            self.network_calls.append(f"{self.path}:{node.lineno} ({self._scope()})")
+
+        if (
+            func_name
+            in {
+                "subprocess.run",
+                "subprocess.Popen",
+                "subprocess.check_call",
+                "subprocess.check_output",
+            }
+            and node.args
+        ):
+            command = node.args[0]
+            first = (
+                command.elts[0]
+                if isinstance(command, (ast.List, ast.Tuple)) and command.elts
+                else command
+            )
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                executable = first.value.rsplit("/", 1)[-1].split(None, 1)[0]
+                if executable in NETWORK_COMMANDS:
+                    self.network_calls.append(f"{self.path}:{node.lineno} ({self._scope()})")
+
         is_bronze_parser = bool(
             func_name
             and (func_name in BRONZE_PARSER_CALLS or func_name.rsplit(".", 1)[-1] == "file_parse")
         )
-        # P3's BeautifulSoup call sites parse HTML returned by a sandbox capture.
-        # D0's P5 table parser consumes untrusted downloaded bronze bytes and must
-        # move to the networkless parse pod.
-        is_p5_beautifulsoup = (
-            func_name in {"bs4.BeautifulSoup", "BeautifulSoup"}
-            and "/phases/p5_execute/" in f"/{self.path}"
+        in_bronze_consumer = any(
+            marker in f"/{self.path}"
+            for marker in (
+                "/phases/p5_execute/",
+                "/phases/p3_fanout/site_graph.py",
+                "/phases/p3_fanout/discovery_loop.py",
+                "/phases/p3_fanout/search.py",
+                "/refiner/bronze_replay.py",
+                "/repair/pattern_a.py",
+            )
         )
-        if is_bronze_parser or is_p5_beautifulsoup:
+        is_target_html_parser = (
+            func_name in {"bs4.BeautifulSoup", "BeautifulSoup"} and in_bronze_consumer
+        )
+        if is_bronze_parser or is_target_html_parser:
             self.parser_calls.append(f"{self.path}:{node.lineno} ({func_name})")
+
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "read_key"
+            and _dotted_name(node.func.value) in {"lake", "self.lake"}
+        ):
+            forbidden_path = any(
+                marker in f"/{self.path}"
+                for marker in (
+                    "/phases/p3_fanout/discovery_loop.py",
+                    "/phases/p3_fanout/search.py",
+                    "/phases/p3_fanout/site_graph.py",
+                    "/phases/p5_execute/phase.py",
+                    "/refiner/bronze_replay.py",
+                    "/repair/runner.py",
+                )
+            )
+            capture_argument = bool(
+                node.args and _dotted_name(node.args[0]) in {"capture_key", "case.capture_key"}
+            )
+            if forbidden_path or (
+                self.path == "src/ontofill/repair/pattern_a.py"
+                and self._scope() == "repair_html_extractor"
+                and capture_argument
+            ):
+                self.bronze_reads.append(f"{self.path}:{node.lineno} ({self._scope()})")
 
         self.generic_visit(node)
 
 
-def _violations(path: str, source: str) -> tuple[list[str], list[str]]:
+def _violations(path: str, source: str) -> tuple[list[str], list[str], list[str]]:
     tree = ast.parse(source, filename=path)
     visitor = _CallSiteVisitor(path, tree)
     visitor.visit(tree)
-    return visitor.network_calls, visitor.parser_calls
+    return visitor.network_calls, visitor.parser_calls, visitor.bronze_reads
 
 
 def _engine_sources() -> list[tuple[str, str]]:
@@ -203,6 +274,15 @@ def test_engine_does_not_parse_bronze_files_outside_the_sandbox() -> None:
     assert violations == [], "bronze parser outside sandbox: " + ", ".join(violations)
 
 
+def test_engine_does_not_open_bronze_payloads_in_target_consumers() -> None:
+    violations = [
+        violation
+        for path, source in _engine_sources()
+        for violation in _violations(path, source)[2]
+    ]
+    assert violations == [], "control process read of bronze payload: " + ", ".join(violations)
+
+
 def test_guard_rejects_injected_target_domain_httpx_requests() -> None:
     injected_sources = {
         "src/ontofill/phases/p3_fanout/injected.py": """
@@ -224,21 +304,71 @@ def fetch_target(url: str) -> dict:
     client = httpx.Client(follow_redirects=True)
     return client.get(url).json()
 """,
+        "src/ontofill/phases/p3_fanout/injected_urlopen.py": """
+from urllib.request import urlopen as open_url
+
+def fetch_target(url: str):
+    return open_url(url)
+""",
+        "src/ontofill/phases/p3_fanout/injected_urlopen_module.py": """
+import urllib.request
+
+def fetch_target(url: str):
+    return urllib.request.urlopen(url)
+""",
+        "src/ontofill/phases/p3_fanout/injected_socket.py": """
+import socket
+
+def fetch_target(host: str):
+    return socket.create_connection((host, 443))
+""",
+        "src/ontofill/phases/p3_fanout/injected_curl.py": """
+import subprocess
+
+def fetch_target(url: str):
+    return subprocess.run(["curl", url], check=True)
+""",
     }
 
     for path, source in injected_sources.items():
-        network, _ = _violations(path, source)
+        network, _, _ = _violations(path, source)
         assert network, f"guard missed injected request in {path}"
 
 
 def test_guard_rejects_injected_bronze_parser_outside_the_sandbox() -> None:
-    path = "src/ontofill/phases/p5_execute/injected.py"
-    source = """
+    injected_sources = {
+        "src/ontofill/phases/p5_execute/injected.py": """
 from ontofill_scrape import file_parse
 
 def parse_downloaded_bytes(data: bytes) -> object:
     return file_parse(data, format="csv")
-"""
+""",
+        "src/ontofill/phases/p3_fanout/site_graph.py": """
+from bs4 import BeautifulSoup
 
-    _, parsers = _violations(path, source)
-    assert parsers
+def parse_captured_page(html: str) -> object:
+    return BeautifulSoup(html, "html.parser")
+""",
+        "src/ontofill/refiner/bronze_replay.py": """
+from ontofill_scrape import file_parse
+
+def replay_bronze(data: bytes) -> object:
+    return file_parse(data, format="csv")
+""",
+    }
+
+    for path, source in injected_sources.items():
+        _, parsers, _ = _violations(path, source)
+        assert parsers, f"guard missed injected bronze parser in {path}"
+
+
+def test_guard_rejects_injected_bronze_key_reads_in_target_consumers() -> None:
+    source = """
+def replay(lake, case):
+    return lake.read_key(case.capture_key)
+"""
+    for path in ("src/ontofill/repair/runner.py", "src/ontofill/phases/p5_execute/phase.py"):
+        network, parsers, reads = _violations(path, source)
+        assert network == []
+        assert parsers == []
+        assert reads, f"guard missed direct bronze key read in {path}"

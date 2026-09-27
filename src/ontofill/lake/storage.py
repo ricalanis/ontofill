@@ -84,6 +84,19 @@ class FileLake:
     def read_key(self, key: str) -> bytes:
         return (self.root / object_path(key)).read_bytes()
 
+    def bronze_path(self, key: str) -> Path:
+        """Return a verified-in-tree local path for Docker CLI sandbox staging."""
+        if not BRONZE_KEY.fullmatch(key):
+            raise ValueError("bronze_key must be a sha256 bronze object key")
+        validate_key(key)
+        path = self.root / object_path(key)
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(self.root):
+            raise ValueError("bronze object escaped the lake root")
+        if not resolved.is_file():
+            raise ValueError("bronze object is not a regular file")
+        return resolved
+
     def read_metadata(self, key: str) -> dict[str, str]:
         return json.loads((self.root / metadata_path(key)).read_text(encoding="utf-8"))
 
@@ -125,6 +138,34 @@ class S3Lake:
 
     def read_key(self, key: str) -> bytes:
         return self.client.get_object(Bucket=self.bucket, Key=object_path(key))["Body"].read()
+
+    def download_bronze(self, key: str, destination: str | Path, *, max_bytes: int) -> int:
+        """Stage an opaque bronze object to disk for sandbox CLI transfer.
+
+        The content is never returned to application code. The parser pod checks
+        its content address after Docker stages the private temporary file.
+        """
+        if not BRONZE_KEY.fullmatch(key):
+            raise ValueError("bronze_key must be a sha256 bronze object key")
+        validate_key(key)
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        size = self.bronze_size(key)
+        if size > max_bytes:
+            return size
+        self.client.download_file(self.bucket, object_path(key), str(destination))
+        return size
+
+    def bronze_size(self, key: str) -> int:
+        """Return the object size from S3 metadata without loading its contents."""
+        if not BRONZE_KEY.fullmatch(key):
+            raise ValueError("bronze_key must be a sha256 bronze object key")
+        validate_key(key)
+        response = self.client.head_object(Bucket=self.bucket, Key=object_path(key))
+        size = response.get("ContentLength")
+        if type(size) is not int or size < 0:
+            raise ValueError("S3 bronze object has an invalid size")
+        return size
 
     def read_metadata(self, key: str) -> dict[str, str]:
         data = self.client.get_object(Bucket=self.bucket, Key=metadata_path(key))["Body"].read()

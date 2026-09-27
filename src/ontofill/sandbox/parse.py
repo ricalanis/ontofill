@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -19,7 +21,6 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from ontofill.lake import FileLake, S3Lake
-from ontofill.lake.storage import validate_key
 from ontofill.sandbox.capture import CaptureError, DockerTimeout, _docker
 from ontofill.sandbox.jobs import validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
@@ -49,6 +50,7 @@ class ParseResult:
     dom_skeleton_hash: str | None
     trace: tuple[dict[str, Any], ...]
     job_record: dict[str, Any]
+    challenge_detected: bool = False
 
     def as_parsed_file(self) -> Any:
         """Rebuild the safe parsed-file value object without reopening bronze bytes."""
@@ -121,6 +123,19 @@ class ParseExecutor(Protocol):
         limits: SandboxLimits,
     ) -> ParseExecution: ...
 
+    def run_from_file(
+        self,
+        path: Path,
+        *,
+        expected_sha256: str,
+        max_bytes: int,
+        kind: str,
+        format: str,
+        max_rows: int,
+        base_url: str,
+        limits: SandboxLimits,
+    ) -> ParseExecution: ...
+
 
 class DockerParseExecutor:
     """Run a parser worker in a disposable runsc container without network or secrets."""
@@ -137,6 +152,58 @@ class DockerParseExecutor:
         base_url: str,
         limits: SandboxLimits,
     ) -> ParseExecution:
+        return self._run(
+            payload=payload,
+            bronze_path=None,
+            expected_sha256=None,
+            max_input_bytes=_MAX_INPUT_BYTES,
+            kind=kind,
+            format=format,
+            max_rows=max_rows,
+            base_url=base_url,
+            limits=limits,
+        )
+
+    def run_from_file(
+        self,
+        path: Path,
+        *,
+        expected_sha256: str,
+        max_bytes: int,
+        kind: str,
+        format: str,
+        max_rows: int,
+        base_url: str,
+        limits: SandboxLimits,
+    ) -> ParseExecution:
+        """Stage a local bronze object through Docker CLI without opening it in Python."""
+        return self._run(
+            payload=None,
+            bronze_path=path,
+            expected_sha256=expected_sha256,
+            max_input_bytes=max_bytes,
+            kind=kind,
+            format=format,
+            max_rows=max_rows,
+            base_url=base_url,
+            limits=limits,
+        )
+
+    def _run(
+        self,
+        *,
+        payload: bytes | None,
+        bronze_path: Path | None,
+        expected_sha256: str | None,
+        max_input_bytes: int,
+        kind: str,
+        format: str,
+        max_rows: int,
+        base_url: str,
+        limits: SandboxLimits,
+    ) -> ParseExecution:
+        if (payload is None) == (bronze_path is None):
+            raise ValueError("parse executor requires exactly one bronze input")
         name = f"ontofill-parse-{uuid.uuid4().hex[:12]}"
         host: dict[str, Any] | None = None
         pod: dict[str, Any] | None = None
@@ -197,16 +264,27 @@ class DockerParseExecutor:
                     timeout=min(90.0, _remaining(deadline)),
                 )
 
-                envelope = json.dumps(
-                    {
-                        "kind": kind,
-                        "format": format,
-                        "max_rows": max_rows,
-                        "base_url": base_url,
-                        "payload": base64.b64encode(payload).decode("ascii"),
-                    },
-                    separators=(",", ":"),
-                )
+                if bronze_path is not None:
+                    self._stage_local_file(bronze_path, name, deadline)
+
+                envelope_data = {
+                    "kind": kind,
+                    "format": format,
+                    "max_rows": max_rows,
+                    "max_input_bytes": max_input_bytes,
+                    "base_url": base_url,
+                }
+                if bronze_path is not None:
+                    envelope_data.update(
+                        {
+                            "bronze_path": "/work/bronze",
+                            "expected_sha256": expected_sha256,
+                        }
+                    )
+                else:
+                    assert payload is not None
+                    envelope_data["payload"] = base64.b64encode(payload).decode("ascii")
+                envelope = json.dumps(envelope_data, separators=(",", ":"))
                 _docker(
                     "exec",
                     "-i",
@@ -349,6 +427,123 @@ class DockerParseExecutor:
                 _docker("build", "-t", image, str(pod_directory), timeout=900)
         return image
 
+    @staticmethod
+    def _stage_local_file(path: Path, container: str, deadline: float) -> None:
+        """Send opaque bronze bytes through Docker CLI; Python only handles the path."""
+        source_path = str(path.resolve(strict=True))
+        copied = _docker(
+            "cp",
+            source_path,
+            f"{container}:/work/bronze",
+            timeout=_remaining(deadline),
+            check=False,
+        )
+        if copied.returncode == 0:
+            return
+
+        source = subprocess.Popen(
+            ["cat", "--", source_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        assert source.stdout is not None
+        try:
+            staged = _docker(
+                "exec",
+                "-i",
+                container,
+                "sh",
+                "-c",
+                "cat > /work/bronze",
+                timeout=_remaining(deadline),
+                check=False,
+                input_stream=source.stdout,
+            )
+        finally:
+            source.stdout.close()
+        try:
+            source.wait(timeout=min(5.0, _remaining(deadline)))
+        except subprocess.TimeoutExpired:
+            source.kill()
+            source.wait(timeout=5)
+            raise DockerTimeout("bronze staging process exceeded its deadline") from None
+        if staged.returncode != 0 or source.returncode != 0:
+            raise CaptureError("bronze staging failed through Docker CLI")
+
+
+def _input_too_large_execution() -> ParseExecution:
+    return ParseExecution(
+        None,
+        None,
+        None,
+        None,
+        None,
+        _empty_teardown(),
+        error="input_too_large",
+        limit_reason="input_too_large",
+    )
+
+
+def _dispatch_parse(
+    lake: FileLake | S3Lake,
+    bronze_key: str,
+    *,
+    kind: str,
+    format: str,
+    max_rows: int,
+    max_bytes: int,
+    base_url: str,
+    limits: SandboxLimits,
+    executor: ParseExecutor | None,
+) -> ParseExecution:
+    runner = executor or DockerParseExecutor()
+    file_dispatch = getattr(runner, "run_from_file", None)
+    if isinstance(lake, FileLake):
+        path = lake.bronze_path(bronze_key)
+        if path.stat().st_size > max_bytes:
+            return _input_too_large_execution()
+        if not callable(file_dispatch):
+            raise TypeError("FileLake parsing requires an executor that stages bronze by path")
+        return file_dispatch(
+            path,
+            expected_sha256=bronze_key.removeprefix("sha256:"),
+            max_bytes=max_bytes,
+            kind=kind,
+            format=format,
+            max_rows=max_rows,
+            base_url=base_url,
+            limits=limits,
+        )
+
+    if not callable(file_dispatch):
+        raise TypeError("S3Lake parsing requires an executor that stages bronze by path")
+    with tempfile.TemporaryDirectory(prefix="ontofill-bronze-") as temporary:
+        path = Path(temporary) / "bronze"
+        size = lake.download_bronze(bronze_key, path, max_bytes=max_bytes)
+        if size > max_bytes:
+            return _input_too_large_execution()
+        expected_sha256 = bronze_key.removeprefix("sha256:")
+        if not _external_sha256_matches(path, expected_sha256):
+            return ParseExecution(
+                None,
+                None,
+                None,
+                None,
+                None,
+                _empty_teardown(),
+                error="bronze_digest_mismatch",
+            )
+        return file_dispatch(
+            path,
+            expected_sha256=expected_sha256,
+            max_bytes=max_bytes,
+            kind=kind,
+            format=format,
+            max_rows=max_rows,
+            base_url=base_url,
+            limits=limits,
+        )
+
 
 def parse_bronze(
     lake: FileLake | S3Lake,
@@ -357,21 +552,25 @@ def parse_bronze(
     format: ParseFormat,
     max_rows: int = 300,
     max_bytes: int = _MAX_INPUT_BYTES,
+    base_url: str | None = None,
     limits: SandboxLimits | Mapping[str, object] | None = None,
     run_id: str | None = None,
     source_id: str = "source:bronze-parse",
     step_id: str | None = None,
     objective_id: str | None = None,
     tdd_path: str = "sandbox/parse",
+    phase: int = 5,
     generated_by: Mapping[str, str] | None = None,
     executor: ParseExecutor | None = None,
 ) -> ParseResult:
-    """Parse a bronze CSV, XLSX, HTML, JSON table, or PDF without opening bytes on host.
+    """Parse one immutable bronze object inside the networkless parser pod.
 
-    The control process reads and digest-checks the object, then transfers opaque
-    bytes to the parser pod. All format decoding happens in `sandbox/parse-pod`.
-    A size, row, output, parser, isolation, or teardown failure raises
-    `SandboxParseError`; that exception carries the failed job and trace proof.
+    FileLake objects are staged by Docker CLI into pod-only storage and
+    digest-checked in the pod. S3 objects are downloaded by the lake SDK to a
+    private temporary file, size and digest checked without Python decoding,
+    then staged by Docker CLI. Both paths work with a remote daemon without a
+    host bind mount. A size, row, output, parser, isolation, or teardown failure
+    raises `SandboxParseError` with its job proof.
     """
     kind = _format(format)
     _validate_limits(max_rows=max_rows, max_bytes=max_bytes)
@@ -382,39 +581,20 @@ def parse_bronze(
         step_id=step_id,
         objective_id=objective_id,
         tdd_path=tdd_path,
+        phase=phase,
         generated_by=generated_by,
     )
-    data = _read_verified(lake, bronze_key)
-    base_url = _bronze_base_url(lake, bronze_key)
-    if len(data) > max_bytes:
-        execution = ParseExecution(
-            None,
-            None,
-            None,
-            None,
-            None,
-            _empty_teardown(),
-            error="input_too_large",
-            limit_reason="input_too_large",
-        )
-        return _result(
-            execution,
-            bronze_key=bronze_key,
-            format=kind,
-            kind=kind,
-            max_rows=max_rows,
-            max_bytes=max_bytes,
-            limits=budget,
-            context=context,
-        )
-    runner = executor or DockerParseExecutor()
-    execution = runner.run(
-        data,
+    safe_base_url = _safe_base_url(base_url) or _bronze_base_url(lake, bronze_key)
+    execution = _dispatch_parse(
+        lake,
+        bronze_key,
         kind=kind,
         format=kind,
         max_rows=max_rows,
-        base_url=base_url,
+        max_bytes=max_bytes,
+        base_url=safe_base_url,
         limits=budget,
+        executor=executor,
     )
     return _result(
         execution,
@@ -439,6 +619,7 @@ def parse_bronze_json(
     step_id: str | None = None,
     objective_id: str | None = None,
     tdd_path: str = "sandbox/parse-json",
+    phase: int = 5,
     generated_by: Mapping[str, str] | None = None,
     executor: ParseExecutor | None = None,
 ) -> JsonDocumentResult:
@@ -451,39 +632,20 @@ def parse_bronze_json(
         step_id=step_id,
         objective_id=objective_id,
         tdd_path=tdd_path,
+        phase=phase,
         generated_by=generated_by,
     )
-    data = _read_verified(lake, bronze_key)
     base_url = _bronze_base_url(lake, bronze_key)
-    if len(data) > max_bytes:
-        execution = ParseExecution(
-            None,
-            None,
-            None,
-            None,
-            None,
-            _empty_teardown(),
-            error="input_too_large",
-            limit_reason="input_too_large",
-        )
-        return _result(
-            execution,
-            bronze_key=bronze_key,
-            format="json",
-            kind="json_document",
-            max_rows=1,
-            max_bytes=max_bytes,
-            limits=budget,
-            context=context,
-        )
-    runner = executor or DockerParseExecutor()
-    execution = runner.run(
-        data,
+    execution = _dispatch_parse(
+        lake,
+        bronze_key,
         kind="json_document",
         format="json",
         max_rows=1,
+        max_bytes=max_bytes,
         base_url=base_url,
         limits=budget,
+        executor=executor,
     )
     result = _result(
         execution,
@@ -553,6 +715,7 @@ def _result(
     page_text = output.get("page_text", "")
     links = output.get("links", [])
     skeleton_hash = output.get("dom_skeleton_hash")
+    challenge_detected = output.get("challenge_detected", False)
     if (
         not isinstance(page_text, str)
         or len(page_text) > 200_000
@@ -560,7 +723,8 @@ def _result(
         or len(links) > max_rows
         or any(
             not isinstance(link, dict)
-            or set(link) != {"url", "text", "rel"}
+            or not {"url", "text", "rel"}.issubset(link)
+            or not set(link).issubset({"url", "text", "rel", "title", "context", "result_kind"})
             or any(
                 not isinstance(key, str) or not isinstance(value, str)
                 for key, value in link.items()
@@ -578,6 +742,10 @@ def _result(
         task_ok = False
         reason = "parse_pod_returned_invalid_skeleton_hash"
         skeleton_hash = None
+    if not isinstance(challenge_detected, bool):
+        task_ok = False
+        reason = "parse_pod_returned_invalid_challenge_flag"
+        challenge_detected = False
     truncated = output.get("truncated", False)
     if not isinstance(truncated, bool):
         task_ok = False
@@ -600,6 +768,7 @@ def _result(
         dom_skeleton_hash=skeleton_hash if task_ok else None,
         trace=(),
         job_record={},
+        challenge_detected=challenge_detected if task_ok else False,
     )
     record, trace = _job_and_trace(
         execution,
@@ -641,6 +810,7 @@ def _result(
         dom_skeleton_hash=result.dom_skeleton_hash,
         trace=trace,
         job_record=record,
+        challenge_detected=result.challenge_detected,
     )
 
 
@@ -785,7 +955,7 @@ def _trace_rows(
             {
                 "step_id": context["step_id"] if index == 0 else f"step:{uuid.uuid4().hex}",
                 "run_id": context["run_id"],
-                "phase": 5,
+                "phase": context["phase"],
                 "source_id": context["source_id"],
                 "objective_id": context["objective_id"],
                 "tdd_path": context["tdd_path"],
@@ -944,16 +1114,26 @@ def _pod_failure_reason(
     return None
 
 
-def _read_verified(lake: FileLake | S3Lake, key: str) -> bytes:
-    if not _BRONZE_KEY.fullmatch(key):
-        raise ValueError("bronze_key must be a sha256 bronze object key")
-    validate_key(key)
-    data = lake.read_key(key)
-    if not isinstance(data, bytes):
-        raise TypeError("lake.read_key must return bytes")
-    if "sha256:" + hashlib.sha256(data).hexdigest() != key:
-        raise ValueError("bronze bytes do not match the requested key digest")
-    return data
+def _external_sha256_matches(path: Path, expected: str) -> bool:
+    """Verify an opaque staged file without loading its contents into Python."""
+    command = shutil.which("sha256sum")
+    arguments = [command, str(path)] if command else None
+    if arguments is None:
+        command = shutil.which("shasum")
+        arguments = [command, "-a", "256", str(path)] if command else None
+    if arguments is None:
+        return False
+    try:
+        checked = subprocess.run(
+            arguments,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return checked.returncode == 0 and checked.stdout.split(maxsplit=1)[:1] == [expected]
 
 
 def _bronze_base_url(lake: FileLake | S3Lake, key: str) -> str:
@@ -966,6 +1146,22 @@ def _bronze_base_url(lake: FileLake | S3Lake, key: str) -> str:
         return ""
     try:
         parsed = urlsplit(raw_url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _safe_base_url(value: str | None) -> str:
+    if not isinstance(value, str) or not value or len(value) > 4096:
+        return ""
+    try:
+        parsed = urlsplit(value)
         hostname = parsed.hostname
         _ = parsed.port
     except ValueError:
@@ -1007,12 +1203,15 @@ def _job_context(
     step_id: str | None,
     objective_id: str | None,
     tdd_path: str,
+    phase: int,
     generated_by: Mapping[str, str] | None,
 ) -> dict[str, Any]:
     if not isinstance(source_id, str) or not source_id.strip():
         raise ValueError("source_id must be nonempty")
     if not isinstance(tdd_path, str) or not tdd_path.strip():
         raise ValueError("tdd_path must be nonempty")
+    if type(phase) is not int or phase not in range(1, 6):
+        raise ValueError("phase must be 1..5")
     timestamp = datetime.now(UTC).isoformat()
     provenance = dict(
         generated_by or {"backend": "recorded", "model": "deterministic-parse-pod", "at": timestamp}
@@ -1035,6 +1234,7 @@ def _job_context(
         "source_id": source_id,
         "objective_id": objective_id,
         "tdd_path": tdd_path,
+        "phase": phase,
         "started_at": timestamp,
         "generated_by": provenance,
     }

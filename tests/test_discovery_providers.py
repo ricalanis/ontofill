@@ -21,18 +21,52 @@ from ontofill.phases.p3_fanout.search import (
     SandboxWebSearchProvider,
     parse_web_results,
 )
+from ontofill.sandbox import parse as parse_module
+from ontofill.sandbox import parse_bronze
 from tests.genericity.fixtures.discovery import discovery_case
+from tests.r17_helpers import SyntheticParseExecutor
 
 
-def test_web_result_links_are_decoded_only_from_captured_html() -> None:
+@pytest.fixture(autouse=True)
+def synthetic_parse_pod(monkeypatch):
+    monkeypatch.setattr(parse_module, "DockerParseExecutor", SyntheticParseExecutor)
+
+
+def _parsed_links(lake: FileLake, html: str, base_url: str):
+    key = lake.put_bytes(html.encode("utf-8"), {"content_type": "text/html", "url": base_url})
+    return parse_bronze(
+        lake,
+        key,
+        format="html",
+        base_url=base_url,
+        run_id="mock-search-links",
+        source_id="search-provider",
+        tdd_path="03-fanout/search-policy.json",
+        generated_by={
+            "backend": "recorded",
+            "model": "synthetic-search-test",
+            "at": datetime.now(UTC).isoformat(),
+        },
+    ).links
+
+
+def test_web_result_links_are_decoded_only_from_sandboxed_capture(tmp_path) -> None:
     target = "https://agency.example.gov/list"
     wrapped = "a1" + base64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
     html = f'<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u={wrapped}">Official list</a></h2></li>'
-    assert parse_web_results(html, provider="bing_html") == (
-        SearchResult(target, "Official list", "Official list"),
-    )
+    lake = FileLake(tmp_path / "lake")
+    assert parse_web_results(
+        _parsed_links(lake, html, "https://www.bing.com/search"), provider="bing_html"
+    ) == (SearchResult(target, "Official list", "Official list"),)
     assert (
-        parse_web_results('<a href="https://unlisted.example.test/">Ad</a>', provider="bing_html")
+        parse_web_results(
+            _parsed_links(
+                lake,
+                '<a href="https://unlisted.example.test/">Ad</a>',
+                "https://www.bing.com/search",
+            ),
+            provider="bing_html",
+        )
         == ()
     )
 
@@ -109,7 +143,9 @@ def test_web_provider_stops_on_captcha_after_sandbox_capture(tmp_path) -> None:
             "url": url,
             "status": 200,
             "html": '<input type="password" name="captcha">',
-            "html_key": lake.put_bytes(b"captcha"),
+            "html_key": lake.put_bytes(
+                b'<input type="password" name="captcha">', {"content_type": "text/html"}
+            ),
             "trace": [{"step_id": "step:captcha"}],
         }
 
@@ -125,7 +161,12 @@ def test_web_provider_stops_on_captcha_after_sandbox_capture(tmp_path) -> None:
         provider.search("public suppliers")
     assert error.value.kind == FailureKind.BLOCKED
     assert len(calls) == 1
-    assert len(provider.trace) == 1
+    assert len(provider.trace) == 7
+    assert {
+        row["evaluated"]["proof_checkpoint"]
+        for row in provider.trace
+        if row.get("evaluated", {}).get("proof_checkpoint")
+    } == {"task", "host", "where", "isolation", "secrets", "teardown"}
 
 
 class CapturedSearch:

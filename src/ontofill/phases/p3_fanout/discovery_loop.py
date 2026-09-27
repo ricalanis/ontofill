@@ -26,7 +26,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
-from bs4 import BeautifulSoup
 from jsonschema import Draft202012Validator
 
 from ontofill.case.checkpoints import load_json, require_approval, write_json
@@ -43,6 +42,7 @@ from ontofill.phases.p3_fanout.leads import (
     LeadQuery,
 )
 from ontofill.sandbox.domains import registrable_domain
+from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 TDD_PATH = "03-fanout/discovery-loop.json"
 _BOOLEAN_TYPES = {"boolean", "bool", "xsd:boolean"}
@@ -99,13 +99,6 @@ def authority_tier(url: str, policy: Mapping) -> str:
 
 def _source_id(url: str) -> str:
     return "source-" + hashlib.sha256(url.encode()).hexdigest()[:12]
-
-
-def _page_text(html: str) -> str:
-    soup = BeautifulSoup(html or "", "html.parser")
-    for tag in soup(["script", "style", "noscript", "template"]):
-        tag.decompose()
-    return " ".join(soup.get_text(" ", strip=True).split())
 
 
 def _property_tokens(prop: Mapping, owner: Mapping) -> set[str]:
@@ -198,6 +191,7 @@ class DiscoveryLoop:
         provenance: Mapping[str, str],
         budget: LoopBudget | None = None,
         spider_capture: Callable[..., dict] | None = None,
+        parse_executor: ParseExecutor | None = None,
         max_captures_per_iteration: int = 6,
         max_queries_per_iteration: int = 4,
     ) -> None:
@@ -210,6 +204,7 @@ class DiscoveryLoop:
         self.provenance = dict(provenance)
         self.budget = budget or LoopBudget(max_iterations=3, wall_seconds=900)
         self.spider_capture = spider_capture
+        self.parse_executor = parse_executor
         self.max_captures = max_captures_per_iteration
         self.max_queries = max_queries_per_iteration
         self.trace: list[dict] = []
@@ -383,11 +378,43 @@ class DiscoveryLoop:
             self.jobs.append(captured)
         status = int(captured.get("status", 200))
         key = captured.get("html_key")
-        text = _page_text(captured.get("html", ""))
-        if status >= 400 or not key or not text:
+        if status >= 400 or not isinstance(key, str):
             candidate.update(
                 status="capture_failed",
                 capture_reason=f"http_{status}" if status >= 400 else "empty_page",
+                capture_key=key,
+            )
+            return
+        try:
+            parsed_page = parse_bronze(
+                self.lake,
+                key,
+                format="html",
+                max_rows=300,
+                base_url=str(captured.get("url") or url),
+                run_id=self.run_id,
+                source_id=source_id,
+                tdd_path=TDD_PATH,
+                phase=3,
+                generated_by=self.provenance,
+                executor=self.parse_executor,
+            )
+        except SandboxParseError as exc:
+            self.trace.extend(exc.trace)
+            self.jobs.append(exc.job_record)
+            candidate.update(
+                status="capture_failed",
+                capture_reason="sandbox_parse_failed",
+                capture_key=key,
+            )
+            return
+        self.trace.extend(parsed_page.trace)
+        self.jobs.append(parsed_page.job_record)
+        text = parsed_page.page_text
+        if not text:
+            candidate.update(
+                status="capture_failed",
+                capture_reason="empty_page",
                 capture_key=key,
             )
             return
@@ -969,6 +996,7 @@ class DiscoveryLoop:
             capture=self.spider_capture,
             provenance=self.provenance,
             force_source_ids=force_source_ids,
+            parse_executor=self.parse_executor,
         )
         self._pending_spider_gap_properties.clear()
         self.trace.extend(result["trace"])

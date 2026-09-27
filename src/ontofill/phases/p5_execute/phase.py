@@ -14,9 +14,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from bs4 import BeautifulSoup
 from jsonschema import Draft202012Validator
-from ontofill_scrape import Evidence, emit_observation, file_parse, page_links
+from ontofill_scrape import Evidence, PageLink, emit_observation
 from ontofill_scrape import Observation as ToolObservation
 from ontofill_scrape.models import ParsedFile, ParsedRow
 
@@ -30,7 +29,8 @@ from ontofill.refiner import Observation, SilverStore
 from ontofill.repair import repair_html_extractor
 from ontofill.repair.runner import RepairExecutor
 from ontofill.runfeed import RunFeed
-from ontofill.sandbox import capture_url, fetch_url
+from ontofill.sandbox import SandboxParseError, capture_url, fetch_url, parse_bronze
+from ontofill.sandbox.parse import ParseExecutor
 
 Capture = Callable[..., dict]
 
@@ -58,15 +58,8 @@ def _format(url: str) -> str | None:
     return None
 
 
-def _html_table(html: str) -> ParsedFile:
-    soup = BeautifulSoup(html, "html.parser")
-    rows = []
-    for table_number, table in enumerate(soup.select("table"), start=1):
-        for row_number, row in enumerate(table.select("tr"), start=1):
-            cells = tuple(cell.get_text(" ", strip=True) for cell in row.select("th, td"))
-            if cells:
-                rows.append(ParsedRow(f"html-table-{table_number}", row_number, cells))
-    return ParsedFile("html", tuple(rows))
+def _parsed_links(result) -> tuple[PageLink, ...]:
+    return tuple(PageLink(link["url"], link["text"], link["rel"]) for link in result.links)
 
 
 def _html_d1_records(
@@ -547,6 +540,7 @@ def execute_objective(
     browser_steps_root: Path | None = None,
     browser_captures_root: Path | None = None,
     repair_executor: RepairExecutor | None = None,
+    parse_executor: ParseExecutor | None = None,
 ) -> ExecutionResult:
     """Execute one approved TDD; every emitted value is a literal captured cell."""
     source_id = objective["source_id"]
@@ -589,6 +583,33 @@ def execute_objective(
     page = capture(objective["source_url"], **kwargs)
     traces = list(page["trace"])
     jobs = [page]
+    page_parse = None
+    if isinstance(page.get("html_key"), str):
+        try:
+            page_parse = parse_bronze(
+                lake,
+                page["html_key"],
+                format="html",
+                max_rows=10_000,
+                run_id=run_id,
+                source_id=source_id,
+                step_id=f"step:{uuid.uuid4().hex}",
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                generated_by=provenance,
+                base_url=page["url"],
+                executor=parse_executor,
+            )
+        except SandboxParseError as exc:
+            traces.extend(exc.trace)
+            jobs.append(exc.job_record)
+            exc.trace = tuple(traces)
+            exc.sandbox_jobs = jobs
+            raise
+        traces.extend(page_parse.trace)
+        jobs.append(page_parse.job_record)
+    # The captured source is now represented by bounded pod output and its key.
+    page.pop("html", None)
 
     def controller_fallback() -> ExecutionResult:
         if feed is None:
@@ -613,7 +634,7 @@ def execute_objective(
 
     candidates = [
         link
-        for link in page_links(page["html"], page["url"])
+        for link in (_parsed_links(page_parse) if page_parse is not None else ())
         if _format(link.url) and (urlsplit(link.url).hostname or "") in tdd["allowed_domains"]
     ]
     candidate_count = len(candidates)
@@ -644,14 +665,33 @@ def execute_objective(
             ),
             selection_schema,
         )
-        downloaded = fetch(candidates[choice["index"]].url, **kwargs)
+        downloaded = fetch(candidates[choice["index"]].url, include_bytes=False, **kwargs)
         traces.extend(downloaded["trace"])
         jobs.append(downloaded)
-        parsed = file_parse(
-            downloaded["bytes"],
-            format=_format(downloaded["url"]),
-            max_rows=10_000 if tdd.get("membership") else 300,
-        )
+        try:
+            parsed_result = parse_bronze(
+                lake,
+                downloaded["bronze_key"],
+                format=_format(downloaded["url"]),
+                max_rows=10_000 if tdd.get("membership") else 300,
+                run_id=run_id,
+                source_id=source_id,
+                step_id=f"step:{uuid.uuid4().hex}",
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                generated_by=provenance,
+                base_url=downloaded["url"],
+                executor=parse_executor,
+            )
+        except SandboxParseError as exc:
+            traces.extend(exc.trace)
+            jobs.append(exc.job_record)
+            exc.trace = tuple(traces)
+            exc.sandbox_jobs = jobs
+            raise
+        traces.extend(parsed_result.trace)
+        jobs.append(parsed_result.job_record)
+        parsed = parsed_result.as_parsed_file()
         evidence_url, bronze_key = downloaded["url"], downloaded["bronze_key"]
         parent_step = downloaded["trace"][0]["step_id"]
     else:
@@ -682,7 +722,7 @@ def execute_objective(
                 }
             )
             return ExecutionResult([], traces, jobs, "html")
-        parsed = _html_table(page["html"])
+        parsed = page_parse.as_parsed_file() if page_parse is not None else ParsedFile("html")
         if (
             tdd.get("extraction_method") == "dom"
             and _table(parsed) is not None
@@ -721,7 +761,9 @@ def execute_objective(
                     generated_by=provenance,
                     parent_step_id=mapped[2]["step_id"],
                     executor=repair_executor,
+                    parse_executor=parse_executor,
                 )
+                jobs.extend(repaired.sandbox_jobs)
                 repair_trace = list(repaired.trace)
                 if repaired.passed:
                     replayed = _rows_from_html_macro(mapped, repaired.outputs)
@@ -957,6 +999,7 @@ def execute_objectives(
     browser_steps_root: Path | None = None,
     browser_captures_root: Path | None = None,
     repair_executor: RepairExecutor | None = None,
+    parse_executor: ParseExecutor | None = None,
 ) -> list[ExecutionResult]:
     """Run every selected objective, applying complete-list membership last."""
     ordered = [
@@ -981,6 +1024,7 @@ def execute_objectives(
             browser_steps_root=browser_steps_root,
             browser_captures_root=browser_captures_root,
             repair_executor=repair_executor,
+            parse_executor=parse_executor,
         )
         for objective in ordered
     ]

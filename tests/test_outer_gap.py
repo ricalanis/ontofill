@@ -13,12 +13,15 @@ from ontofill.outer_gap import (
     outer_trace_step,
     prior_gap_iterations,
 )
+from ontofill.sandbox import parse as parse_module
 from ontofill.workflow import _scratch_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
 from tests.genericity.test_library_workflow import BRIEF, LibrarySearch, _capture, _fetch
+from tests.r17_helpers import SyntheticParseExecutor
 
 
-def _run_library_case(tmp_path, *, target: int, reopen: list[dict] | None = None):
+def _run_library_case(tmp_path, monkeypatch, *, target: int, reopen: list[dict] | None = None):
+    monkeypatch.setattr(parse_module, "DockerParseExecutor", SyntheticParseExecutor)
     case = tmp_path / "case"
     case.mkdir()
     (case / "brief.md").write_text(BRIEF.read_text(encoding="utf-8"), encoding="utf-8")
@@ -52,8 +55,8 @@ def _run_library_case(tmp_path, *, target: int, reopen: list[dict] | None = None
     return case, scratch, lake, code, outer, metrics
 
 
-def test_no_measured_gap_stops_without_model_reopen(tmp_path) -> None:
-    case, _scratch, lake, code, outer, metrics = _run_library_case(tmp_path, target=1)
+def test_no_measured_gap_stops_without_model_reopen(tmp_path, monkeypatch) -> None:
+    case, _scratch, lake, code, outer, metrics = _run_library_case(tmp_path, monkeypatch, target=1)
     assert code == 3  # recorded checkpoints remain unsatisfied
     assert len(outer) == 1
     assert outer[0]["executed"]["reopen"] is None
@@ -69,10 +72,10 @@ def test_no_measured_gap_stops_without_model_reopen(tmp_path) -> None:
     assert not lake.exists(f"runs/{case.name}/latest.json")
 
 
-def test_gap_reopens_discovery_twice_then_stops_at_code_bound(tmp_path) -> None:
+def test_gap_reopens_discovery_twice_then_stops_at_code_bound(tmp_path, monkeypatch) -> None:
     repair = {"reopen": 3, "reason": "Find another captured public source"}
     case, scratch, lake, code, outer, metrics = _run_library_case(
-        tmp_path, target=2, reopen=[repair, repair]
+        tmp_path, monkeypatch, target=2, reopen=[repair, repair]
     )
     assert code == 3
     assert [step["executed"]["reopen"] for step in outer] == [3, 3, None]
@@ -99,9 +102,12 @@ def test_gap_reopens_discovery_twice_then_stops_at_code_bound(tmp_path) -> None:
     assert not lake.exists(f"gold/{case.name}/latest.json")
 
 
-def test_gap_reopens_local_tdd_with_gap_context_and_retains_prior_draft(tmp_path) -> None:
+def test_gap_reopens_local_tdd_with_gap_context_and_retains_prior_draft(
+    tmp_path, monkeypatch
+) -> None:
     case, scratch, _lake, code, outer, metrics = _run_library_case(
         tmp_path,
+        monkeypatch,
         target=2,
         reopen=[
             {"reopen": 4, "reason": "Try a revised extraction plan"},
@@ -119,9 +125,10 @@ def test_gap_reopens_local_tdd_with_gap_context_and_retains_prior_draft(tmp_path
     assert sorted(path.name for path in case.iterdir()) == ["brief.md"]
 
 
-def test_ontology_reopen_waits_for_human_review(tmp_path) -> None:
+def test_ontology_reopen_waits_for_human_review(tmp_path, monkeypatch) -> None:
     case, scratch, lake, code, outer, _metrics = _run_library_case(
         tmp_path,
+        monkeypatch,
         target=2,
         reopen=[{"reopen": 2, "reason": "The ontology may not cover the approved query"}],
     )

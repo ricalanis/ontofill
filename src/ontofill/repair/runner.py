@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 import difflib
-import hashlib
 import json
 import re
+import subprocess
 import tempfile
 import uuid
 from collections import Counter
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ class RepairExecution:
     stderr: str = ""
     error: str | None = None
     limit_reason: str | None = None
+    input_proof: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -65,8 +67,12 @@ class RepairOutcome:
 
 
 class RepairExecutor(Protocol):
-    def run(
-        self, code: str, captures: Sequence[bytes], limits: SandboxLimits
+    def run_from_lake(
+        self,
+        lake: FileLake | S3Lake,
+        captures: Sequence[CaptureCase],
+        code: str,
+        limits: SandboxLimits,
     ) -> RepairExecution: ...
 
 
@@ -76,6 +82,65 @@ class DockerRepairExecutor:
     image = "python:3.12-alpine"
 
     def run(self, code: str, captures: Sequence[bytes], limits: SandboxLimits) -> RepairExecution:
+        """Execute in-memory synthetic inputs; bronze callers use run_from_lake."""
+        input_document = {"captures": [base64.b64encode(item).decode("ascii") for item in captures]}
+        return self._execute(code, input_document, (), limits)
+
+    def run_from_lake(
+        self,
+        lake: FileLake | S3Lake,
+        captures: Sequence[CaptureCase],
+        code: str,
+        limits: SandboxLimits,
+    ) -> RepairExecution:
+        """Stage bronze paths into the runsc pod; application code never reads bytes."""
+        references = []
+        staged_paths = []
+        total_bytes = 0
+        with ExitStack() as stack:
+            for index, case in enumerate(captures):
+                if not _BRONZE_KEY.fullmatch(case.capture_key):
+                    raise ValueError("capture_key must be a bronze sha256 key")
+                if isinstance(lake, FileLake):
+                    path = lake.bronze_path(case.capture_key)
+                    size = path.stat().st_size
+                else:
+                    size = lake.bronze_size(case.capture_key)
+                    if size > _MAX_CAPTURE_BYTES:
+                        raise ValueError("capture exceeds 8 MiB")
+                    directory = Path(
+                        stack.enter_context(tempfile.TemporaryDirectory(prefix="ontofill-repair-"))
+                    )
+                    path = directory / f"capture-{index}"
+                    lake.download_bronze(case.capture_key, path, max_bytes=_MAX_CAPTURE_BYTES)
+                total_bytes += size
+                if size > _MAX_CAPTURE_BYTES:
+                    raise ValueError("capture exceeds 8 MiB")
+                if total_bytes > _MAX_CAPTURE_BYTES:
+                    raise ValueError("combined captures exceed 8 MiB")
+                container_path = f"/work/capture-{index}"
+                references.append(
+                    {
+                        "path": container_path,
+                        "expected_sha256": case.capture_key.removeprefix("sha256:"),
+                        "max_bytes": _MAX_CAPTURE_BYTES,
+                    }
+                )
+                staged_paths.append((path, container_path))
+            return self._execute(
+                code,
+                {"captures": references},
+                tuple(staged_paths),
+                limits,
+            )
+
+    def _execute(
+        self,
+        code: str,
+        input_document: dict,
+        capture_paths: Sequence[tuple[Path, str]],
+        limits: SandboxLimits,
+    ) -> RepairExecution:
         info = json.loads(_docker("info", "--format", "{{json .}}").stdout)
         if "runsc" not in info.get("Runtimes", {}):
             raise RuntimeError("gVisor runsc is required for code repair")
@@ -84,9 +149,7 @@ class DockerRepairExecutor:
             stage = Path(directory)
             (stage / "candidate.py").write_text(code, encoding="utf-8")
             (stage / "input.json").write_text(
-                json.dumps(
-                    {"captures": [base64.b64encode(item).decode("ascii") for item in captures]}
-                ),
+                json.dumps(input_document),
                 encoding="utf-8",
             )
             try:
@@ -132,6 +195,8 @@ class DockerRepairExecutor:
                         input_text=filename.read_text(encoding="utf-8"),
                         timeout=30,
                     )
+                for source_path, container_path in capture_paths:
+                    self._stage_local_file(source_path, name, container_path)
                 try:
                     result = _docker(
                         "exec",
@@ -164,7 +229,10 @@ class DockerRepairExecutor:
                     _docker("exec", name, "cat", "/work/output.json", timeout=30).stdout
                 )
                 return RepairExecution(
-                    tuple(document["outputs"]), document["stderr"], document.get("error")
+                    tuple(document["outputs"]),
+                    document["stderr"],
+                    document.get("error"),
+                    input_proof=document.get("input_proof"),
                 )
             finally:
                 _docker("rm", "-f", name, check=False, timeout=30)
@@ -174,6 +242,47 @@ class DockerRepairExecutor:
                     marker in detail for marker in ("no such object", "no such container")
                 ):
                     raise RuntimeError("repair pod teardown could not be verified")
+
+    @staticmethod
+    def _stage_local_file(path: Path, name: str, container_path: str) -> None:
+        source_path = str(path.resolve(strict=True))
+        copied = _docker(
+            "cp",
+            source_path,
+            f"{name}:{container_path}",
+            timeout=30,
+            check=False,
+        )
+        if copied.returncode == 0:
+            return
+        source = subprocess.Popen(
+            ["cat", "--", source_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        assert source.stdout is not None
+        try:
+            staged = _docker(
+                "exec",
+                "-i",
+                name,
+                "sh",
+                "-c",
+                f"cat > {container_path}",
+                timeout=30,
+                check=False,
+                input_stream=source.stdout,
+            )
+        finally:
+            source.stdout.close()
+        try:
+            source.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            source.kill()
+            source.wait(timeout=5)
+            raise RuntimeError("repair bronze staging process timed out") from None
+        if staged.returncode != 0 or source.returncode != 0:
+            raise RuntimeError("repair bronze staging failed through Docker CLI")
 
 
 def _score(outputs: Sequence[list[dict]], cases: Sequence[CaptureCase]) -> dict:
@@ -246,19 +355,20 @@ def run_code_repair(
         raise ValueError("at least one stored capture is required")
     if not source_id or not tdd_path:
         raise ValueError("source_id and tdd_path are required")
-    payloads: list[bytes] = []
+    total_bytes = 0
     for case in captures:
         if not _BRONZE_KEY.fullmatch(case.capture_key):
             raise ValueError("capture_key must be a bronze sha256 key")
-        data = lake.read_key(case.capture_key)
-        if "sha256:" + hashlib.sha256(data).hexdigest() != case.capture_key:
-            raise ValueError("stored capture bytes do not match their bronze key")
-        if len(data) > _MAX_CAPTURE_BYTES:
+        if isinstance(lake, FileLake):
+            size = lake.bronze_path(case.capture_key).stat().st_size
+        else:
+            size = lake.bronze_size(case.capture_key)
+        if size > _MAX_CAPTURE_BYTES:
             raise ValueError("capture exceeds 8 MiB")
-        payloads.append(data)
+        total_bytes += size
         if any(not isinstance(row, dict) for row in case.expected):
             raise ValueError("expected records must be dictionaries")
-    if sum(map(len, payloads)) > _MAX_CAPTURE_BYTES:
+    if total_bytes > _MAX_CAPTURE_BYTES:
         raise ValueError("combined captures exceed 8 MiB")
     runner = executor or DockerRepairExecutor()
     code = initial_code
@@ -281,7 +391,7 @@ def run_code_repair(
         )
         diff_key = _artifact(lake, diff.encode("utf-8"), "text/x-diff", source_id)
         try:
-            execution = runner.run(code, payloads, budget)
+            execution = runner.run_from_lake(lake, captures, code, budget)
         except (OSError, RuntimeError, ValueError) as exc:
             execution = RepairExecution((), f"{type(exc).__name__}: {exc}", error="executor_error")
         stderr = execution.stderr[-8192:]
@@ -320,6 +430,7 @@ def run_code_repair(
                 if isinstance(runner, DockerRepairExecutor)
                 else "test-double",
                 "limits": budget.as_dict(),
+                "input_proof": execution.input_proof,
             },
             "evaluated": {"status": "pass" if passed else "fail", "error": execution.error},
             "repair": {

@@ -6,9 +6,11 @@ import json
 import os
 import shutil
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from dotenv import load_dotenv
@@ -42,10 +44,96 @@ from ontofill.runfeed import RunFeed
 from ontofill.sandbox import (
     CaptureBlocked,
     SandboxLimitExceeded,
+    SandboxParseError,
     append_job_record,
     build_job_record,
     capture_url,
+    fetch_url,
+    parse_bronze_json,
 )
+
+
+class _SandboxCkanJsonFetcher:
+    """Fetch and decode CKAN JSON through the network and parse sandboxes."""
+
+    def __init__(
+        self,
+        *,
+        lake,
+        run_id: str,
+        provenance: Mapping[str, str],
+        fetch: Callable[..., dict] = fetch_url,
+        parse: Callable[..., object] = parse_bronze_json,
+    ) -> None:
+        self.lake = lake
+        self.run_id = run_id
+        self.provenance = dict(provenance)
+        self.fetch = fetch
+        self.parse = parse
+        self.trace: list[dict] = []
+        self.jobs: list[dict] = []
+
+    def __call__(self, url: str, domain: str) -> Mapping:
+        allowed_domain = domain.casefold().rstrip(".")
+        try:
+            parsed_url = urlsplit(url)
+            port = parsed_url.port
+        except ValueError as exc:
+            raise ValueError("invalid CKAN package_search URL") from exc
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.hostname != allowed_domain
+            or parsed_url.username
+            or parsed_url.password
+            or port is not None
+            or parsed_url.path != "/api/3/action/package_search"
+        ):
+            raise ValueError("CKAN URL is outside its approved catalog endpoint")
+
+        source_id = "source:ckan-catalog"
+        tdd_path = "03-fanout/ckan/package-search.json"
+        try:
+            fetched = self.fetch(
+                url,
+                allowed_domains=[allowed_domain],
+                lake=self.lake,
+                run_id=self.run_id,
+                source_id=source_id,
+                objective_id=None,
+                tdd_path=tdd_path,
+                phase=3,
+                generated_by=self.provenance,
+                include_bytes=False,
+            )
+        except Exception as exc:
+            self.trace.extend(getattr(exc, "trace", None) or [])
+            failure_result = getattr(exc, "result", None)
+            if isinstance(failure_result, dict) and "proof" in failure_result:
+                self.jobs.append(failure_result)
+            raise
+        self.trace.extend(fetched.get("trace", []))
+        self.jobs.append(fetched)
+        try:
+            decoded = self.parse(
+                self.lake,
+                fetched["bronze_key"],
+                run_id=self.run_id,
+                source_id=source_id,
+                objective_id=None,
+                tdd_path=tdd_path,
+                phase=3,
+                generated_by=self.provenance,
+            )
+        except SandboxParseError as exc:
+            self.trace.extend(exc.trace)
+            self.jobs.append(exc.job_record)
+            raise
+        self.trace.extend(decoded.trace)
+        self.jobs.append(decoded.job_record)
+        document = decoded.document
+        if not isinstance(document, Mapping):
+            raise TypeError("sandbox CKAN JSON root must be an object")
+        return document
 
 
 def _preview_decision(brief: str) -> RecordedDecisionClient:
@@ -288,7 +376,7 @@ def _persisted_run_trace(
     return [json.loads(line) for line in lake.read_key(key).splitlines()]
 
 
-def _merge_bronze_replay_steps(
+def _merge_trace_steps(
     trace: list[dict], replay_steps: list[dict]
 ) -> tuple[list[dict], list[dict]]:
     merged = list(trace)
@@ -679,7 +767,15 @@ def run_case(
                 lead_search = ProviderSearchClient(providers) if providers else None
                 # Bounded P3 loop: lead-only providers, sandbox confirmation, authority check.
                 search_client = DiscoveryLoop(
-                    default_lead_providers(decision, search_client=lead_search),
+                    default_lead_providers(
+                        decision,
+                        search_client=lead_search,
+                        fetch_json=_SandboxCkanJsonFetcher(
+                            lake=lake,
+                            run_id=run_id,
+                            provenance=provenance,
+                        ),
+                    ),
                     capture=capture or capture_url,
                     lake=lake,
                     run_id=run_id,
@@ -705,7 +801,9 @@ def run_case(
                 _publish_steps(feed, fresh_trace)
                 trace.extend(fresh_trace)
                 for job in getattr(search_client, "jobs", [])[jobs_before:]:
-                    if "proof" in job:
+                    if "checkpoints" in job:
+                        append_job_record(lake, case_id, job)
+                    elif "proof" in job:
                         append_job_record(lake, case_id, build_job_record(job))
             step = _trace_step(
                 run_id, 3, provenance, "source.discover", "03-fanout/objectives.json"
@@ -827,11 +925,14 @@ def run_case(
             observations = store.list_for_run(run_id)
             _write_silver_cache(case_id, run_id, observations)
             for execution in executions:
-                for index, job in enumerate(execution.sandbox_jobs):
-                    if "proof" in job:
+                proof_jobs = [job for job in execution.sandbox_jobs if "proof" in job]
+                for job in execution.sandbox_jobs:
+                    if "checkpoints" in job:
+                        append_job_record(lake, case_id, job)
+                    elif "proof" in job:
                         ids = (
                             [item.value_id for item in execution.observations]
-                            if index == len(execution.sandbox_jobs) - 1
+                            if proof_jobs and job is proof_jobs[-1]
                             else []
                         )
                         append_job_record(lake, case_id, build_job_record(job, value_ids=ids))
@@ -969,6 +1070,22 @@ def run_case(
             _publish_unreported_decisions(feed, trace, decision, run_id, phase)
             feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
             raise
+        except SandboxParseError as exc:
+            fresh = [
+                step for step in exc.trace if step["step_id"] not in {s["step_id"] for s in trace}
+            ]
+            _publish_steps(feed, fresh)
+            trace.extend(fresh)
+            jobs = getattr(exc, "sandbox_jobs", [exc.job_record])
+            for job in jobs:
+                if "checkpoints" in job:
+                    append_job_record(lake, case_id, job)
+                elif "proof" in job:
+                    append_job_record(lake, case_id, build_job_record(job))
+            phase = feed.current_status["phase"] if feed.current_status else 5
+            _publish_unreported_decisions(feed, trace, decision, run_id, phase)
+            feed.update_status(state="failed", phase=phase, checkpoint_pending=pending)
+            raise
         except CaptureBlocked as exc:
             if exc.trace:
                 dispatch = next(
@@ -1066,6 +1183,12 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
         ontology=ontology,
         provenance=provenance,
     )
+    for record in replay.parse_job_records:
+        append_job_record(lake, case_id, record)
+    trace, parse_additions = _merge_trace_steps(trace, replay.parse_trace_steps)
+    if parse_additions:
+        lake.write_key(trace_key, _append_trace_bytes(previous_trace_bytes, parse_additions))
+        previous_trace_bytes = lake.read_key(trace_key)
     observations.extend(replay.observations)
     if not observations:
         raise RuntimeError(f"no silver observations for {run_id}; refusing to overwrite gold")
@@ -1090,7 +1213,7 @@ def refine_case(case_dir: Path, *, run_id: str | None = None) -> int:
     # Classification calls remain in the audit trail even if replay export fails.
     # Rollback removes only replay steps that have no exported values.
     previous_trace_bytes = lake.read_key(trace_key)
-    export_trace, replay_additions = _merge_bronze_replay_steps(trace, replay.trace_steps)
+    export_trace, replay_additions = _merge_trace_steps(trace, replay.trace_steps)
     if replay_additions:
         lake.write_key(trace_key, _append_trace_bytes(previous_trace_bytes, replay_additions))
     try:

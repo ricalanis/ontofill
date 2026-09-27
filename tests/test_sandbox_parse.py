@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -94,6 +95,7 @@ class FakeExecutor:
         )
         self.overrides = overrides
         self.calls: list[dict] = []
+        self.file_calls: list[dict] = []
 
     def run(self, payload, *, kind, format, max_rows, base_url, limits):
         self.calls.append(
@@ -120,6 +122,35 @@ class FakeExecutor:
             limit_reason=self.overrides.get("limit_reason"),
         )
 
+    def run_from_file(
+        self,
+        path,
+        *,
+        expected_sha256,
+        max_bytes,
+        kind,
+        format,
+        max_rows,
+        base_url,
+        limits,
+    ):
+        payload = path.read_bytes()
+        if len(payload) > max_bytes:
+            raise ValueError("input_too_large")
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise ValueError("bronze bytes do not match the requested key digest")
+        self.file_calls.append(
+            {"path": path, "expected_sha256": expected_sha256, "max_bytes": max_bytes}
+        )
+        return self.run(
+            payload,
+            kind=kind,
+            format=format,
+            max_rows=max_rows,
+            base_url=base_url,
+            limits=limits,
+        )
+
 
 def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
@@ -141,7 +172,8 @@ def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_p
         executor=executor,
     )
 
-    assert executor.calls[0]["payload"] == payload
+    assert executor.file_calls[0]["path"] == lake.bronze_path(key)
+    assert executor.file_calls[0]["expected_sha256"] == key.removeprefix("sha256:")
     assert executor.calls[0]["kind"] == "csv"
     assert executor.calls[0]["max_rows"] == 12
     assert result.rows[0]["values"] == ["name", "Example 01"]
@@ -165,6 +197,89 @@ def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_p
     assert len(result.trace) == 6
 
 
+def test_file_lake_uses_docker_file_staging_without_python_byte_reads(tmp_path: Path, monkeypatch):
+    lake = FileLake(tmp_path / "lake")
+    payload = b"synthetic staged bytes"
+    key = lake.put_bytes(payload)
+    executor = FakeExecutor()
+    observed = {}
+
+    def run_from_file(path, **kwargs):
+        observed["path"] = path
+        observed.update(kwargs)
+        return executor.run(
+            b"",
+            kind=kwargs["kind"],
+            format=kwargs["format"],
+            max_rows=kwargs["max_rows"],
+            base_url=kwargs["base_url"],
+            limits=kwargs["limits"],
+        )
+
+    executor.run_from_file = run_from_file
+    monkeypatch.setattr(
+        lake,
+        "read_key",
+        lambda _key: (_ for _ in ()).throw(AssertionError("application read bronze bytes")),
+    )
+
+    result = parse_bronze(lake, key, format="csv", executor=executor)
+
+    assert observed["path"] == lake.bronze_path(key)
+    assert observed["expected_sha256"] == key.removeprefix("sha256:")
+    assert result.job_record["checkpoints"]["host"]["runtime"] == "runsc"
+
+
+def test_docker_executor_stages_local_bronze_via_cli_for_remote_daemon(monkeypatch, tmp_path: Path):
+    executor = parse_module.DockerParseExecutor()
+    bronze = tmp_path / "bronze.csv"
+    bronze.write_bytes(b"synthetic transfer content")
+    calls: list[tuple[tuple[str, ...], dict]] = []
+    output = json.dumps(_output()).encode()
+
+    def fake_docker(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("image", "inspect"):
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:2] == ("info", "--format"):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"Name": "synthetic-remote", "Runtimes": {"runsc": {}}}), ""
+            )
+        if args and args[0] == "exec" and "wc" in args:
+            return subprocess.CompletedProcess(args, 0, f"{len(output)} /work/output.json\n", "")
+        if args and args[0] == "exec" and "cat" in args and "/work/output.json" in args:
+            return subprocess.CompletedProcess(args, 0, output.decode(), "")
+        if args and args[0] == "inspect":
+            return subprocess.CompletedProcess(args, 1, "", "No such container")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(parse_module, "_docker", fake_docker)
+    monkeypatch.setattr(executor, "_image", lambda: "synthetic-parse-image")
+
+    result = executor.run_from_file(
+        bronze,
+        expected_sha256=hashlib.sha256(bronze.read_bytes()).hexdigest(),
+        max_bytes=1024,
+        kind="csv",
+        format="csv",
+        max_rows=10,
+        base_url="",
+        limits=SandboxLimits(memory_mb=256, pids=32, timeout_s=5, max_steps=1),
+    )
+
+    run_args = next(args for args, _kwargs in calls if args and args[0] == "run")
+    copy_args = next(args for args, _kwargs in calls if args and args[0] == "cp")
+    assert "--runtime" in run_args and run_args[run_args.index("--runtime") + 1] == "runsc"
+    assert "--network" in run_args and run_args[run_args.index("--network") + 1] == "none"
+    assert "--mount" not in run_args and "-v" not in run_args
+    assert copy_args[1] == str(bronze.resolve())
+    assert copy_args[2].endswith(":/work/bronze")
+    staged = next(kwargs["input_text"] for args, kwargs in calls if "input_text" in kwargs)
+    assert json.loads(staged)["bronze_path"] == "/work/bronze"
+    assert "synthetic transfer content" not in staged
+    assert result.teardown["verified"] is True
+
+
 def test_parse_bronze_json_returns_pod_decoded_mapping(tmp_path: Path) -> None:
     lake = FileLake(tmp_path / "lake")
     payload = b'{"success":true,"result":{"results":[{"id":"synthetic-01"}]}}'
@@ -182,7 +297,7 @@ def test_parse_bronze_json_returns_pod_decoded_mapping(tmp_path: Path) -> None:
         executor=executor,
     )
 
-    assert executor.calls[0]["payload"] == payload
+    assert executor.file_calls[0]["path"] == lake.bronze_path(key)
     assert executor.calls[0]["kind"] == "json_document"
     assert result.document == expected
     assert result.job_record["checkpoints"]["task"]["ok"]
@@ -233,7 +348,7 @@ def test_bronze_key_and_digest_are_checked_before_dispatch(
     executor = FakeExecutor()
     if key.startswith("sha256:"):
         key = valid_key
-        monkeypatch.setattr(lake, "read_key", lambda _key: b"different synthetic bytes")
+        lake.bronze_path(key).write_bytes(b"different synthetic bytes")
 
     with pytest.raises(ValueError, match=expected):
         parse_bronze(lake, key, format="csv", executor=executor)
@@ -303,14 +418,14 @@ def test_parse_runner_extracts_html_and_decodes_json_in_worker_code() -> None:
         b"<a href='https://user:password@synthetic.example.test/private'>Drop</a>"
         b"</body></html>"
     )
-    rows, text, page_text, links, skeleton = runner._parse(
+    rows, text, page_text, links, skeleton, challenge = runner._parse(
         html,
         "html",
         10,
         "https://synthetic.example.test/catalog/list?token=discarded",
     )
     document = b'{"success":true,"result":{"id":"synthetic-01"}}'
-    json_rows, _, _, _, _ = runner._parse(document, "json_document", 1, "")
+    json_rows, _, _, _, _, _ = runner._parse(document, "json_document", 1, "")
 
     assert text == ""
     assert rows[0]["values"] == ["Name"]
@@ -321,8 +436,12 @@ def test_parse_runner_extracts_html_and_decodes_json_in_worker_code() -> None:
             "url": "https://synthetic.example.test/catalog/item/1",
             "text": "Open record",
             "rel": "next",
+            "title": "Open record",
+            "context": "Open record",
+            "result_kind": "other",
         }
     ]
+    assert challenge is False
     assert len(skeleton) == 64
     assert json_rows == [{"document": {"success": True, "result": {"id": "synthetic-01"}}}]
 
@@ -429,6 +548,35 @@ def test_docker_executor_cleans_up_after_runtime_start_timeout(monkeypatch) -> N
     assert result.teardown["verified"] is True
 
 
+def test_default_parser_refuses_when_runsc_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"name,value\nExample 01,42\n")
+    calls: list[tuple[str, ...]] = []
+
+    def no_runsc(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("info", "--format"):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"Name": "synthetic-no-runsc", "Runtimes": {"runc": {}}}), ""
+            )
+        raise AssertionError("default parser must refuse before creating a container")
+
+    monkeypatch.setattr(parse_module, "_docker", no_runsc)
+    with pytest.raises(SandboxParseError) as raised:
+        parse_bronze(
+            lake,
+            key,
+            format="csv",
+            run_id="mock-no-runsc",
+            source_id="source:synthetic",
+            generated_by=PROVENANCE,
+        )
+
+    assert raised.value.reason == "runtime_unavailable"
+    assert raised.value.job_record["checkpoints"]["host"]["ok"] is False
+    assert calls == [("info", "--format", "{{json .}}")]
+
+
 @pytest.mark.skipif(
     os.environ.get("ONTOFILL_RUN_PARSE_CONTAINMENT") != "1" or shutil.which("docker") is None,
     reason="set ONTOFILL_RUN_PARSE_CONTAINMENT=1 to run the real runsc parser proof",
@@ -450,6 +598,17 @@ def test_recorded_csv_parses_in_real_runsc_pod(tmp_path: Path) -> None:
         {"sheet": None, "row_number": 2, "values": ["Example 01", "42"]},
     )
     assert result.job_record["checkpoints"]["host"]["runtime"] == "runsc"
+    assert set(result.job_record["checkpoints"]) == {
+        "host",
+        "task",
+        "where",
+        "isolation",
+        "secrets",
+        "teardown",
+    }
+    assert len(result.trace) == 6
+    assert result.job_record["checkpoints"]["task"]["ok"] is True
+    assert result.job_record["checkpoints"]["teardown"]["ok"] is True
 
 
 @pytest.mark.skipif(
@@ -481,6 +640,9 @@ def test_recorded_html_returns_links_text_and_skeleton_from_runsc(tmp_path: Path
             "url": "https://synthetic.example.test/catalog/item/1",
             "text": "Open record",
             "rel": "next",
+            "title": "Open record",
+            "context": "Open record",
+            "result_kind": "other",
         },
     )
     assert result.dom_skeleton_hash and len(result.dom_skeleton_hash) == 64

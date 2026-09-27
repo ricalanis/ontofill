@@ -13,8 +13,9 @@ import resource
 import socket
 import sys
 import time
-from datetime import date, datetime, time as datetime_time
 from collections.abc import Mapping
+from datetime import date, datetime
+from datetime import time as datetime_time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -157,7 +158,7 @@ def _parse_xlsx(data: bytes, max_rows: int) -> list[dict[str, Any]]:
 
 def _parse_html(
     data: bytes, max_rows: int, base_url: str
-) -> tuple[list[dict[str, Any]], str, list[dict[str, str]], str]:
+) -> tuple[list[dict[str, Any]], str, list[dict[str, str]], str, bool]:
     document = BeautifulSoup(data.decode("utf-8-sig"), "html.parser")
     rows: list[dict[str, Any]] = []
     links: list[dict[str, str]] = []
@@ -193,11 +194,47 @@ def _parse_html(
             if isinstance(rel_value, list)
             else str(rel_value)
         )
+        container = next(
+            (
+                parent
+                for parent in tag.parents
+                if getattr(parent, "name", None) in {"article", "li"}
+                or any(
+                    "result" in str(class_name).casefold() or str(class_name).casefold() == "b_algo"
+                    for class_name in parent.get("class", [])
+                )
+            ),
+            None,
+        )
+        container_classes = (
+            [str(item).casefold() for item in container.get("class", [])]
+            if container is not None
+            else []
+        )
+        if container is not None and container.name == "article":
+            result_kind = "article"
+        elif container is not None and "b_algo" in container_classes:
+            result_kind = "bing"
+        elif container is not None and any("result" in item for item in container_classes):
+            result_kind = "result"
+        else:
+            result_kind = "other"
+        context = (
+            " ".join(container.get_text(" ", strip=True).split())
+            if container is not None
+            else tag.get_text(" ", strip=True)
+        )[:900]
+        heading = container.find(["h2", "h3", "h4", "h5"]) if container is not None else None
         links.append(
             {
                 "url": url,
                 "text": tag.get_text(" ", strip=True),
                 "rel": rel,
+                "title": heading.get_text(" ", strip=True)
+                if heading
+                else tag.get_text(" ", strip=True),
+                "context": context,
+                "result_kind": result_kind,
             }
         )
     skeleton = " ".join(tag.name for tag in document.find_all(True))
@@ -208,7 +245,11 @@ def _parse_html(
     page_text = " ".join(body.get_text(" ", strip=True).split())
     if len(page_text) > MAX_PAGE_TEXT_CHARS:
         raise ParseFailure("page_text_limit")
-    return rows, page_text, links, skeleton_hash
+    challenge_detected = bool(
+        document.select('input[type="password"][name*="captcha" i], input[name*="captcha" i]')
+        or "captcha" in str(document.title.string if document.title else "").casefold()
+    )
+    return rows, page_text, links, skeleton_hash, challenge_detected
 
 
 def _parse_json(data: bytes, max_rows: int) -> list[dict[str, Any]]:
@@ -243,23 +284,23 @@ def _parse_document(data: bytes) -> dict[str, Any]:
 
 def _parse(
     data: bytes, kind: str, max_rows: int, base_url: str
-) -> tuple[list[dict[str, Any]], str, str, list[dict[str, str]], str | None]:
+) -> tuple[list[dict[str, Any]], str, str, list[dict[str, str]], str | None, bool]:
     if len(data) > MAX_INPUT_BYTES:
         raise ParseFailure("input_too_large")
     if kind == "csv":
-        return _parse_csv(data, max_rows), "", "", [], None
+        return _parse_csv(data, max_rows), "", "", [], None, False
     if kind in {"xlsx", "xlsm"}:
-        return _parse_xlsx(data, max_rows), "", "", [], None
+        return _parse_xlsx(data, max_rows), "", "", [], None, False
     if kind == "html":
-        rows, page_text, links, skeleton_hash = _parse_html(data, max_rows, base_url)
-        return rows, "", page_text, links, skeleton_hash
+        rows, page_text, links, skeleton_hash, challenge = _parse_html(data, max_rows, base_url)
+        return rows, "", page_text, links, skeleton_hash, challenge
     if kind == "json":
-        return _parse_json(data, max_rows), "", "", [], None
+        return _parse_json(data, max_rows), "", "", [], None, False
     if kind == "pdf":
         rows = _parse_pdf(data, max_rows)
-        return rows, "\n".join(row["text"] for row in rows), "", [], None
+        return rows, "\n".join(row["text"] for row in rows), "", [], None, False
     if kind == "json_document":
-        return [{"document": _parse_document(data)}], "", "", [], None
+        return [{"document": _parse_document(data)}], "", "", [], None, False
     raise ParseFailure("unsupported_format")
 
 
@@ -379,6 +420,7 @@ def run(input_path: Path, output_path: Path) -> None:
     page_text = ""
     links: list[dict[str, str]] = []
     skeleton_hash: str | None = None
+    challenge_detected = False
     error: dict[str, str] | None = None
     kind = ""
     max_rows = 0
@@ -388,12 +430,39 @@ def run(input_path: Path, output_path: Path) -> None:
         max_rows = envelope.get("max_rows")
         if type(max_rows) is not int or not 1 <= max_rows <= MAX_ROWS:
             raise ParseFailure("invalid_row_limit")
-        payload = base64.b64decode(envelope.get("payload", ""), validate=True)
         proof = _proof()
         base_url = envelope.get("base_url", "")
         if not isinstance(base_url, str):
             raise ParseFailure("invalid_base_url")
-        rows, text, page_text, links, skeleton_hash = _parse(payload, kind, max_rows, base_url)
+        bronze_path = envelope.get("bronze_path")
+        if bronze_path is not None:
+            if bronze_path != "/work/bronze":
+                raise ParseFailure("invalid_bronze_path")
+            expected_sha256 = envelope.get("expected_sha256")
+            max_input_bytes = envelope.get("max_input_bytes")
+            if (
+                not isinstance(expected_sha256, str)
+                or len(expected_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in expected_sha256)
+                or type(max_input_bytes) is not int
+                or not 1 <= max_input_bytes <= MAX_INPUT_BYTES
+            ):
+                raise ParseFailure("invalid_bronze_digest")
+            path = Path(bronze_path)
+            try:
+                with path.open("rb") as stream:
+                    payload = stream.read(max_input_bytes + 1)
+            except OSError as exc:
+                raise ParseFailure("bronze_read_failed") from exc
+            if len(payload) > max_input_bytes:
+                raise ParseFailure("input_too_large")
+            if hashlib.sha256(payload).hexdigest() != expected_sha256:
+                raise ParseFailure("bronze_digest_mismatch")
+        else:
+            payload = base64.b64decode(envelope.get("payload", ""), validate=True)
+        rows, text, page_text, links, skeleton_hash, challenge_detected = _parse(
+            payload, kind, max_rows, base_url
+        )
     except ParseFailure as exc:
         error = {"code": exc.code}
     except Exception as exc:  # noqa: BLE001 - all input parsing is confined to this pod
@@ -413,6 +482,7 @@ def run(input_path: Path, output_path: Path) -> None:
         "page_text": page_text if error is None else "",
         "links": links if error is None else [],
         "dom_skeleton_hash": skeleton_hash if error is None else None,
+        "challenge_detected": challenge_detected if error is None else False,
         "truncated": False,
         "error": error,
         "proof": proof,

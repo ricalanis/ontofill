@@ -6,16 +6,16 @@ import base64
 import re
 import time
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import ClassVar
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
-from bs4 import BeautifulSoup
-from ontofill_scrape import SearchResult, page_snapshot
+from ontofill_scrape import SearchResult
 from ontofill_scrape.models import FailureKind, ToolFailure
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox import capture_url
+from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 
 class SandboxSearchClient:
@@ -31,6 +31,7 @@ class SandboxSearchClient:
         *,
         endpoint: str,
         capture=capture_url,
+        parse_executor: ParseExecutor | None = None,
     ) -> None:
         parsed = urlsplit(endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -44,6 +45,7 @@ class SandboxSearchClient:
         self.jobs: list[dict] = []
         self.capture_key: str | None = None
         self.capture = capture
+        self.parse_executor = parse_executor
 
     def search(self, query: str) -> tuple[SearchResult, ...]:
         url = self.endpoint
@@ -58,6 +60,7 @@ class SandboxSearchClient:
                 tdd_path="03-fanout/search-policy.json",
                 phase=3,
                 generated_by=self.generated_by,
+                include_bytes=False,
             )
         except Exception as exc:
             self.trace.extend(getattr(exc, "trace", []))
@@ -67,8 +70,29 @@ class SandboxSearchClient:
         self.capture_key = capture["html_key"]
         if capture["status"] >= 400:
             raise ToolFailure(FailureKind.NETWORK, "catalog returned an error")
-        page_snapshot(capture["html"], capture["url"])
-        return parse_search_results(capture["html"], query, base_url=url)
+        try:
+            parsed = parse_bronze(
+                self.lake,
+                self.capture_key,
+                format="html",
+                max_rows=300,
+                base_url=capture["url"],
+                run_id=self.run_id,
+                source_id="search-provider",
+                tdd_path="03-fanout/search-policy.json",
+                phase=3,
+                generated_by=self.generated_by,
+                executor=self.parse_executor,
+            )
+        except SandboxParseError as exc:
+            self.trace.extend(exc.trace)
+            self.jobs.append(exc.job_record)
+            raise ToolFailure(FailureKind.NETWORK, "catalog page parse failed in sandbox") from None
+        self.trace.extend(parsed.trace)
+        self.jobs.append(parsed.job_record)
+        if parsed.challenge_detected:
+            raise ToolFailure(FailureKind.BLOCKED, "catalog returned a challenge page")
+        return parse_search_results(parsed.links, query, base_url=url)
 
 
 def _unwrap_bing(href: str) -> str:
@@ -84,13 +108,17 @@ def _unwrap_bing(href: str) -> str:
     return ""
 
 
-def parse_web_results(html: str, *, provider: str) -> tuple[SearchResult, ...]:
-    """Read only links visible in a captured HTML search result page."""
-    soup = BeautifulSoup(html, "html.parser")
-    selector = "li.b_algo h2 a[href]" if provider == "bing_html" else "a.result__a[href]"
+def parse_web_results(
+    links: Sequence[Mapping[str, str]], *, provider: str
+) -> tuple[SearchResult, ...]:
+    """Shape already parsed, sandboxed search links into provider results."""
     found = []
-    for anchor in soup.select(selector):
-        href = anchor.get("href", "")
+    for link in links:
+        if provider == "bing_html" and link.get("result_kind") != "bing":
+            continue
+        if provider != "bing_html" and link.get("result_kind") != "result":
+            continue
+        href = link.get("url", "")
         if provider == "bing_html":
             href = _unwrap_bing(href)
         else:
@@ -99,11 +127,10 @@ def parse_web_results(html: str, *, provider: str) -> tuple[SearchResult, ...]:
                 href = parse_qs(parsed.query).get("uddg", [""])[0]
         if urlsplit(href).scheme not in {"http", "https"}:
             continue
-        title = anchor.get_text(" ", strip=True)
+        title = link.get("title") or link.get("text", "")
         if not title:
             continue
-        container = anchor.find_parent("li") or anchor.parent
-        snippet = container.get_text(" ", strip=True)[:900] if container else title
+        snippet = link.get("context") or title
         found.append(SearchResult(href, title, snippet))
     return tuple(found)
 
@@ -129,6 +156,7 @@ class SandboxWebSearchProvider:
         *,
         capture=capture_url,
         min_interval_seconds: float = 3,
+        parse_executor: ParseExecutor | None = None,
     ) -> None:
         if name not in self.ENDPOINTS:
             raise ValueError(f"unknown web search provider: {name}")
@@ -136,6 +164,7 @@ class SandboxWebSearchProvider:
         self.trusted_origin = None
         self.lake, self.run_id, self.generated_by = lake, run_id, generated_by
         self.capture = capture
+        self.parse_executor = parse_executor
         self.min_interval_seconds = min_interval_seconds
         self._last_request = 0.0
         self.trace: list[dict] = []
@@ -160,6 +189,7 @@ class SandboxWebSearchProvider:
                 tdd_path="03-fanout/search-policy.json",
                 phase=3,
                 generated_by=self.generated_by,
+                include_bytes=False,
             )
         except Exception as exc:
             self.trace.extend(getattr(exc, "trace", []))
@@ -173,8 +203,29 @@ class SandboxWebSearchProvider:
             )
         if captured["status"] >= 400:
             raise ToolFailure(FailureKind.NETWORK, f"{self.name} returned an error")
-        page_snapshot(captured["html"], captured["url"])
-        return parse_web_results(captured["html"], provider=self.name)
+        try:
+            parsed = parse_bronze(
+                self.lake,
+                self.capture_key,
+                format="html",
+                max_rows=300,
+                base_url=captured["url"],
+                run_id=self.run_id,
+                source_id="search-provider",
+                tdd_path="03-fanout/search-policy.json",
+                phase=3,
+                generated_by=self.generated_by,
+                executor=self.parse_executor,
+            )
+        except SandboxParseError as exc:
+            self.trace.extend(exc.trace)
+            self.jobs.append(exc.job_record)
+            raise ToolFailure(FailureKind.NETWORK, f"{self.name} parse failed in sandbox") from None
+        self.trace.extend(parsed.trace)
+        self.jobs.append(parsed.job_record)
+        if parsed.challenge_detected:
+            raise ToolFailure(FailureKind.BLOCKED, f"{self.name} returned a challenge page")
+        return parse_web_results(parsed.links, provider=self.name)
 
 
 class ProviderSearchClient:
@@ -276,24 +327,20 @@ def _words(value: str) -> set[str]:
     }
 
 
-def parse_search_results(html: str, query: str, *, base_url: str) -> tuple[SearchResult, ...]:
-    soup = BeautifulSoup(html, "html.parser")
+def parse_search_results(
+    links: Sequence[Mapping[str, str]], query: str, *, base_url: str
+) -> tuple[SearchResult, ...]:
+    """Rank structured links and snippets returned by the parser pod."""
     terms = _words(query)
     results: list[tuple[int, SearchResult]] = []
-    for article in soup.select("article"):
-        anchor = article.select_one("a[href]")
-        if anchor is None:
+    for link in links:
+        if link.get("result_kind") != "article":
             continue
-        href = urljoin(base_url, anchor.get("href", ""))
+        href = urljoin(base_url, link.get("url", ""))
         if urlsplit(href).scheme not in {"http", "https"}:
             continue
-        heading = article.find(["h2", "h3", "h4", "h5"])
-        title = (
-            heading.get_text(" ", strip=True)
-            if heading
-            else article.get_text(" ", strip=True)[:160]
-        )
-        snippet = article.get_text(" ", strip=True)[:900]
+        title = link.get("title") or link.get("text", "")
+        snippet = link.get("context") or title
         score = len(terms & _words(title)) * 3 + len(terms & _words(snippet))
         jurisdiction = title.partition(":")[0]
         if ":" in title and _words(jurisdiction) & terms:

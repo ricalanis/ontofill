@@ -8,6 +8,7 @@ from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p5_execute import execute_objective
 from ontofill.refiner import MemorySilverStore
+from tests.r17_helpers import SyntheticParseExecutor
 
 
 def test_execute_emits_only_observed_cells(tmp_path) -> None:
@@ -106,6 +107,7 @@ def test_execute_emits_only_observed_cells(tmp_path) -> None:
         provenance=provenance,
         capture=capture,
         fetch=fetch,
+        parse_executor=SyntheticParseExecutor(),
     )
     assert {item.property_id: item.value for item in result.observations} == {
         "name": "North Branch",
@@ -118,6 +120,17 @@ def test_execute_emits_only_observed_cells(tmp_path) -> None:
     assert [step["mode"] for step in result.trace[-2:]] == ["D1", "D0"]
     assert result.trace[-1]["value_ids"] == [item.value_id for item in result.observations]
     assert len(store.list_for_run("mock-test")) == 3
+    parse_jobs = [job for job in result.sandbox_jobs if "checkpoints" in job]
+    assert len(parse_jobs) == 2
+    assert all(job["checkpoints"]["host"]["runtime"] == "runsc" for job in parse_jobs)
+    assert all(
+        set(job["checkpoints"]) == {"host", "task", "where", "isolation", "secrets", "teardown"}
+        for job in parse_jobs
+    )
+    assert any(
+        step["mode"] == "D0" and step["requested"].get("tool") == "file.parse"
+        for step in result.trace
+    )
     prompts = dict(decision.calls)
     for purpose in ("phase5.select_download", "phase5.map_columns"):
         assert prompts[purpose].count("<page_content>") == 1

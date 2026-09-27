@@ -20,7 +20,6 @@ from ontofill.phases.p1_scope.phase import draft_prd
 from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
 from ontofill.phases.p3_fanout.discovery_loop import (
     DiscoveryLoop,
-    _page_text,
     authority_tier,
     high_stakes_properties,
 )
@@ -39,10 +38,19 @@ from ontofill.phases.p3_fanout.leads import (
 )
 from ontofill.phases.p3_fanout.phase import discover_objectives
 from ontofill.sandbox import CaptureBlocked
+from ontofill.sandbox import parse as parse_module
 from ontofill.sandbox.domains import registrable_domain, same_registrable_domain
 from tests.genericity.fixtures.libraries import library_decisions
+from tests.r17_helpers import SyntheticParseExecutor
 
 FIXTURES = Path(__file__).parent / "genericity/fixtures/leads"
+
+
+@pytest.fixture(autouse=True)
+def synthetic_parse_pod(monkeypatch):
+    monkeypatch.setattr(parse_module, "DockerParseExecutor", SyntheticParseExecutor)
+
+
 BRIEF = Path(__file__).parent / "genericity/cases/libraries/brief.md"
 PAGE = (
     "<html><body><h1>{title}</h1><p>Branch name, opening hours and free internet "
@@ -501,10 +509,8 @@ def test_loop_stops_when_checks_pass_and_emits_loop_trace(tmp_path) -> None:
     assert set(first["target_fields"]) & set(manifest["property_evidence"])
     assert all(
         evidence["capture_key"] == first["confirmed_bronze_key"]
-        and any(
-            evidence["quote"] in _page_text(PAGE.format(title=title))
-            for title in ("Branches", "Annex")
-        )
+        and "Branch name, opening hours and free internet for every library in Example City."
+        in evidence["quote"]
         for evidence in manifest["property_evidence"].values()
     )
     on_disk = yaml.safe_load((tmp_path / "03-fanout/objectives.yaml").read_text())

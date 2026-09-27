@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import math
@@ -10,32 +9,26 @@ import re
 import unicodedata
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Protocol
 from urllib.parse import urlsplit
 
-from ontofill_scrape import file_parse
 from ontofill_scrape.models import ParsedFile, ParsedRow
 
+from ontofill.lake import FileLake, S3Lake
 from ontofill.refiner.core import Observation
+from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
-
-
-class BronzeLake(Protocol):
-    def exists(self, key: str) -> bool: ...
-
-    def read_key(self, key: str) -> bytes: ...
-
-    def read_metadata(self, key: str) -> dict[str, str]: ...
 
 
 @dataclass
 class BronzeReplayResult:
     observations: list[Observation]
     trace_steps: list[dict]
+    parse_trace_steps: list[dict] = field(default_factory=list)
+    parse_job_records: list[dict] = field(default_factory=list)
 
 
 def _read_case_json(case_dir: Path, relative_path: str) -> dict | None:
@@ -114,7 +107,7 @@ def _screenshot_key(
     source_id: str,
     objective_id: str,
     tdd_path: str,
-    lake: BronzeLake,
+    lake: FileLake | S3Lake,
 ) -> str | None:
     for step in reversed(trace[:index]):
         if (
@@ -148,7 +141,7 @@ def _screenshot_key(
     return None
 
 
-def _file_format(data: bytes, content_type: str) -> str | None:
+def _file_format(content_type: str, url: str) -> str | None:
     mime = content_type.split(";", 1)[0].strip().casefold()
     if mime in {"text/html", "application/xhtml+xml", "application/pdf"}:
         return None
@@ -164,24 +157,15 @@ def _file_format(data: bytes, content_type: str) -> str | None:
     if mime in {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.ms-excel.sheet.macroenabled.12",
-    } or data.startswith(b"PK\x03\x04"):
+    }:
         return "xlsx"
-    stripped = data.lstrip(b"\xef\xbb\xbf\x00\t\r\n ")
-    if stripped.startswith((b"{", b"[")):
-        return "json"
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return None
-    if text.lstrip().casefold().startswith(("<html", "<!doctype html")):
-        return None
-    if "\n" in text or "\r" in text:
-        try:
-            csv.Sniffer().sniff(text[:4096])
-        except csv.Error:
-            return None
-        return "csv"
-    return None
+    suffix = urlsplit(url).path.rsplit(".", 1)[-1].casefold()
+    return {
+        "csv": "csv",
+        "json": "json",
+        "xlsx": "xlsx",
+        "xlsm": "xlsm",
+    }.get(suffix)
 
 
 def _table(parsed: ParsedFile) -> tuple[str | None, tuple[str, ...], list[ParsedRow]] | None:
@@ -297,7 +281,7 @@ def _entity_id(class_id: str, identifier: object) -> str:
 def _replay_file(
     *,
     case_dir: Path,
-    lake: BronzeLake,
+    lake: FileLake | S3Lake,
     run_id: str,
     trace: Sequence[dict],
     index: int,
@@ -306,6 +290,9 @@ def _replay_file(
     provenance: dict,
     objectives: dict[tuple[str, str], dict],
     historical_ontology_version: str,
+    parse_executor: ParseExecutor | None,
+    parse_trace_steps: list[dict],
+    parse_job_records: list[dict],
 ) -> tuple[list[Observation], dict] | None:
     context = _safe_trace_context(step, run_id)
     if context is None:
@@ -331,21 +318,35 @@ def _replay_file(
     if file_url is None:
         return None
     try:
-        data = lake.read_key(key)
         metadata = lake.read_metadata(key)
     except (OSError, ValueError, KeyError):
         return None
-    if hashlib.sha256(data).hexdigest() != key.removeprefix("sha256:"):
-        return None
     if not _metadata_matches_trace(metadata, step):
         return None
-    format_name = _file_format(data, str(metadata.get("content_type", "")))
+    format_name = _file_format(str(metadata.get("content_type", "")), file_url)
     if format_name is None:
         return None
     try:
-        parsed = file_parse(data, format=format_name, max_rows=10_000)
-    except (OSError, UnicodeError, ValueError):
+        parse_result = parse_bronze(
+            lake,
+            key,
+            format=format_name,
+            max_rows=10_000,
+            base_url=file_url,
+            run_id=run_id,
+            source_id=source_id,
+            objective_id=objective_id,
+            tdd_path=tdd_path,
+            generated_by=provenance,
+            executor=parse_executor,
+        )
+    except SandboxParseError as exc:
+        parse_trace_steps.extend(exc.trace)
+        parse_job_records.append(exc.job_record)
         return None
+    parse_trace_steps.extend(parse_result.trace)
+    parse_job_records.append(parse_result.job_record)
+    parsed = parse_result.as_parsed_file()
     if parsed.truncated:
         return None
     table = _table(parsed)
@@ -541,11 +542,12 @@ def _replay_file(
 def replay_bronze_observations(
     *,
     case_dir: Path,
-    lake: BronzeLake,
+    lake: FileLake | S3Lake,
     run_id: str,
     trace: Sequence[dict],
     ontology: dict,
     provenance: dict,
+    parse_executor: ParseExecutor | None = None,
 ) -> BronzeReplayResult:
     """Reparse completed file captures already linked from this run's trace."""
     objective_doc = _read_case_json(case_dir, "03-fanout/objectives.json")
@@ -562,6 +564,8 @@ def replay_bronze_observations(
     }
     observations: list[Observation] = []
     trace_steps: list[dict] = []
+    parse_trace_steps: list[dict] = []
+    parse_job_records: list[dict] = []
     for index, step in enumerate(trace):
         if not isinstance(step, dict):
             continue
@@ -576,10 +580,13 @@ def replay_bronze_observations(
             provenance=provenance,
             objectives=objectives,
             historical_ontology_version=objective_doc["ontology_version"],
+            parse_executor=parse_executor,
+            parse_trace_steps=parse_trace_steps,
+            parse_job_records=parse_job_records,
         )
         if replayed is None:
             continue
         items, trace_step = replayed
         observations.extend(items)
         trace_steps.append(trace_step)
-    return BronzeReplayResult(observations, trace_steps)
+    return BronzeReplayResult(observations, trace_steps, parse_trace_steps, parse_job_records)

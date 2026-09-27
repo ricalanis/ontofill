@@ -494,6 +494,8 @@ class CkanLeadProvider(LeadProvider):
         self.max_calls = max_calls
         self.calls = 0
         self.cache_hits = 0
+        self.trace: list[dict] = []
+        self.jobs: list[dict] = []
         self._unsupported: set[str] = set()
 
     @staticmethod
@@ -539,7 +541,14 @@ class CkanLeadProvider(LeadProvider):
             f"https://{domain}/api/3/action/package_search?"
             f"{urlencode({'q': query, 'rows': self.rows})}"
         )
-        payload = self.fetch_json(url, domain)
+        fetcher = self.fetch_json
+        trace_before = len(getattr(fetcher, "trace", []))
+        jobs_before = len(getattr(fetcher, "jobs", []))
+        try:
+            payload = fetcher(url, domain)
+        finally:
+            self.trace.extend(getattr(fetcher, "trace", [])[trace_before:])
+            self.jobs.extend(getattr(fetcher, "jobs", [])[jobs_before:])
         if not isinstance(payload, Mapping):
             raise TypeError("sandbox fetch_json did not return a JSON object")
         payload = dict(payload)
