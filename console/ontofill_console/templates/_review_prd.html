@@ -1,4 +1,13 @@
 {% set prd = docs.prd %}
+{% if prd.open_issues %}
+<section class="block" aria-labelledby="prd-issues-h">
+  <div class="signal prd-issues">
+    <h2 id="prd-issues-h">The engine flagged {{ prd.open_issues|length }} open issue{{ "" if prd.open_issues|length == 1 else "s" }} in this draft</h2>
+    <p class="note">Its own review of the draft, left unresolved. Read these before you sign.</p>
+    <ul>{% for i in prd.open_issues %}<li>{{ i }}</li>{% endfor %}</ul>
+  </div>
+</section>
+{% endif %}
 <section class="block" aria-labelledby="dod-h">
   <h2 id="dod-h">Definition of done</h2>
   <p class="muted note">What "finished" means for this case. Each criterion is a query over gold. Basis says where
@@ -19,6 +28,48 @@
     {% endfor %}</tbody>
   </table>
 </section>
+{% set pol = prd.authority_policy %}
+{% if pol %}
+{% set TIER = {"primary": "primary", "secondary": "secondary", "low": "low", "review": "needs review"} %}
+{% set LEVEL = {"national_federal": "national / federal", "state_provincial": "state / provincial", "municipal": "municipal", "autonomous_bodies": "autonomous bodies"} %}
+<section class="block" aria-labelledby="authority-h">
+  <h2 id="authority-h">Authority policy</h2>
+  <p class="muted note">Which publishers the engine may trust, and how much. A primary publisher can back a value on its
+    own; a secondary one only cross-checks. The engine matches sources against these domains.</p>
+  <dl class="kv">
+    <dt>Jurisdiction</dt><dd>{{ pol.jurisdiction or "not stated" }}{% if pol.jurisdiction_hierarchy %} · from {{ LEVEL.get(pol.jurisdiction_hierarchy.root_level, pol.jurisdiction_hierarchy.root_level) }}{{ " down" if pol.jurisdiction_hierarchy.include_descendants else " only" }}{% endif %}</dd>
+    <dt>Unlisted source</dt><dd>{% if pol.unknown_source_action == "review" %}waits for a person's review at a source checkpoint{% else %}{{ pol.unknown_source_action or "not stated" }}{% endif %}</dd>
+    {% if pol.unknown_official_action %}<dt>Unlisted official publisher</dt><dd>{% if pol.unknown_official_action == "admit_low_tier_flagged" %}admitted at low tier and flagged{% else %}{{ pol.unknown_official_action }}{% endif %}</dd>{% endif %}
+  </dl>
+  <table class="ledger prd-publishers">
+    <caption class="muted">Trusted publishers ({{ (pol.trusted_publishers or [])|length }}), in the draft's order</caption>
+    <thead><tr><th scope="col" class="num">#</th><th scope="col">Publisher</th><th scope="col">Tier</th><th scope="col">Domains</th></tr></thead>
+    <tbody>{% for t in pol.trusted_publishers or [] %}
+      <tr><td class="num mono">{{ loop.index0 }}</td>
+        <th scope="row">{{ t.kind }}{% if t.jurisdiction %} <span class="muted">· {{ t.jurisdiction }}</span>{% endif %}{% if t.rationale %}<span class="sub">Why: {{ t.rationale }}</span>{% endif %}</th>
+        <td>{% if t.tier == "primary" %}<b>primary</b>{% else %}{{ TIER.get(t.tier, t.tier or "not stated") }}{% endif %}</td>
+        <td class="mono prd-domains">{% for d in t.domains or [] %}{{ d }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="muted">none listed</span>{% endfor %}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No trusted publishers listed: every source will wait for review.</td></tr>{% endfor %}</tbody>
+  </table>
+  {% if pol.authority_matrix %}
+  <table class="ledger prd-matrix">
+    <caption class="muted">Authority by source class: the tier a publisher gets when it is not listed above</caption>
+    <thead><tr><th scope="col">Source class</th><th scope="col">Government levels</th><th scope="col">Channels</th><th scope="col">Default tier</th></tr></thead>
+    <tbody>{% for m in pol.authority_matrix %}
+      <tr><th scope="row">{{ m.source_class }}</th>
+        <td>{% for l in m.government_levels or [] %}{{ LEVEL.get(l, l) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td>{% for c in m.channel_types or [] %}{{ c|replace("_", " ") }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td>{{ TIER.get(m.default_tier, m.default_tier) }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% endif %}
+  {% if pol.recall_coverage %}{% set rc = pol.recall_coverage %}
+  <p class="note">Recall: look across {% for l in rc.government_levels or [] %}{{ LEVEL.get(l, l) }}{% if not loop.last %}, {% endif %}{% endfor %}
+    levels and {% for c in rc.channel_types or [] %}{{ c|replace("_", " ") }}{% if not loop.last %}, {% endif %}{% endfor %};
+    at least {{ rc.minimum_independent_publishers_per_property }} independent publisher{{ "" if rc.minimum_independent_publishers_per_property == 1 else "s" }} per property.</p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="block" aria-labelledby="personas-h">
   <h2 id="personas-h">Personas and jobs to be done</h2>
   <div class="personas">
