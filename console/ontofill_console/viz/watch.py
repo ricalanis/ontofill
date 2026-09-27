@@ -291,14 +291,16 @@ def _run_usd(a: Artifacts, case, rid: str, current: str | None, current_steps: l
     return sum(priced), len(priced)
 
 
-def caps(case_id: str, runner: dict, env: dict) -> dict:
+def caps(case_id: str, runner: dict, env: dict, meta: dict | None = None) -> dict:
     """Per-case and global caps: the runner's env settings (when this process can see them), cap fields in the
     runner's status, or the runner's own budget-stop reason. None when nothing states them."""
     st = runner.get("_status") or {}
     case_cap = global_cap = None
     case_basis = global_basis = None
     budgets = parse_budgets(env.get("ONTOFILL_RUNNER_BUDGETS"))
-    if case_id in budgets:
+    if meta and _num(meta.get("budget_usd")) is not None:  # the case registry (v1.0.6) is what the runner reads
+        case_cap, case_basis = _num(meta["budget_usd"]), "cases.json budget_usd"
+    elif case_id in budgets:
         case_cap, case_basis = budgets[case_id], "ONTOFILL_RUNNER_BUDGETS"
     elif _env_float(env, "ONTOFILL_RUNNER_DEFAULT_CASE_USD") is not None:
         case_cap, case_basis = _env_float(env, "ONTOFILL_RUNNER_DEFAULT_CASE_USD"), "ONTOFILL_RUNNER_DEFAULT_CASE_USD"
@@ -486,7 +488,7 @@ def case_model(case, root: Path, rover: dict, now: datetime, stale_min: float, e
         priced += n
     case_usd = round(trace_usd, 6) if priced else runner["spent_usd_case"]
     burn, burn_usd, burn_h = burn_rate(steps, anchor) if moving else (None, 0.0, 0.0)
-    cap = caps(case.id, runner, env)
+    cap = caps(case.id, runner, env, getattr(case, "meta", None))
     spend = {"case_usd": case_usd, "case_basis": "trace est_usd, all runs" if priced else (
         "runner status" if runner["spent_usd_case"] is not None else None), "priced_steps": priced,
         "runner_case_usd": runner["spent_usd_case"], "global_usd": runner["spent_usd_global"], **cap,

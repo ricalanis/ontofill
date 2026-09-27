@@ -301,3 +301,11 @@ def test_unknown_runner_state_and_empty_registry():
     assert m["cases"] == [] and m["runner"]["state_dir_ok"] is False
     assert m["attention"][0]["severity"] == 1 and "Runner state not found" in m["attention"][0]["text"]
     assert "No cases registered" in c.get("/watch").text
+
+
+def test_registry_budget_is_the_case_cap():
+    from ontofill_console.viz.watch import caps
+
+    got = caps("x", {"_status": {}}, {"ONTOFILL_RUNNER_BUDGETS": "x=9"}, {"budget_usd": 1.5})
+    assert got["case_cap_usd"] == 1.5 and got["case_cap_basis"] == "cases.json budget_usd"
+    assert caps("x", {"_status": {}}, {"ONTOFILL_RUNNER_BUDGETS": "x=9"})["case_cap_usd"] == 9
