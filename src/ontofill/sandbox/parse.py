@@ -25,9 +25,9 @@ from ontofill.sandbox.capture import CaptureError, DockerTimeout, _docker
 from ontofill.sandbox.jobs import validate_job_record
 from ontofill.sandbox.limits import SandboxLimits
 
-ParseFormat = Literal["csv", "xlsx", "xlsm", "html", "json", "pdf"]
+ParseFormat = Literal["csv", "xlsx", "xlsm", "html", "json", "pdf", "auto"]
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_SUPPORTED_FORMATS = frozenset({"csv", "xlsx", "xlsm", "html", "json", "pdf"})
+_SUPPORTED_FORMATS = frozenset({"csv", "xlsx", "xlsm", "html", "json", "pdf", "auto"})
 _MAX_INPUT_BYTES = 8 * 1024 * 1024
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_ROWS = 10_000
@@ -47,6 +47,8 @@ class ParseResult:
     text: str
     page_text: str
     links: tuple[dict[str, str], ...]
+    forms: tuple[dict[str, Any], ...]
+    table_headers: tuple[tuple[str, ...], ...]
     dom_skeleton_hash: str | None
     trace: tuple[dict[str, Any], ...]
     job_record: dict[str, Any]
@@ -701,13 +703,21 @@ def _result(
         reason = (
             str(error.get("code", "parse_error")) if isinstance(error, Mapping) else "parse_error"
         )
+    detected_kind = output.get("kind", kind)
+    result_format = format
+    if format == "auto":
+        if detected_kind not in {"csv", "xlsx", "xlsm", "json", "pdf"}:
+            task_ok = False
+            reason = "parse_pod_returned_invalid_detected_format"
+        else:
+            result_format = detected_kind
     rows = output.get("rows", []) if task_ok else []
     text = output.get("text", "") if task_ok else ""
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         rows = []
         task_ok = False
         reason = "parse_pod_returned_invalid_rows"
-    elif len(rows) > max_rows + (1 if kind == "json" else 0):
+    elif len(rows) > max_rows + (1 if detected_kind == "json" else 0):
         rows = []
         task_ok = False
         reason = "parse_pod_returned_too_many_rows"
@@ -717,6 +727,8 @@ def _result(
         reason = "parse_pod_returned_invalid_text"
     page_text = output.get("page_text", "")
     links = output.get("links", [])
+    forms = output.get("forms", [])
+    table_headers = output.get("table_headers", [])
     skeleton_hash = output.get("dom_skeleton_hash")
     challenge_detected = output.get("challenge_detected", False)
     if (
@@ -734,11 +746,17 @@ def _result(
             )
             for link in links
         )
+        or not isinstance(forms, list)
+        or len(forms) > 40
+        or any(not _valid_form_record(form) for form in forms)
+        or not _valid_table_headers(table_headers)
     ):
         task_ok = False
         reason = "parse_pod_returned_invalid_html_metadata"
         page_text = ""
         links = []
+        forms = []
+        table_headers = []
     if skeleton_hash is not None and (
         not isinstance(skeleton_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", skeleton_hash)
     ):
@@ -759,15 +777,19 @@ def _result(
         text = ""
         page_text = ""
         links = []
+        forms = []
+        table_headers = []
         skeleton_hash = None
     result = ParseResult(
         bronze_key=bronze_key,
-        format=format,
+        format=result_format,
         rows=tuple(rows),
         truncated=truncated if task_ok else False,
         text=text,
         page_text=page_text if task_ok else "",
         links=tuple(links) if task_ok else (),
+        forms=tuple(forms) if task_ok else (),
+        table_headers=tuple(tuple(row) for row in table_headers) if task_ok else (),
         dom_skeleton_hash=skeleton_hash if task_ok else None,
         trace=(),
         job_record={},
@@ -791,12 +813,15 @@ def _result(
         request=request,
         result={
             "bronze_key": bronze_key,
-            "format": format,
+            "format": result_format,
+            **({"requested_format": "auto"} if format == "auto" else {}),
             "row_count": len(result.rows),
             "truncated": result.truncated,
             "text_chars": len(result.text),
             "page_text_chars": len(result.page_text),
             "link_count": len(result.links),
+            "form_count": len(result.forms),
+            "table_header_rows": len(result.table_headers),
             "dom_skeleton_hash": result.dom_skeleton_hash,
         },
         limits=limits,
@@ -813,10 +838,59 @@ def _result(
         text=result.text,
         page_text=result.page_text,
         links=result.links,
+        forms=result.forms,
+        table_headers=result.table_headers,
         dom_skeleton_hash=result.dom_skeleton_hash,
         trace=trace,
         job_record=record,
         challenge_detected=result.challenge_detected,
+    )
+
+
+def _valid_form_record(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "label",
+        "role",
+        "search_like",
+        "fields",
+        "submit_labels",
+    }:
+        return False
+    if any(
+        not isinstance(value.get(key), str) or len(value[key]) > 160 for key in ("label", "role")
+    ) or not isinstance(value.get("search_like"), bool):
+        return False
+    fields = value.get("fields")
+    submit_labels = value.get("submit_labels")
+    if (
+        not isinstance(fields, list)
+        or len(fields) > 200
+        or not isinstance(submit_labels, list)
+        or len(submit_labels) > 12
+        or any(not isinstance(label, str) or len(label) > 160 for label in submit_labels)
+    ):
+        return False
+    return all(
+        isinstance(field, dict)
+        and set(field) == {"type", "label", "placeholder", "name"}
+        and all(
+            isinstance(field.get(key), str) and len(field[key]) <= 160
+            for key in ("type", "label", "placeholder", "name")
+        )
+        for field in fields
+    )
+
+
+def _valid_table_headers(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) <= 40
+        and all(
+            isinstance(row, list)
+            and 1 <= len(row) <= 30
+            and all(isinstance(cell, str) and 0 < len(cell) <= 160 for cell in row)
+            for row in value
+        )
     )
 
 

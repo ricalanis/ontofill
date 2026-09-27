@@ -68,6 +68,39 @@ def test_captured_source_candidate_keeps_evidence_fields() -> None:
     validate_document("source-candidate", packet)
 
 
+def test_source_candidate_accepts_access_path_and_requires_form_index() -> None:
+    packet = {
+        **_redirect_packet(),
+        "provider": "synthetic_search",
+        "providers": ["synthetic_search"],
+        "capture_key": KEY,
+        "authority": "auto",
+        "authority_tier": "primary",
+        "authority_reason": "approved publisher kind: synthetic registry",
+        "access_path": {
+            "synthetic_record_key": {
+                "kind": "search_form",
+                "url": "https://registry.other.test/records",
+                "capture_key": KEY,
+                "access_path_quote": "Find entries",
+                "authority_verdict": "authoritative",
+                "critic_reason": "Synthetic critic confirmed a record search route.",
+                "form_index": 0,
+            }
+        },
+    }
+
+    validate_document("source-candidate", packet)
+    packet["access_path"]["synthetic_record_key"].pop("access_path_quote")
+    with pytest.raises(ValidationError):
+        validate_document("source-candidate", packet)
+
+    packet["access_path"]["synthetic_record_key"]["access_path_quote"] = "Find entries"
+    packet["access_path"]["synthetic_record_key"].pop("form_index")
+    with pytest.raises(ValidationError):
+        validate_document("source-candidate", packet)
+
+
 @pytest.mark.parametrize("missing", ["redirect_chain", "generated_by"])
 def test_redirect_packet_rejects_missing_review_evidence(missing: str) -> None:
     packet = deepcopy(_redirect_packet())

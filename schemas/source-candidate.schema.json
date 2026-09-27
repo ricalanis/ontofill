@@ -39,6 +39,10 @@
         {"type": "null"}
       ]
     },
+    "artifact_kind": {"enum": ["html", "download"]},
+    "document_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+    "document_content_type": {"type": "string", "minLength": 1, "maxLength": 200},
+    "document_size_bytes": {"type": ["integer", "null"], "minimum": 0},
     "source_type": {"type": ["string", "null"]},
     "authority": {"enum": ["auto", "review"]},
     "authority_tier": {"enum": ["primary", "secondary", "review", "unknown"]},
@@ -70,6 +74,36 @@
         }
       }
     },
+    "access_path": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "url", "capture_key", "access_path_quote", "authority_verdict", "critic_reason"
+        ],
+        "properties": {
+          "kind": {"enum": ["search_form", "listing", "dataset", "download", "api", "metadata"]},
+          "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+          "capture_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+          "access_path_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+          "property_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+          "authority_verdict": {"enum": ["authoritative", "not_authoritative", "unknown"]},
+          "critic_reason": {"type": "string", "minLength": 1, "maxLength": 300},
+          "form_index": {"type": "integer", "minimum": 0, "maximum": 39},
+          "link_index": {"type": "integer", "minimum": 0, "maximum": 299},
+          "content_type": {"type": "string", "minLength": 1, "maxLength": 200},
+          "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+          "document_format": {"enum": ["csv", "xlsx", "xlsm", "json", "pdf"]}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "search_form"}}, "required": ["kind"]},
+            "then": {"required": ["form_index"]}
+          }
+        ]
+      }
+    },
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"}
   },
   "allOf": [
@@ -90,6 +124,10 @@
           "redirect_chain": {"minItems": 2}
         }
       }
+    },
+    {
+      "if": {"properties": {"artifact_kind": {"const": "download"}}, "required": ["artifact_kind"]},
+      "then": {"required": ["document_key", "document_content_type"]}
     }
   ]
 }

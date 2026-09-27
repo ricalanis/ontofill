@@ -74,6 +74,7 @@ def source_fingerprint(
     provider: str,
     capture_key: str | None,
     authority_policy: dict | None = None,
+    access_path: dict | None = None,
 ) -> str:
     evidence = {
         "url": url,
@@ -83,6 +84,8 @@ def source_fingerprint(
         "capture_key": capture_key,
         "authority_policy": authority_policy or {},
     }
+    if access_path is not None:
+        evidence["access_path"] = access_path
     return hashlib.sha256(
         json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()

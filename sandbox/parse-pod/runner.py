@@ -9,10 +9,12 @@ import io
 import json
 import math
 import os
+import re
 import resource
 import socket
 import sys
 import time
+import zipfile
 from collections.abc import Mapping
 from datetime import date, datetime
 from datetime import time as datetime_time
@@ -30,6 +32,12 @@ MAX_ROWS = 10_000
 MAX_DOCUMENT_ITEMS = 100_000
 MAX_JSON_DEPTH = 64
 MAX_PAGE_TEXT_CHARS = 200_000
+MAX_FORMS = 40
+MAX_FORM_FIELDS = 200
+MAX_FORM_TEXT_CHARS = 160
+MAX_TABLES = 40
+MAX_TABLE_HEADERS = 30
+MAX_FORMAT_SNIFF_BYTES = 64 * 1024
 _SECRET_MARKERS = (
     "API_KEY",
     "SECRET",
@@ -41,6 +49,10 @@ _SECRET_MARKERS = (
     "AWS_",
     "JEV_",
 )
+_SENSITIVE_FIELD = re.compile(
+    r"(?i)(?:password|secret|token|credential|authorization|bearer|csrf|session)"
+)
+_SEARCH_FORM_CUE = re.compile(r"(?i)\b(?:search|find|lookup|look up|query)\b")
 
 
 class ParseFailure(ValueError):
@@ -252,6 +264,105 @@ def _parse_html(
     return rows, page_text, links, skeleton_hash, challenge_detected
 
 
+def _parse_forms(data: bytes) -> list[dict[str, Any]]:
+    """Return bounded, value-free form labels from HTML inside the parse pod."""
+    document = BeautifulSoup(data.decode("utf-8-sig"), "html.parser")
+    forms: list[dict[str, Any]] = []
+    field_count = 0
+
+    def clean(value: Any) -> str:
+        return " ".join(str(value or "").split())[:MAX_FORM_TEXT_CHARS]
+
+    for form in document.find_all("form")[:MAX_FORMS]:
+        fields: list[dict[str, str]] = []
+        for field in form.select("input, select, textarea"):
+            if field_count >= MAX_FORM_FIELDS:
+                break
+            field_type = clean(
+                field.get("type") or ("select" if field.name == "select" else "text")
+            )
+            field_type = field_type.casefold()[:32]
+            name = clean(field.get("name"))
+            if (
+                field_type in {"hidden", "password", "file", "submit", "button", "image"}
+                or field.get("aria-hidden") == "true"
+                or _SENSITIVE_FIELD.search(name)
+            ):
+                continue
+            field_id = field.get("id")
+            labels = (
+                document.find_all("label", attrs={"for": field_id})
+                if isinstance(field_id, str) and field_id
+                else []
+            )
+            parent_label = field.find_parent("label")
+            label = clean(
+                " ".join(item.get_text(" ", strip=True) for item in labels)
+                or (parent_label.get_text(" ", strip=True) if parent_label else "")
+                or field.get("aria-label")
+                or field.get("title")
+            )
+            placeholder = clean(field.get("placeholder"))
+            if not any((label, placeholder, name)):
+                continue
+            fields.append(
+                {
+                    "type": field_type,
+                    "label": label,
+                    "placeholder": placeholder,
+                    "name": name,
+                }
+            )
+            field_count += 1
+
+        submit_labels = []
+        for button in form.select("button, input[type=submit], input[type=button]")[:12]:
+            label = clean(
+                button.get("aria-label")
+                or button.get("title")
+                or button.get("value")
+                or button.get_text(" ", strip=True)
+            )
+            if label and not _SENSITIVE_FIELD.search(label):
+                submit_labels.append(label)
+
+        form_label = clean(form.get("aria-label") or form.get("title"))
+        role = clean(form.get("role")).casefold()
+        if not fields and not submit_labels and not form_label:
+            continue
+        forms.append(
+            {
+                "label": form_label,
+                "role": role,
+                "search_like": bool(
+                    role == "search"
+                    or any(field["type"] == "search" for field in fields)
+                    or _SEARCH_FORM_CUE.search(" ".join([form_label, *submit_labels]))
+                ),
+                "fields": fields,
+                "submit_labels": submit_labels,
+            }
+        )
+    return forms
+
+
+def _parse_table_headers(data: bytes) -> list[list[str]]:
+    """Return only explicit table header cells, never record rows."""
+    document = BeautifulSoup(data.decode("utf-8-sig"), "html.parser")
+    headers: list[list[str]] = []
+    for table in document.select("table")[:MAX_TABLES]:
+        for row in table.select("tr"):
+            cells = [
+                " ".join(cell.get_text(" ", strip=True).split())[:MAX_FORM_TEXT_CHARS]
+                for cell in row.select("th")[:MAX_TABLE_HEADERS]
+            ]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                headers.append(cells)
+                break
+    return headers
+
+
 def _parse_json(data: bytes, max_rows: int) -> list[dict[str, Any]]:
     document = json.loads(data.decode("utf-8-sig"), parse_constant=_json_no_constants)
     records = _flatten_json_records(document, max_rows=max_rows)
@@ -272,6 +383,37 @@ def _parse_pdf(data: bytes, max_rows: int) -> list[dict[str, Any]]:
         {"page_number": number, "text": page.extract_text() or ""}
         for number, page in enumerate(reader.pages, start=1)
     ]
+
+
+def _detect_document_format(data: bytes) -> str:
+    """Infer a bounded supported format from document bytes inside the parse pod."""
+    prefix = data[:MAX_FORMAT_SNIFF_BYTES]
+    if prefix.startswith(b"%PDF-"):
+        return "pdf"
+    if prefix.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = set(archive.namelist()[:10_000])
+        except (OSError, zipfile.BadZipFile, RuntimeError):
+            raise ParseFailure("unknown_document_format") from None
+        if "xl/workbook.xml" in names:
+            return "xlsm" if "xl/vbaProject.bin" in names else "xlsx"
+        raise ParseFailure("unknown_document_format")
+    try:
+        text = prefix.decode("utf-8-sig").strip()
+    except UnicodeDecodeError:
+        raise ParseFailure("unknown_document_format") from None
+    if text.startswith(("{", "[")):
+        return "json"
+    if "\n" in text:
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+            rows = list(csv.reader(io.StringIO("\n".join(text.splitlines()[:3])), dialect))
+        except csv.Error:
+            rows = []
+        if len(rows) >= 2 and len(rows[0]) > 1 and len(rows[0]) == len(rows[1]):
+            return "csv"
+    raise ParseFailure("unknown_document_format")
 
 
 def _parse_document(data: bytes) -> dict[str, Any]:
@@ -419,6 +561,8 @@ def run(input_path: Path, output_path: Path) -> None:
     text = ""
     page_text = ""
     links: list[dict[str, str]] = []
+    forms: list[dict[str, Any]] = []
+    table_headers: list[list[str]] = []
     skeleton_hash: str | None = None
     challenge_detected = False
     error: dict[str, str] | None = None
@@ -460,9 +604,14 @@ def run(input_path: Path, output_path: Path) -> None:
                 raise ParseFailure("bronze_digest_mismatch")
         else:
             payload = base64.b64decode(envelope.get("payload", ""), validate=True)
+        if kind == "auto":
+            kind = _detect_document_format(payload)
         rows, text, page_text, links, skeleton_hash, challenge_detected = _parse(
             payload, kind, max_rows, base_url
         )
+        if kind == "html":
+            forms = _parse_forms(payload)
+            table_headers = _parse_table_headers(payload)
     except ParseFailure as exc:
         error = {"code": exc.code}
     except Exception as exc:  # noqa: BLE001 - all input parsing is confined to this pod
@@ -481,6 +630,8 @@ def run(input_path: Path, output_path: Path) -> None:
         "text": text if error is None else "",
         "page_text": page_text if error is None else "",
         "links": links if error is None else [],
+        "forms": forms if error is None else [],
+        "table_headers": table_headers if error is None else [],
         "dom_skeleton_hash": skeleton_hash if error is None else None,
         "challenge_detected": challenge_detected if error is None else False,
         "truncated": False,
@@ -501,6 +652,8 @@ def run(input_path: Path, output_path: Path) -> None:
                 "text": "",
                 "page_text": "",
                 "links": [],
+                "forms": [],
+                "table_headers": [],
                 "dom_skeleton_hash": None,
                 "error": {"code": "output_too_large"},
             }

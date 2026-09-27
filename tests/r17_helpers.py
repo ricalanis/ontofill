@@ -45,9 +45,13 @@ class SyntheticParseExecutor:
     """Exercise caller wiring while the pod parser supplies deterministic outputs."""
 
     def run(self, payload, *, kind, format, max_rows, base_url, limits):
+        if kind == "auto":
+            kind = _PARSER._detect_document_format(payload)
         rows, text, page_text, links, skeleton, challenge = _PARSER._parse(
             payload, kind, max_rows, base_url
         )
+        forms = _PARSER._parse_forms(payload) if kind == "html" else []
+        table_headers = _PARSER._parse_table_headers(payload) if kind == "html" else []
         return ParseExecution(
             output={
                 "ok": True,
@@ -56,6 +60,8 @@ class SyntheticParseExecutor:
                 "text": text,
                 "page_text": page_text,
                 "links": links,
+                "forms": forms,
+                "table_headers": table_headers,
                 "dom_skeleton_hash": skeleton,
                 "challenge_detected": challenge,
                 "truncated": False,

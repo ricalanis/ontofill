@@ -30,7 +30,38 @@
         "priority": {"type": "integer", "minimum": 1},
         "expected_contribution": {"type": "number", "minimum": 0, "maximum": 1},
         "authority_tier": {"enum": ["primary", "secondary", "review", "unknown"]},
-        "confirmed_bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"}
+        "confirmed_bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "document_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "access_path": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind", "url", "capture_key", "access_path_quote", "authority_verdict", "critic_reason"
+            ],
+            "properties": {
+              "kind": {"enum": ["search_form", "listing", "dataset", "download", "api", "metadata"]},
+              "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+              "capture_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+              "access_path_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+              "property_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+              "authority_verdict": {"enum": ["authoritative", "not_authoritative", "unknown"]},
+              "critic_reason": {"type": "string", "minLength": 1, "maxLength": 300},
+              "form_index": {"type": "integer", "minimum": 0, "maximum": 39},
+              "link_index": {"type": "integer", "minimum": 0, "maximum": 299},
+              "content_type": {"type": "string", "minLength": 1, "maxLength": 200},
+              "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+              "document_format": {"enum": ["csv", "xlsx", "xlsm", "json", "pdf"]}
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"kind": {"const": "search_form"}}, "required": ["kind"]},
+                "then": {"required": ["form_index"]}
+              }
+            ]
+          }
+        }
       }
     },
     "discovered_by": {

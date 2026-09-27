@@ -72,6 +72,7 @@ def _output(
     error: dict | None = None,
     page_text: str = "",
     links: list[dict[str, str]] | None = None,
+    forms: list[dict] | None = None,
     dom_skeleton_hash: str | None = None,
 ) -> dict:
     return {
@@ -80,6 +81,7 @@ def _output(
         "text": "",
         "page_text": page_text,
         "links": links or [],
+        "forms": forms or [],
         "dom_skeleton_hash": dom_skeleton_hash,
         "truncated": False,
         "error": error,
@@ -196,6 +198,29 @@ def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_p
     assert result.job_record["checkpoints"]["secrets"]["ok"] is True
     assert result.job_record["checkpoints"]["teardown"]["ok"] is True
     assert len(result.trace) == 6
+
+
+def test_parse_auto_detects_extensionless_octet_stream_csv_in_pod(tmp_path: Path) -> None:
+    from tests.r17_helpers import SyntheticParseExecutor
+
+    lake = FileLake(tmp_path / "lake")
+    payload = b"record_key,established_on\nrec-01,2001-04-03\n"
+    key = lake.put_bytes(payload, {"content_type": "application/octet-stream"})
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="auto",
+        max_rows=12,
+        run_id="mock-auto-parse",
+        source_id="source:synthetic-download",
+        generated_by=PROVENANCE,
+        executor=SyntheticParseExecutor(),
+    )
+
+    assert result.format == "csv"
+    assert result.rows[0]["values"] == ["record_key", "established_on"]
+    assert result.rows[1]["values"] == ["rec-01", "2001-04-03"]
 
 
 def test_file_lake_uses_docker_file_staging_without_python_byte_reads(tmp_path: Path, monkeypatch):
@@ -324,6 +349,22 @@ def test_html_result_returns_pod_tables_links_text_and_skeleton(tmp_path: Path) 
                     "rel": "next",
                 }
             ],
+            forms=[
+                {
+                    "label": "Search public records",
+                    "role": "search",
+                    "search_like": True,
+                    "fields": [
+                        {
+                            "type": "search",
+                            "label": "Record identifier",
+                            "placeholder": "Enter a record identifier",
+                            "name": "identifier",
+                        }
+                    ],
+                    "submit_labels": ["Search"],
+                }
+            ],
             dom_skeleton_hash="a" * 64,
         )
     )
@@ -334,6 +375,7 @@ def test_html_result_returns_pod_tables_links_text_and_skeleton(tmp_path: Path) 
     assert result.as_parsed_file().rows[0].values == ("Name", "Example 01")
     assert result.links[0]["url"].endswith("/catalog/item/1")
     assert result.page_text == "Example 01 public data"
+    assert result.forms[0]["fields"][0]["label"] == "Record identifier"
     assert result.dom_skeleton_hash == "a" * 64
 
 
@@ -471,6 +513,43 @@ def test_parse_runner_extracts_html_and_decodes_json_in_worker_code() -> None:
     assert challenge is False
     assert len(skeleton) == 64
     assert json_rows == [{"document": {"success": True, "result": {"id": "synthetic-01"}}}]
+
+
+def test_parse_runner_extracts_search_form_labels_without_form_values() -> None:
+    spec = importlib.util.spec_from_file_location("ontofill_parse_pod_runner", _PARSE_RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    html = (
+        b"<form role='search' aria-label='Search public records'>"
+        b"<label for='record'>Record identifier</label>"
+        b"<input id='record' type='search' name='identifier' "
+        b"placeholder='Enter a record identifier' value='sample-value'>"
+        b"<input type='password' name='password' value='never-copy'>"
+        b"<button type='submit'>Search</button></form>"
+    )
+
+    forms = runner._parse_forms(html)
+
+    assert forms == [
+        {
+            "label": "Search public records",
+            "role": "search",
+            "search_like": True,
+            "fields": [
+                {
+                    "type": "search",
+                    "label": "Record identifier",
+                    "placeholder": "Enter a record identifier",
+                    "name": "identifier",
+                }
+            ],
+            "submit_labels": ["Search"],
+        }
+    ]
+    assert "sample-value" not in json.dumps(forms)
+    assert "never-copy" not in json.dumps(forms)
 
 
 def test_parse_runner_rejects_row_limit_instead_of_returning_partial_rows() -> None:
