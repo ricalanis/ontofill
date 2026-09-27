@@ -27,6 +27,7 @@ from ontofill.lake import FileLake, S3Lake
 from ontofill.lake.storage import BRONZE_KEY
 from ontofill.refiner import Observation, SilverStore
 from ontofill.runfeed import RunFeed
+from ontofill.sandbox import append_job_record
 
 Coerce = Callable[[object, str], str | int | float | bool | None]
 _SENSITIVE_QUERY = re.compile(
@@ -102,14 +103,25 @@ def _rows(extracted: object) -> list[dict]:
     return []
 
 
-def _safe_screenshot_keys(steps_path: Path) -> tuple[set[str], str | None]:
+def _read_controller_steps(steps_path: Path) -> list[dict]:
     if not steps_path.exists():
-        return set(), "trace_missing"
-    safe: set[str] = set()
+        return []
+    steps: list[dict] = []
     for line in steps_path.read_bytes().splitlines(keepends=True):
         if not line.endswith(b"\n"):
             break
         step = json.loads(line)
+        if not isinstance(step, dict):
+            raise TypeError("browser step must be an object")
+        steps.append(step)
+    return steps
+
+
+def _safe_screenshot_keys(steps: list[dict]) -> tuple[set[str], str | None]:
+    if not steps:
+        return set(), "trace_missing"
+    safe: set[str] = set()
+    for step in steps:
         if step.get("event") == "quarantine":
             return set(), "quarantined"
         if step.get("event") in {"hard_stop", "limit_kill"}:
@@ -129,6 +141,53 @@ def _safe_screenshot_keys(steps_path: Path) -> tuple[set[str], str | None]:
     return safe, None
 
 
+def _valid_capture_time(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _is_mirrored_screenshot(lake: FileLake | S3Lake, key: str) -> bool:
+    if not BRONZE_KEY.fullmatch(key) or not lake.exists(key):
+        return False
+    expected_digest = key.removeprefix("sha256:")
+    return hashlib.sha256(lake.read_key(key)).hexdigest() == expected_digest
+
+
+def _extract_steps(steps: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    by_id = {
+        step["step_id"]: step
+        for step in steps
+        if isinstance(step.get("step_id"), str) and step["step_id"]
+    }
+    extracts = {
+        step_id: step
+        for step_id, step in by_id.items()
+        if (step.get("requested") or {}).get("tool") == "extract"
+    }
+    return by_id, extracts
+
+
+def _quarantine_ancestor(extract_step: dict, by_id: dict[str, dict], screenshot_key: str) -> bool:
+    parent_id = extract_step.get("parent_step_id")
+    seen = {extract_step.get("step_id")}
+    while parent_id is not None:
+        if parent_id in seen:
+            return True
+        seen.add(parent_id)
+        parent = by_id.get(parent_id)
+        if parent is None:
+            return True
+        if parent.get("event") == "quarantine" and parent.get("screenshot_key") == screenshot_key:
+            return True
+        parent_id = parent.get("parent_step_id")
+    return False
+
+
 def _trace_step(
     *,
     run_id: str,
@@ -139,6 +198,7 @@ def _trace_step(
     status: str,
     session_id: str,
     row_count: int,
+    parent_step_id: str,
 ) -> dict:
     return {
         "step_id": f"step:{uuid.uuid4().hex}",
@@ -152,6 +212,35 @@ def _trace_step(
         "requested": {"tool": "browser_agent.session.act"},
         "executed": {"tool": "browser_agent.session.act"},
         "evaluated": {"status": status, "rows": row_count},
+        "parent_step_id": parent_step_id,
+        "value_ids": [],
+        "ts": datetime.now(UTC).isoformat(),
+        "generated_by": provenance,
+    }
+
+
+def _dispatch_step(
+    *,
+    step_id: str,
+    run_id: str,
+    source_id: str,
+    objective_id: str,
+    tdd_path: str,
+    target_fields: list[str],
+    provenance: dict,
+) -> dict:
+    return {
+        "step_id": step_id,
+        "run_id": run_id,
+        "phase": 5,
+        "source_id": source_id,
+        "objective_id": objective_id,
+        "tdd_path": tdd_path,
+        "mode": "S1",
+        "observed": {"target_fields": target_fields},
+        "requested": {"tool": "browser_agent.session.open"},
+        "executed": {"tool": "browser_agent.session.open"},
+        "evaluated": {"status": "started"},
         "parent_step_id": None,
         "value_ids": [],
         "ts": datetime.now(UTC).isoformat(),
@@ -175,15 +264,19 @@ def _emit_rows(
     provenance: dict,
     coerce: Coerce,
     safe_screenshots: set[str],
+    controller_steps: list[dict],
+    target_volume: int,
 ) -> tuple[list[Observation], list[dict]]:
     classes = {item["id"]: item for item in ontology["classes"]}
     properties = {item["id"]: item for item in ontology["properties"]}
     targets = set(target_fields)
+    controller_by_id, extract_steps = _extract_steps(controller_steps)
     emitted: list[Observation] = []
     trace: list[dict] = []
+    emitted_entities: set[str] = set()
 
-    for row in rows:
-        by_class: dict[str, dict[str, tuple[object, str, str, str]]] = defaultdict(dict)
+    for row in rows[:target_volume]:
+        by_class: dict[str, dict[str, tuple[object, str, str, str, str, str]]] = defaultdict(dict)
         for property_id, cell in row.items():
             if (
                 property_id not in targets
@@ -201,6 +294,8 @@ def _emit_rows(
             selector = cell.get("selector")
             url = _safe_url(cell.get("url"), allowed_domains)
             screenshot_key = cell.get("screenshot_key")
+            extract_step_id = cell.get("step_id")
+            captured_at = cell.get("captured_at")
             if (
                 not isinstance(selector, str)
                 or not selector.strip()
@@ -209,7 +304,31 @@ def _emit_rows(
                 or not isinstance(screenshot_key, str)
                 or not BRONZE_KEY.fullmatch(screenshot_key)
                 or screenshot_key not in safe_screenshots
-                or not lake.exists(screenshot_key)
+                or not _is_mirrored_screenshot(lake, screenshot_key)
+                or not isinstance(extract_step_id, str)
+                or not extract_step_id
+                or not _valid_capture_time(captured_at)
+            ):
+                continue
+            extract_step = extract_steps.get(extract_step_id)
+            if extract_step is None or extract_step.get("screenshot_key") != screenshot_key:
+                continue
+            if captured_at != extract_step.get("ts"):
+                continue
+            observed_url = (extract_step.get("observed") or {}).get("url")
+            if observed_url != url:
+                continue
+            requested_fields = (extract_step.get("requested") or {}).get("args", {}).get("fields")
+            if not isinstance(requested_fields, dict) or property_id not in requested_fields:
+                continue
+            traced_value = ((extract_step.get("executed") or {}).get("values") or {}).get(
+                property_id
+            )
+            if (
+                not isinstance(traced_value, dict)
+                or traced_value.get("value") != raw_value
+                or traced_value.get("selector") != selector
+                or _quarantine_ancestor(extract_step, controller_by_id, screenshot_key)
             ):
                 continue
             try:
@@ -217,7 +336,14 @@ def _emit_rows(
             except (TypeError, ValueError):
                 continue
             if value is not None:
-                by_class[entity_class][property_id] = (value, selector.strip(), url, screenshot_key)
+                by_class[entity_class][property_id] = (
+                    value,
+                    selector.strip(),
+                    url,
+                    screenshot_key,
+                    extract_step_id,
+                    captured_at,
+                )
 
         for entity_class, values in by_class.items():
             class_info = classes[entity_class]
@@ -226,16 +352,26 @@ def _emit_rows(
             if identity is None:
                 continue
             entity_id = f"{entity_class}:{hashlib.sha256(str(identity[0]).casefold().encode()).hexdigest()[:24]}"
-            step_id = f"step:{uuid.uuid4().hex}"
-            timestamp = datetime.now(UTC).isoformat()
-            value_ids: list[str] = []
-            for property_id, (value, selector, url, screenshot_key) in values.items():
+            if entity_id in emitted_entities:
+                continue
+            emitted_entities.add(entity_id)
+            for property_id, (
+                value,
+                selector,
+                url,
+                screenshot_key,
+                extract_step_id,
+                captured_at,
+            ) in values.items():
+                step_id = f"step:{uuid.uuid4().hex}"
+                timestamp = datetime.now(UTC).isoformat()
                 evidence = {
                     "url": url,
                     "bronze_key": screenshot_key,
                     "selector": selector,
                     "screenshot_key": screenshot_key,
-                    "captured_at": timestamp,
+                    "step_id": extract_step_id,
+                    "captured_at": captured_at,
                     "source_id": source_id,
                     "source_type": source_type,
                     "format": "html",
@@ -254,7 +390,7 @@ def _emit_rows(
                     entity_id,
                     property_id,
                     value,
-                    Evidence(url, screenshot_key, selector, timestamp, source_id, screenshot_key),
+                    Evidence(url, screenshot_key, selector, captured_at, source_id, screenshot_key),
                     1.0,
                 )
                 emit_observation(
@@ -264,26 +400,28 @@ def _emit_rows(
                     write=lambda _record, observation=item: store.add(observation),
                 )
                 emitted.append(item)
-                value_ids.append(item.value_id)
-            trace.append(
-                {
-                    "step_id": step_id,
-                    "run_id": run_id,
-                    "phase": 5,
-                    "source_id": source_id,
-                    "objective_id": objective_id,
-                    "tdd_path": tdd_path,
-                    "mode": "S1",
-                    "observed": {"controller_extracted_properties": list(values)},
-                    "requested": {"tool": "emit.observation", "properties": list(values)},
-                    "executed": {"tool": "emit.observation", "count": len(value_ids)},
-                    "evaluated": {"status": "ok", "literal_controller_values": True},
-                    "parent_step_id": None,
-                    "value_ids": value_ids,
-                    "ts": timestamp,
-                    "generated_by": provenance,
-                }
-            )
+                trace.append(
+                    {
+                        "step_id": step_id,
+                        "run_id": run_id,
+                        "phase": 5,
+                        "source_id": source_id,
+                        "objective_id": objective_id,
+                        "tdd_path": tdd_path,
+                        "mode": "S1",
+                        "observed": {
+                            "property_id": property_id,
+                            "extract_step_id": extract_step_id,
+                        },
+                        "requested": {"tool": "emit.observation", "property_id": property_id},
+                        "executed": {"tool": "emit.observation", "count": 1},
+                        "evaluated": {"status": "ok", "literal_controller_value": True},
+                        "parent_step_id": extract_step_id,
+                        "value_ids": [item.value_id],
+                        "ts": timestamp,
+                        "generated_by": provenance,
+                    }
+                )
     return emitted, trace
 
 
@@ -336,11 +474,27 @@ def execute_controller(
         "max_attempts": 3,
         "budget_usd": budget,
         "ttl_s": 900,
+        "memory_mb": 1024,
+        "cpus": 1.0,
+        "pids": 256,
     }
+    dispatch_id = f"step:{uuid.uuid4().hex}"
+    feed.append_step(
+        _dispatch_step(
+            step_id=dispatch_id,
+            run_id=run_id,
+            source_id=source_id,
+            objective_id=objective_id,
+            tdd_path=tdd_path,
+            target_fields=list(tdd["target_fields"]),
+            provenance=provenance,
+        )
+    )
     opened = controller.session_open(controller_tdd, domains, limits)
     session_id = opened["session_id"]
     steps_path = step_root / f"{session_id}.jsonl"
     bridge: BrowserTraceBridge | None = None
+    close_result: dict | None = None
     safe_result: dict | None = None
     result_status = "not_achieved"
     observe_blocked = False
@@ -348,6 +502,12 @@ def execute_controller(
         returned_path = opened.get("steps_path")
         if not isinstance(returned_path, str) or Path(returned_path).name != steps_path.name:
             raise ValueError("browser controller returned an unexpected session trace name")
+        context = {
+            "run_id": run_id,
+            "source_id": source_id,
+            "objective_id": objective_id,
+            "tdd_path": tdd_path,
+        }
         bridge = BrowserTraceBridge(
             session_id=session_id,
             steps_path=steps_path,
@@ -355,6 +515,8 @@ def execute_controller(
             captures_root=capture_root,
             feed=feed,
             lake=lake,
+            parent_step_id=dispatch_id,
+            expected_context=context,
         )
         bridge.drain()
         act_result = controller.session_act(
@@ -371,13 +533,44 @@ def execute_controller(
             bridge.drain()
             observe_blocked = "screen" in observed and not screen_is_cleared(observed.get("screen"))
     finally:
+        # Record a cleanup failure only after attempting close, trace drain, and job persistence.
+        close_error: Exception | None = None
         try:
-            controller.session_close(session_id)
-        finally:
+            close_result = controller.session_close(session_id)
+        except Exception as exc:  # noqa: BLE001
+            close_error = exc
+        try:
             if bridge is not None:
                 bridge.drain()
+        except Exception as exc:  # noqa: BLE001
+            if close_error is None:
+                close_error = exc
+        if close_result is not None:
+            try:
+                if close_result.get("closed") is not True:
+                    raise RuntimeError("browser controller did not confirm session close")
+                teardown_job = ((close_result.get("cell") or {}).get("teardown") or {}).get(
+                    "job_record"
+                )
+                if not isinstance(teardown_job, dict):
+                    raise TypeError("browser controller close omitted its teardown job record")
+                if (
+                    teardown_job.get("run_id") != run_id
+                    or teardown_job.get("source_id") != source_id
+                    or teardown_job.get("job_id") != controller_tdd["job_id"]
+                ):
+                    raise ValueError("browser teardown job belongs to another run or source")
+                append_job_record(lake, feed.case_id, teardown_job)
+            except Exception as exc:  # noqa: BLE001
+                if close_error is None:
+                    close_error = exc
+        elif close_error is None:
+            close_error = RuntimeError("browser controller close returned no result")
+        if close_error is not None:
+            raise close_error
 
-    safe_screenshots, trace_block = _safe_screenshot_keys(steps_path)
+    controller_steps = _read_controller_steps(steps_path)
+    safe_screenshots, trace_block = _safe_screenshot_keys(controller_steps)
     if result_status == "achieved" and not observe_blocked and trace_block is None:
         safe_result = act_result
     elif trace_block is not None:
@@ -401,6 +594,8 @@ def execute_controller(
         provenance=provenance,
         coerce=coerce,
         safe_screenshots=safe_screenshots,
+        controller_steps=controller_steps,
+        target_volume=tdd.get("target_volume", 300),
     )
     summary = _trace_step(
         run_id=run_id,
@@ -411,5 +606,6 @@ def execute_controller(
         status="ok" if observations else result_status,
         session_id=session_id,
         row_count=len({item.entity_id for item in observations}),
+        parent_step_id=dispatch_id,
     )
     return ControllerResult(observations, [summary, *extraction_trace])

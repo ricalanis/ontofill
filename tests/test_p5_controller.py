@@ -13,6 +13,7 @@ from ontofill.lake import FileLake
 from ontofill.phases.p5_execute.controller import _safe_url
 from ontofill.refiner import MemorySilverStore
 from ontofill.runfeed import RunFeed
+from ontofill.sandbox import build_job_record
 from ontofill.workflow import _scratch_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
 
@@ -27,6 +28,81 @@ def test_signed_page_url_is_not_exported_as_evidence() -> None:
             ["libraries.example.test"],
         )
         is None
+    )
+
+
+def _teardown_job_record(run_id: str, source_id: str, job_id: str) -> dict:
+    checkpoints = [
+        "dispatch_result",
+        "host_check",
+        "pod_identity",
+        "isolation_probe",
+        "secrets",
+        "teardown",
+    ]
+    trace = [
+        {
+            "step_id": "step:synthetic-cell",
+            "run_id": run_id,
+            "source_id": source_id,
+            "requested": {"url": PAGE_URL, "allowed_domains": ["libraries.example.test"]},
+            "evaluated": {"status": "captured", "proof_checkpoint": checkpoint},
+            "generated_by": RECORDED,
+        }
+        for checkpoint in checkpoints
+    ]
+    return build_job_record(
+        {
+            "trace": trace,
+            "status": 200,
+            "started_at": "2026-09-26T00:00:00Z",
+            "ended_at": "2026-09-26T00:00:01Z",
+            "limits": {
+                "memory_mb": 1024,
+                "cpus": 1.0,
+                "pids": 256,
+                "timeout_s": 900,
+                "max_steps": 30,
+            },
+            "usage": {"peak_memory_mb": 8, "wall_s": 1, "steps": 1},
+            "proof": {
+                "dispatch_result": {"url": PAGE_URL, "status": 200},
+                "host_check": {
+                    "docker_host": "synthetic-host",
+                    "runtime": "runc",
+                    "runtime_available": True,
+                    "cpu_virtualization_flags": [],
+                    "dev_kvm_present": False,
+                },
+                "pod_identity": {
+                    "hostname": "synthetic-pod",
+                    "uname": {"system": "Linux", "release": "synthetic", "machine": "arm64"},
+                },
+                "isolation_probe": {
+                    "network": {
+                        "host": "blocked.invalid",
+                        "blocked": True,
+                        "proxy_logged_block": True,
+                    },
+                    "write_outside_pod": {"path": "/host/proof", "blocked": True},
+                    "write_outside_writable_mount": {"path": "/etc/proof", "blocked": True},
+                },
+                "secrets": {
+                    "ok": True,
+                    "env_keys_found": 0,
+                    "files_with_keys": 0,
+                    "metadata_ip": "BLOCKED",
+                    "mesh": "BLOCKED",
+                },
+                "teardown": {
+                    "pod_gone": True,
+                    "proxy_gone": True,
+                    "network_removed": True,
+                    "verified": True,
+                },
+            },
+        },
+        job_id=job_id,
     )
 
 
@@ -45,14 +121,19 @@ class FakeBrowserController:
         self.run_id = ""
         self.source_id = ""
         self.objective_id = ""
+        self.job_id = ""
 
     def session_open(self, tdd: dict, allowed_domains: list[str], limits: dict) -> dict:
         self.calls.append("open")
         assert allowed_domains == ["libraries.example.test"]
         assert limits["max_steps"] > 0
+        assert limits["memory_mb"] == 1024
+        assert limits["cpus"] == 1.0
+        assert limits["pids"] == 256
         self.run_id = tdd["run_id"]
         self.source_id = tdd["source_id"]
         self.objective_id = tdd["objective_id"]
+        self.job_id = tdd["job_id"]
         self.steps_root.mkdir(parents=True, exist_ok=True)
         self.steps_path = self.steps_root / f"{self.session_id}.jsonl"
         blob = b"synthetic controller screenshot"
@@ -73,25 +154,21 @@ class FakeBrowserController:
             ),
             encoding="utf-8",
         )
-        self.extracted = {
-            "name": self._cell("North Branch", "main table tr:nth-child(2) td:nth-child(1)"),
-            "free_internet": self._cell("true", "main table tr:nth-child(2) td:nth-child(2)"),
-            "opening_hours": self._cell(
-                "Mon-Fri 09:00-17:00", "main table tr:nth-child(2) td:nth-child(3)"
-            ),
-            "unrequested": self._cell("ignore", "main table .internal"),
-        }
-        return {"session_id": self.session_id, "steps_path": str(self.steps_path)}
-
-    def _cell(self, value: str, selector: str) -> dict:
         return {
-            "value": value,
-            "selector": selector,
+            "session_id": self.session_id,
+            "cell_id": "cell:synthetic",
+            "isolation": {
+                "provider": "recorded",
+                "runtime": "runc",
+                "tier": "synthetic",
+                "egress": [],
+            },
+            "live_view_url": None,
             "url": PAGE_URL,
-            "screenshot_key": self.screenshot_key,
+            "steps_path": str(self.steps_path),
         }
 
-    def _append(self, **extra: object) -> None:
+    def _append(self, **extra: object) -> dict:
         assert self.steps_path is not None
         base = {
             "step_id": f"step:{uuid.uuid4().hex}",
@@ -114,6 +191,7 @@ class FakeBrowserController:
         step = base | extra
         with self.steps_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(step) + "\n")
+        return step
 
     def session_act(
         self, session_id: str, *, goal: str | None = None, action: dict | None = None
@@ -121,7 +199,7 @@ class FakeBrowserController:
         self.calls.append("act")
         assert session_id == self.session_id
         assert goal and action is None
-        self._append(
+        clear_step = self._append(
             screenshot_key=self.screenshot_key,
             screen={
                 "flagged": False,
@@ -132,8 +210,9 @@ class FakeBrowserController:
                 "by": "controller",
             },
         )
+        quarantine_step = None
         if self.unsafe:
-            self._append(
+            quarantine_step = self._append(
                 event="quarantine",
                 screenshot_key=self.screenshot_key,
                 screen={
@@ -167,6 +246,45 @@ class FakeBrowserController:
                 "screenshot_key": self.screenshot_key,
             },
         )
+        selectors = {
+            "name": "main table tr:nth-child(2) td:nth-child(1)",
+            "free_internet": "main table tr:nth-child(2) td:nth-child(2)",
+            "opening_hours": "main table tr:nth-child(2) td:nth-child(3)",
+            "unrequested": "main table .internal",
+        }
+        values = {
+            "name": {"value": "North Branch", "selector": selectors["name"]},
+            "free_internet": {"value": "true", "selector": selectors["free_internet"]},
+            "opening_hours": {
+                "value": "Mon-Fri 09:00-17:00",
+                "selector": selectors["opening_hours"],
+            },
+        }
+        extract_step = self._append(
+            requested={"tool": "extract", "args": {"fields": selectors}},
+            executed={"ok": True, "values": values},
+            evaluated={"ok": True, "fields_found": sorted(values), "fields_missing": []},
+            parent_step_id=(quarantine_step or clear_step)["step_id"],
+            screenshot_key=self.screenshot_key,
+        )
+        self.extracted = {
+            property_id: {
+                **value,
+                "url": PAGE_URL,
+                "screenshot_key": self.screenshot_key,
+                "step_id": extract_step["step_id"],
+                "captured_at": extract_step["ts"],
+            }
+            for property_id, value in values.items()
+        }
+        self.extracted["unrequested"] = {
+            "value": "ignore",
+            "selector": selectors["unrequested"],
+            "url": PAGE_URL,
+            "screenshot_key": self.screenshot_key,
+            "step_id": extract_step["step_id"],
+            "captured_at": extract_step["ts"],
+        }
         return {"status": "achieved", "extracted": self.extracted}
 
     def session_observe(self, session_id: str) -> dict:
@@ -182,7 +300,18 @@ class FakeBrowserController:
     def session_close(self, session_id: str) -> dict:
         self.calls.append("close")
         assert session_id == self.session_id
-        return {"closed": True}
+        record = _teardown_job_record(self.run_id, self.source_id, self.job_id)
+        return {
+            "closed": True,
+            "metrics": {},
+            "token_revoked": True,
+            "cell": {
+                "cell_id": "cell:synthetic",
+                "released": True,
+                "destroy_ms": 1,
+                "teardown": {"state": "destroyed", "job_record": record},
+            },
+        }
 
 
 def test_s1_controller_exports_only_trace_backed_target_values(tmp_path: Path) -> None:
@@ -221,24 +350,60 @@ def test_s1_controller_exports_only_trace_backed_target_values(tmp_path: Path) -
     trace_key = f"gold/{case.name}/{run_id}/trace.jsonl"
     trace = [json.loads(line) for line in lake.read_key(trace_key).splitlines()]
     controller_steps = [step for step in trace if step.get("session_id") == controller.session_id]
+    dispatch = next(
+        step
+        for step in trace
+        if step.get("requested", {}).get("tool") == "browser_agent.session.open"
+    )
+    raw_steps = [
+        json.loads(line) for line in controller.steps_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len({step["step_id"] for step in trace}) == len(trace)
+    assert trace.index(dispatch) < trace.index(controller_steps[0])
+    assert controller_steps[0]["parent_step_id"] == dispatch["step_id"]
+    assert controller_steps[0]["step_id"] == raw_steps[0]["step_id"]
+    assert raw_steps[0]["parent_step_id"] is None
     assert any(step.get("event") == "action_gate" for step in controller_steps)
     assert any(
         step.get("event") == "verify" and step["verify"]["verdict"] == "achieved"
         for step in controller_steps
     )
     values = [step for step in trace if step.get("executed", {}).get("tool") == "emit.observation"]
-    assert len(values) == 1
-    assert set(values[0]["requested"]["properties"]) == {
+    assert len(values) == 3
+    assert {step["requested"]["property_id"] for step in values} == {
         "name",
         "free_internet",
         "opening_hours",
     }
+    extract_ids = {
+        step["step_id"]
+        for step in controller_steps
+        if step.get("requested", {}).get("tool") == "extract"
+    }
+    assert {step["parent_step_id"] for step in values} == extract_ids
     entities = [
         json.loads(line)
         for line in lake.read_key(f"gold/{case.name}/{run_id}/entities.jsonl").splitlines()
     ]
     assert len(entities) == 1
     assert entities[0]["properties"]["free_internet"]["value"] is True
+    evidence = entities[0]["properties"]["free_internet"]["evidence"][0]
+    assert evidence["step_id"] in extract_ids
+    extract_step = next(step for step in controller_steps if step["step_id"] == evidence["step_id"])
+    assert evidence["captured_at"] == extract_step["ts"]
+    jobs = [
+        json.loads(line)
+        for line in lake.read_key(f"runs/{case.name}/{run_id}/jobs.jsonl").splitlines()
+    ]
+    assert len(jobs) == 1
+    assert set(jobs[0]["checkpoints"]) == {
+        "host",
+        "task",
+        "where",
+        "isolation",
+        "secrets",
+        "teardown",
+    }
     serialized_trace = json.dumps(trace)
     assert str(case.resolve()) not in serialized_trace
     assert "live_view_url" not in serialized_trace
@@ -342,5 +507,7 @@ def test_missing_download_falls_back_to_controller_and_quarantine_withholds(tmp_
         assert any(step.get("event") == "verify" for step in trace)
         assert any(step.get("event") == "action_gate" for step in trace)
         assert not store.list_for_run("mock-r3-fallback")
+        job = lake.read_key("runs/synthetic-case/mock-r3-fallback/jobs.jsonl")
+        assert len(job.splitlines()) == 1
     finally:
         feed.close()
