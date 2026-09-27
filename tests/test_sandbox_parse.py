@@ -1,0 +1,486 @@
+"""Synthetic contract and transport tests for the isolated bronze parser."""
+
+from __future__ import annotations
+
+import base64
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from ontofill.lake import FileLake
+from ontofill.sandbox import (
+    ParseExecution,
+    SandboxLimits,
+    SandboxParseError,
+    parse_bronze,
+    parse_bronze_json,
+)
+from ontofill.sandbox import parse as parse_module
+
+_PARSE_RUNNER_PATH = Path(__file__).resolve().parents[1] / "sandbox/parse-pod/runner.py"
+
+PROVENANCE = {
+    "backend": "recorded",
+    "model": "synthetic-parse-test",
+    "at": "2026-09-26T12:00:00Z",
+}
+HOST = {
+    "docker_host": "synthetic-sandbox",
+    "runtime": "runsc",
+    "runtime_available": True,
+}
+POD = {
+    "hostname": "parse-pod-synthetic",
+    "uname": {"system": "Linux", "release": "synthetic", "machine": "x86_64"},
+    "cpu_virtualization_flags": [],
+    "dev_kvm_present": False,
+}
+ISOLATION = {
+    "probes": [
+        {"probe": "external_network", "blocked": True, "target": "1.1.1.1:53"},
+        {
+            "probe": "write_outside_writable_mount",
+            "blocked": True,
+            "target": "/etc/.ontofill-write-probe",
+        },
+    ]
+}
+SECRETS = {
+    "ok": True,
+    "env_keys_found": 0,
+    "files_with_keys": 0,
+    "metadata_ip": "BLOCKED",
+    "mesh": "BLOCKED",
+}
+TEARDOWN = {
+    "pod_gone": True,
+    "proxy_gone": True,
+    "network_removed": True,
+    "verified": True,
+}
+
+
+def _output(
+    rows: list[dict] | None = None,
+    *,
+    error: dict | None = None,
+    page_text: str = "",
+    links: list[dict[str, str]] | None = None,
+    dom_skeleton_hash: str | None = None,
+) -> dict:
+    return {
+        "ok": error is None,
+        "rows": rows or [],
+        "text": "",
+        "page_text": page_text,
+        "links": links or [],
+        "dom_skeleton_hash": dom_skeleton_hash,
+        "truncated": False,
+        "error": error,
+        "proof": {"pod": POD, "isolation": ISOLATION, "secrets": SECRETS},
+        "usage": {"peak_memory_mb": 24.0, "wall_s": 0.02, "steps": 1},
+    }
+
+
+class FakeExecutor:
+    def __init__(self, output: dict | None = None, **overrides) -> None:
+        self.output = output or _output(
+            [{"sheet": None, "row_number": 1, "values": ["name", "value"]}]
+        )
+        self.overrides = overrides
+        self.calls: list[dict] = []
+
+    def run(self, payload, *, kind, format, max_rows, base_url, limits):
+        self.calls.append(
+            {
+                "payload": payload,
+                "kind": kind,
+                "format": format,
+                "max_rows": max_rows,
+                "base_url": base_url,
+                "limits": limits,
+            }
+        )
+        return ParseExecution(
+            output=self.output,
+            host=self.overrides.get("host", HOST),
+            pod=self.overrides.get("pod", POD),
+            isolation=self.overrides.get("isolation", ISOLATION),
+            secrets=self.overrides.get("secrets", SECRETS),
+            teardown=self.overrides.get("teardown", TEARDOWN),
+            peak_memory_mb=24.0,
+            wall_s=0.02,
+            steps=1,
+            error=self.overrides.get("error"),
+            limit_reason=self.overrides.get("limit_reason"),
+        )
+
+
+def test_parse_bronze_transfers_opaque_bytes_and_builds_six_checkpoint_job(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    payload = b"synthetic captured bytes, not a real case"
+    key = lake.put_bytes(payload, {"content_type": "text/csv"})
+    executor = FakeExecutor(
+        _output([{"sheet": None, "row_number": 1, "values": ["name", "Example 01"]}])
+    )
+
+    result = parse_bronze(
+        lake,
+        key,
+        format="csv",
+        max_rows=12,
+        run_id="mock-parse-test",
+        source_id="source:synthetic",
+        step_id="step:synthetic-parse",
+        generated_by=PROVENANCE,
+        executor=executor,
+    )
+
+    assert executor.calls[0]["payload"] == payload
+    assert executor.calls[0]["kind"] == "csv"
+    assert executor.calls[0]["max_rows"] == 12
+    assert result.rows[0]["values"] == ["name", "Example 01"]
+    assert result.as_parsed_file().rows[0].values == ("name", "Example 01")
+    assert set(result.job_record["checkpoints"]) == {
+        "host",
+        "task",
+        "where",
+        "isolation",
+        "secrets",
+        "teardown",
+    }
+    assert result.job_record["checkpoints"]["host"]["runtime"] == "runsc"
+    assert result.job_record["checkpoints"]["task"]["ok"] is True
+    assert all(
+        item["result"] == "BLOCKED"
+        for item in result.job_record["checkpoints"]["isolation"]["probes"]
+    )
+    assert result.job_record["checkpoints"]["secrets"]["ok"] is True
+    assert result.job_record["checkpoints"]["teardown"]["ok"] is True
+    assert len(result.trace) == 6
+
+
+def test_parse_bronze_json_returns_pod_decoded_mapping(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    payload = b'{"success":true,"result":{"results":[{"id":"synthetic-01"}]}}'
+    key = lake.put_bytes(payload, {"content_type": "application/json"})
+    expected = {"success": True, "result": {"results": [{"id": "synthetic-01"}]}}
+    executor = FakeExecutor(_output([{"document": expected}]))
+
+    result = parse_bronze_json(
+        lake,
+        key,
+        run_id="mock-ckan-lead",
+        source_id="source:synthetic-catalog",
+        step_id="step:synthetic-json",
+        generated_by=PROVENANCE,
+        executor=executor,
+    )
+
+    assert executor.calls[0]["payload"] == payload
+    assert executor.calls[0]["kind"] == "json_document"
+    assert result.document == expected
+    assert result.job_record["checkpoints"]["task"]["ok"]
+
+
+def test_html_result_returns_pod_tables_links_text_and_skeleton(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(
+        b"synthetic HTML capture",
+        {
+            "content_type": "text/html",
+            "url": "https://synthetic.example.test/catalog/list?page=1&token=removed",
+        },
+    )
+    executor = FakeExecutor(
+        _output(
+            [{"sheet": "html-table-1", "row_number": 1, "values": ["Name", "Example 01"]}],
+            page_text="Example 01 public data",
+            links=[
+                {
+                    "url": "https://synthetic.example.test/catalog/item/1",
+                    "text": "Example 01",
+                    "rel": "next",
+                }
+            ],
+            dom_skeleton_hash="a" * 64,
+        )
+    )
+
+    result = parse_bronze(lake, key, format="html", executor=executor)
+
+    assert executor.calls[0]["base_url"] == "https://synthetic.example.test/catalog/list"
+    assert result.as_parsed_file().rows[0].values == ("Name", "Example 01")
+    assert result.links[0]["url"].endswith("/catalog/item/1")
+    assert result.page_text == "Example 01 public data"
+    assert result.dom_skeleton_hash == "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [("../not-a-key", "bronze_key must be"), ("sha256:" + "0" * 64, "do not match")],
+)
+def test_bronze_key_and_digest_are_checked_before_dispatch(
+    tmp_path: Path, monkeypatch, key: str, expected: str
+) -> None:
+    lake = FileLake(tmp_path / "lake")
+    valid_key = lake.put_bytes(b"synthetic bytes")
+    executor = FakeExecutor()
+    if key.startswith("sha256:"):
+        key = valid_key
+        monkeypatch.setattr(lake, "read_key", lambda _key: b"different synthetic bytes")
+
+    with pytest.raises(ValueError, match=expected):
+        parse_bronze(lake, key, format="csv", executor=executor)
+    assert executor.calls == []
+
+
+def test_input_limit_fails_closed_with_job_record(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"synthetic input over the caller limit")
+    executor = FakeExecutor()
+
+    with pytest.raises(SandboxParseError, match="input_too_large") as raised:
+        parse_bronze(lake, key, format="csv", max_bytes=8, executor=executor)
+
+    assert executor.calls == []
+    record = raised.value.job_record
+    assert record["checkpoints"]["task"]["ok"] is False
+    assert record["checkpoints"]["task"]["result"]["reason"] == "input_too_large"
+    assert record["checkpoints"]["host"] == {"ok": False, "not_run": True}
+    assert record["checkpoints"]["teardown"]["ok"] is True
+    assert len(raised.value.trace) == 6
+
+
+def test_parse_failure_returns_no_partial_rows_and_failed_job(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"synthetic csv rows")
+    executor = FakeExecutor(_output(error={"code": "max_rows_exceeded"}), error="max_rows_exceeded")
+
+    with pytest.raises(SandboxParseError, match="max_rows_exceeded") as raised:
+        parse_bronze(lake, key, format="csv", max_rows=1, executor=executor)
+
+    assert raised.value.job_record["checkpoints"]["task"]["ok"] is False
+    assert raised.value.job_record["checkpoints"]["task"]["result"]["row_count"] == 0
+    assert raised.value.job_record["checkpoints"]["task"]["result"]["reason"] == (
+        "max_rows_exceeded"
+    )
+
+
+def test_invalid_html_metadata_does_not_return_partial_rows(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"synthetic HTML bytes")
+    executor = FakeExecutor(
+        _output(
+            [{"sheet": "html-table-1", "row_number": 1, "values": ["Example 01"]}],
+            page_text={"invalid": "metadata"},
+        )
+    )
+
+    with pytest.raises(SandboxParseError, match="invalid_html_metadata") as raised:
+        parse_bronze(lake, key, format="html", executor=executor)
+
+    task_result = raised.value.job_record["checkpoints"]["task"]["result"]
+    assert task_result["row_count"] == 0
+    assert task_result["page_text_chars"] == 0
+
+
+def test_parse_runner_extracts_html_and_decodes_json_in_worker_code() -> None:
+    spec = importlib.util.spec_from_file_location("ontofill_parse_pod_runner", _PARSE_RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    html = (
+        b"<html><body><script>synthetic hidden text</script><h1>Example 01</h1>"
+        b"<table><tr><th>Name</th></tr><tr><td>Example 01</td></tr></table>"
+        b"<a href='item/1' rel='next'>Open record</a>"
+        b"<a href='https://user:password@synthetic.example.test/private'>Drop</a>"
+        b"</body></html>"
+    )
+    rows, text, page_text, links, skeleton = runner._parse(
+        html,
+        "html",
+        10,
+        "https://synthetic.example.test/catalog/list?token=discarded",
+    )
+    document = b'{"success":true,"result":{"id":"synthetic-01"}}'
+    json_rows, _, _, _, _ = runner._parse(document, "json_document", 1, "")
+
+    assert text == ""
+    assert rows[0]["values"] == ["Name"]
+    assert rows[1]["values"] == ["Example 01"]
+    assert page_text == "Example 01 Name Example 01 Open record Drop"
+    assert links == [
+        {
+            "url": "https://synthetic.example.test/catalog/item/1",
+            "text": "Open record",
+            "rel": "next",
+        }
+    ]
+    assert len(skeleton) == 64
+    assert json_rows == [{"document": {"success": True, "result": {"id": "synthetic-01"}}}]
+
+
+def test_parse_runner_rejects_row_limit_instead_of_returning_partial_rows() -> None:
+    spec = importlib.util.spec_from_file_location("ontofill_parse_pod_runner", _PARSE_RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    with pytest.raises(runner.ParseFailure, match="max_rows_exceeded"):
+        runner._parse(b"name\nExample 01\nExample 02\n", "csv", 2, "")
+
+
+def test_unverified_secret_checkpoint_fails_closed(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"synthetic csv bytes")
+    secrets = {**SECRETS, "mesh": "ALLOWED", "ok": False}
+
+    with pytest.raises(SandboxParseError, match="proof did not pass") as raised:
+        parse_bronze(lake, key, format="csv", executor=FakeExecutor(secrets=secrets))
+
+    assert raised.value.job_record["checkpoints"]["task"]["ok"] is True
+    assert raised.value.job_record["checkpoints"]["secrets"]["ok"] is False
+
+
+def test_docker_executor_uses_runsc_network_none_and_opaque_stdin(monkeypatch) -> None:
+    executor = parse_module.DockerParseExecutor()
+    calls: list[tuple[tuple[str, ...], dict]] = []
+    output = json.dumps(_output()).encode()
+
+    def fake_docker(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("image", "inspect"):
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:2] == ("info", "--format"):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"Name": "synthetic", "Runtimes": {"runsc": {}}}), ""
+            )
+        if args[:2] == ("exec", "wc") or (args and args[0] == "exec" and "wc" in args):
+            return subprocess.CompletedProcess(args, 0, f"{len(output)} /work/output.json\n", "")
+        if args and args[0] == "exec" and "cat" in args and "/work/output.json" in args:
+            return subprocess.CompletedProcess(args, 0, output.decode(), "")
+        if args and args[0] == "inspect":
+            return subprocess.CompletedProcess(args, 1, "", "No such container")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(parse_module, "_docker", fake_docker)
+    monkeypatch.setattr(executor, "_image", lambda: "synthetic-parse-image")
+
+    result = executor.run(
+        b"synthetic bytes",
+        kind="csv",
+        format="csv",
+        max_rows=10,
+        base_url="https://synthetic.example.test/data.csv",
+        limits=SandboxLimits(memory_mb=256, pids=32, timeout_s=5, max_steps=1),
+    )
+
+    run_args = next(args for args, _kwargs in calls if args and args[0] == "run")
+    assert "--runtime" in run_args and run_args[run_args.index("--runtime") + 1] == "runsc"
+    assert "--network" in run_args and run_args[run_args.index("--network") + 1] == "none"
+    assert "--read-only" in run_args
+    assert "--memory" in run_args and "256m" in run_args
+    assert "-e" not in run_args and "-v" not in run_args and "--mount" not in run_args
+    staged = next(kwargs["input_text"] for args, kwargs in calls if "input_text" in kwargs)
+    envelope = json.loads(staged)
+    assert base64.b64decode(envelope["payload"]) == b"synthetic bytes"
+    assert "AWS_SECRET_ACCESS_KEY" not in staged
+    assert result.teardown["verified"] is True
+
+
+def test_docker_executor_cleans_up_after_runtime_start_timeout(monkeypatch) -> None:
+    executor = parse_module.DockerParseExecutor()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_docker(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("info", "--format"):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"Name": "synthetic", "Runtimes": {"runsc": {}}}), ""
+            )
+        if args and args[0] == "run":
+            raise parse_module.DockerTimeout("synthetic run timeout")
+        if args and args[0] == "inspect":
+            return subprocess.CompletedProcess(args, 1, "", "No such container")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(parse_module, "_docker", fake_docker)
+    monkeypatch.setattr(executor, "_image", lambda: "synthetic-parse-image")
+
+    result = executor.run(
+        b"synthetic bytes",
+        kind="csv",
+        format="csv",
+        max_rows=10,
+        base_url="",
+        limits=SandboxLimits(memory_mb=256, pids=32, timeout_s=5, max_steps=1),
+    )
+
+    assert result.limit_reason == "timeout"
+    assert result.error == "pod exceeded wall-clock limit"
+    assert any(args[:2] == ("rm", "-f") for args in calls)
+    assert result.teardown["verified"] is True
+
+
+@pytest.mark.skipif(
+    os.environ.get("ONTOFILL_RUN_PARSE_CONTAINMENT") != "1" or shutil.which("docker") is None,
+    reason="set ONTOFILL_RUN_PARSE_CONTAINMENT=1 to run the real runsc parser proof",
+)
+def test_recorded_csv_parses_in_real_runsc_pod(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    key = lake.put_bytes(b"name,value\nExample 01,42\n")
+    result = parse_bronze(
+        lake,
+        key,
+        format="csv",
+        max_rows=10,
+        run_id="mock-parse-runsc",
+        source_id="source:synthetic",
+        generated_by=PROVENANCE,
+    )
+    assert result.rows == (
+        {"sheet": None, "row_number": 1, "values": ["name", "value"]},
+        {"sheet": None, "row_number": 2, "values": ["Example 01", "42"]},
+    )
+    assert result.job_record["checkpoints"]["host"]["runtime"] == "runsc"
+
+
+@pytest.mark.skipif(
+    os.environ.get("ONTOFILL_RUN_PARSE_CONTAINMENT") != "1" or shutil.which("docker") is None,
+    reason="set ONTOFILL_RUN_PARSE_CONTAINMENT=1 to run the real runsc parser proof",
+)
+def test_recorded_html_returns_links_text_and_skeleton_from_runsc(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    html = (
+        b"<html><body><script>hidden payload</script><h1>Example 01</h1>"
+        b"<table><tr><th>Name</th></tr><tr><td>Example 01</td></tr></table>"
+        b"<a href='item/1' rel='next'>Open record</a></body></html>"
+    )
+    key = lake.put_bytes(
+        html,
+        {
+            "content_type": "text/html",
+            "url": "https://synthetic.example.test/catalog/list?token=discarded",
+        },
+    )
+
+    result = parse_bronze(lake, key, format="html", max_rows=20)
+
+    assert result.rows[0]["values"] == ["Name"]
+    assert result.page_text == "Example 01 Name Example 01 Open record"
+    assert "hidden payload" not in result.page_text
+    assert result.links == (
+        {
+            "url": "https://synthetic.example.test/catalog/item/1",
+            "text": "Open record",
+            "rel": "next",
+        },
+    )
+    assert result.dom_skeleton_hash and len(result.dom_skeleton_hash) == 64

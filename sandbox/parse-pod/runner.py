@@ -1,0 +1,445 @@
+"""Untrusted bronze parser entry point; receives only opaque bytes over stdin staging."""
+
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import io
+import json
+import math
+import os
+import resource
+import socket
+import sys
+import time
+from datetime import date, datetime, time as datetime_time
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin, urlsplit
+
+from bs4 import BeautifulSoup
+from openpyxl import load_workbook
+from pypdf import PdfReader
+
+MAX_INPUT_BYTES = 8 * 1024 * 1024
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_ROWS = 10_000
+MAX_DOCUMENT_ITEMS = 100_000
+MAX_JSON_DEPTH = 64
+MAX_PAGE_TEXT_CHARS = 200_000
+_SECRET_MARKERS = (
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "CREDENTIAL",
+    "VULTR_",
+    "NETBIRD_",
+    "AWS_",
+    "JEV_",
+)
+
+
+class ParseFailure(ValueError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _json_no_constants(value: str) -> None:
+    raise ParseFailure("invalid_json_constant")
+
+
+def _bounded_document(document: Any) -> None:
+    stack = [(document, 0)]
+    count = 0
+    while stack:
+        value, depth = stack.pop()
+        count += 1
+        if count > MAX_DOCUMENT_ITEMS:
+            raise ParseFailure("document_item_limit")
+        if depth > MAX_JSON_DEPTH:
+            raise ParseFailure("document_depth_limit")
+        if isinstance(value, dict):
+            stack.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            stack.extend((child, depth + 1) for child in value)
+
+
+def _flatten_json_records(value: Any, *, max_rows: int) -> list[dict[str, Any]]:
+    """Flatten arrays of objects to bounded dotted-path records."""
+
+    _bounded_document(value)
+
+    def expand(node: Any, prefix: str = "") -> list[dict[str, Any]]:
+        if isinstance(node, Mapping):
+            records: list[dict[str, Any]] = [{}]
+            for key, child in node.items():
+                child_prefix = f"{prefix}.{key}" if prefix else str(key)
+                branches = expand(child, child_prefix)
+                merged: list[dict[str, Any]] = []
+                for left in records:
+                    for right in branches:
+                        merged.append({**left, **right})
+                        if len(merged) > max_rows:
+                            raise ParseFailure("max_rows_exceeded")
+                records = merged
+            return records
+        if isinstance(node, list):
+            if node and all(isinstance(item, Mapping) for item in node):
+                records: list[dict[str, Any]] = []
+                for item in node:
+                    records.extend(expand(item, prefix))
+                    if len(records) > max_rows:
+                        raise ParseFailure("max_rows_exceeded")
+                return records
+            return [{prefix: json.dumps(node, ensure_ascii=False, separators=(",", ":"))}]
+        return [{prefix: node}] if prefix else [{}]
+
+    records = expand(value)
+    if len(records) > max_rows:
+        raise ParseFailure("max_rows_exceeded")
+    return records
+
+
+def _row(sheet: str | None, row_number: int, values: Any) -> dict[str, Any]:
+    return {
+        "sheet": sheet,
+        "row_number": row_number,
+        "values": [_json_cell(value) for value in values],
+    }
+
+
+def _json_cell(value: Any) -> Any:
+    if isinstance(value, (date, datetime, datetime_time)):
+        return value.isoformat()
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ParseFailure("non_finite_cell")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _parse_csv(data: bytes, max_rows: int) -> list[dict[str, Any]]:
+    text = data.decode("utf-8-sig")
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096])
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.reader(io.StringIO(text), dialect)
+    rows: list[dict[str, Any]] = []
+    for number, values in enumerate(reader, start=1):
+        if number > max_rows:
+            raise ParseFailure("max_rows_exceeded")
+        if any(value != "" for value in values):
+            rows.append(_row(None, number, values))
+    return rows
+
+
+def _parse_xlsx(data: bytes, max_rows: int) -> list[dict[str, Any]]:
+    workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
+    rows: list[dict[str, Any]] = []
+    total_rows = 0
+    try:
+        for sheet in workbook.worksheets:
+            for number, values in enumerate(sheet.iter_rows(values_only=True), start=1):
+                total_rows += 1
+                if total_rows > max_rows:
+                    raise ParseFailure("max_rows_exceeded")
+                if any(value is not None and value != "" for value in values):
+                    rows.append(_row(sheet.title, number, values))
+    finally:
+        workbook.close()
+    return rows
+
+
+def _parse_html(
+    data: bytes, max_rows: int, base_url: str
+) -> tuple[list[dict[str, Any]], str, list[dict[str, str]], str]:
+    document = BeautifulSoup(data.decode("utf-8-sig"), "html.parser")
+    rows: list[dict[str, Any]] = []
+    links: list[dict[str, str]] = []
+    for table_number, table in enumerate(document.select("table"), start=1):
+        for number, tr in enumerate(table.select("tr"), start=1):
+            values = tuple(cell.get_text(" ", strip=True) for cell in tr.select("th, td"))
+            if values:
+                if len(rows) >= max_rows:
+                    raise ParseFailure("max_rows_exceeded")
+                rows.append(_row(f"html-table-{table_number}", number, values))
+    for tag in document.select("a[href], link[href]"):
+        href = str(tag.get("href", ""))
+        url = urljoin(base_url, href) if base_url else href
+        try:
+            parsed = urlsplit(url)
+            hostname = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            continue
+        if (
+            len(url) > 8192
+            or parsed.scheme not in {"http", "https"}
+            or not hostname
+            or parsed.username
+            or parsed.password
+        ):
+            continue
+        if len(links) >= max_rows:
+            raise ParseFailure("max_links_exceeded")
+        rel_value = tag.get("rel") or []
+        rel = (
+            " ".join(str(item) for item in rel_value)
+            if isinstance(rel_value, list)
+            else str(rel_value)
+        )
+        links.append(
+            {
+                "url": url,
+                "text": tag.get_text(" ", strip=True),
+                "rel": rel,
+            }
+        )
+    skeleton = " ".join(tag.name for tag in document.find_all(True))
+    skeleton_hash = hashlib.sha256(skeleton.encode("utf-8")).hexdigest()
+    for tag in document(("script", "style", "noscript", "template")):
+        tag.decompose()
+    body = document.body or document
+    page_text = " ".join(body.get_text(" ", strip=True).split())
+    if len(page_text) > MAX_PAGE_TEXT_CHARS:
+        raise ParseFailure("page_text_limit")
+    return rows, page_text, links, skeleton_hash
+
+
+def _parse_json(data: bytes, max_rows: int) -> list[dict[str, Any]]:
+    document = json.loads(data.decode("utf-8-sig"), parse_constant=_json_no_constants)
+    records = _flatten_json_records(document, max_rows=max_rows)
+    if not records:
+        return []
+    headers = tuple(dict.fromkeys(key for row in records for key in row))
+    return [_row(None, 1, headers)] + [
+        _row(None, index, tuple(record.get(header) for header in headers))
+        for index, record in enumerate(records, start=2)
+    ]
+
+
+def _parse_pdf(data: bytes, max_rows: int) -> list[dict[str, Any]]:
+    reader = PdfReader(io.BytesIO(data), strict=True)
+    if len(reader.pages) > max_rows:
+        raise ParseFailure("max_rows_exceeded")
+    return [
+        {"page_number": number, "text": page.extract_text() or ""}
+        for number, page in enumerate(reader.pages, start=1)
+    ]
+
+
+def _parse_document(data: bytes) -> dict[str, Any]:
+    document = json.loads(data.decode("utf-8-sig"), parse_constant=_json_no_constants)
+    if not isinstance(document, dict):
+        raise ParseFailure("json_document_root_must_be_object")
+    _bounded_document(document)
+    return document
+
+
+def _parse(
+    data: bytes, kind: str, max_rows: int, base_url: str
+) -> tuple[list[dict[str, Any]], str, str, list[dict[str, str]], str | None]:
+    if len(data) > MAX_INPUT_BYTES:
+        raise ParseFailure("input_too_large")
+    if kind == "csv":
+        return _parse_csv(data, max_rows), "", "", [], None
+    if kind in {"xlsx", "xlsm"}:
+        return _parse_xlsx(data, max_rows), "", "", [], None
+    if kind == "html":
+        rows, page_text, links, skeleton_hash = _parse_html(data, max_rows, base_url)
+        return rows, "", page_text, links, skeleton_hash
+    if kind == "json":
+        return _parse_json(data, max_rows), "", "", [], None
+    if kind == "pdf":
+        rows = _parse_pdf(data, max_rows)
+        return rows, "\n".join(row["text"] for row in rows), "", [], None
+    if kind == "json_document":
+        return [{"document": _parse_document(data)}], "", "", [], None
+    raise ParseFailure("unsupported_format")
+
+
+def _probe_socket(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return False
+    except OSError:
+        return True
+
+
+def _probe_write(path: Path) -> bool:
+    try:
+        with path.open("xb") as stream:
+            stream.write(b"probe")
+        path.unlink(missing_ok=True)
+    except OSError:
+        return True
+    return False
+
+
+def _files_with_secret_names() -> int:
+    roots = (Path("/run/secrets"), Path("/root"), Path("/home"), Path("/work"))
+    count = 0
+    visited = 0
+    for root in roots:
+        if not root.exists():
+            continue
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [name for name in dirs if not Path(directory, name).is_symlink()]
+            for name in files:
+                visited += 1
+                if visited > 1000:
+                    return count
+                if any(marker.lower() in name.lower() for marker in _SECRET_MARKERS):
+                    count += 1
+    return count
+
+
+def _proof() -> dict[str, Any]:
+    env_keys = sum(any(marker in name.upper() for marker in _SECRET_MARKERS) for name in os.environ)
+    metadata_blocked = _probe_socket("169.254.169.254", 80)
+    mesh_blocked = _probe_socket("100.64.0.1", 22)
+    external_blocked = _probe_socket("1.1.1.1", 53)
+    work_write_allowed = not _probe_write(Path("/work/.write-probe"))
+    etc_write_blocked = _probe_write(Path("/etc/.ontofill-write-probe"))
+    uname = os.uname()
+    flags: list[str] = []
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.lower().startswith("flags"):
+                flags = sorted(set(line.split(":", 1)[-1].split()))
+                break
+    except OSError:
+        pass
+    probes = [
+        {
+            "probe": "network_non_allowlisted",
+            "blocked": external_blocked,
+            "target": "1.1.1.1:53",
+        },
+        {
+            "probe": "write_outside_pod",
+            "blocked": _probe_write(Path("/host/.ontofill-write-probe")),
+            "target": "/host/.ontofill-write-probe",
+        },
+        {
+            "probe": "write_outside_writable_mount",
+            "blocked": etc_write_blocked,
+            "target": "/etc/.ontofill-write-probe",
+        },
+        {
+            "probe": "no_host_mounts",
+            "blocked": not Path("/host").exists(),
+            "target": "/host",
+        },
+    ]
+    secrets = {
+        "env_keys_found": env_keys,
+        "files_with_keys": _files_with_secret_names(),
+        "metadata_ip": "BLOCKED" if metadata_blocked else "ALLOWED",
+        "mesh": "BLOCKED" if mesh_blocked else "ALLOWED",
+    }
+    secrets["ok"] = (
+        secrets["env_keys_found"] == 0
+        and secrets["files_with_keys"] == 0
+        and secrets["metadata_ip"] == "BLOCKED"
+        and secrets["mesh"] == "BLOCKED"
+    )
+    return {
+        "pod": {
+            "hostname": socket.gethostname(),
+            "uname": {"system": uname.sysname, "release": uname.release, "machine": uname.machine},
+            "cpu_virtualization_flags": flags,
+            "dev_kvm_present": Path("/dev/kvm").exists(),
+        },
+        "isolation": {"probes": probes, "work_write_allowed": work_write_allowed},
+        "secrets": secrets,
+        "network_probes": {
+            "external": external_blocked,
+            "metadata_ip": metadata_blocked,
+            "mesh": mesh_blocked,
+        },
+    }
+
+
+def _peak_memory_mb() -> float:
+    # Linux reports ru_maxrss in KiB.
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 3)
+
+
+def run(input_path: Path, output_path: Path) -> None:
+    started = time.monotonic()
+    proof: dict[str, Any] = {}
+    rows: list[dict[str, Any]] = []
+    text = ""
+    page_text = ""
+    links: list[dict[str, str]] = []
+    skeleton_hash: str | None = None
+    error: dict[str, str] | None = None
+    kind = ""
+    max_rows = 0
+    try:
+        envelope = json.loads(input_path.read_text(encoding="utf-8"))
+        kind = str(envelope.get("kind", ""))
+        max_rows = envelope.get("max_rows")
+        if type(max_rows) is not int or not 1 <= max_rows <= MAX_ROWS:
+            raise ParseFailure("invalid_row_limit")
+        payload = base64.b64decode(envelope.get("payload", ""), validate=True)
+        proof = _proof()
+        base_url = envelope.get("base_url", "")
+        if not isinstance(base_url, str):
+            raise ParseFailure("invalid_base_url")
+        rows, text, page_text, links, skeleton_hash = _parse(payload, kind, max_rows, base_url)
+    except ParseFailure as exc:
+        error = {"code": exc.code}
+    except Exception as exc:  # noqa: BLE001 - all input parsing is confined to this pod
+        error = {"code": "parse_error", "exception": type(exc).__name__}
+    finally:
+        if not proof:
+            try:
+                proof = _proof()
+            except Exception as exc:  # noqa: BLE001 - emit an honest failed proof
+                error = {"code": "proof_error", "exception": type(exc).__name__}
+
+    document: dict[str, Any] = {
+        "ok": error is None,
+        "kind": kind,
+        "rows": rows if error is None else [],
+        "text": text if error is None else "",
+        "page_text": page_text if error is None else "",
+        "links": links if error is None else [],
+        "dom_skeleton_hash": skeleton_hash if error is None else None,
+        "truncated": False,
+        "error": error,
+        "proof": proof,
+        "usage": {
+            "peak_memory_mb": _peak_memory_mb(),
+            "wall_s": round(time.monotonic() - started, 3),
+            "steps": 1,
+        },
+    }
+    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    if len(encoded.encode("utf-8")) > MAX_OUTPUT_BYTES:
+        document.update(
+            {
+                "ok": False,
+                "rows": [],
+                "text": "",
+                "page_text": "",
+                "links": [],
+                "dom_skeleton_hash": None,
+                "error": {"code": "output_too_large"},
+            }
+        )
+        encoded = json.dumps(document, separators=(",", ":"), allow_nan=False)
+    output_path.write_text(encoded, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: runner.py INPUT OUTPUT")
+    run(Path(sys.argv[1]), Path(sys.argv[2]))
