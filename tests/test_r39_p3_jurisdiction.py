@@ -160,8 +160,9 @@ def test_same_country_government_redirect_keeps_bounded_r33b_review_path(tmp_pat
     preview_html = (
         "<html><body><h1>National tax authority records</h1>"
         "Search the public tax record registry."
-        '<form role="search"><label>Opening hours'
-        '<input type="search" name="opening_hours"></label>'
+        '<form role="search"><label>Library name'
+        '<input type="search" name="library_name"></label>'
+        '<label>Opening hours<input type="text" name="opening_hours"></label>'
         '<button type="submit">Search records</button></form></body></html>'
     )
 

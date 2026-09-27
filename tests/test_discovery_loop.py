@@ -709,7 +709,8 @@ def test_model_critic_requires_cited_access_path_and_screens_captured_text(tmp_p
                         "label": "",
                         "placeholder": "Search records",
                         "name": "query",
-                    }
+                    },
+                    {"type": "text", "label": "Library name", "name": "library_name"},
                 ],
                 "submit_labels": ["Find records"],
             }

@@ -867,9 +867,9 @@ def test_workflow_stops_at_source_review_for_an_unapproved_redirect(
     destination = "https://registry.unknown.test/records"
     directory = (
         "<html><body><h1>Public library directory</h1>"
-        "<table><thead><tr><th>Opening hours</th><th>Free internet</th></tr></thead>"
-        "<tbody><tr><td>Weekdays</td><td>Available</td></tr>"
-        "<tr><td>Weekends</td><td>Available</td></tr></tbody></table></body></html>"
+        "<table><thead><tr><th>Name</th><th>Opening hours</th><th>Free internet</th></tr></thead>"
+        "<tbody><tr><td>Central Branch</td><td>Weekdays</td><td>Available</td></tr>"
+        "<tr><td>East Branch</td><td>Weekends</td><td>Available</td></tr></tbody></table></body></html>"
     )
     generic = "<html><body><p>General information about this public website.</p></body></html>"
 

@@ -366,6 +366,113 @@ def _property_tokens(prop: Mapping, owner: Mapping) -> set[str]:
     )
 
 
+def _primary_identity_tokens(ontology: Mapping) -> set[str]:
+    """Use the inferred primary class's identifier/title, never case vocabulary."""
+    primary = next(
+        (item for item in ontology["classes"] if item["id"] == ontology["primary_class"]),
+        {},
+    )
+    properties = {item["id"]: item for item in ontology["properties"]}
+    labels = [
+        str(properties.get(primary.get(key), {}).get("label", ""))
+        for key in ("identifier_property", "title_property")
+    ]
+    class_words = _tokens(f"{primary.get('label', '')} {primary.get('label_plural', '')}")
+    plain = unicodedata.normalize("NFKD", " ".join(labels).casefold())
+    plain = "".join(char for char in plain if not unicodedata.combining(char))
+    return set(re.findall(r"[a-z0-9]{2,}", plain)) - class_words - _STOP
+
+
+def _granularity_tokens(value: str) -> set[str]:
+    plain = unicodedata.normalize("NFKD", value.casefold())
+    plain = "".join(char for char in plain if not unicodedata.combining(char))
+    return set(re.findall(r"[a-z0-9]{2,}", plain)) - _STOP
+
+
+def _record_granularity(
+    context: Mapping,
+    proposed: Mapping,
+    identity_tokens: set[str],
+    class_tokens: set[str],
+) -> tuple[str, str | None, str]:
+    """Ground a per-entity route in captured row/field or search/link evidence."""
+    kind = proposed.get("kind")
+    critic_granularity = proposed.get("record_granularity")
+    if critic_granularity in {"aggregate_statistics", "unknown"}:
+        return (
+            critic_granularity,
+            None,
+            str(proposed.get("granularity_reason") or "critic did not find entity-level records")[
+                :300
+            ],
+        )
+    document = context.get("document")
+    tables = context.get("table_headers", [])
+    headers = [
+        value for row in tables if isinstance(row, list) for value in row if isinstance(value, str)
+    ]
+    if isinstance(document, Mapping):
+        headers.extend(value for value in document.get("headers", []) if isinstance(value, str))
+    row_count = max(
+        int(context.get("listing_row_count") or 0),
+        int(document.get("row_count") or 0) if isinstance(document, Mapping) else 0,
+    )
+    parsed_rows_are_this_route = kind == "listing" or (
+        kind in {"dataset", "download"} and type(proposed.get("link_index")) is not int
+    )
+    if row_count and parsed_rows_are_this_route:
+        identity_header = next(
+            (header for header in headers if _granularity_tokens(header) & identity_tokens), None
+        )
+        if identity_header:
+            return "entity_records", identity_header[:500], "parsed rows name the primary entity"
+        if headers:
+            return (
+                "aggregate_statistics",
+                headers[0][:500],
+                "parsed rows have no primary-entity identifier or title field",
+            )
+    if kind == "search_form":
+        index = proposed.get("form_index")
+        forms = context.get("forms", [])
+        if type(index) is int and 0 <= index < len(forms) and isinstance(forms[index], Mapping):
+            form = forms[index]
+            values = [form.get("label"), *form.get("submit_labels", [])]
+            for field in form.get("fields", []):
+                if isinstance(field, Mapping):
+                    values.extend((field.get("label"), field.get("placeholder"), field.get("name")))
+            quote = next(
+                (
+                    value
+                    for value in values
+                    if isinstance(value, str)
+                    and _granularity_tokens(value) & (identity_tokens | class_tokens)
+                ),
+                None,
+            )
+            if quote:
+                return "entity_records", quote[:500], "search field names the primary entity"
+    # A linked route has no parsed rows yet. The critic may identify a record-level
+    # link only when it cites identity-bearing text from that exact captured link.
+    if kind in {"dataset", "download", "api"}:
+        index = proposed.get("link_index")
+        links = context.get("links", [])
+        quote = proposed.get("granularity_quote")
+        if (
+            type(index) is int
+            and 0 <= index < len(links)
+            and isinstance(links[index], Mapping)
+            and proposed.get("record_granularity") == "entity_records"
+            and isinstance(quote, str)
+            and _granularity_tokens(quote) & identity_tokens
+            and any(
+                quote in str(links[index].get(key) or "") for key in ("text", "title", "context")
+            )
+        ):
+            return "entity_records", quote[:500], "captured link names primary-entity records"
+    return "unknown", None, "capture does not establish one row or page per primary entity"
+
+
 def _supporting_quote(text: str, wanted: set[str]) -> str | None:
     """Return a verbatim sentence containing at least one target-property token."""
     for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", text):
@@ -678,13 +785,19 @@ class DiscoveryLoop:
                     "label": properties[gap]["label"],
                     "description": properties[gap].get("description", ""),
                     "class": classes.get(properties[gap].get("domain"), {}).get("label", ""),
+                    "requires_entity_records": properties[gap].get("domain")
+                    == ontology["primary_class"]
+                    and bool(properties[gap].get("dod")),
                 }
                 for gap in gaps
             ]
             prompt = (
                 "Write one short web search query per gap that would find the public "
                 "publisher of that property for the brief's jurisdiction, in the brief's "
-                "language. Do not include URLs. Do not repeat a tried query. "
+                "language. For primary-entity DoD properties, seek individual record lists, "
+                "registries, contracts or row-level datasets with the ontology identifier/title "
+                "field; exclude aggregate statistics, totals and dashboards. Do not include URLs. "
+                "Do not repeat a tried query. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Gaps: {json.dumps(listing, ensure_ascii=False)}. "
                 f"Tried queries: {sorted(tried)[:20]}."
@@ -720,13 +833,15 @@ class DiscoveryLoop:
             prop = properties[gap]
             owner = classes.get(prop.get("domain"), {})
             plural = owner.get("label_plural") or owner.get("label", "")
+            identity_label = properties.get(owner.get("identifier_property"), {}).get("label", "")
+            title_label = properties.get(owner.get("title_property"), {}).get("label", "")
             if planned_by_gap.get(gap):
                 queries.append(LeadQuery(gap, planned_by_gap[gap]))
                 continue
             variants = [
-                f"{prop['label']} {plural} {jurisdiction}",
-                f"{prop['label']} {subject}",
-                f"{prop['label']} {owner.get('label', '')} {jurisdiction} {subject}",
+                f"{prop['label']} {plural} {identity_label} {jurisdiction}",
+                f"{prop['label']} {title_label} {subject}",
+                f"{prop['label']} {plural} {identity_label} {jurisdiction} {subject}",
             ]
             for variant in variants[iteration - 1 :] + variants[: iteration - 1]:
                 text = " ".join(variant.split())
@@ -1552,6 +1667,9 @@ class DiscoveryLoop:
     def _code_verdicts(self, draft: dict, ontology: Mapping) -> dict[str, dict[str, str | None]]:
         properties = {item["id"]: item for item in ontology["properties"]}
         classes = {item["id"]: item for item in ontology["classes"]}
+        identity_tokens = _primary_identity_tokens(ontology)
+        primary = classes.get(ontology["primary_class"], {})
+        class_tokens = _tokens(f"{primary.get('label', '')} {primary.get('label_plural', '')}")
         verdicts: dict[str, dict[str, str | None]] = {}
         for url, candidate in draft["candidates"].items():
             if candidate["status"] != "captured":
@@ -1653,6 +1771,10 @@ class DiscoveryLoop:
                     proposed,
                     authority_verdict=authority_verdict,
                     critic_reason="Deterministic parser found a property-matching access affordance.",
+                    primary_target=prop.get("domain") == ontology["primary_class"]
+                    and bool(prop.get("dod")),
+                    identity_tokens=identity_tokens,
+                    class_tokens=class_tokens,
                 )
                 verdicts[url][property_id] = path_error
                 if path is not None:
@@ -1670,6 +1792,9 @@ class DiscoveryLoop:
         critic_reason: str,
         property_quote: str | None = None,
         wanted: set[str] | None = None,
+        primary_target: bool = False,
+        identity_tokens: set[str] | None = None,
+        class_tokens: set[str] | None = None,
     ) -> tuple[dict | None, str | None]:
         """Bind one critic claim to a concrete affordance from the parse pod output."""
         kind = proposed.get("kind")
@@ -1822,6 +1947,12 @@ class DiscoveryLoop:
             if wanted and not (_tokens(property_quote) & wanted):
                 return None, "property quote does not name the target ontology property"
 
+        granularity, granularity_quote, granularity_reason = _record_granularity(
+            context, proposed, identity_tokens or set(), class_tokens or set()
+        )
+        if primary_target and granularity != "entity_records":
+            return None, f"primary-entity granularity unproven: {granularity_reason}"
+
         path = {
             "kind": kind,
             "url": path_url,
@@ -1829,7 +1960,11 @@ class DiscoveryLoop:
             "access_path_quote": quote,
             "authority_verdict": authority_verdict,
             "critic_reason": critic_reason,
+            "record_granularity": granularity,
+            "granularity_reason": granularity_reason,
         }
+        if granularity_quote:
+            path["granularity_quote"] = granularity_quote
         if property_quote:
             path["property_quote"] = property_quote
         if kind == "search_form":
@@ -1871,6 +2006,11 @@ class DiscoveryLoop:
                         "kind": {"enum": list(_ACCESS_PATH_KINDS)},
                         "access_path_quote": {"type": "string", "minLength": 1, "maxLength": 500},
                         "property_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "record_granularity": {
+                            "enum": ["entity_records", "aggregate_statistics", "unknown"]
+                        },
+                        "granularity_quote": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "granularity_reason": {"type": "string", "minLength": 1, "maxLength": 300},
                         "form_index": {"type": "integer", "minimum": 0, "maximum": 39},
                         "link_index": {"type": "integer", "minimum": 0, "maximum": 299},
                     },
@@ -1936,6 +2076,15 @@ class DiscoveryLoop:
                     }
                     for property_id in candidate["property_ids"]
                 },
+                "primary_class": ontology["primary_class"],
+                "primary_identity_properties": {
+                    key: properties.get(classes[ontology["primary_class"]].get(key), {}).get(
+                        "label", ""
+                    )
+                    for key in ("identifier_property", "title_property")
+                }
+                if ontology["primary_class"] in classes
+                else {},
             }
             for index, (url, candidate) in enumerate(pending)
         ]
@@ -1943,6 +2092,13 @@ class DiscoveryLoop:
             "For every captured source/property pair, decide whether the source can provide the "
             "ontology property through a concrete access path. Capability is about a retrieval "
             "route, not whether this landing page displays a value for every entity. A captured "
+            "For a primary-class DoD property, determine record granularity: one row or page per "
+            "primary entity, aggregate statistics, or unknown. A table of totals by region or "
+            "category is not an entity-level provider even when its header mentions the target "
+            "property. Cite the identity-bearing table header, search field, or linked record-list "
+            "text as `granularity_quote`; never infer per-entity rows from a generic Download link. "
+            "Set `record_granularity` and `granularity_reason` on the access path. "
+            "A captured "
             "search form with usable fields may provide record-level properties even when it does "
             "not name every field. A listing needs captured listing structure; a dataset/download "
             "needs a captured link or parsed document with rows, text, or field metadata; an API "
@@ -2030,6 +2186,12 @@ class DiscoveryLoop:
                     critic_reason=item["reason"],
                     property_quote=proposed.get("property_quote"),
                     wanted=wanted,
+                    primary_target=prop.get("domain") == ontology["primary_class"]
+                    and bool(prop.get("dod")),
+                    identity_tokens=_primary_identity_tokens(ontology),
+                    class_tokens=_tokens(
+                        f"{owner.get('label', '')} {owner.get('label_plural', '')}"
+                    ),
                 )
                 if failure:
                     verdicts[url][property_id] = failure
@@ -2048,6 +2210,7 @@ class DiscoveryLoop:
                     if isinstance(proposed, Mapping)
                     else None,
                     "authority_verdict": item["authority_verdict"],
+                    "record_granularity": path.get("record_granularity") if path else None,
                     "reason": failure or item["reason"],
                 }
             )
@@ -2098,7 +2261,7 @@ class DiscoveryLoop:
                     sorted(targets),
                     [provider.name for provider in self.providers],
                     decision.backend,
-                    "p3-discovery-loop-v2",
+                    "p3-discovery-loop-v3-entity-granularity",
                 ],
                 sort_keys=True,
                 ensure_ascii=False,
@@ -2107,6 +2270,20 @@ class DiscoveryLoop:
         previous = load_json(objectives_path) if objectives_path.exists() else None
         if previous and previous.get("generated_by", {}).get("backend") != decision.backend:
             previous = None
+        if previous:
+            current_objectives = [
+                item
+                for item in previous.get("objectives", [])
+                if all(
+                    properties.get(property_id, {}).get("domain") != ontology["primary_class"]
+                    or not properties.get(property_id, {}).get("dod")
+                    or path.get("record_granularity") == "entity_records"
+                    for property_id, path in item.get("access_path", {}).items()
+                )
+            ]
+            if len(current_objectives) != len(previous.get("objectives", [])):
+                # A prior capability claim cannot survive the new entity-granularity rule.
+                previous = None
         ledger = load_json(ledger_path) if ledger_path.exists() else {}
         backend = self.provenance.get("backend", decision.backend)
         if previous and ledger.get("request_fingerprint") == request_key:
@@ -2146,6 +2323,14 @@ class DiscoveryLoop:
                     (
                         isinstance(candidate.get("access_path"), Mapping)
                         and bool(candidate["access_path"])
+                        and all(
+                            properties.get(property_id, {}).get("domain")
+                            != ontology["primary_class"]
+                            or not properties.get(property_id, {}).get("dod")
+                            or path.get("record_granularity") == "entity_records"
+                            for property_id, path in candidate["access_path"].items()
+                            if isinstance(path, Mapping)
+                        )
                     )
                     or candidate.get("status") == "capture_failed"
                 )
