@@ -18,9 +18,10 @@ implementation. `entity_lookup` prefers an exact normalized tax ID, then a norma
 confidence, content-addressed evidence, timestamp and a caller-provided SHACL/schema validator
 before calling the silver writer. It is the only observation write path.
 
-`file_parse` returns `ParsedFile(format, rows, text)`. CSV and XLSX rows are `ParsedRow(sheet,
-row_number, values)` with original 1-based row numbers. Every nonempty XLSX row is kept, so header
-rows can be found even when they are not first. PDF text is in `.text`.
+`file_parse` returns `ParsedFile(format, rows, text, truncated)`. CSV, XLSX, and JSON rows are
+`ParsedRow(sheet, row_number, values)`; JSON object arrays use generic dotted property paths, and
+`truncated` reports when a row or page cap omitted source content. XLSX row numbers remain 1-based.
+PDF text is in `.text`.
 
 `code_write`, `code_test` and `code_promote` require an explicit `SandboxWorkspace`. `code_test`
 hands only captures under `replay_root` to an injected `SandboxRunner`; it never executes

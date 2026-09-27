@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -32,6 +33,7 @@ class Gap:
     target: float
     operator: str
     properties: tuple[str, ...]
+    iteration: int = 1
 
     def public_summary(self) -> dict:
         return {
@@ -40,6 +42,7 @@ class Gap:
             "target": self.target,
             "operator": self.operator,
             "properties": list(self.properties),
+            "iteration": self.iteration,
         }
 
 
@@ -54,7 +57,13 @@ class OuterDecision:
     usd: float
 
 
-def gaps_from_metrics(metrics: dict, dod_queries: dict, ontology: dict) -> tuple[Gap, ...]:
+def gaps_from_metrics(
+    metrics: dict,
+    dod_queries: dict,
+    ontology: dict,
+    *,
+    prior_iterations: dict[str, int] | None = None,
+) -> tuple[Gap, ...]:
     """Use approved query operators; recorded previews can assess without satisfying DoD."""
     results = {item["criterion_id"]: item for item in metrics["dod"]}
     queries = dod_queries["queries"]
@@ -76,6 +85,7 @@ def gaps_from_metrics(metrics: dict, dod_queries: dict, ontology: dict) -> tuple
                 query["target"],
                 query["operator"],
                 tuple(dict.fromkeys(properties)),
+                (prior_iterations or {}).get(query["criterion_id"], 0) + 1,
             )
         )
     return tuple(gaps)
@@ -105,6 +115,24 @@ def prior_reopens(trace: list[dict]) -> int:
     )
 
 
+def prior_gap_iterations(trace: list[dict]) -> dict[str, int]:
+    """Count prior reopened passes separately for each stable DoD criterion ID."""
+    counts: dict[str, int] = defaultdict(int)
+    for step in trace:
+        if not (
+            step.get("event") == "loop"
+            and step.get("loop", {}).get("phase") == "outer"
+            and step.get("loop", {}).get("role") == "decide"
+            and step.get("executed", {}).get("reopen") in {2, 3, 4}
+        ):
+            continue
+        for gap in step.get("observed", {}).get("gaps", []):
+            criterion_id = gap.get("criterion_id")
+            if isinstance(criterion_id, str) and criterion_id:
+                counts[criterion_id] += 1
+    return dict(counts)
+
+
 def _zero_usage(provenance: dict) -> dict:
     return {
         "model": provenance["model"],
@@ -128,7 +156,9 @@ def decide_outer_gap(
 ) -> OuterDecision:
     """Let a typed model choose only among code-authorized phase transitions."""
     iteration = prior_reopens(trace) + 1
-    gaps = gaps_from_metrics(metrics, dod_queries, ontology)
+    gaps = gaps_from_metrics(
+        metrics, dod_queries, ontology, prior_iterations=prior_gap_iterations(trace)
+    )
     spent = spent_usd(trace)
     usage = _zero_usage(provenance)
     if not gaps:

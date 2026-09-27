@@ -7,7 +7,12 @@ import uuid
 from collections import deque
 from copy import deepcopy
 
-from ontofill.outer_gap import decide_outer_gap, gaps_from_metrics, outer_trace_step
+from ontofill.outer_gap import (
+    decide_outer_gap,
+    gaps_from_metrics,
+    outer_trace_step,
+    prior_gap_iterations,
+)
 from ontofill.workflow import _scratch_case, run_case
 from tests.genericity.fixtures.libraries import library_decisions
 from tests.genericity.test_library_workflow import BRIEF, LibrarySearch, _capture
@@ -144,6 +149,50 @@ def test_gap_fields_derive_only_from_approved_ontology_queries() -> None:
     gap = gaps_from_metrics(metrics, queries, ontology)[0]
     assert gap.properties == ("opening_hours",)
     assert gap.public_summary()["criterion_id"] == "c"
+
+
+def test_gap_iterations_are_counted_per_criterion_id() -> None:
+    trace = [
+        {
+            "event": "loop",
+            "loop": {"phase": "outer", "role": "decide"},
+            "executed": {"reopen": 4},
+            "observed": {"gaps": [{"criterion_id": "gap_a", "properties": ["name"]}]},
+        },
+        {
+            "event": "loop",
+            "loop": {"phase": "outer", "role": "decide"},
+            "executed": {"reopen": 3},
+            "observed": {"gaps": [{"criterion_id": "gap_a", "properties": ["name"]}]},
+        },
+    ]
+    assert prior_gap_iterations(trace) == {"gap_a": 2}
+    metrics = {
+        "dod": [
+            {"criterion_id": "gap_a", "actual": 0, "target": 1},
+            {"criterion_id": "gap_b", "actual": 0, "target": 1},
+        ]
+    }
+    queries = {
+        "queries": [
+            {"criterion_id": "gap_a", "properties": ["name"], "operator": ">=", "target": 1},
+            {"criterion_id": "gap_b", "properties": ["category"], "operator": ">=", "target": 1},
+        ]
+    }
+    ontology = {
+        "properties": [
+            {"id": "name", "dod": True},
+            {"id": "category", "dod": True},
+        ]
+    }
+    gaps = gaps_from_metrics(
+        metrics, queries, ontology, prior_iterations=prior_gap_iterations(trace)
+    )
+    assert {gap.criterion_id: gap.iteration for gap in gaps} == {"gap_a": 3, "gap_b": 1}
+    assert {gap.criterion_id: gap.properties for gap in gaps} == {
+        "gap_a": ("name",),
+        "gap_b": ("category",),
+    }
 
 
 def test_outer_budget_blocks_decision_and_counts_retry_usage() -> None:

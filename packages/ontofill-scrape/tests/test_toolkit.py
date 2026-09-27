@@ -101,6 +101,19 @@ def test_file_fetch_allowlist_and_csv_rows() -> None:
     assert len(client.urls) == 2
 
 
+def test_json_arrays_flatten_to_generic_rows_and_mark_truncation() -> None:
+    payload = b'{"meta":{"total":2},"records":[{"id":"A","detail":{"name":"First"}},{"id":"B","detail":{"name":"Second"}}]}'
+    parsed = file_parse(payload, format="json")
+    assert parsed.format == "json"
+    assert parsed.truncated is False
+    assert parsed.rows[0].values == ("meta.total", "records.id", "records.detail.name")
+    assert parsed.rows[1].values == (2, "A", "First")
+    assert parsed.rows[2].values == (2, "B", "Second")
+    limited = file_parse(payload, format="json", max_rows=1)
+    assert limited.truncated is True
+    assert len(limited.rows) == 2
+
+
 def test_xlsx_preserves_sheet_and_original_row_positions() -> None:
     workbook = Workbook()
     sheet = workbook.active

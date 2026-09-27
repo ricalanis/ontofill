@@ -470,6 +470,19 @@ def test_synthetic_example_validates(name: str) -> None:
     validate(name, EXAMPLES[name])
 
 
+def test_tdd_accepts_announced_membership_shape_only_when_complete() -> None:
+    artifact = copy.deepcopy(EXAMPLES["tdd"])
+    artifact["membership"] = {
+        "property_id": "is_listed",
+        "identifier_property_id": "record_id",
+        "complete": True,
+    }
+    validate("tdd", artifact)
+    artifact["membership"]["complete"] = False
+    with pytest.raises(ValidationError):
+        validate("tdd", artifact)
+
+
 def test_gold_value_without_bronze_evidence_is_rejected() -> None:
     record = supplier()
     record["fields"]["legal_name"]["evidence"] = []

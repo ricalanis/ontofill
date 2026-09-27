@@ -79,6 +79,7 @@ class ParsedFile:
     format: str
     rows: tuple[ParsedRow, ...] = ()
     text: str = ""
+    truncated: bool = False
 
 
 @dataclass(frozen=True)

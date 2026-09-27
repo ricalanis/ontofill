@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Protocol
@@ -25,6 +26,47 @@ class ReadOnlyFetchClient(Protocol):
     """Implemented by a sandbox browser/proxy; this package makes no network call."""
 
     def get(self, url: str) -> FetchResponse: ...
+
+
+def _flatten_json_records(value: object, *, max_rows: int) -> tuple[list[dict[str, object]], bool]:
+    """Flatten generic arrays of objects into rows with dotted property paths."""
+    truncated = False
+
+    def expand(node: object, prefix: str = "") -> list[dict[str, object]]:
+        nonlocal truncated
+        if isinstance(node, Mapping):
+            records: list[dict[str, object]] = [{}]
+            for key, child in node.items():
+                child_prefix = f"{prefix}.{key}" if prefix else str(key)
+                branches = expand(child, child_prefix)
+                merged: list[dict[str, object]] = []
+                for left in records:
+                    for right in branches:
+                        merged.append({**left, **right})
+                        if len(merged) > max_rows:
+                            truncated = True
+                            break
+                    if len(merged) > max_rows:
+                        break
+                records = merged[:max_rows]
+            return records
+        if isinstance(node, list):
+            if node and all(isinstance(item, Mapping) for item in node):
+                records = []
+                for item in node:
+                    records.extend(expand(item, prefix))
+                    if len(records) > max_rows:
+                        truncated = True
+                        return records[:max_rows]
+                return records
+            return [{prefix: json.dumps(node, ensure_ascii=False, separators=(",", ":"))}]
+        return [{prefix: node}] if prefix else [{}]
+
+    rows = expand(value)
+    if len(rows) > max_rows:
+        truncated = True
+        rows = rows[:max_rows]
+    return rows, truncated
 
 
 def _allowed(url: str, allowed_domains: set[str]) -> None:
@@ -97,31 +139,55 @@ def file_parse(
             dialect = csv.Sniffer().sniff(text[:4096])
         except csv.Error:
             dialect = csv.excel
+        all_rows = list(csv.reader(io.StringIO(text), dialect))
         rows = tuple(
             ParsedRow(None, index, tuple(row))
-            for index, row in enumerate(csv.reader(io.StringIO(text), dialect), start=1)
-            if index <= max_rows and any(value != "" for value in row)
+            for index, row in enumerate(all_rows[:max_rows], start=1)
+            if any(value != "" for value in row)
         )
-        return ParsedFile("csv", rows)
+        return ParsedFile("csv", rows, truncated=len(all_rows) > max_rows)
     if kind in {"xlsx", "xlsm"}:
         workbook = load_workbook(
             io.BytesIO(content), read_only=True, data_only=True, keep_links=False
         )
         rows: list[ParsedRow] = []
+        truncated = False
+        total_rows = 0
         try:
             for sheet in workbook.worksheets:
                 for index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
-                    if index > max_rows:
+                    total_rows += 1
+                    if total_rows > max_rows:
+                        truncated = True
                         break
                     if any(value is not None and value != "" for value in row):
                         rows.append(ParsedRow(sheet.title, index, tuple(row)))
+                if truncated:
+                    break
         finally:
             workbook.close()
-        return ParsedFile("xlsx", tuple(rows))
+        return ParsedFile("xlsx", tuple(rows), truncated=truncated)
+    if kind == "json":
+        try:
+            document = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ToolFailure(FailureKind.VALIDATION_FAILED, "invalid JSON source") from exc
+        records, truncated = _flatten_json_records(document, max_rows=max_rows)
+        if not records:
+            return ParsedFile("json", ())
+        headers = tuple(dict.fromkeys(key for row in records for key in row))
+        rows = tuple(
+            [ParsedRow(None, 1, headers)]
+            + [
+                ParsedRow(None, index, tuple(row.get(header) for header in headers))
+                for index, row in enumerate(records, start=2)
+            ]
+        )
+        return ParsedFile("json", rows, truncated=truncated)
     if kind == "pdf":
         reader = PdfReader(io.BytesIO(content))
         text = "\n".join((page.extract_text() or "") for page in reader.pages[:max_pages])
-        return ParsedFile("pdf", text=text)
+        return ParsedFile("pdf", text=text, truncated=len(reader.pages) > max_pages)
     raise ToolFailure(
         FailureKind.VALIDATION_FAILED, f"unsupported file format: {kind or 'unknown'}"
     )
