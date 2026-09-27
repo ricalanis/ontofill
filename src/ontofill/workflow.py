@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import shutil
@@ -72,6 +73,7 @@ from ontofill.sandbox import (
 )
 
 NEEDS_HUMAN_EXIT = 4
+_LOGGER = logging.getLogger(__name__)
 
 
 class _SandboxCkanJsonFetcher:
@@ -807,12 +809,23 @@ def _remaining_budget_usd(decision: object, total_budget: float | None) -> float
     if total_budget is None:
         return None
     spent = 0.0
-    for call in getattr(decision, "call_log", []):
+    for index, call in enumerate(getattr(decision, "call_log", []), start=1):
         usage = call.get("usage") if isinstance(call, Mapping) else None
         cost = usage.get("est_usd") if isinstance(usage, Mapping) else None
-        if not isinstance(cost, (int, float)) or not math.isfinite(float(cost)) or cost < 0:
-            return 0.0
-        spent += float(cost)
+        try:
+            priced_cost = (
+                float(cost)
+                if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                else None
+            )
+        except (OverflowError, ValueError):
+            priced_cost = None
+        if priced_cost is None or not math.isfinite(priced_cost) or priced_cost < 0:
+            # Call metadata may contain prompts or other sensitive data; identify only its
+            # ordinal so the accounting diagnostic cannot leak request contents.
+            _LOGGER.warning("budget.unpriced_call call=%d", index)
+            continue
+        spent += priced_cost
     return max(0.0, total_budget - spent)
 
 
@@ -1067,6 +1080,7 @@ def run_case(
             if from_phase <= 3:
                 feed.update_status(state="running", phase=3)
             if search_client is None:
+                remaining_budget_usd = _remaining_budget_usd(decision, budget_usd)
                 providers = []
                 if catalog := os.getenv("ONTOFILL_CATALOG_URL"):
                     providers.append(
@@ -1077,7 +1091,7 @@ def run_case(
                 search_client = DiscoveryLoop(
                     default_lead_providers(
                         decision,
-                        remaining_budget_usd=_remaining_budget_usd(decision, budget_usd),
+                        remaining_budget_usd=remaining_budget_usd,
                         search_client=lead_search,
                         fetch_json=_SandboxCkanJsonFetcher(
                             lake=lake,
@@ -1090,10 +1104,8 @@ def run_case(
                     run_id=run_id,
                     provenance=provenance,
                     budget=LoopBudget(
-                        max_iterations=p3_iteration_limit(
-                            remaining_usd=_remaining_budget_usd(decision, budget_usd)
-                        ),
-                        max_usd=_remaining_budget_usd(decision, budget_usd),
+                        max_iterations=p3_iteration_limit(remaining_usd=remaining_budget_usd),
+                        max_usd=remaining_budget_usd,
                         wall_seconds=900,
                     ),
                     spider_capture=(capture or capture_url) if not mock else None,
