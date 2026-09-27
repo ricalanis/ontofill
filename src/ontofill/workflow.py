@@ -74,6 +74,17 @@ from ontofill.sandbox import (
 
 NEEDS_HUMAN_EXIT = 4
 _LOGGER = logging.getLogger(__name__)
+_P3_WALL_SECONDS_PER_ITERATION = 900
+_P3_MAX_WALL_SECONDS = 3600
+
+
+def _p3_loop_budget(remaining_usd: float | None) -> LoopBudget:
+    iterations = p3_iteration_limit(remaining_usd=remaining_usd)
+    wall_seconds = min(
+        _P3_MAX_WALL_SECONDS,
+        max(_P3_WALL_SECONDS_PER_ITERATION, iterations * _P3_WALL_SECONDS_PER_ITERATION),
+    )
+    return LoopBudget(max_iterations=iterations, max_usd=remaining_usd, wall_seconds=wall_seconds)
 
 
 class _SandboxCkanJsonFetcher:
@@ -1103,11 +1114,7 @@ def run_case(
                     lake=lake,
                     run_id=run_id,
                     provenance=provenance,
-                    budget=LoopBudget(
-                        max_iterations=p3_iteration_limit(remaining_usd=remaining_budget_usd),
-                        max_usd=remaining_budget_usd,
-                        wall_seconds=900,
-                    ),
+                    budget=_p3_loop_budget(remaining_budget_usd),
                     spider_capture=(capture or capture_url) if not mock else None,
                 )
             trace_before = len(getattr(search_client, "trace", []))
@@ -1416,7 +1423,7 @@ def run_case(
                     if _gaps_for_objective([gap.public_summary() for gap in outer.gaps], objective):
                         _reopen_local_scope(case_dir, objective, outer.iteration)
                 reopen_phase = 4
-            outer_paused = outer.stop_reason in {"budget", "human"}
+            outer_paused = outer.stop_reason in {"budget", "wall_clock", "human"}
             if reopen_phase is not None:
                 feed.update_status(
                     state="running",

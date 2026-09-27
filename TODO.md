@@ -1,3 +1,23 @@
+# R51b P3 wall-clock budget accounting
+
+- [x] Distinguish wall-clock exhaustion from USD/unpriced budget stops in `PhaseLoop` and trace/metrics schemas.
+- [x] Derive P3 wall seconds from the existing P3 iteration limit, with a 3600-second ceiling and unchanged USD budget.
+- [x] Preserve P3's needs-human status and expose `wall_clock` in its discovery summary.
+- [x] Run the managed focused regression, lint, format, and diff check; commit the isolated fix without pushing or deploying.
+
+FILES: `src/ontofill/workflow.py`, `src/ontofill/phase_loop.py`, `schemas/trace-step.schema.json`, `schemas/metrics.schema.json`, `tests/test_r51_budget.py`, `tests/test_phase_loop.py`, `tests/test_r28_no_sources.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Fix P3 stopping at its fixed wall deadline while USD budget remains, and make the stop reason auditable.
+DONE: the managed focused gate passes and a branch commit SHA is reported to root.
+FORMAT: Ruff check/format for edited Python; JSON parse for edited schemas; `git diff --check`.
+
+## Work steps
+
+1. [x] Add failing regressions for iteration-scaled P3 wall seconds, distinct wall-clock stop, and P3 no-source pause reporting.
+2. [x] Implement the P3 allowance and distinct stop reason while preserving USD accounting.
+3. [x] Run the managed green focused gate and commit.
+
+CHECK: `agent-progress run --task r51b-budget --check r51b-wall-clock-p3-successor` passed: 12 tests, Ruff lint/format, JSON parsing for both schemas, and diff check. The initial same-check run passed pytest and found one import-order issue; the final managed attempt passed cleanly.
+
 # R25 current integration
 
 FILES: `sandbox/code-repair/runner.py`, `src/ontofill/phases/p5_execute/phase.py`, `src/ontofill/repair/`, `src/ontofill/sandbox/jobs.py`, focused tests.

@@ -1,3 +1,11 @@
+# Current goal: R51b P3 wall-clock budget accounting
+
+Scale the P3 wall-clock allowance with its budgeted iteration count, capped at 3600 seconds, while preserving the independent USD cap. Report wall-clock exhaustion as `wall_clock` rather than `budget`, including in trace and metrics schemas; preserve P3's needs-human pause on exhaustion.
+
+DONE: `agent-progress run` with the `r51b-wall-clock-p3-successor` focused gate passed 12 tests, Ruff lint/format, both schema JSON parses, and `git diff --check`. Coverage confirms four iterations receive 3600 seconds, USD exhaustion stays distinct, and a wall-clock P3 stop remains a `needs_human` pause.
+
+Constraints: synthetic tests only; no live case, approvals, credentials, deployment, or PA-owned code.
+
 # Current goal: R25 repair durability and six-checkpoint jobs
 
 Merge the reviewed repair changes into current engine main without weakening sandbox limits or page screening. Ensure patch prompts carry expected row volume, repair/escalation steps survive fallback errors, and repair pods write six-checkpoint jobs. DONE: full pytest, Ruff lint/format, schema/diff checks and a pre-push scan. VM deploy only when no engine process is active.

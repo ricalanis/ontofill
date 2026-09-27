@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Generic, Literal, TypeVar
 
 T = TypeVar("T")
-StopReason = Literal["checks_passed", "budget", "human", "max_iterations"]
+StopReason = Literal["checks_passed", "budget", "wall_clock", "human", "max_iterations"]
 Role = Literal["gather", "propose", "critique", "revise", "check", "decide"]
 
 
@@ -137,13 +137,15 @@ class PhaseLoop(Generic[T]):
         self._started: float | None = None
         self._used = False
 
-    def _budget_reached(self) -> bool:
+    def _stop_reason(self) -> StopReason | None:
         assert self._started is not None
-        return (
-            self.monotonic() - self._started >= self.budget.wall_seconds
-            or self._unknown_cost
-            or (self.budget.max_usd is not None and self.usd >= self.budget.max_usd)
-        )
+        if self.monotonic() - self._started >= self.budget.wall_seconds:
+            return "wall_clock"
+        if self._unknown_cost or (
+            self.budget.max_usd is not None and self.usd >= self.budget.max_usd
+        ):
+            return "budget"
+        return None
 
     def _stage(
         self,
@@ -297,19 +299,19 @@ class PhaseLoop(Generic[T]):
         artifact: T | None = None
         objections: tuple[str, ...] = ()
         prior_rejections: list[tuple[T, str]] = []
-        if self._budget_reached():
-            return self._finish(None, 0, "budget", ())
+        if stop_reason := self._stop_reason():
+            return self._finish(None, 0, stop_reason, ())
         for iteration in range(1, self.budget.max_iterations + 1):
             context = self._stage(
                 "gather", iteration, lambda n=iteration, previous=artifact: gather(n, previous)
             )
-            if self._budget_reached():
-                return self._finish(artifact, iteration, "budget", objections)
+            if stop_reason := self._stop_reason():
+                return self._finish(artifact, iteration, stop_reason, objections)
             artifact = self._stage(
                 "propose", iteration, lambda value=context, n=iteration: propose(value, n)
             )
-            if self._budget_reached():
-                return self._finish(artifact, iteration, "budget", objections)
+            if stop_reason := self._stop_reason():
+                return self._finish(artifact, iteration, stop_reason, objections)
 
             def reviewed(
                 draft: T = artifact, gathered: object = context, number: int = iteration
@@ -335,8 +337,8 @@ class PhaseLoop(Generic[T]):
                 objections=lambda result: result.objections,
                 draft=artifact,
             )
-            if self._budget_reached():
-                return self._finish(artifact, iteration, "budget", critic.objections)
+            if stop_reason := self._stop_reason():
+                return self._finish(artifact, iteration, stop_reason, critic.objections)
             if not critic.passed:
                 prior_rejections.extend(
                     (deepcopy(artifact), objection)
@@ -350,8 +352,8 @@ class PhaseLoop(Generic[T]):
                     draft, review, value, n
                 ),
             )
-            if self._budget_reached():
-                return self._finish(artifact, iteration, "budget", critic.objections)
+            if stop_reason := self._stop_reason():
+                return self._finish(artifact, iteration, stop_reason, critic.objections)
             checked = self._stage(
                 "check",
                 iteration,
@@ -361,13 +363,13 @@ class PhaseLoop(Generic[T]):
                 draft=artifact,
             )
             objections = (*critic.objections, *checked.objections)
-            if self._budget_reached():
-                return self._finish(artifact, iteration, "budget", objections)
+            if stop_reason := self._stop_reason():
+                return self._finish(artifact, iteration, stop_reason, objections)
             if critic.passed and checked.passed:
                 if gate is not None:
                     allowed = gate(artifact, iteration)
-                    if self._budget_reached():
-                        return self._finish(artifact, iteration, "budget", objections)
+                    if stop_reason := self._stop_reason():
+                        return self._finish(artifact, iteration, stop_reason, objections)
                     if allowed is not True:
                         return self._finish(artifact, iteration, "human", objections)
                 return self._finish(artifact, iteration, "checks_passed", ())

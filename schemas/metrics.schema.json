@@ -68,7 +68,7 @@
         "properties": {
           "phase": {"oneOf": [{"type": "integer", "minimum": 1, "maximum": 5}, {"const": "outer"}]},
           "iterations": {"type": "integer", "minimum": 0},
-          "stop_reason": {"enum": ["checks_passed", "budget", "human", "max_iterations"]},
+          "stop_reason": {"enum": ["checks_passed", "budget", "wall_clock", "human", "max_iterations"]},
           "usd": {"type": "number", "minimum": 0}
         }
       }

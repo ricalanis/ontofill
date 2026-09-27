@@ -288,7 +288,7 @@ def test_wall_budget_and_unpriced_live_call_fail_closed() -> None:
         revise=lambda *_args: {},
         check=lambda *_args: True,
     )
-    assert wall.stop_reason == "budget"
+    assert wall.stop_reason == "wall_clock"
 
     call_log: list[dict] = []
     unpriced = PhaseLoop[dict](
@@ -343,6 +343,10 @@ def test_loop_schema_and_metrics_reject_invalid_rows() -> None:
     Draft202012Validator(trace_schema["$defs"]["loop"]).validate(trace[-1]["loop"])
     metrics = {"loops": [result.metric(1)]}
     Draft202012Validator(metrics_schema["properties"]["loops"]).validate(metrics["loops"])
+    wall_metrics = {"phase": 3, "iterations": 4, "stop_reason": "wall_clock", "usd": 1.73}
+    Draft202012Validator(metrics_schema["properties"]["loops"]).validate([wall_metrics])
+    wall_trace = {**trace[-1]["loop"], "stop_reason": "wall_clock"}
+    Draft202012Validator(trace_schema["$defs"]["loop"]).validate(wall_trace)
     invalid = {**trace[-1], "loop": {**trace[-1]["loop"], "role": "invented"}}
     with pytest.raises(ValidationError):
         Draft202012Validator(trace_schema["$defs"]["loop"]).validate(invalid["loop"])

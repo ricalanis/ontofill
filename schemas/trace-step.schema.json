@@ -54,7 +54,7 @@
         "draft_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "verdict": {"type": "string", "minLength": 1},
         "objections": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "stop_reason": {"enum": ["checks_passed", "budget", "human", "max_iterations"]}
+        "stop_reason": {"enum": ["checks_passed", "budget", "wall_clock", "human", "max_iterations"]}
       }
     },
     "log_item": {

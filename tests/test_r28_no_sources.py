@@ -6,9 +6,12 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from ontofill.inference import generated_by
 from ontofill.lake import FileLake
-from ontofill.phase_loop import LoopBudget
+from ontofill.phase_loop import LoopBudget, PhaseLoop
+from ontofill.phases.p3_fanout import discovery_loop as discovery_loop_module
 from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop
 from ontofill.phases.p3_fanout.leads import Lead, LeadContext, LeadProvider
 from ontofill.sandbox import CaptureBlocked
@@ -25,8 +28,18 @@ class EmptyRecordedProvider(LeadProvider):
         return []
 
 
+@pytest.mark.parametrize(
+    ("wall_clock", "expected_stop_reason", "expected_iterations"),
+    [(False, "max_iterations", 2), (True, "wall_clock", 1)],
+    ids=["iteration-limit", "wall-clock"],
+)
 def test_recorded_p3_empty_search_tries_policy_roots_then_pauses_with_trace(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    wall_clock: bool,
+    expected_stop_reason: str,
+    expected_iterations: int,
 ) -> None:
     original = tmp_path / "case"
     original.mkdir()
@@ -45,6 +58,18 @@ def test_recorded_p3_empty_search_tries_policy_roots_then_pauses_with_trace(
     monkeypatch.setattr("ontofill.workflow._scratch_case", scratch_case)
     decision = library_decisions()
 
+    if wall_clock:
+        clock_values = iter([0, 0, 0, 10])
+
+        class WallClockPhaseLoopFactory:
+            def __class_getitem__(cls, _item):
+                return cls
+
+            def __new__(cls, **kwargs):
+                return PhaseLoop(**kwargs, monotonic=lambda: next(clock_values))
+
+        monkeypatch.setattr(discovery_loop_module, "PhaseLoop", WallClockPhaseLoopFactory)
+
     captured_roots: list[str] = []
 
     def blocked_capture(url: str, **_kwargs) -> dict:
@@ -57,7 +82,7 @@ def test_recorded_p3_empty_search_tries_policy_roots_then_pauses_with_trace(
         lake=lake,
         run_id=run_id,
         provenance=generated_by(decision),
-        budget=LoopBudget(max_iterations=2, wall_seconds=60),
+        budget=LoopBudget(max_iterations=2, wall_seconds=5 if wall_clock else 60),
     )
 
     result = run_case(
@@ -81,7 +106,7 @@ def test_recorded_p3_empty_search_tries_policy_roots_then_pauses_with_trace(
     assert all(url.startswith("https://") and url.endswith("/") for url in captured_roots)
     assert "queries:" in status["reason"]
     assert "objections:" in status["reason"]
-    assert "iterations: 2" in status["reason"]
+    assert f"iterations: {expected_iterations}" in status["reason"]
     assert len(status["reason"]) <= 750
     trace = [
         json.loads(line)
@@ -89,8 +114,9 @@ def test_recorded_p3_empty_search_tries_policy_roots_then_pauses_with_trace(
     ]
     outcome = next(step for step in trace if step["evaluated"].get("status") == "needs_human")
     assert outcome["evaluated"]["queries"]
-    assert outcome["evaluated"]["objections"]
-    assert outcome["evaluated"]["stop_reason"] == "max_iterations"
+    assert outcome["evaluated"]["stop_reason"] == expected_stop_reason
+    if not wall_clock:
+        assert outcome["evaluated"]["objections"]
     assert len(outcome["evaluated"]["queries"]) <= 8
     assert len(outcome["evaluated"]["objections"]) <= 8
     output = capsys.readouterr().out

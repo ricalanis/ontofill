@@ -3,7 +3,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from ontofill.workflow import _remaining_budget_usd
+from ontofill.workflow import _p3_loop_budget, _remaining_budget_usd
+
+
+def test_p3_wall_budget_scales_with_iterations_and_preserves_usd_ceiling() -> None:
+    four_iterations = _p3_loop_budget(0.05)
+    assert four_iterations.max_iterations == 4
+    assert four_iterations.wall_seconds == 3600
+
+    budget = _p3_loop_budget(13.27)
+
+    assert budget.max_iterations == 12
+    assert budget.max_usd == pytest.approx(13.27)
+    assert budget.wall_seconds == 3600
+
+    base = _p3_loop_budget(None)
+    assert base.max_iterations == 3
+    assert base.wall_seconds == 2700
 
 
 def test_unpriced_cached_calls_preserve_remaining_budget_and_log_only_call_numbers(caplog):

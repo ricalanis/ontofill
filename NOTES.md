@@ -18,6 +18,12 @@ The second managed full gate passed 568 tests/5 skips and Ruff lint, then failed
 
 The source critic currently proves an access affordance but does not distinguish a record-level route from a table of aggregate counts. P3 will bind granularity to captured evidence and the primary class inferred from the ontology, with an explicit unknown result when capture cannot establish it. P4 will reject objectives that lack record-level granularity for the primary class. Existing approved source decisions remain digest-bound; caches must be reconsidered when the granularity contract changes.
 
+# R51b P3 wall-clock budget accounting (2026-09-27)
+
+Diagnosis: P3's workflow budget supplied a fixed 900-second wall deadline, and `PhaseLoop` reported elapsed wall time using the same `budget` stop reason as USD exhaustion and unknown call cost. The live call log had priced usage, so the USD ceiling was not the stopping cause. Keep the USD cap unchanged, allocate up to 900 seconds per allowed P3 iteration with a 3600-second ceiling, and expose elapsed-time exhaustion as `wall_clock`. P3's no-source path already pauses for human review; the regression will keep that behavior visible with the new reason.
+
+Managed-check history: the red baseline failed because the new budget helper was not implemented. One follow-up found a non-generic local `PhaseLoop` test subclass; a successor attempt exposed that the clock fixture stopped before P3 reached policy-root capture. The final regression uses a factory returning the real `PhaseLoop`, preserves the existing `max_iterations` pause test, and adds a `wall_clock` P3 pause case. The final managed gate passed 12 tests, Ruff lint/format, schema JSON parses, and diff check.
+
 # R36 per-navigation diagnostics (2026-09-27)
 
 Read the R36 gap and the engine capture/job/trace path. Root asked for the field shape before schema edits; proposed additive shape sent to root: `navigation_attempts: [{http_status: integer 100..599 | null, elapsed_ms: integer 0..120000, error: {type: string <=128, message: string <=512} | null}]`, present on `jobs.jsonl.outcome` and `trace-step.evaluated`. HTTP response status remains separate from a thrown navigation error. Do not include a URL property.
