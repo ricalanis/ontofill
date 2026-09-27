@@ -50,3 +50,36 @@ The brief 10b scratch denial probe passed after the grounding and pause fixes: t
 stayed human-grounded, the secondary cross-check reached the policy, and a critic objection was
 persisted as an open issue. Eight model calls cost an estimated $0.01958. The probe script and
 artifacts stayed under ignored `.cache/` and a temporary directory.
+# Brief 10c progress guard, 2026-09-26
+
+The first focused P1 check failed because the new authority invariant sent a second
+recorded response request and existing live fixtures lacked a local primary publisher.
+After fixing that flow, the second check exposed two legacy assertions that required
+the old broad publisher demotion and empty-domain human placeholder. That strategy is
+retired: only the named cross-check is demoted, unrelated primary publishers remain,
+and unresolved human requests stay visible in revisions/open issues. The next check
+uses the invariant-specific assertions through `agent-progress run`.
+
+The later managed `live-critic-flip-and-cache-regressions` strategy failed once: the
+critic-flip test saw two draft digests because a regenerated draft's volatile
+`generated_by.at` timestamp was included in the hash. The code now hashes draft
+content without provenance timestamps. That correction is unverified: the guard
+blocked a repeat after two distinct failed strategies, so verification awaits
+explicit direction for a genuinely new managed strategy.
+
+Read-only review before that check found three more failure cases: a tier
+objection can clear on `secondary→review` while the rationale still claims
+primary; a short keyword overlap can demote an unrelated publisher; and the
+cache can return an `open_issues` draft whose authority invariant still fails.
+The next strategy needs focused regressions for all three before any live rerun.
+
+The user-authorized successor managed check on commit `4b54b77` passed the full
+test suite (232 passed, 3 skipped) but failed Ruff B023 on the nested `reviewed`
+closure in `phase_loop.py` because it captures loop variables without binding
+them. The chained formatting check did not run. This strategy is stopped after
+one attempt as the user instructed; no source fix or retry followed.
+
+The user then authorized a B023 closure-binding edit plus one further full
+managed check. Commit `e806618` binds the draft, gathered context and iteration
+as arguments of the nested review function. That one check passed: 232 tests,
+3 opt-in skips, Ruff check clean, and Ruff format check clean.
