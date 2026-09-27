@@ -1,4 +1,14 @@
-# Current goal: make exhausted PRD validation decidable
+# Current goal: durable per-case P3 discovery checkpoint
+
+Persist safe P3 discovery progress under each case's `03-fanout/cache/`, reuse only current, policy-valid bronze captures within six hours, and invalidate dependent state narrowly when inputs or versions change.
+
+DONE: `agent-progress run --task p3-checkpoint --paths src/ontofill/phases/p3_fanout/checkpoint.py,schemas/p3-checkpoint.schema.json,tests/test_p3_checkpoint.py,GOAL.md,TODO.md,NOTES.md --check p3-checkpoint-focused --strategy explicit-trace-contract-review --hypothesis 'After read-only API review, state the caller-owned current-run trace and fresh bronze-sidecar verification requirements explicitly; rerun the isolated acceptance gate.' -- sh -c 'uv run pytest -q tests/test_p3_checkpoint.py && uv run ruff check src/ontofill/phases/p3_fanout/checkpoint.py tests/test_p3_checkpoint.py && uv run ruff format --check src/ontofill/phases/p3_fanout/checkpoint.py tests/test_p3_checkpoint.py && python3 -m json.tool schemas/p3-checkpoint.schema.json >/dev/null && git diff --check'` (passed 13 tests, Ruff lint/format, schema JSON parse, and diff check).
+
+Constraints: own the new checkpoint module, its focused tests/schema, and required task notes only. Do not edit `discovery_loop.py`, case or approval data, README, console, service/browser-agent code, secrets, root main, or deliver publicly/deploy.
+
+---
+
+# Prior goal: make exhausted PRD validation decidable
 
 ## Active P4/P5 nested-record extraction slice
 Consume bounded nested JSON/JSONL records returned by the parse sandbox. Build a reusable ontology/PRD/TDD-bound JSON Pointer mapping that emits identifier-resolved entities and the matching observations needed for declared ontology relations, each with a row/property bronze receipt. DONE: the `generic-nested-record-mapping-evidence-link` managed gate passed 91 tests plus Ruff/schema/diff checks; commit locally for root review. Constraints: generic model-built paths only; no hard-coded case vocabulary or source URLs; no parse-pod or discovery-loop edits; no source page values or credentials in mapping artifacts; no case edits, push or deployment.

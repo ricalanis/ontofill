@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontofill.dev/schemas/p3-checkpoint.schema.json",
+  "title": "Safe resumable Phase 3 discovery checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "inputs",
+    "updated_at",
+    "query_runs",
+    "leads",
+    "captures",
+    "critic_verdicts",
+    "iteration_count",
+    "gap_state"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "inputs": {"$ref": "#/$defs/inputs"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "query_runs": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/query_run"}
+    },
+    "leads": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"$ref": "#/$defs/lead"}
+    },
+    "captures": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {"$ref": "#/$defs/capture"}
+    },
+    "critic_verdicts": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {"$ref": "#/$defs/critic_verdict"}
+    },
+    "iteration_count": {"type": "integer", "minimum": 0},
+    "gap_state": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"$ref": "#/$defs/gap"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]*$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9_.:/-]+$"},
+    "reason_code": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$"},
+    "source_identity": {"type": "string", "minLength": 1, "maxLength": 512},
+    "url": {"type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "pattern": "^https?://"},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prd_digest",
+        "ontology_digest",
+        "authority_digest",
+        "approvals_digest",
+        "p3_algorithm_version",
+        "critic_version"
+      ],
+      "properties": {
+        "prd_digest": {"$ref": "#/$defs/sha256"},
+        "ontology_digest": {"$ref": "#/$defs/sha256"},
+        "authority_digest": {"$ref": "#/$defs/sha256"},
+        "approvals_digest": {"$ref": "#/$defs/sha256"},
+        "p3_algorithm_version": {"$ref": "#/$defs/version"},
+        "critic_version": {"$ref": "#/$defs/version"}
+      }
+    },
+    "query_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "provider", "iteration", "status"],
+      "properties": {
+        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 100},
+        "iteration": {"type": "integer", "minimum": 1},
+        "status": {"enum": ["completed", "unavailable", "error"]}
+      }
+    },
+    "lead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "provider", "url", "source_identity"],
+      "properties": {
+        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 100},
+        "url": {"$ref": "#/$defs/url"},
+        "source_identity": {"$ref": "#/$defs/source_identity"}
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "source_identity", "bronze_key", "metadata_digest", "captured_at"],
+      "properties": {
+        "url": {"$ref": "#/$defs/url"},
+        "source_identity": {"$ref": "#/$defs/source_identity"},
+        "bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "metadata_digest": {"$ref": "#/$defs/sha256"},
+        "captured_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "critic_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture_digest", "critic_version", "decision", "capability_ids", "reason_codes"],
+      "properties": {
+        "capture_digest": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "critic_version": {"$ref": "#/$defs/version"},
+        "decision": {"enum": ["accepted", "rejected", "needs_review"]},
+        "capability_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "reason_codes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/reason_code"}}
+      }
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_id", "status", "reason_code", "remaining_count"],
+      "properties": {
+        "gap_id": {"$ref": "#/$defs/id"},
+        "status": {"enum": ["open", "covered", "blocked"]},
+        "reason_code": {"$ref": "#/$defs/reason_code"},
+        "remaining_count": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

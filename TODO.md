@@ -1,3 +1,20 @@
+# P3 durable checkpoint
+
+FILES: `src/ontofill/phases/p3_fanout/checkpoint.py`, `schemas/p3-checkpoint.schema.json`, `tests/test_p3_checkpoint.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Add a versioned per-case checkpoint API with atomic persistence, dependency-aware resume filtering, and a six-hour reuse limit for verified bronze captures.
+DONE: The managed `p3-checkpoint-focused` gate in `GOAL.md` passes and the isolated change is committed locally.
+FORMAT: Ruff check and format for touched Python; JSON parse for the schema; `git diff --check`.
+
+1. [x] Define strict typed records and a JSON schema that cannot represent secrets or raw page content.
+2. [x] Implement fail-closed loading, narrow invalidation, atomic writes, and bronze reuse by URL/source identity/TTL.
+3. [x] Add restart, TTL, changed-input/version, corrupt-file, and atomic-replacement tests.
+4. [x] Run the managed focused gate.
+5. [x] Commit locally on `p3-checkpoint`.
+
+CHECK: Managed attempt 1 ran all 13 focused tests successfully; Ruff found one unused import, a redundant UTC marker replacement, and an incorrect exception class. Managed attempt 2 passed tests and lint, then reported two formatting wraps. Ruff's formatter applied those exact layout changes. `formatter-normalized-final-gate` and the later `explicit-trace-contract-review` both passed all 13 tests, Ruff lint/format, schema JSON parsing, and `git diff --check` (exit 0). The final run also verifies that callers must run `check` before reuse after any fingerprint change.
+
+---
+
 # R54 PDF bounds and profiler completeness
 - [x] Add synthetic regressions for a >8 MiB PDF, a PDF beyond 40 pages, and explicit page/table/row/output limit failures with no partial profile.
 - [x] Raise the safe parse envelope to 32 MiB for PDF while retaining the 8 MiB non-PDF bound; remove silent profiler slices and return typed failures.

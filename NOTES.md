@@ -1,3 +1,13 @@
+# P3 durable checkpoint strategy (2026-09-27)
+
+- Base this isolated worktree on `93816dc` and keep discovery-loop integration with the parent owner.
+- Store only query strings, lead URLs/source identities, bronze object keys and capture timestamps, normalized critic verdicts, iteration count, and typed gap codes. Do not persist page excerpts, raw candidate documents, run IDs, budgets, credentials, or live-view data.
+- Bind the checkpoint to digests for PRD, ontology, authority, and approval bytes plus explicit P3 algorithm and critic versions. On PRD/ontology changes, clear derived searches/verdicts and loop-gap state while retaining policy-valid recent bronze pointers for re-critique. On authority/approval changes, clear leads/captures/verdicts while preserving query history. Critic changes clear only critic verdicts. Algorithm changes clear the query/lead plan and loop state while preserving valid captures and verdicts keyed by capture digest and critic version.
+- `reuse` additionally requires equal authority/approval digests, exact normalized URL and source identity, a freshly verified `(bronze_key, metadata_digest)` pair supplied by the caller, a non-future capture time, and age no greater than six hours. The parent integration must emit new-run trace steps for reused records.
+- Corrupt, unsupported, or schema-invalid cache files load as empty state. Save with same-directory temporary file, flush/fsync, `os.replace`, and directory fsync.
+
+---
+
 # R48 strategy (read-only plan)
 
 Use the existing trusted publisher policy, sandbox capture, parse pod and R35/R44 capability/granularity guard. Prioritize approved publisher roots in the bounded frontier; add one-level leads from captured portal links, without granting authority to external hosts. Mark blank and bot-challenge captures inconclusive; seek open-data/API successors through search, with no challenge evasion. Expand per-property channel queries while retaining provider/capture caps. A parsed entity-level approved workbook may confirm only the columns actually present. R49's matrix/hierarchical policy is a later backward-compatible addition; R48 uses existing authority policy.
