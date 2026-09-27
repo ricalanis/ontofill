@@ -4,8 +4,8 @@ gather   ontology gaps -> one targeted query per uncovered property
 propose  lead-only providers -> ranked leads -> sandbox capture of the best ones
 critique an independent check that each captured source can provide the property
 revise   keep only the (source, property) pairs with a cited access path
-check    bounded search pursues policy coverage targets, including the existing
-         two-source target for status-check properties
+check    bounded search pursues policy coverage targets while accepting a primary
+         publisher unless the approved PRD explicitly requires corroboration
 
 A lead never becomes a source without a bronze capture from the sandbox. A captured
 official publisher may use the versioned matrix; unverified/non-official sources
@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import re
 import subprocess
 import unicodedata
@@ -662,6 +663,111 @@ def _jurisdiction_query_context(policy: Mapping) -> dict:
 def _dod_properties(ontology: Mapping) -> tuple[str, ...]:
     selected = tuple(item["id"] for item in ontology["properties"] if item.get("dod"))
     return selected or tuple(item["id"] for item in ontology["properties"])
+
+
+_SOURCE_WORD = r"(?:publishers?|sources?|source\s+classes?|providers?|registries?|channels?)"
+_COUNT_MARKER = r"(?:count|number|total|minimum|at least|no fewer than)"
+_COUNT_NUMBER = (
+    r"(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|multiple|second)"
+)
+_COUNT_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "multiple": 2,
+    "second": 2,
+}
+
+
+def _number_value(value: str) -> int:
+    value = value.casefold()
+    return _COUNT_WORDS[value] if value in _COUNT_WORDS else math.ceil(float(value))
+
+
+def _dod_criterion_targets(text: str, ontology: Mapping, targets: Sequence[str]) -> tuple[str, ...]:
+    """Scope a DoD criterion to property labels it names, if any."""
+    normalized_text = " " + " ".join(re.findall(r"[a-z0-9]+", text.casefold())) + " "
+    text_tokens = _granularity_tokens(text)
+    properties = {item["id"]: item for item in ontology.get("properties", [])}
+    matched = []
+    for target in targets:
+        prop = properties.get(target, {})
+        names = [str(target).replace("_", " "), str(prop.get("label", ""))]
+        if any(
+            " " + " ".join(re.findall(r"[a-z0-9]+", name.casefold())) + " " in normalized_text
+            for name in names
+            if name.strip()
+        ):
+            matched.append(target)
+            continue
+        property_tokens = _granularity_tokens(" ".join(names))
+        if len(property_tokens) > 1 and property_tokens <= text_tokens:
+            matched.append(target)
+    return tuple(matched) or tuple(targets)
+
+
+def _approved_dod_publisher_floors(
+    prd: Mapping, ontology: Mapping, targets: Sequence[str]
+) -> dict[str, int]:
+    """Return publisher floors explicitly required by approved PRD criteria."""
+    floors = {target: 1 for target in targets}
+    for criterion in prd.get("definition_of_done", []):
+        if not isinstance(criterion, Mapping) or criterion.get("basis") not in {"brief", "human"}:
+            continue
+        text = " ".join(
+            str(criterion.get(field, ""))
+            for field in ("id", "metric", "basis_quote")
+            if criterion.get(field)
+        ).casefold()
+        metric = str(criterion.get("metric", "")).casefold()
+        source_count_metric = bool(
+            re.search(rf"\b{_SOURCE_WORD}\b", metric) and re.search(rf"\b{_COUNT_MARKER}\b", metric)
+        )
+        source_count_phrase = re.search(
+            rf"\b(?:(at\s+least|minimum\s+of|no\s+fewer\s+than|more\s+than)\s+)?({_COUNT_NUMBER})\s+(?:(?:independent|distinct|separate|different|external|corroborating)\s+)?{_SOURCE_WORD}\b",
+            text,
+        )
+        source_requirement = bool(
+            re.search(
+                rf"\b(?:independent|distinct|separate|multiple|second|corroborat\w*|cross[- ]check)\b.{{0,40}}\b{_SOURCE_WORD}\b",
+                text,
+            )
+            or re.search(
+                rf"\b{_SOURCE_WORD}\b.{{0,40}}\b(?:independent|distinct|separate|multiple|second|corroborat\w*|cross[- ]check)\b",
+                text,
+            )
+            or re.search(r"\bcorroborat\w*\b.{0,30}\b(?:count|number|minimum)\b", text)
+            or source_count_metric
+            or (source_count_phrase is not None and _number_value(source_count_phrase.group(2)) > 1)
+        )
+        if not source_requirement:
+            continue
+
+        if source_count_phrase:
+            criterion_floor = _number_value(source_count_phrase.group(2))
+            if source_count_phrase.group(1) == "more than":
+                criterion_floor += 1
+        elif source_count_metric:
+            operator = criterion.get("operator")
+            target = criterion.get("target")
+            if operator in {">=", ">", "="} and isinstance(target, (int, float)):
+                criterion_floor = math.ceil(target) + (1 if operator == ">" else 0)
+            else:
+                continue
+        else:
+            # A general corroboration request without an explicit count means
+            # an independent source in addition to the primary publisher.
+            criterion_floor = 2
+        for target in _dod_criterion_targets(text, ontology, targets):
+            floors[target] = max(floors[target], criterion_floor)
+    return floors
 
 
 def high_stakes_properties(ontology: Mapping, dod_queries: Mapping | None) -> set[str]:
@@ -2126,13 +2232,14 @@ class DiscoveryLoop:
                         candidates.append(text)
             candidates_by_gap[gap] = candidates
 
-        # The approved publisher names are part of the search plan, not merely
-        # an allowlist applied after generic model queries. Rotate them so a
-        # later approved publisher is reached even with a five-query batch.
+        # Seed a trusted primary publisher before broad query variants. The
+        # first batch is reserved for primary namespaces so their index pages
+        # can be captured before searching outside approved authorities.
         publishers = [
             (str(item.get("kind") or "").strip(), str(domain).strip().casefold())
             for item in policy.get("trusted_publishers", [])
             if isinstance(item, Mapping)
+            if item.get("tier", "primary") == "primary"
             for domain in item.get("domains", [])
             if isinstance(domain, str) and _public_dns_host(domain.strip().casefold())
         ]
@@ -2146,6 +2253,13 @@ class DiscoveryLoop:
             text = " ".join(f"site:{domain} {kind} {channel} {terms_by_gap[gap]}".split())[:240]
             if text not in pass_tried:
                 queries.append(LeadQuery(gap, text))
+        if iteration == 1 and queries:
+            # Primary index capture is the first discovery action. Save these
+            # queries for the next round, then broaden only after that pass.
+            self._planned_query_cache = {}
+            for query in queries:
+                self._planned_query_cache.setdefault(query.property_id, []).append(query.text)
+            return queries[:limit]
         depth = max((len(candidates) for candidates in candidates_by_gap.values()), default=0)
         quotas = {gap: min(2, max(1, len(planned_by_gap.get(gap, [])))) for gap in gaps}
         selected_by_gap = {gap: sum(query.property_id == gap for query in queries) for gap in gaps}
@@ -3966,10 +4080,8 @@ class DiscoveryLoop:
         brief = (case_dir / "brief.md").read_text(encoding="utf-8")
         prd = load_json(case_dir / "01-scope/prd.json")
         policy = prd["authority_policy"]
-        dod_path = case_dir / "02-ontology/dod-queries.json"
-        dod_queries = load_json(dod_path) if dod_path.exists() else None
-        high = high_stakes_properties(ontology, dod_queries)
-        required = {target: 2 if target in high else 1 for target in targets}
+        # Recall coverage guides search effort. Acceptance requires one confirmed
+        # publisher unless an approved PRD criterion explicitly asks for more.
         recall_coverage = policy.get("recall_coverage")
         configured_minimum = (
             recall_coverage.get("minimum_independent_publishers_per_property")
@@ -3979,6 +4091,7 @@ class DiscoveryLoop:
         search_target = (
             configured_minimum if type(configured_minimum) is int and configured_minimum > 0 else 1
         )
+        required = _approved_dod_publisher_floors(prd, ontology, targets)
         coverage_target = {target: max(required[target], search_target) for target in targets}
         objectives_path = case_dir / "03-fanout/objectives.json"
         sources_dir = case_dir / "03-fanout/sources"
@@ -4447,13 +4560,29 @@ class DiscoveryLoop:
             capture_queue_limit = max(1, self.max_captures)
             chosen: list[dict] = []
             per_host: dict[str, int] = {}
+            if iteration == 1 and self.max_captures > 0:
+                primary_root = next(
+                    (
+                        item
+                        for item in pool
+                        if "authority_policy" in item["providers"]
+                        and authority_tier(str(item.get("url") or ""), policy) == "primary"
+                    ),
+                    None,
+                )
+                if primary_root is not None:
+                    chosen.append(primary_root)
+                    host = urlsplit(primary_root["url"]).hostname or ""
+                    per_host[host] = per_host.get(host, 0) + 1
             # A one-capture round must preserve the highest-ranked lead. There
-            # is no remaining slot to follow a portal child in that round.
+            # is no remaining slot to follow a portal child in that round. A
+            # policy-primary root, when present, is already first in the queue.
             if self.max_captures > 1 and followable_portals:
-                portal = followable_portals[0]
-                chosen.append(portal)
-                host = urlsplit(portal["url"]).hostname or ""
-                per_host[host] = per_host.get(host, 0) + 1
+                portal = next((item for item in followable_portals if item not in chosen), None)
+                if portal is not None:
+                    chosen.append(portal)
+                    host = urlsplit(portal["url"]).hostname or ""
+                    per_host[host] = per_host.get(host, 0) + 1
             while len(chosen) < capture_queue_limit:
                 progressed = False
                 for gap in context["gaps"]:
@@ -4939,10 +5068,10 @@ class DiscoveryLoop:
         def check(draft: dict, _context: dict, _iteration: int) -> CheckResult:
             hosts = coverage(draft)
             objections = tuple(
-                f"{target}: {len(hosts[target])}/{coverage_target[target]} independent publisher "
-                "coverage target"
+                f"{target}: {len(hosts[target])}/{required[target]} approved publisher "
+                "acceptance requirement"
                 for target in targets
-                if len(hosts[target]) < coverage_target[target]
+                if len(hosts[target]) < required[target]
             )
             return CheckResult(not objections, objections)
 

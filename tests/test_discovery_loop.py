@@ -86,6 +86,31 @@ POLICY = {
 }
 
 
+def _policy_with_recall_minimum(policy: dict, minimum: int) -> dict:
+    """Return a structurally versioned policy with an explicit source threshold."""
+    return {
+        "schema_version": "1",
+        "jurisdiction": policy["jurisdiction"],
+        "jurisdiction_hierarchy": {"root_level": "municipal", "include_descendants": True},
+        "trusted_publishers": [dict(item) for item in policy["trusted_publishers"]],
+        "authority_matrix": [
+            {
+                "source_class": "city_library_office",
+                "government_levels": ["municipal"],
+                "channel_types": ["lists"],
+                "default_tier": "primary",
+            }
+        ],
+        "recall_coverage": {
+            "government_levels": ["municipal"],
+            "channel_types": ["lists"],
+            "minimum_independent_publishers_per_property": minimum,
+        },
+        "unknown_source_action": "review",
+        "unknown_official_action": "admit_low_tier_flagged",
+    }
+
+
 def _fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
@@ -102,6 +127,23 @@ def _library_case(tmp_path: Path, policy: dict | None = None) -> dict:
         document["authority_policy"] = policy
         path.write_text(json.dumps(document))
     return ontology
+
+
+def _require_two_independent_publishers(tmp_path: Path, property_label: str | None = None) -> None:
+    path = tmp_path / "01-scope/prd.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    subject = property_label or "Each entity"
+    document["definition_of_done"].append(
+        {
+            "id": "independent_publisher_confirmation",
+            "metric": f"{subject} verified by independent publishers",
+            "operator": ">=",
+            "target": 1,
+            "basis": "human",
+            "basis_quote": f"{subject} must be confirmed by at least two independent publishers.",
+        }
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 class FakeCapture:
@@ -189,6 +231,7 @@ class FakeVultr:
         if purpose != "critic.phase3.capability":
             raise TypeError("query model disabled in tests")
         context = json.loads(prompt.split("Review context: ", 1)[1])
+        policy = context["authority_policy"]
         verdicts = []
         for page in context["pages"]:
             for property_id in page["target_properties"]:
@@ -213,26 +256,44 @@ class FakeVultr:
                     ),
                     None,
                 )
-                verdicts.append(
-                    {
-                        "index": page["index"],
-                        "property_id": property_id,
-                        "provides": bool(header),
-                        "authority_verdict": (
-                            "authoritative" if page["publisher_matches"] else "unknown"
-                        ),
-                        "access_path": (
-                            {
-                                "kind": "listing",
-                                "access_path_quote": header,
-                                "property_quote": header,
-                            }
-                            if header
+                verdict = {
+                    "index": page["index"],
+                    "property_id": property_id,
+                    "provides": bool(header),
+                    "authority_verdict": (
+                        "authoritative" if page["publisher_matches"] else "unknown"
+                    ),
+                    "access_path": (
+                        {
+                            "kind": "listing",
+                            "access_path_quote": header,
+                            "property_quote": header,
+                        }
+                        if header
+                        else None
+                    ),
+                    "reason": "synthetic policy and captured listing structure",
+                }
+                if policy.get("schema_version") == "1":
+                    primary = any(
+                        item.get("tier") == "primary" for item in page["publisher_matches"]
+                    )
+                    verdict["authority_context"] = {
+                        "official": primary,
+                        "publisher_kind": "city library office" if primary else None,
+                        "publisher_quote": (
+                            "City Library Office (Municipal Government of Example City)"
+                            if primary
                             else None
                         ),
-                        "reason": "synthetic policy and captured listing structure",
+                        "jurisdiction_quote": "Example City" if primary else None,
+                        "source_class": "city_library_office" if primary else None,
+                        "government_level": "municipal" if primary else None,
+                        "government_level_quote": "Municipal" if primary else None,
+                        "channel_type": "lists" if primary else None,
+                        "channel_quote": "lists" if primary else None,
                     }
-                )
+                verdicts.append(verdict)
         return {"verdicts": verdicts}
 
 
@@ -566,7 +627,7 @@ def test_loop_stops_when_checks_pass_and_emits_loop_trace(tmp_path) -> None:
     assert on_disk == result
     ledger = json.loads((tmp_path / "03-fanout/surface-map/discovery.json").read_text())
     round_ = ledger["rounds"][-1]
-    assert round_["required"]["free_internet"] == 2  # boolean status check is high-stakes
+    assert round_["required"]["free_internet"] == 1  # no corroboration requirement was approved
     assert round_["required"]["opening_hours"] == 1
     assert round_["provider_yield"]["synthetic"]["sources"] == 2
     # Same request is served from the ledger: no second provider or sandbox call.
@@ -576,7 +637,8 @@ def test_loop_stops_when_checks_pass_and_emits_loop_trace(tmp_path) -> None:
 
 
 def test_loop_stops_at_iteration_bound_when_gaps_stay_open(tmp_path) -> None:
-    ontology = _library_case(tmp_path)
+    ontology = _library_case(tmp_path, _policy_with_recall_minimum(POLICY, 2))
+    _require_two_independent_publishers(tmp_path)
     url = "https://libraries.example.test/branches"
     provider = StaticProvider("synthetic", _all_urls(("name", "free_internet", "opening_hours")))
     loop, _ = _loop(tmp_path, [provider], {url: PAGE.format(title="Branches")})
@@ -1122,21 +1184,37 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path, monk
 
     monkeypatch.setattr(discovery_loop_module, "validate_document", record_validation)
     monkeypatch.setattr(discovery_loop_module, "write_json", record_write)
-    ontology = _library_case(tmp_path, POLICY)
+    corroboration_policy = _policy_with_recall_minimum(POLICY, 2)
+    ontology = _library_case(tmp_path, corroboration_policy)
+    _require_two_independent_publishers(tmp_path)
     primary = "https://libraries.example.test/branches"
     secondary = "https://region.example.test/libraries"
     unknown = "https://forum.example.test/libraries"
     props = ("name", "free_internet", "opening_hours")
     provider = StaticProvider("synthetic", {primary: props, secondary: props, unknown: props})
-    pages = {url: PAGE.format(title="Libraries") for url in (primary, secondary, unknown)}
+    authority_page = PAGE.format(
+        title="City Library Office (Municipal Government of Example City) — Open Data lists"
+    )
+    pages = {
+        primary: authority_page,
+        "https://libraries.example.test/": authority_page,
+        secondary: PAGE.format(title="Regional library cross-check"),
+        unknown: PAGE.format(title="Community library discussion"),
+    }
     loop, _ = _loop(tmp_path, [provider], pages, backend="vultr")
     decision = FakeVultr()  # live-shaped: model calls fail, code fallbacks run
     document = loop.discover_sources(tmp_path, ontology, decision)
     primary_write = source_events.index(("write", primary))
     assert source_events[primary_write - 1] == ("validate", primary)
     tiers = {item["source_url"]: item["authority_tier"] for item in document["objectives"]}
-    assert tiers == {primary: "primary", secondary: "secondary", unknown: "unknown"}
-    assert document["objectives"][0]["source_url"] == primary
+    index_url = "https://libraries.example.test/"
+    assert tiers == {
+        index_url: "primary",
+        primary: "primary",
+        secondary: "secondary",
+        unknown: "unknown",
+    }
+    assert tiers[primary] == "primary"
     assert loop.result.stop_reason == "max_iterations"
     by_url = {item["source_url"]: item for item in document["objectives"]}
     for url in (secondary, unknown):
@@ -1147,7 +1225,7 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path, monk
     assert not (
         tmp_path / "03-fanout/sources" / by_url[primary]["source_id"] / "APPROVAL_PENDING.md"
     ).exists()
-    # A human approves the secondary cross-check; the high-stakes gap closes on a
+    # A human approves the configured secondary cross-check; the gap closes on a
     # reopened round without any new provider call or capture.
     directory = tmp_path / "03-fanout/sources" / by_url[secondary]["source_id"]
     candidate_path = directory / "candidate.json"
