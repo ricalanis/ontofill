@@ -60,7 +60,7 @@ def _live(a: Artifacts) -> dict | None:
     )
     return {
         "run_id": rid,
-        "state": status.get("state"),
+        "state": hc.stopped_state(status),  # a reasoned pause with nothing to approve is a stop, not a pause
         "phase": phase,
         "phase_name": dict(live.PHASES).get(phase, ""),
         "checkpoint": status.get("checkpoint_pending"),

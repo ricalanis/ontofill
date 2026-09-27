@@ -65,3 +65,18 @@ def test_a_checkpoint_wait_is_said_once(client, cases_dir):
     if m["live"]["checkpoint"]:
         assert html.count("waiting for") == 1
     assert m["question"].endswith("?") or "?" not in m["brief"][:300]
+
+
+def test_a_needs_human_stop_reads_as_a_stop(client, cases_dir):
+    """Live (sf-library-branches run-1eebeb4fcf34): P2 gave up and the run's status was "paused" with a reason and
+    nothing to approve; the page said "paused". It now says the run stopped and needs a person, and why."""
+    from test_viz_live import set_status
+
+    shutil.rmtree(cases_dir / "libraries" / "lake" / "gold")
+    why = "phase2.schema remained invalid after 3 attempts"
+    set_status(cases_dir, state="paused", phase=2, reason=why, checkpoint_pending=None)
+    m = client.get("/cases/libraries/api/viz/answer").json()
+    assert m["live"]["state"] == "needs_human"
+    html = client.get("/cases/libraries/answer").text
+    assert "the run stopped before publishing one" in html and "stopped: it needs a person" in html
+    assert "Why it stopped:" in html and why in html

@@ -50,7 +50,8 @@
 {% else %}
 {% set lv = m.live %}
 <section class="ans-empty" aria-labelledby="ans-empty-h">
-  <h2 id="ans-empty-h">No answer yet{% if lv and lv.state == "running" %}: the engine is working on it{% endif %}</h2>
+  {% set STATE_WORDS = {"running": "running", "paused": "paused", "needs_human": "stopped: it needs a person", "failed": "failed", "budget_stop": "stopped at its budget", "stopped": "stopped", "killed": "stopped"} %}
+  <h2 id="ans-empty-h">No answer yet{% if lv and lv.state == "running" %}: the engine is working on it{% elif lv and lv.state in ("needs_human", "failed", "budget_stop", "stopped") %}: the run stopped before publishing one{% endif %}</h2>
   <p>Values appear here when the run publishes its gold export: reconciled, with a source for every value. Nothing on this
     page is filled in by hand or before the engine has evidence for it.</p>
   {% if lv %}
@@ -58,12 +59,12 @@
     {% for p in lv.phases %}<li class="{{ 'done' if p.done else ('now' if p.now else '') }}"><span class="mono">{{ p.n }}</span> {{ p.name }}{% if p.now %} <small>now</small>{% endif %}</li>{% endfor %}
   </ol>
   <p class="ans-stats">
-    <span>run <span class="mono">{{ lv.run_id }}</span> · {{ lv.state or "unknown" }}{% if lv.checkpoint %} · waiting for a person to approve the {{ lv.checkpoint }}{% endif %}</span>
+    <span>run <span class="mono">{{ lv.run_id }}</span> · {{ STATE_WORDS.get(lv.state, lv.state or "unknown") }}{% if lv.checkpoint %} · waiting for a person to approve the {{ lv.checkpoint }}{% endif %}</span>
     <span><b>{{ lv.n_steps }}</b> steps logged</span>
     <span><b>{{ lv.n_sources }}</b> sources touched</span>
     <span><b>{{ lv.n_captures }}</b> pages captured</span>
   </p>
-  {% if lv.reason and lv.state != "running" and not lv.checkpoint %}<p class="note">{{ lv.reason|truncate(300, true, "…") }}</p>{% endif %}
+  {% if lv.reason and lv.state != "running" and not lv.checkpoint %}<p class="note{% if lv.state == 'needs_human' %} signal{% endif %}">{% if lv.state == "needs_human" %}<b>Why it stopped:</b> {% endif %}{{ lv.reason|truncate(400, true, "…") }}</p>{% endif %}
   <p class="note"><a href="/cases/{{ m.case_id }}/runs/{{ lv.run_id }}">Watch the run live →</a> · <a href="/cases/{{ m.case_id }}/pages">pages it has read</a> · <a href="/cases/{{ m.case_id }}/discovery">sources it is weighing</a></p>
   {% else %}
   <p class="note">No run has started for this case yet.</p>
