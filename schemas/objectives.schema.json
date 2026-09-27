@@ -29,7 +29,7 @@
         "taxonomy_node_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "priority": {"type": "integer", "minimum": 1},
         "expected_contribution": {"type": "number", "minimum": 0, "maximum": 1},
-        "authority_tier": {"enum": ["primary", "secondary", "review", "unknown"]},
+        "authority_tier": {"enum": ["primary", "secondary", "low", "review", "unknown"]},
         "publisher_of_record": {"$ref": "#/$defs/publisher_of_record"},
         "confirmed_bronze_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
         "document_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
@@ -74,7 +74,7 @@
       "properties": {
         "kind": {"type": "string", "minLength": 1},
         "domain": {"type": "string", "minLength": 1},
-        "tier": {"enum": ["primary", "secondary", "review"]},
+        "tier": {"enum": ["primary", "secondary", "low", "review"]},
         "basis": {"enum": ["approved_policy", "captured_page"]},
         "evidence_quote": {"type": "string", "minLength": 1, "maxLength": 500}
       }
