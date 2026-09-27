@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Watch{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-live.css"><link rel="stylesheet" href="/static/viz-watch.css"><script src="/static/viz-live.js" defer></script>{% endblock %}
+{% macro usd(x, d=2) %}{% if x is not none %}{{ ("%." ~ d ~ "f")|format(x) }}{% else %}—{% endif %}{% endmacro %}
+{% macro age(s) %}{% if s is none %}—{% elif s < 90 %}{{ s }} s{% elif s < 5400 %}{{ s // 60 }} min{% elif s < 172800 %}{{ s // 3600 }} h {{ "%02d"|format((s % 3600) // 60) }} min{% else %}{{ s // 86400 }} d{% endif %}{% endmacro %}
+{% macro rate(x) %}{% if x is not none %}{{ x }}{% else %}—{% endif %}{% endmacro %}
+{% set RSTATE = {"running": "run", "waiting_approval": "need", "paused": "pause", "killed": "block", "budget_stop": "block", "failed": "block", "done": "done", "idle": "none"} %}
+{% block main %}
+{{ v.head("Watch", "Supervision across every case for unattended runs: whether the runner is on, whether each current run is still moving, how fast, what fails and where, spend against the runner's caps, and how close each case is to done. The ranked list says where to look first; the same numbers are at /api/watch.", sources) }}
+{{ v.live_indicator(m.live, "no case running · static") }}
+
+<div data-live-region="runner">
+<ul class="strips">
+  {% if not m.runner.state_dir_ok %}
+  <li>{{ v.strip("block", "Runner state not found", "Nothing at " ~ m.runner.state_dir ~ " (ONTOFILL_RUNNER_STATE): the runner's per-case state, resumes and caps are unknown here.", None, None) }}</li>
+  {% elif m.runner.killed %}
+  <li>{{ v.strip("block", "Runner OFF · kill switch is on", "Nothing launches; running engines get SIGTERM, then SIGKILL after the grace period. Lifting it resumes an interrupted run.", "last write " ~ age(m.runner.last_write_age_s) ~ " ago", "/") }}</li>
+  {% else %}
+  <li>{{ v.strip("run" if m.n_running else "none", "Runner on · " ~ m.n_running ~ " of " ~ m.cases|length ~ " case" ~ ("s" if m.cases|length != 1 else "") ~ " running", m.runner.n_events ~ " runner events · state dir " ~ m.runner.state_dir, ("last write " ~ age(m.runner.last_write_age_s) ~ " ago") if m.runner.last_write_age_s is not none else "", None) }}</li>
+  {% endif %}
+</ul>
+</div>
+
+<div data-live-region="attention">
+<h2 class="section-h">What I'd look at first · {{ m.n_attention }}</h2>
+{% if m.attention %}
+<ol class="strips wt-attn">
+  {% for i in m.attention %}<li>{{ v.strip(i.state, (i.case_id ~ " · " if i.case_id else "") ~ i.text, None, i.level, i.href) }}</li>{% endfor %}
+</ol>
+{% else %}
+<div class="empty" role="note"><b>Nothing to look at</b><span>No stale, failed, killed or budget-stopped case, nobody waiting on a decision, no rising failures, no cap projected within 8 h, and every DoD criterion met or no run yet.</span></div>
+{% endif %}
+</div>
+
+{% for c in m.cases %}
+{% set r = c.runner %}{% set lv = c.liveness %}{% set t = c.throughput %}{% set f = c.failures %}{% set s = c.spend %}{% set d = c.dod %}
+<section class="wt-case" aria-labelledby="wt-{{ c.case_id }}" data-live-region="case-{{ c.case_id }}">
+  <header class="wt-head">
+    <h2 id="wt-{{ c.case_id }}"><a href="{{ c.links.case }}">{{ c.title }}</a> <small class="mono">{{ c.case_id }}</small></h2>
+    <span class="chip st-{{ RSTATE.get(r.state, 'none') }}">runner {{ (r.state or "not seen")|replace("_", " ") }}</span>
+    {% if r.paused %}<span class="chip st-pause">paused by an operator</span>{% endif %}
+    {% if c.run_state %}<span class="chip st-{{ RSTATE.get(c.run_state, 'pause') }}">run {{ c.run_state }}{% if c.checkpoint_pending %} at {{ c.checkpoint_pending }}{% endif %}</span>{% endif %}
+    {% if lv.stale %}<span class="chip st-block">STALE</span>{% endif %}
+    <span class="wt-links"><a href="{{ c.links.run }}">run page</a><a href="{{ c.links.failures }}">failures</a><a href="{{ c.links.inference }}">inference</a><a href="{{ c.links.output }}">output</a></span>
+  </header>
+
+  {% if lv.stale %}
+  <ul class="strips wt-stale"><li>{{ v.strip("block", "STALE · no step has landed for " ~ age(lv.quiet_s), "The " ~ ("runner" if r.state == "running" else "run status") ~ " says running; threshold " ~ ("%g"|format(lv.stale_min)) ~ " min (?stale_min=). Check the engine log on the runner host and the run page.", "run " ~ (c.run_id or "—"), c.links.run) }}</li></ul>
+  {% endif %}
+
+  <dl class="kv wt-kv">
+    <dt>Run</dt><dd class="mono">{% if c.run_id %}<a href="{{ c.links.run }}">{{ c.run_id }}</a>{% if c.phase %} · P{{ c.phase }}{% endif %} · {{ c.n_runs }} run{{ "s" if c.n_runs != 1 }}{% else %}no run feed yet{% endif %}</dd>
+    <dt>Last step</dt><dd class="mono">{% if lv.last_step_age_s is not none %}{{ age(lv.last_step_age_s) }} ago{% else %}none{% endif %} · status {% if lv.status_age_s is not none %}{{ age(lv.status_age_s) }} ago{% else %}—{% endif %}</dd>
+    <dt>Runner</dt><dd>{% if r.seen %}{{ (r.state or "?")|replace("_", " ") }}{% if r.checkpoint %} · {{ r.checkpoint }}{% endif %}{% if r.running_since and r.state == "running" %} · since <span class="mono">{{ r.running_since[11:16] }} UTC</span>{% endif %}{% if r.reason %} · {{ r.reason }}{% endif %}{% else %}not seen by the runner{% endif %}</dd>
+    <dt>Last resume</dt><dd>{% if r.last_resume %}<span class="mono">{{ (r.last_resume.ts or "")[:16]|replace("T", " ") }}</span> · {{ r.last_resume.detail or "no reason recorded" }}{% else %}none recorded{% endif %}</dd>
+    {% if r.last_event and r.last_event.kind != "resumed" %}<dt>Last event</dt><dd><span class="mono">{{ (r.last_event.ts or "")[:16]|replace("T", " ") }}</span> · {{ r.last_event.kind|replace("_", " ") }}{% if r.last_event.detail %}: {{ r.last_event.detail }}{% endif %}</dd>{% endif %}
+  </dl>
+
+  <div class="panels wt-panels">
+    <section class="panel">
+      <h3 class="section-h">Throughput · steps/min</h3>
+      {% if t.total.n %}
+      <div class="table-wrap"><table class="grid-table">
+        <caption class="wt-cap">{{ "window ends now" if c.moving else "as of the last step" }} ({{ (t.anchor or "")[11:16] }} UTC); run {{ t.run_minutes }} min</caption>
+        <thead><tr><th scope="col">Phase</th><th scope="col" class="num">steps</th><th scope="col" class="num">15 min</th><th scope="col" class="num">60 min</th><th scope="col" class="num">run</th></tr></thead>
+        <tbody>
+        {% for p in t.phases %}<tr><th scope="row">{% if p.phase %}P{{ p.phase }} {% endif %}{{ p.name }}</th><td class="num">{{ p.n }}</td><td class="num">{{ p.per_min_15 }}</td><td class="num">{{ p.per_min_60 }}</td><td class="num">{{ rate(p.per_min_run) }}</td></tr>{% endfor %}
+        <tr class="wt-total"><th scope="row">all</th><td class="num">{{ t.total.n }}</td><td class="num">{{ t.total.per_min_15 }}</td><td class="num">{{ t.total.per_min_60 }}</td><td class="num">{{ rate(t.total.per_min_run) }}</td></tr>
+        </tbody>
+      </table></div>
+      <p class="wt-note">Cells: {{ t.n_cells }} sandbox job{{ "s" if t.n_cells != 1 }}{% if t.cells_per_h_60 is not none %} · {{ t.cells_per_h_60 }} in the last hour · {{ t.cells_per_h_run }}/h over the run{% elif t.n_cells %} · no timestamps to rate them{% endif %}</p>
+      {% else %}<p class="wt-note">No steps in this run's trace yet.</p>{% endif %}
+    </section>
+
+    <section class="panel">
+      <h3 class="section-h">Failures · {{ f.n_failures }} in {{ f.n_steps }} steps{% if f.rate_per_100 is not none %} · {{ f.rate_per_100 }}/100{% endif %}</h3>
+      {% if f.n_failures %}
+      <p class="wt-note">Last 15 min: {{ f.failures_15 }} in {{ f.steps_15 }} steps{% if f.rate_per_100_15 is not none %} ({{ f.rate_per_100_15 }}/100){% endif %}{% if f.rising %} <span class="chip st-block">rising</span>{% endif %}{% if f.hard_stops %} · hard stops {{ f.hard_stops }}{% endif %}</p>
+      <p class="legend">{% for k in f.by_kind if k.n %}<span>{{ k.label }} <b>{{ k.n }}</b></span>{% endfor %}</p>
+      {% endif %}
+      {% if f.sources %}
+      <div class="table-wrap"><table class="grid-table">
+        <thead><tr><th scope="col">Source</th><th scope="col" class="num">steps</th><th scope="col" class="num">failed</th><th scope="col" class="num">/100</th><th scope="col">kinds</th></tr></thead>
+        <tbody>
+        {% for x in f.sources %}<tr><th scope="row" class="mono">{{ x.source_id }}{% if x.only_failures %} <span class="chip st-block">only failures</span>{% endif %}</th><td class="num">{{ x.steps }}</td><td class="num">{{ x.failures }}</td><td class="num">{{ rate(x.rate_per_100) }}</td><td class="wt-kinds">{{ x.top or "—" }}</td></tr>{% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}<p class="wt-note">No source work in this run's trace yet.</p>{% endif %}
+    </section>
+
+    <section class="panel">
+      <h3 class="section-h">Spend · USD</h3>
+      <div class="meters wt-meters">
+        <span>Case</span>
+        {% if s.case_cap_usd %}<div class="meter" role="img" aria-label="{{ usd(s.case_usd) }} of {{ usd(s.case_cap_usd) }} USD"><span style="--v: {{ [s.case_pct or 0, 100]|min }}%; --c: {{ 'var(--st-block)' if (s.case_pct or 0) >= 100 else 'var(--st-run)' }}"></span><i style="--t: 100%"></i></div>
+        {% else %}<span class="wt-note">cap unknown</span>{% endif %}
+        <span class="num">{{ usd(s.case_usd, 3) }}{% if s.case_cap_usd %} / {{ usd(s.case_cap_usd) }}{% endif %}</span>
+      </div>
+      <div class="meters wt-meters">
+        <span>Global</span>
+        {% if s.global_cap_usd and s.global_usd is not none %}<div class="meter" role="img" aria-label="{{ usd(s.global_usd) }} of {{ usd(s.global_cap_usd) }} USD"><span style="--v: {{ [100 * s.global_usd / s.global_cap_usd, 100]|min }}%"></span><i style="--t: 100%"></i></div>
+        {% else %}<span class="wt-note">{{ "cap unknown" if s.global_usd is not none else "not reported" }}</span>{% endif %}
+        <span class="num">{{ usd(s.global_usd, 3) }}{% if s.global_cap_usd %} / {{ usd(s.global_cap_usd) }}{% endif %}</span>
+      </div>
+      <dl class="kv wt-kv">
+        <dt>Burn</dt><dd class="mono">{% if s.burn_usd_per_h is not none %}{{ usd(s.burn_usd_per_h, 3) }} USD/h ({{ usd(s.burn_window_usd, 3) }} over {{ (s.burn_window_h * 60)|round|int }} min){% elif c.moving %}no priced step in the last hour{% else %}not running{% endif %}</dd>
+        <dt>Cap hit</dt><dd class="mono">{% if s.case_projection.hours == 0 %}cap reached{% elif s.projected_cap_hit_at %}{{ s.projected_cap_hit_at[:16]|replace("T", " ") }} UTC (in {{ age((s.case_projection.hours * 3600)|round|int) }}){% elif s.case_cap_usd %}no projection (no burn){% else %}unknown: no case cap visible{% endif %}</dd>
+        <dt>Basis</dt><dd>{{ s.case_basis or "no priced step yet" }}{% if s.priced_steps %} · {{ s.priced_steps }} priced steps{% endif %}; case cap {{ s.case_cap_basis or "not visible to the console (ONTOFILL_RUNNER_BUDGETS / _DEFAULT_CASE_USD)" }}; global cap {{ s.global_cap_basis or "not visible (ONTOFILL_RUNNER_GLOBAL_USD)" }}</dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <h3 class="section-h">Definition of done{% if d.n_criteria %} · {{ d.n_met }}/{{ d.n_criteria }} met{% endif %}</h3>
+      {% if d.latest %}
+      <p class="wt-note mono">{{ d.entities_total }} found · {{ d.latest.meeting_dod if d.latest.meeting_dod is not none else "—" }} meeting ({{ rate(d.pct_meeting) }}%) · {{ d.distinct_sources|int if d.distinct_sources is not none else "—" }} source classes</p>
+      {% endif %}
+      {% if d.criteria %}
+      <div class="wt-rows" role="list">
+        {% for x in d.criteria %}
+        <div class="meters wt-meters" role="listitem">
+        <span>{{ x.label }}</span>
+        <div class="meter" style="--v: {{ x.v or 0 }}%;{% if x.t is not none %} --t: {{ x.t }}%;{% endif %}" role="img" aria-label="{{ x.actual if x.actual is not none else 'unknown' }} of target {{ x.target }}"><span style="--c: var(--st-{{ x.state or 'run' }})"></span>{% if x.t is not none %}<i></i>{% endif %}</div>
+        <span class="num">{{ x.actual if x.actual is not none else "—" }} / {{ x.target }}{% if x.mock %} <span class="chip st-pause" title="recorded inference never counts as met">mock</span>{% elif x.met %} <span class="chip st-done">met</span>{% endif %}</span>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="wt-note">{{ d.basis }}</p>
+      {% endif %}
+      {% if d.chart %}{% set ch = d.chart %}
+      <figure class="wt-fig">
+        <svg class="wt-chart" viewBox="0 0 320 120" role="img" aria-label="Entities found and meeting the DoD over {{ ch.n }} run{{ 's' if ch.n != 1 }}: {% for p in ch.pts %}{{ p.run }} {{ p.total }} found, {{ p.meeting if p.meeting is not none else 'unknown' }} meeting{% if not loop.last %}; {% endif %}{% endfor %}">
+          <line class="axis" x1="{{ ch.x0 }}" y1="{{ ch.y0 }}" x2="{{ ch.x1 }}" y2="{{ ch.y0 }}"/>
+          <line class="axis" x1="{{ ch.x0 }}" y1="{{ ch.y1 }}" x2="{{ ch.x0 }}" y2="{{ ch.y0 }}"/>
+          <text x="{{ ch.x0 - 4 }}" y="{{ ch.y1 + 4 }}" text-anchor="end">{{ ch.top }}</text>
+          <text x="{{ ch.x0 - 4 }}" y="{{ ch.y0 + 4 }}" text-anchor="end">0</text>
+          <path class="series s-total" d="{{ ch.total }}"/><path class="series s-dod" d="{{ ch.meeting }}"/>
+          {% for p in ch.pts %}<circle class="s-total" cx="{{ p.x }}" cy="{{ p.yt }}" r="3"><title>{{ p.run }} ({{ p.source }}): {{ p.total }} found</title></circle><circle class="s-dod" cx="{{ p.x }}" cy="{{ p.ym }}" r="3"><title>{{ p.run }} ({{ p.source }}): {{ p.meeting }} meeting the DoD</title></circle>{% endfor %}
+          <text x="{{ ch.x0 }}" y="114">{{ ch.first[-14:] }}</text>{% if ch.n > 1 %}<text x="{{ ch.x1 }}" y="114" text-anchor="end">{{ ch.last[-14:] }}</text>{% endif %}
+        </svg>
+        <figcaption class="legend"><span><i style="--c: var(--st-run)"></i>found</span><span><i style="--c: var(--st-done)"></i>meeting the DoD</span><span>n = {{ ch.n }} run{{ "s" if ch.n != 1 }} (gold metrics, or status.json while running)</span></figcaption>
+      </figure>
+      {% endif %}
+      {% if not d.latest and not d.criteria %}<p class="wt-note">No metrics yet: neither a gold export nor status.json metrics for this case.</p>{% endif %}
+    </section>
+  </div>
+</section>
+{% else %}
+<div class="empty" role="note"><b>No cases registered</b><span>Register cases with ONTOFILL_CONSOLE_CASES.</span></div>
+{% endfor %}
+
+<details class="wt-keys">
+  <summary>JSON: /api/watch keys</summary>
+  <p class="wt-note">GET <span class="mono">/api/watch?stale_min=10</span> returns the numbers on this page. Stable keys:</p>
+  <dl class="kv">
+    <dt class="mono">generated_at, stale_min</dt><dd>when the model was computed (UTC); the STALE threshold in minutes</dd>
+    <dt class="mono">runner</dt><dd>on, killed, state_dir_ok, state_dir, last_write_at, last_write_age_s, n_events</dd>
+    <dt class="mono">global_spend</dt><dd>global_usd, global_cap_usd, burn_usd_per_h (sum of case burns), projection{remaining_usd, hours, at}</dd>
+    <dt class="mono">cases[]</dt><dd>case_id, title, run_id, n_runs, run_state, phase, checkpoint_pending, run_reason, moving, pending_approvals, lake_error, links{case, run, operation, failures, inference, cost, output, approvals, inbox}</dd>
+    <dt class="mono">cases[].runner</dt><dd>seen, state (idle | running | waiting_approval | paused | killed | budget_stop | failed | done), run_id, checkpoint, reason, paused, pid, running_since, last_started_at, last_resumed_at, updated_at, spent_usd_case, spent_usd_global, last_trigger, last_resume{ts, kind, run_id, detail}, last_event{…}</dd>
+    <dt class="mono">cases[].liveness</dt><dd>last_step_at, last_step_age_s, status_updated_at, status_age_s, runner_age_s, says_running, quiet_s, stale, stale_min</dd>
+    <dt class="mono">cases[].throughput</dt><dd>anchor, first_step_at, run_minutes, phases[]{phase, name, n, n_15, n_60, per_min_15, per_min_60, per_min_run}, total{…}, n_cells, n_cells_timed, cells_60, cells_per_h_60, cells_per_h_run</dd>
+    <dt class="mono">cases[].failures</dt><dd>n_steps, n_failures, rate_per_100, steps_15, failures_15, rate_per_100_15, rising, hard_stops, by_kind[]{kind, label, n}, sources[]{source_id, steps, failures, hard_stops, by_kind{…}, rate_per_100, only_failures, top}, only_failures[]</dd>
+    <dt class="mono">cases[].spend</dt><dd>case_usd, case_basis, priced_steps, runner_case_usd, global_usd, case_cap_usd, case_cap_basis, global_cap_usd, global_cap_basis, burn_usd_per_h, burn_window_usd, burn_window_h, case_projection{remaining_usd, hours, at}, projected_cap_hit_at, case_pct</dd>
+    <dt class="mono">cases[].dod</dt><dd>basis, latest, entities_total, pct_meeting, distinct_sources, criteria[]{criterion_id, label, actual, target, met, v, t, state}, n_criteria, n_met, series[]{run_id, at, source, class, entities_total, meeting_dod, pct_meeting, distinct_source_classes}, chart</dd>
+    <dt class="mono">attention[]</dt><dd>severity (1 killed / stale / failed / budget stop · 2 needs a person · 3 failures · 4 spend projection · 5 DoD), level, state, case_id, text, href; sorted by severity</dd>
+    <dt class="mono">live, n_attention, n_stale, n_running</dt><dd>the page's live marker and counts</dd>
+  </dl>
+</details>
+{% endblock %}

@@ -456,7 +456,7 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
     monkeypatch.setattr(
         workflow,
         "refine_observations",
-        lambda *_args, **_kwargs: SimpleNamespace(entities=[]),
+        lambda *_args, **_kwargs: SimpleNamespace(entities=[], classified=False),
     )
     monkeypatch.setattr(workflow, "export_run", lambda *_args, **_kwargs: {"dod": []})
     monkeypatch.setattr(

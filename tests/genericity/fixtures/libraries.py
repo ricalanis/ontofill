@@ -86,9 +86,19 @@ def library_decisions() -> RecordedDecisionClient:
                                     "id": "internet_access",
                                     "label": "Internet access",
                                     "level": 1,
-                                    "critic_label": "Good-Exclusive",
                                 }
                             ],
+                        }
+                    ]
+                }
+            ],
+            "critic.phase2.taxonomy_nodes": [
+                {
+                    "labels": [
+                        {
+                            "factor_id": "access",
+                            "node_id": "internet_access",
+                            "critic_label": "Good-Exclusive",
                         }
                     ]
                 }
