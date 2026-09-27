@@ -26,7 +26,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import parse_qsl, urljoin, urlsplit
+from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
 
 import yaml
 from jsonschema import ValidationError
@@ -80,6 +80,45 @@ _DOCUMENT_MIME_FORMAT = {
     "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
 }
 _DATASET_FILE_SUFFIXES = frozenset({".csv", ".xls", ".xlsx", ".zip"})
+_STATIC_ASSET_SUFFIXES = frozenset(
+    {
+        ".css",
+        ".js",
+        ".mjs",
+        ".map",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".avif",
+        ".bmp",
+        ".apng",
+    }
+)
+_STATIC_ASSET_MIME_TYPES = frozenset(
+    {
+        "text/css",
+        "text/javascript",
+        "application/javascript",
+        "application/x-javascript",
+        "application/json+source-map",
+        "application/font-woff",
+        "font/woff",
+        "font/woff2",
+        "font/ttf",
+        "font/otf",
+        "image/x-icon",
+        "image/vnd.microsoft.icon",
+    }
+)
 _DATASET_LINK_CUE = re.compile(
     r"\b(?:dataset|download|records?|registry|register|spreadsheet|export|roster|archive|list|"
     r"datos?|descarga|listado|relaci[oó]n|padr[oó]n|archivo|registro|cat[aá]logo)\b",
@@ -196,6 +235,18 @@ def _summary_text(value: object, limit: int = 180) -> str:
 def _capture_error_text(error: Exception) -> str:
     """Prefer the substrate's bounded, URL-sanitized first failure line."""
     return _summary_text(getattr(error, "first_line", None) or str(error), 300)
+
+
+def _static_asset_reason(url: str, content_type: str | None = None) -> str | None:
+    """Recognize presentation assets without excluding data documents or APIs."""
+    path = unquote(urlsplit(url).path).casefold()
+    suffix = Path(path).suffix
+    if suffix in _STATIC_ASSET_SUFFIXES:
+        return f"extension:{suffix}"
+    mime = (content_type or "").split(";", 1)[0].strip().casefold()
+    if mime.startswith(("image/", "font/")) or mime in _STATIC_ASSET_MIME_TYPES:
+        return f"content_type:{mime}"
+    return None
 
 
 def p3_iteration_limit(*, remaining_usd: float | None) -> int:
@@ -2518,6 +2569,22 @@ class DiscoveryLoop:
         if "proof" in captured:
             self.jobs.append(captured)
         status = int(captured.get("status", 200))
+        asset_reason = _static_asset_reason(
+            str(captured.get("url") or url),
+            str(captured.get("document_content_type") or captured.get("content_type") or ""),
+        )
+        if asset_reason is not None:
+            candidate.update(status="skipped", capture_reason="static_asset")
+            self._step(
+                {
+                    "tool": "lead.skip",
+                    "url": urlsplit(url)._replace(query="", fragment="").geturl(),
+                },
+                {"asset_reason": asset_reason},
+                {"status": "skipped", "reason": "static_asset"},
+                source_id=source_id,
+            )
+            return None
         if captured.get("capture_reason") == "bot_challenge":
             candidate.update(
                 status="inconclusive",
@@ -3815,11 +3882,29 @@ class DiscoveryLoop:
                     entry["property_ids"] = sorted(set(entry["property_ids"]) | {gap})
 
             open_now = set(context["gaps"])
+            for lead in draft["leads"].values():
+                reason = _static_asset_reason(
+                    str(lead.get("url") or ""),
+                    str(lead.get("content_type") or lead.get("mime_type") or ""),
+                )
+                if reason is not None and "static_skip_reason" not in lead:
+                    lead["static_skip_reason"] = reason
+                    self._step(
+                        {
+                            "tool": "lead.skip",
+                            "url": urlsplit(str(lead["url"]))
+                            ._replace(query="", fragment="")
+                            .geturl(),
+                        },
+                        {"asset_reason": reason},
+                        {"status": "skipped", "reason": "static_asset"},
+                    )
             pool = [
                 lead
                 for url, lead in draft["leads"].items()
                 if url not in draft["candidates"]
                 and url not in known_urls
+                and "static_skip_reason" not in lead
                 and open_now & set(lead["property_ids"])
                 and (
                     not (lead.get("redirect_review_required") or lead.get("source_review_required"))
@@ -3923,6 +4008,24 @@ class DiscoveryLoop:
             while capture_queue and captures_this_iteration < self.max_captures:
                 lead = capture_queue.pop(0)
                 if lead["url"] in draft["candidates"]:
+                    continue
+                asset_reason = _static_asset_reason(
+                    str(lead["url"]),
+                    str(lead.get("content_type") or lead.get("mime_type") or ""),
+                )
+                if asset_reason is not None:
+                    if "static_skip_reason" not in lead:
+                        lead["static_skip_reason"] = asset_reason
+                        self._step(
+                            {
+                                "tool": "lead.skip",
+                                "url": urlsplit(str(lead["url"]))
+                                ._replace(query="", fragment="")
+                                .geturl(),
+                            },
+                            {"asset_reason": asset_reason},
+                            {"status": "skipped", "reason": "static_asset"},
+                        )
                     continue
                 captures_this_iteration += 1
                 candidate = {

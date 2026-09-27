@@ -334,3 +334,10 @@ credential, push, or deploy.
 # Current goal: R53 link integrity and recall
 
 Previously reviewed off-domain links may be reused only with the same captured parent evidence. A bounded captured open-data page may nominate relevant Spanish file links and browser-observed fetchable documents without granting source authority or evidence. Bot interstitials and credential URLs must fail safely. DONE: focused red-to-green synthetic tests, managed pytest/Ruff gate, local commit for integration.
+# Current goal: R55 static asset rejection
+
+P3 rejects CSS, scripts, source maps, favicons, fonts, and image leads before a browser pod is dispatched, regardless of whether a lead came from search, a portal, or a saved frontier. Known static response MIME types also cannot become sources. Every rejected lead has a trace reason.
+
+DONE: a synthetic provider with CSS, favicon, image, and a valid entity page captures only the entity page; the trace names each static skip. `uv run pytest -q tests/test_r55_static_assets.py`, then full pytest, Ruff lint and format checks, and `git diff --check` pass.
+
+Constraints: engine-owned P3 code and tests only; no case or approvals, no VM pull while an engine process runs, no credentials.

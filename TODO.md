@@ -656,3 +656,11 @@ tests/test_r53_dataset_links.py && git diff --check'`.
 - DONE: `agent-progress run` focused pytest and Ruff gate for R53 and P5 review tests; red-to-green regressions must cover each behavior.
 - FORMAT: `uv run ruff check` and `uv run ruff format --check` on touched Python files.
 - CHECK RESULT: `agent-progress run --task r53-integrity-recall --check r53-integrity-focused` passed: 49 P3/P5 tests, Ruff lint/format, and `git diff --check` (exit 0). Red baseline failed for Spanish links, network records, and changed-parent approval reuse.
+# R55 static assets
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r55_static_assets.py`, task notes and shared status. TASK: drop static leads before source capture. DONE: GOAL.md gate. FORMAT: Ruff.
+
+1. [ ] Add synthetic red capture-slot and trace regression.
+2. [ ] Filter by URL suffix and known MIME at the shared lead boundary; refuse static capture responses.
+3. [ ] Run focused and full gates, review and push public main.
+4. [ ] Deploy with R54/R53 in a confirmed zero-engine window; rebuild parse pod and report live SHA.
