@@ -6,9 +6,14 @@ import asyncio
 import importlib.util
 import json
 import sys
+import threading
 import types
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlsplit
+
+import pytest
 
 
 def _import_capture_module(monkeypatch):
@@ -266,3 +271,88 @@ def test_document_rescue_retains_one_follow_on_redirect_without_fetching_it(tmp_
     assert not (tmp_path / "document.bin").exists()
     handler = module._NoRedirectHandler()
     assert handler.redirect_request(None, None, 302, "found", {}, follow_on) is None
+
+
+@pytest.mark.parametrize("scheme, method", [("http", "GET"), ("https", "CONNECT")])
+def test_fetch_forces_no_proxy_target_through_job_proxy_and_records_failure(
+    monkeypatch, scheme, method
+):
+    module = _import_capture_module(monkeypatch)
+    target_host = "approved.example.test"
+    target = f"{scheme}://{target_host}/PorSitRFC21.xls"
+    events: list[dict] = []
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            host = urlsplit(self.path).hostname
+            events.append(
+                {
+                    "host": host,
+                    "method": "GET",
+                    "decision": "block",
+                    "reason": "dns_failed",
+                }
+            )
+            self.send_response(502)
+            self.end_headers()
+
+        def do_CONNECT(self) -> None:
+            events.append(
+                {
+                    "host": self.path.split(":", 1)[0],
+                    "method": "CONNECT",
+                    "decision": "block",
+                    "reason": "dns_failed",
+                }
+            )
+            self.send_response(502)
+            self.end_headers()
+
+        def log_message(self, _format: str, *_args) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    proxy_url = f"http://127.0.0.1:{server.server_port}"
+
+    monkeypatch.setenv("CAPTURE_URL", target)
+    monkeypatch.setenv("PROXY_URL", proxy_url)
+    monkeypatch.setenv("NO_PROXY", target_host)
+    monkeypatch.setenv("no_proxy", target_host)
+    monkeypatch.setenv("CAPTURE_MAX_STEPS", "3")
+    monkeypatch.setattr(module, "pod_identity", lambda: {"hostname": "synthetic-pod"})
+    monkeypatch.setattr(module, "isolation_probes", lambda _proxy: {"network": {}})
+    monkeypatch.setattr(
+        module,
+        "secret_probes",
+        lambda: {
+            "env_keys_found": 0,
+            "files_with_keys": 0,
+            "metadata_ip": "BLOCKED",
+            "mesh": "BLOCKED",
+        },
+    )
+
+    try:
+        with pytest.raises((HTTPError, URLError), match="502"):
+            module.fetch()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert events == [
+        {
+            "host": target_host,
+            "method": method,
+            "decision": "block",
+            "reason": "dns_failed",
+        }
+    ]
+    assert (
+        module._NoRedirectHandler().redirect_request(
+            None, None, 302, "found", {}, "http://unapproved.example.test/elsewhere"
+        )
+        is None
+    )

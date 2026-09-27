@@ -688,8 +688,22 @@ def fetch() -> None:
             {**preflight, "hygiene_failure": True, "steps": 0, "peak_memory_mb": peak_memory_mb()},
         )
         return
-    opener = build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    proxy = urlsplit(proxy_url)
+    if (
+        proxy.scheme != "http"
+        or not proxy.hostname
+        or proxy.port is None
+        or proxy.username is not None
+        or proxy.password is not None
+    ):
+        raise ValueError("fetch requires a plain HTTP per-job egress proxy")
     request = Request(target, headers={"User-Agent": "Ontofill/0.1"}, method="GET")
+    # Bind the request before urllib's ProxyHandler sees it. ProxyHandler's normal
+    # path calls proxy_bypass(), so a matching NO_PROXY entry would otherwise send
+    # DNS and the request directly from the pod. The empty handler also disables
+    # process-wide proxy settings; HTTPS still uses urllib's default TLS handler.
+    request.set_proxy(proxy.netloc, proxy.scheme)
+    opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
     budget.take()
     with opener.open(request, timeout=30) as response:
         payload = response.read(20 * 1024 * 1024 + 1)
