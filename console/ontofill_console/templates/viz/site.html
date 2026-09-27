@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Site graph · {{ m.source_id }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-sites.css"><script src="/static/viz-sites.js" defer></script>{% endblock %}
+{% block main %}
+{{ v.head("Site graph · " ~ m.source_id, "Page types the spider found on this source, sized by how many pages it fetched of each, with the links between them. Select a type to see its pages; pick a property to see which types show it.", m.sources) }}
+{% if m.question %}<p class="quote sg-question">{{ m.question }}</p>{% endif %}
+<p class="note sg-note"><a href="{{ m.list_href }}">All site graphs</a>{% if m.run_note %} · {{ m.run_note }}{% endif %}</p>
+
+{% if m.empty %}
+{{ v.empty(m.empty, "This graph cannot be drawn") }}
+{% else %}
+{% set g = m.graph %}
+{% set L = g.layout %}
+<dl class="kv sg-kv">
+  <dt>Source</dt><dd class="mono">{% if g.source_href %}<a href="{{ g.source_href }}" rel="noopener noreferrer" target="_blank">{{ g.source_url }}</a>{% else %}{{ g.source_url or "—" }}{% endif %}</dd>
+  <dt>Run</dt><dd class="mono">{% if g.run_href %}<a href="{{ g.run_href }}">{{ g.run_id }}</a>{% else %}{{ g.run_id or "—" }}{% endif %}{% if g.job_ids %} · {{ g.job_ids|length }} job{{ "s" if g.job_ids|length != 1 }}: {{ g.job_ids|join(", ") }}{% endif %}</dd>
+  <dt>Graph</dt><dd class="mono">{{ g.n_types }} page types · {{ g.n_instances }} fetched pages · {{ g.n_edges }} links ({{ g.n_followed }} followed, {{ g.n_not_followed }} not)</dd>
+  <dt>Labels</dt><dd class="mono">ontology {{ g.ontology_version or "—" }}{% if g.generated_by.backend %} · {{ g.generated_by.backend }}{% if g.generated_by.model %} {{ g.generated_by.model }}{% endif %}{% endif %}{% if g.generated_by.at %} · {{ g.generated_by.at[:19]|replace("T", " ") }}{% endif %}</dd>
+  <dt>File</dt><dd class="mono">{{ g.path }}{% if g.bronze_href %} · <a href="{{ g.bronze_href }}">bronze copy</a>{% endif %}{% if g.source_fingerprint %} · source {{ g.source_fingerprint[:12] }}…{% endif %}</dd>
+</dl>
+{% if g.problems %}<p class="note sg-note sg-partial" role="note">Partial file: {{ g.problems|join("; ") }}. What is present is drawn; nothing is inferred.</p>{% endif %}
+
+<div class="sg-layout" data-sg>
+  <section class="sg-main" aria-labelledby="sg-graph-h" id="graph">
+    <h2 class="section-h" id="sg-graph-h">Page types and links</h2>
+    <form class="sg-overlay" method="get" action="#graph">
+      {% if m.run_filter %}<input type="hidden" name="run" value="{{ m.run_filter }}">{% endif %}
+      {% if g.selected %}<input type="hidden" name="type" value="{{ g.selected }}">{% endif %}
+      <label for="sg-ov">Coverage overlay</label>
+      <select id="sg-ov" name="overlay">
+        <option value="">none</option>
+        {% for p in g.props %}<option value="{{ p.property_id }}"{% if p.active %} selected{% endif %}>{{ p.label }}{% if p.target %} · target{% endif %}</option>{% endfor %}
+      </select>
+      <button class="btn btn--quiet" type="submit">Show</button>
+    </form>
+    {% for p in g.props %}
+    <p class="sg-covsum" data-prop="{{ p.property_id }}"{% if not p.active %} hidden{% endif %}><b>{{ p.label }}</b> <span class="mono">({{ p.property_id }}{% if p.class_label %}, {{ p.class_label }}{% endif %})</span>{% if p.target %} · target property{% endif %} · graph coverage: {{ p.status }} · <span class="sg-g">●</span> covered on {{ p.n_covered }} · <span class="sg-g">◐</span> hinted on {{ p.n_hinted }} · <span class="sg-g">○</span> not seen on {{ p.n_none }} page type{{ "s" if p.n_none != 1 }}</p>
+    {% endfor %}
+
+    <div class="sg-wrap" tabindex="0" role="region" aria-label="Site graph drawing; scrolls sideways on narrow screens">
+      <svg class="graph sg-svg" width="{{ L.width }}" height="{{ L.height }}" viewBox="0 0 {{ L.width }} {{ L.height }}" role="group" aria-label="Site graph of {{ m.source_id }}: {{ g.n_types }} page types, {{ g.links|length }} kinds of link">
+        <defs>
+          <marker id="sg-arr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="sg-arrow" d="M0,0 L8,4 L0,8 z"/></marker>
+          <marker id="sg-arr-skip" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="sg-arrow sg-arrow--skip" d="M0,0 L8,4 L0,8 z"/></marker>
+        </defs>
+        {% for h in L.heads %}<text class="sg-colh" x="{{ h.x }}" y="14" text-anchor="middle">{{ h.text }}</text>{% endfor %}
+        {% for e in g.links %}
+        <g class="sg-link{% if not e.followed %} sg-link--skip{% endif %} sg-k-{{ e.kind }}">
+          <path d="{{ e.d }}" marker-end="url(#{{ 'sg-arr' if e.followed else 'sg-arr-skip' }})"><title>{{ e.title }}</title></path>
+          {% if e.n > 1 %}<text class="sg-n" x="{{ e.mx }}" y="{{ e.my }}" text-anchor="middle">×{{ e.n }}</text>{% endif %}
+        </g>
+        {% endfor %}
+        {% if L.ghost %}{% set gh = L.ghost %}
+        <g class="sg-ghost"><title>Links the spider saw but did not fetch: {% for u in g.unfetched %}{{ u.reason }} ×{{ u.n }}{% if not loop.last %}; {% endif %}{% endfor %}</title>
+          <rect x="{{ gh.x }}" y="{{ gh.y }}" width="{{ gh.w }}" height="{{ gh.h }}" rx="3"/>
+          <text x="{{ gh.x + 8 }}" y="{{ gh.y + 18 }}">{{ gh.label }}</text>
+          <text class="sub" x="{{ gh.x + 8 }}" y="{{ gh.y + 34 }}">{{ gh.sub }}</text>
+        </g>
+        {% endif %}
+        {% for n in g.nodes %}
+        <a class="sg-node{% if n.selected %} is-sel{% endif %}{% if n.seed %} is-seed{% endif %}{% if n.cov %} cov-{{ n.cov }}{% endif %}" href="{{ n.href }}" data-type="{{ n.type_id }}" data-cov="{{ n.cov_json }}" data-aria="{{ n.aria }}" aria-label="{{ n.aria }}{% if n.cov %} Coverage: {{ n.cov }}.{% endif %}"{% if n.selected %} aria-current="true"{% endif %}>
+          <rect class="sg-hit" x="{{ n.cx - 100 }}" y="{{ n.cy - 34 }}" width="200" height="112"/>
+          {% if n.seed %}<circle class="sg-seedring" cx="{{ n.cx }}" cy="{{ n.cy }}" r="{{ n.r + 4 }}"/>{% endif %}
+          <circle cx="{{ n.cx }}" cy="{{ n.cy }}" r="{{ n.r }}"/>
+          <text class="sg-glyph" x="{{ n.cx + 34 }}" y="{{ n.cy - 18 }}" text-anchor="middle">{{ n.glyph }}</text>
+          <text x="{{ n.tx }}" y="{{ n.ty }}" text-anchor="middle">{{ n.label_short }}</text>
+          <text class="sub" x="{{ n.tx }}" y="{{ n.ty + 13 }}" text-anchor="middle">{{ n.sub_short }}</text>
+          {% if n.hints_short %}<text class="sub sg-hint" x="{{ n.tx }}" y="{{ n.ty + 26 }}" text-anchor="middle">{{ n.hints_short }}</text>{% endif %}
+        </a>
+        {% endfor %}
+      </svg>
+    </div>
+
+    <div class="sg-legends">
+      <p class="legend sg-legend" aria-label="Size scale">
+        <span>circle area ∝ fetched pages:</span>
+        {% for s in L.scale %}<span class="sg-scale"><svg width="{{ s.d }}" height="{{ s.d }}" viewBox="0 0 {{ s.d }} {{ s.d }}" aria-hidden="true"><circle cx="{{ s.d / 2 }}" cy="{{ s.d / 2 }}" r="{{ s.r }}"/></svg>{{ s.n }}</span>{% endfor %}
+        <span>· double ring = entry page</span>
+      </p>
+      <p class="legend sg-legend" aria-label="Link styles">
+        <span class="sg-key"><svg width="34" height="10" aria-hidden="true"><line x1="0" y1="5" x2="34" y2="5" class="sg-keyline"/></svg>followed</span>
+        <span class="sg-key"><svg width="34" height="10" aria-hidden="true"><line x1="0" y1="5" x2="34" y2="5" class="sg-keyline sg-keyline--skip"/></svg>not followed (reason on hover and in the table below)</span>
+        <span>×n = links of that kind · all links GET, SAFE or LOW</span>
+      </p>
+      <p class="legend sg-legend" id="sg-covlegend" aria-label="Coverage overlay legend"{% if not g.overlay %} hidden{% endif %}>
+        {% for c in g.cov_legend %}<span class="sg-cov cov-{{ c.state }}"><b class="sg-g">{{ c.glyph }}</b> {{ c.label }}: {{ c.meaning }}</span>{% endfor %}
+      </p>
+    </div>
+    <p class="visually-hidden" id="sg-live" aria-live="polite"></p>
+  </section>
+
+  <aside class="sg-side" aria-label="Selected page type and crawl facts">
+    <section id="sel" class="panel sg-drillbox" aria-labelledby="sg-sel-h">
+      <h2 class="section-h" id="sg-sel-h">Selected page type</h2>
+      <p class="note sg-pick" id="sg-pick"{% if g.selected %} hidden{% endif %}>Select a page type in the graph (Tab, then Enter) or in the list below to see its fetched pages.</p>
+      {% for n in g.nodes %}
+      <div class="sg-drill" data-type="{{ n.type_id }}"{% if not n.selected %} hidden{% endif %}>
+        <h3 class="sg-drill__h">{{ n.label }} <span class="mono">· {{ n.n }} page{{ "s" if n.n != 1 }}</span></h3>
+        <dl class="kv">
+          <dt>URL template</dt><dd class="mono">{{ n.template or "—" }}</dd>
+          <dt>Kind</dt><dd>{{ n.kind or "—" }}{% if n.class_id %} · class <span class="mono">{{ n.class_id }}</span>{% endif %}{% if n.depth is not none %} · depth {{ n.depth }}{% endif %}</dd>
+          {% if n.skeleton %}<dt>Skeleton</dt><dd class="mono">{{ n.skeleton[:16] }}…</dd>{% endif %}
+        </dl>
+        {% if n.hints %}
+        <ul class="sg-hints">{% for h in n.hints %}<li><b>{{ h.label }}</b> <span class="mono">({{ h.property_id }})</span>{% if h.quote %}<q class="quote">{{ h.quote }}</q>{% endif %}</li>{% endfor %}</ul>
+        {% else %}<p class="note sg-note">No property hints quoted for this type.</p>{% endif %}
+        <ul class="caps sg-caps">
+          {% for i in n.insts %}
+          <li class="cap sg-cap{% if i.http_status and (i.http_status < 200 or i.http_status >= 300) %} st-block{% endif %}">
+            {% if i.img %}<a href="{{ i.raw or i.img }}"><img src="{{ i.img }}" loading="lazy" decoding="async" alt="Capture of {{ i.path or i.url }}"></a>
+            {% elif i.raw %}<a class="noimg" href="{{ i.raw }}">{{ i.capture_type or i.content_type or "capture" }} · no screenshot</a>
+            {% else %}<span class="noimg">no capture key</span>{% endif %}
+            <p title="{{ i.url }}">{% if i.safe_url %}<a href="{{ i.safe_url }}" rel="noopener noreferrer" target="_blank">{{ i.path or i.url }}</a>{% else %}{{ i.path or "(no url)" }}{% endif %}</p>
+            <p>{{ i.http_status if i.http_status is not none else "no status" }} · depth {{ i.depth if i.depth is not none else "?" }}{% if i.link_kind_label %} · {{ i.link_kind_label }}{% endif %}</p>
+            {% if i.redirects %}<p title="{{ i.redirect_chain|join(' → ') }}">{{ i.redirects|length }} redirect{{ "s" if i.redirects|length != 1 }}</p>{% endif %}
+            <p>{% if i.step_href %}<a href="{{ i.step_href }}">trace step</a>{% else %}no trace step{% endif %}</p>
+          </li>
+          {% else %}<li class="note">No fetched page carries this type.</li>{% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </section>
+
+    <section class="panel" aria-labelledby="sg-crawl-h">
+      <h2 class="section-h" id="sg-crawl-h">Crawl</h2>
+      {% set c = g.crawl %}
+      <p><span class="chip st-{{ c.stop_state }}">stop: {{ c.stop_label or "not recorded" }}</span></p>
+      <dl class="kv">
+        <dt>Pages</dt><dd class="mono">{{ c.fetched_pages if c.fetched_pages is not none else "?" }} fetched of {{ c.attempted_pages if c.attempted_pages is not none else "?" }} attempted</dd>
+        <dt>Page cap</dt><dd class="mono">{{ c.page_cap if c.page_cap is not none else "—" }}</dd>
+        <dt>Max depth</dt><dd class="mono">{{ c.max_depth if c.max_depth is not none else "—" }}</dd>
+        <dt>Delay</dt><dd class="mono">{% if c.delay_seconds is not none %}{{ c.delay_seconds }} s between requests{% else %}—{% endif %}</dd>
+        <dt>Domain</dt><dd>{% if c.same_registrable_domain %}same registrable domain only{% elif c.same_registrable_domain is none %}not recorded{% else %}not restricted{% endif %}</dd>
+        <dt>Methods</dt><dd>GET only; SAFE or LOW links; no forms</dd>
+      </dl>
+      <h3 class="section-h">robots.txt</h3>
+      {% if c.robots %}
+      <div class="table-wrap"><table class="grid-table sg-robots">
+        <thead><tr><th scope="col">Origin</th><th scope="col">Decision</th><th scope="col" class="num">HTTP</th><th scope="col" class="num">Delay</th></tr></thead>
+        <tbody>{% for r in c.robots %}<tr><td class="mono">{{ host_of(r.origin or r.url or "") }}{% if r.href %} · <a href="{{ r.href }}">copy</a>{% endif %}</td><td>{{ r.decision_label }}</td><td class="num">{{ r.http_status if r.http_status is not none else "—" }}</td><td class="num">{{ r.crawl_delay_seconds if r.crawl_delay_seconds is not none else "—" }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      {% else %}<p class="note sg-note">No robots.txt decision recorded.</p>{% endif %}
+    </section>
+  </aside>
+</div>
+
+<div class="panels sg-panels">
+  <section class="panel" aria-labelledby="sg-cov-h">
+    <h2 class="section-h" id="sg-cov-h">Property coverage</h2>
+    <dl class="kv">
+      <dt>Target</dt><dd>{% for p in g.coverage.target %}<a class="chip st-none" href="{{ (g.props|selectattr('property_id', 'equalto', p.property_id)|first).href }}#graph">{{ p.label }}</a> {% else %}—{% endfor %}</dd>
+      <dt>Hinted</dt><dd>{% for p in g.coverage.hinted %}<span class="chip st-done">{{ p.label }}</span> {% else %}—{% endfor %}</dd>
+      <dt>Uncovered</dt><dd>{% for p in g.coverage.uncovered %}<span class="chip st-block">{{ p.label }}</span> {% else %}—{% endfor %}</dd>
+    </dl>
+    <p class="note sg-note">Hinted: a page of this source quotes text for the property. Uncovered target properties need another source or another path (Phase 3 reopens).</p>
+  </section>
+  <section class="panel" aria-labelledby="sg-un-h">
+    <h2 class="section-h" id="sg-un-h">Links not fetched</h2>
+    {% if g.unfetched %}
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th scope="col">Reason</th><th scope="col" class="num">Links</th><th scope="col">Examples</th></tr></thead>
+      <tbody>{% for u in g.unfetched %}<tr><td class="mono">{{ u.reason }}</td><td class="num">{{ u.n }}</td><td class="mono">{% for x in u.urls %}{{ x|brief(60) }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="note sg-note">Every link the spider recorded led to a fetched page.</p>{% endif %}
+  </section>
+</div>
+
+<section class="sg-list" aria-labelledby="sg-list-h">
+  <h2 class="section-h" id="sg-list-h">Page types and their pages</h2>
+  {% for n in g.nodes %}
+  <details data-type="{{ n.type_id }}"{% if n.selected %} open{% endif %}>
+    <summary><b>{{ n.label }}</b> <span class="mono">· {{ n.n }} page{{ "s" if n.n != 1 }}{% if n.template %} · {{ n.template }}{% endif %}{% if n.hint_ids %} · hints: {{ n.hints|map(attribute='label')|join(", ") }}{% endif %}</span></summary>
+    <p class="note sg-note"><a href="{{ n.href }}">Select in the graph</a></p>
+    <ul class="sg-rows">
+      {% for i in n.insts %}<li class="mono"><span>{% if i.safe_url %}<a href="{{ i.safe_url }}" rel="noopener noreferrer" target="_blank">{{ i.path or i.url }}</a>{% else %}{{ i.path or "(no url)" }}{% endif %}</span> <span>{{ i.http_status if i.http_status is not none else "—" }} · d{{ i.depth if i.depth is not none else "?" }}</span>{% if i.step_href %} <a href="{{ i.step_href }}">step</a>{% endif %}{% if i.raw %} <a href="{{ i.raw }}">capture</a>{% endif %}</li>{% else %}<li class="note">No fetched page.</li>{% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

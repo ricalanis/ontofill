@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Site graphs{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-sites.css">{% endblock %}
+{% block main %}
+{{ v.head("Site graphs", "Each source a spider explored: the page types it found, how they link, which definition-of-done properties each type shows, and why the crawl stopped. Open a source to see its graph and pages.", m.sources) }}
+{% if m.question %}<p class="quote sg-question">{{ m.question }}</p>{% endif %}
+
+{% if m.run_id %}<p class="note sg-note">Showing graphs built by run <span class="mono">{{ m.run_id }}</span> · <a href="{{ base }}/sites">all graphs</a></p>{% endif %}
+
+{% if m.empty %}
+{{ v.empty(m.empty, "No site graph yet") }}
+{% else %}
+<p class="sg-totals mono">{{ m.n_graphs }} graph{{ "s" if m.n_graphs != 1 }} · {{ m.n_types }} page types · {{ m.n_instances }} fetched pages{% if m.n_files != m.n_graphs %} · {{ m.n_files - m.n_graphs }} unreadable file{{ "s" if m.n_files - m.n_graphs != 1 }}{% endif %}</p>
+<ul class="strips sg-sources">
+  {% for r in m.rows %}
+  <li>
+    <a class="strip st-{{ r.stop_state if r.readable else 'block' }}" href="{{ r.href }}">
+      <span class="strip__g" aria-hidden="true"></span>
+      <span class="strip__main">
+        <b class="mono">{{ r.source_id }}</b>{% if r.host %} <span class="sg-host">{{ r.host }}</span>{% endif %}
+        {% if r.readable %}
+        <small>{{ r.n_types }} page type{{ "s" if r.n_types != 1 }} · {{ r.n_instances }} page{{ "s" if r.n_instances != 1 }} fetched{% if r.attempted is not none %} of {{ r.attempted }} attempted{% endif %}{% if r.page_cap %} (cap {{ r.page_cap }}, depth ≤ {{ r.max_depth }}){% endif %} · {{ r.n_edges }} links: {{ r.n_followed }} followed, {{ r.n_not_followed }} not</small>
+        <small>{{ r.type_labels|join(" · ") }}</small>
+        {% else %}
+        <small>{{ r.path }}: {{ r.problems|join("; ") or "no readable page types" }}</small>
+        {% endif %}
+      </span>
+      <span class="strip__meta">{% if r.readable %}{% if r.stop_label %}stop: {{ r.stop_label }}{% else %}stop reason not recorded{% endif %}{% if r.n_target %}<br>{{ r.n_hinted }}/{{ r.n_target }} target properties hinted{% endif %}{% if r.run_id %}<br>{{ r.run_id }}{% endif %}{% endif %}</span>
+    </a>
+    {% if r.readable and r.n_target %}
+    <div class="meters sg-meter" aria-label="Target properties hinted on {{ r.source_id }}">
+      <span class="mono">coverage</span>
+      <div class="meter" role="img" aria-label="{{ r.n_hinted }} of {{ r.n_target }} target properties hinted, {{ r.n_uncovered }} uncovered"><span style="--v:{{ r.cov_pct }}%;--c:var(--st-done)"></span></div>
+      <span class="num">{{ r.n_hinted }}/{{ r.n_target }} hinted · {{ r.n_uncovered }} uncovered</span>
+    </div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+<p class="note sg-note">The strip edge shows the stop reason: ✓ every reachable link visited · ‖ depth limit or page cap · ◆ login or captcha (stopped and flagged) · ■ robots.txt or network error.</p>
+{% endif %}
+{% endblock %}
