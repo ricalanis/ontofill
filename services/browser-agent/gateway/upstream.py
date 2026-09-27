@@ -15,8 +15,15 @@ class UpstreamError(Exception):
 
 
 class Upstreams:
-    def __init__(self, vultr_base: str, vultr_key: str | None, jev_base: str, jev_key: str | None,
-                 vultr_timeout: float = 90.0, jev_timeout: float = 20.0):
+    def __init__(
+        self,
+        vultr_base: str,
+        vultr_key: str | None,
+        jev_base: str,
+        jev_key: str | None,
+        vultr_timeout: float = 90.0,
+        jev_timeout: float = 20.0,
+    ):
         self.vultr_base = vultr_base.rstrip("/")
         self.jev_base = jev_base.rstrip("/")
         self._vultr_key = vultr_key
@@ -35,8 +42,12 @@ class Upstreams:
     def chat(self, body: dict) -> tuple[dict, float]:
         t0 = time.monotonic()
         try:
-            r = httpx.post(f"{self.vultr_base}/chat/completions", json=body, headers=self._vultr_headers(),
-                           timeout=self.vultr_timeout)
+            r = httpx.post(
+                f"{self.vultr_base}/chat/completions",
+                json=body,
+                headers=self._vultr_headers(),
+                timeout=self.vultr_timeout,
+            )
         except httpx.HTTPError as exc:
             raise UpstreamError(f"vultr unreachable: {type(exc).__name__}") from None
         ms = (time.monotonic() - t0) * 1000
@@ -47,8 +58,9 @@ class Upstreams:
     def chat_stream(self, body: dict):
         """Context-managed streaming response (caller iterates bytes)."""
         client = httpx.Client(timeout=self.vultr_timeout)
-        req = client.build_request("POST", f"{self.vultr_base}/chat/completions", json=body,
-                                   headers=self._vultr_headers())
+        req = client.build_request(
+            "POST", f"{self.vultr_base}/chat/completions", json=body, headers=self._vultr_headers()
+        )
         try:
             resp = client.send(req, stream=True)
         except httpx.HTTPError as exc:
@@ -75,9 +87,12 @@ class Upstreams:
             raise UpstreamError("Jev key not configured")
         t0 = time.monotonic()
         try:
-            r = httpx.post(f"{self.jev_base}/v1/systemone", json=body,
-                           headers={"Authorization": f"Bearer {self._jev_key}", "Content-Type": "application/json"},
-                           timeout=self.jev_timeout)
+            r = httpx.post(
+                f"{self.jev_base}/v1/systemone",
+                json=body,
+                headers={"Authorization": f"Bearer {self._jev_key}", "Content-Type": "application/json"},
+                timeout=self.jev_timeout,
+            )
         except httpx.HTTPError as exc:
             raise UpstreamError(f"jev unreachable: {type(exc).__name__}") from None
         ms = (time.monotonic() - t0) * 1000

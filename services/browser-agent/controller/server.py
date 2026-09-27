@@ -28,7 +28,9 @@ from shared.steps import StepLog
 STEPS_DIR_ENV = "BA_STEPS_DIR"  # where each session's trace-step JSONL goes
 CAPTURES_DIR_ENV = "BA_CAPTURES_DIR"  # local bronze-layout capture root
 CASE_DIR_ENV = "BA_CASE_DIR"  # the case package: action approvals go to <case>/05-actions/
-CDP_URL_ENV = "BA_CDP_URL"  # a browser pod's CDP endpoint (until the cell substrate hands one out per session)
+CDP_URL_ENV = (
+    "BA_CDP_URL"  # a browser pod's CDP endpoint (until the cell substrate hands one out per session)
+)
 
 
 def _default_backend(cdp_url: str | None, debug_port: bool = False):
@@ -40,9 +42,18 @@ def _default_backend(cdp_url: str | None, debug_port: bool = False):
 class Broker:
     """Holds live sessions. Factories are injectable so tests run without a gateway or a browser."""
 
-    def __init__(self, *, admin=None, gateway_factory=None, backend_factory=None, steps_dir: Path | None = None,
-                 captures_dir: Path | None = None, case_dir: Path | None = None, pool: CellPool | None | bool = None,
-                 liveview: LiveViewHub | ExposedLiveView | None | bool = None):
+    def __init__(
+        self,
+        *,
+        admin=None,
+        gateway_factory=None,
+        backend_factory=None,
+        steps_dir: Path | None = None,
+        captures_dir: Path | None = None,
+        case_dir: Path | None = None,
+        pool: CellPool | None | bool = None,
+        liveview: LiveViewHub | ExposedLiveView | None | bool = None,
+    ):
         gateway_url = config.env(config.GATEWAY_URL_ENV)
         admin_token = os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV)
         if admin is None and admin_token:
@@ -53,9 +64,12 @@ class Broker:
         # `netbird expose` per session, else the shared hub on BA_LIVEVIEW_PORT (default 8702, 0 = off).
         self.liveview = live_view_from_env() if liveview is None else (liveview or None)
         self.backend_factory = backend_factory or (
-            lambda cdp_url: _default_backend(cdp_url, debug_port=self.liveview is not None and not cdp_url))
+            lambda cdp_url: _default_backend(cdp_url, debug_port=self.liveview is not None and not cdp_url)
+        )
         self.steps_dir = Path(steps_dir or os.environ.get(STEPS_DIR_ENV) or "runs/browser-agent/steps")
-        self.captures_dir = Path(captures_dir or os.environ.get(CAPTURES_DIR_ENV) or "runs/browser-agent/captures")
+        self.captures_dir = Path(
+            captures_dir or os.environ.get(CAPTURES_DIR_ENV) or "runs/browser-agent/captures"
+        )
         case = case_dir or os.environ.get(CASE_DIR_ENV)
         self.case_dir = Path(case) if case else None
         # Cells (§13a): a pool leases one cell per session; None = the backend launches/connects a browser itself.
@@ -80,12 +94,20 @@ class Broker:
         session_id = f"bas-{uuid.uuid4().hex[:16]}"
         run_id = str(tdd.get("run_id") or "adhoc")
         if self.admin is None:
-            raise RuntimeError(f"no gateway admin: set {config.GATEWAY_ADMIN_TOKEN_ENV} and {config.GATEWAY_URL_ENV}")
-        token = self.admin.open_session(session_id, ttl_s=int(lim.ttl_s), budget_usd=float(lim.budget_usd),
-                                        run_id=run_id)
-        steps = StepLog(self.steps_dir / f"{session_id}.jsonl", run_id=run_id, session_id=session_id,
-                        source_id=tdd.get("source_id"), objective_id=tdd.get("objective_id"),
-                        tdd_path=tdd.get("tdd_path"))
+            raise RuntimeError(
+                f"no gateway admin: set {config.GATEWAY_ADMIN_TOKEN_ENV} and {config.GATEWAY_URL_ENV}"
+            )
+        token = self.admin.open_session(
+            session_id, ttl_s=int(lim.ttl_s), budget_usd=float(lim.budget_usd), run_id=run_id
+        )
+        steps = StepLog(
+            self.steps_dir / f"{session_id}.jsonl",
+            run_id=run_id,
+            session_id=session_id,
+            source_id=tdd.get("source_id"),
+            objective_id=tdd.get("objective_id"),
+            tdd_path=tdd.get("tdd_path"),
+        )
         case_dir = Path(tdd["case_dir"]) if tdd.get("case_dir") else self.case_dir
         cdp_url = tdd.get("cdp_url") or os.environ.get(CDP_URL_ENV)
         cell = None
@@ -98,20 +120,38 @@ class Broker:
             cdp_url = cell.cdp_url
         cell_info = None
         if cell is not None:
-            cell_info = {"cell_id": cell.cell_id, "isolation": cell.isolation, "placement": cell.placement,
-                         **{k: v for k, v in self.pool.timings(cell.cell_id).items() if k.endswith("_ms") or k == "warm"}}
+            cell_info = {
+                "cell_id": cell.cell_id,
+                "isolation": cell.isolation,
+                "placement": cell.placement,
+                **{
+                    k: v
+                    for k, v in self.pool.timings(cell.cell_id).items()
+                    if k.endswith("_ms") or k == "warm"
+                },
+            }
         backend = self.backend_factory(cdp_url)
         if cell is not None:
             backend = CellCountedBackend(backend, self.pool, cell)
         captures = RecordingCaptures(LocalCaptureStore(self.captures_dir))
-        session = Session(session_id=session_id, backend=backend,
-                          gateway=self.gateway_factory(token), steps=steps,
-                          captures=captures, allowed_domains=allowed_domains,
-                          case_dir=case_dir, job_id=str(tdd.get("job_id") or f"job:{session_id}"), limits=lim,
-                          source_id=tdd.get("source_id"),
-                          artifact_paths=[tdd["tdd_path"]] if tdd.get("tdd_path") else None, admin=self.admin,
-                          vision_grounding=bool(tdd.get("vision_grounding")), start_url=tdd.get("start_url"),
-                          cdp_url=cdp_url, cell=cell_info)
+        session = Session(
+            session_id=session_id,
+            backend=backend,
+            gateway=self.gateway_factory(token),
+            steps=steps,
+            captures=captures,
+            allowed_domains=allowed_domains,
+            case_dir=case_dir,
+            job_id=str(tdd.get("job_id") or f"job:{session_id}"),
+            limits=lim,
+            source_id=tdd.get("source_id"),
+            artifact_paths=[tdd["tdd_path"]] if tdd.get("tdd_path") else None,
+            admin=self.admin,
+            vision_grounding=bool(tdd.get("vision_grounding")),
+            start_url=tdd.get("start_url"),
+            cdp_url=cdp_url,
+            cell=cell_info,
+        )
         try:
             opened = session.open()
         except Exception:
@@ -121,18 +161,26 @@ class Broker:
                 self.pool.release(cell)
             raise
         live_view_url, live_view_error = None, None
-        if self.liveview is not None:  # the URL (with its view token) goes to the caller only, never into steps
-            live_view_url, source = self.liveview.register(session_id, cdp_url or getattr(backend, "cdp_endpoint", None))
+        if (
+            self.liveview is not None
+        ):  # the URL (with its view token) goes to the caller only, never into steps
+            live_view_url, source = self.liveview.register(
+                session_id, cdp_url or getattr(backend, "cdp_endpoint", None)
+            )
             captures.source = source
             live_view_error = (getattr(self.liveview, "errors", None) or {}).get(session_id)
         with self._lock:
             self.sessions[session_id] = session
             if cell is not None:
                 self.cells[session_id] = cell
-        return {"session_id": session_id, "live_view_url": live_view_url, "url": opened.get("url"),
-                "steps_path": str(steps.path),
-                **({"live_view": {"error": live_view_error}} if live_view_error and not live_view_url else {}),
-                **({"cell_id": cell_info["cell_id"], "isolation": cell_info["isolation"]} if cell_info else {})}
+        return {
+            "session_id": session_id,
+            "live_view_url": live_view_url,
+            "url": opened.get("url"),
+            "steps_path": str(steps.path),
+            **({"live_view": {"error": live_view_error}} if live_view_error and not live_view_url else {}),
+            **({"cell_id": cell_info["cell_id"], "isolation": cell_info["isolation"]} if cell_info else {}),
+        }
 
     def act(self, session_id: str, goal: str | None = None, action: dict | None = None) -> dict:
         if bool(goal) == bool(action):
@@ -141,7 +189,8 @@ class Broker:
         result = session.run_goal(goal) if goal else session.run_action(action, None)
         with self._lock:
             self.results.setdefault(session_id, []).append(
-                {"goal": goal, "status": result.get("status"), "url": result.get("url")})
+                {"goal": goal, "status": result.get("status"), "url": result.get("url")}
+            )
         return result
 
     def observe(self, session_id: str) -> dict:
@@ -161,8 +210,11 @@ class Broker:
             if cell is not None:  # the proof's task checkpoint gets the real result, never an inference
                 ok = bool(outcomes) and all(o["status"] == "achieved" for o in outcomes if o["goal"])
                 try:
-                    self.pool.report_task_result(cell, {"outcomes": outcomes[-10:],
-                                                        "extracted_fields": sorted(session.extracted)[:50]}, ok)
+                    self.pool.report_task_result(
+                        cell,
+                        {"outcomes": outcomes[-10:], "extracted_fields": sorted(session.extracted)[:50]},
+                        ok,
+                    )
                 except CellError:
                     pass
             result = session.close()
@@ -177,8 +229,12 @@ class Broker:
         if cell_result is not None:
             result = result | {"cell": cell_result}
             result["metrics"] = dict(result.get("metrics") or {}) | {
-                "cell": {k: v for k, v in self.pool.timings(cell_result["cell_id"]).items()
-                         if k.endswith("_ms") or k == "warm"}}
+                "cell": {
+                    k: v
+                    for k, v in self.pool.timings(cell_result["cell_id"]).items()
+                    if k.endswith("_ms") or k == "warm"
+                }
+            }
         return result | {"token_revoked": revoked}
 
     def close_all(self) -> None:
@@ -247,10 +303,14 @@ def session_close(session_id: str) -> dict:
 def build_server():
     from mcp.server.mcpserver import MCPServer
 
-    server = MCPServer("ontofill-browser-agent", instructions=(
-        "Read-only browser sessions for Ontofill. session.open with the TDD and its allowed domains, then "
-        "session.act with a goal or one action, session.observe, and session.close. HIGH-risk actions wait for a "
-        "human approval under the case's 05-actions/."))
+    server = MCPServer(
+        "ontofill-browser-agent",
+        instructions=(
+            "Read-only browser sessions for Ontofill. session.open with the TDD and its allowed domains, then "
+            "session.act with a goal or one action, session.observe, and session.close. HIGH-risk actions wait for a "
+            "human approval under the case's 05-actions/."
+        ),
+    )
 
     async def _open(tdd: dict, allowed_domains: list[str], limits: dict | None = None) -> dict:
         return await anyio.to_thread.run_sync(session_open, tdd, allowed_domains, limits)
@@ -264,9 +324,12 @@ def build_server():
     async def _close(session_id: str) -> dict:
         return await anyio.to_thread.run_sync(session_close, session_id)
 
-    for name, fn, doc in (("session.open", _open, session_open.__doc__), ("session.act", _act, session_act.__doc__),
-                          ("session.observe", _observe, session_observe.__doc__),
-                          ("session.close", _close, session_close.__doc__)):
+    for name, fn, doc in (
+        ("session.open", _open, session_open.__doc__),
+        ("session.act", _act, session_act.__doc__),
+        ("session.observe", _observe, session_observe.__doc__),
+        ("session.close", _close, session_close.__doc__),
+    ):
         server.add_tool(fn, name=name, description=doc)
     return server
 

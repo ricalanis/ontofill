@@ -38,7 +38,7 @@ class Element:
         form = ""
         if self.form:
             form = f" [form {self.form.get('method', 'get').upper()}{' search' if self.form.get('search') else ''}]"
-        return f"{self.id} {self.kind} \"{self.name[:80]}\"{extra}{form}"
+        return f'{self.id} {self.kind} "{self.name[:80]}"{extra}{form}'
 
 
 @dataclass
@@ -55,8 +55,13 @@ class Observation:
         return next((e for e in self.elements if e.id == element_id), None)
 
     def summary(self) -> dict:
-        return {"url": self.url, "title": self.title, "elements": len(self.elements),
-                "text_chars": len(self.text), "screenshot_key": self.screenshot_key}
+        return {
+            "url": self.url,
+            "title": self.title,
+            "elements": len(self.elements),
+            "text_chars": len(self.text),
+            "screenshot_key": self.screenshot_key,
+        }
 
 
 @dataclass
@@ -71,13 +76,13 @@ class Action:
     def describe(self, obs: Observation | None = None) -> str:
         """One line for the gate, the approval file and the planner history."""
         el = obs.element(self.element_id) if obs else None
-        target = f" {el.kind} \"{el.name[:80]}\"" if el else (f" {self.element_id}" if self.element_id else "")
+        target = f' {el.kind} "{el.name[:80]}"' if el else (f" {self.element_id}" if self.element_id else "")
         if self.tool == "navigate":
             return f"navigate to {self.args.get('url')}"
         if self.tool == "type":
-            return f"type \"{str(self.args.get('text', ''))[:80]}\" into{target}"
+            return f'type "{str(self.args.get("text", ""))[:80]}" into{target}'
         if self.tool == "select":
-            return f"select \"{self.args.get('value')}\" in{target}"
+            return f'select "{self.args.get("value")}" in{target}'
         if self.tool == "extract":
             return f"extract {', '.join(self.args.get('fields', []) or [])}"
         host = f" on {urlsplit(obs.url).hostname}" if obs and obs.url else ""

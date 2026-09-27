@@ -75,17 +75,28 @@ def prompt_text(messages: list[dict]) -> str:
 
 def by_name(tool: str, name: str, **args):
     """A plan item that finds the element id by its visible name in the planner prompt."""
+
     def item(prompt: str):
         m = re.search(rf'(e\d+) \w+ "{re.escape(name)}', prompt)
         return tool, {"element_id": m.group(1) if m else "e999", **args}
+
     return item
 
 
 class FakeGateway:
     """Planner calls pop scripted tool calls; Jev answers by question key; the vision verifier pops verdicts."""
 
-    def __init__(self, plan=(), *, jev_tier="SAFE", progress=0.95, vision=(), flag=None, inj=None,
-                 chat_error: int | None = None):
+    def __init__(
+        self,
+        plan=(),
+        *,
+        jev_tier="SAFE",
+        progress=0.95,
+        vision=(),
+        flag=None,
+        inj=None,
+        chat_error: int | None = None,
+    ):
         self.plan = list(plan)
         self.jev_tier = jev_tier
         self.progress = list(progress) if isinstance(progress, (list, tuple)) else progress
@@ -106,12 +117,21 @@ class FakeGateway:
         if params.get("tools"):
             self.planner_prompts.append(text)
             self.last_gate = "flagged" if self.flag(text) else "clean"
-            item = self.plan.pop(0) if self.plan else ("done", {"status": "not_achievable", "summary": "script over"})
+            item = (
+                self.plan.pop(0)
+                if self.plan
+                else ("done", {"status": "not_achievable", "summary": "script over"})
+            )
             tool, args = item(text) if callable(item) else item
-            call = {"id": f"call_{len(self.planner_prompts)}", "type": "function",
-                    "function": {"name": tool, "arguments": json.dumps(args)}}
-            return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [call]}}],
-                    "usage": usage}
+            call = {
+                "id": f"call_{len(self.planner_prompts)}",
+                "type": "function",
+                "function": {"name": tool, "arguments": json.dumps(args)},
+            }
+            return {
+                "choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [call]}}],
+                "usage": usage,
+            }
         self.last_gate = "clean"
         self.vision_calls.append(messages)
         content = self.vision.pop(0) if self.vision else '{"verdict": "achieved", "confidence": 0.9}'
@@ -122,12 +142,18 @@ class FakeGateway:
         key = next(iter(questions))
         model, usage = "jev-1.13.0", {"input_tokens": 250, "output_tokens": 10}
         if key == "tier":
-            return {"model": model, "usage": usage,
-                    "answers": {"tier": {"type": "choice", "choice": self.jev_tier, "confidence": 0.9}}}
+            return {
+                "model": model,
+                "usage": usage,
+                "answers": {"tier": {"type": "choice", "choice": self.jev_tier, "confidence": 0.9}},
+            }
         if key == "inj":
             choice = self.inj(state["chunk"])
-            return {"model": model, "usage": usage,
-                    "answers": {"inj": {"type": "choice", "choice": choice, "confidence": 0.93}}}
+            return {
+                "model": model,
+                "usage": usage,
+                "answers": {"inj": {"type": "choice", "choice": choice, "confidence": 0.93}},
+            }
         if key == "progress":
             p = self.progress.pop(0) if isinstance(self.progress, list) and self.progress else self.progress
             p = 0.5 if isinstance(p, list) else p
@@ -166,18 +192,44 @@ class FakeBackend:
         self.session = session
 
     def observe(self):
-        els = [Element("e1", "input", "input", "Nombre", '[data-ba-id="e1"]', input_type="search",
-                       form={"method": "get", "action": "/r", "search": True}),
-               Element("e2", "link", "a", "Entidad Ejemplo 01", '[data-ba-id="e2"]',
-                       href="https://registry.example/detail")]
-        return Observation(url=self.url, title="Registry", text=f"Registry search\n{len(self.actions)} actions",
-                           elements=els, screenshot_png=PNG + str(len(self.actions)).encode())
+        els = [
+            Element(
+                "e1",
+                "input",
+                "input",
+                "Nombre",
+                '[data-ba-id="e1"]',
+                input_type="search",
+                form={"method": "get", "action": "/r", "search": True},
+            ),
+            Element(
+                "e2",
+                "link",
+                "a",
+                "Entidad Ejemplo 01",
+                '[data-ba-id="e2"]',
+                href="https://registry.example/detail",
+            ),
+        ]
+        return Observation(
+            url=self.url,
+            title="Registry",
+            text=f"Registry search\n{len(self.actions)} actions",
+            elements=els,
+            screenshot_png=PNG + str(len(self.actions)).encode(),
+        )
 
     def act(self, action):
         self.actions.append(action)
         if action.tool == "extract":
-            return ActResult(True, self.url, values={k: {"value": "Entidad Ejemplo 01", "selector": v}
-                                                     for k, v in action.args.get("fields", {}).items()})
+            return ActResult(
+                True,
+                self.url,
+                values={
+                    k: {"value": "Entidad Ejemplo 01", "selector": v}
+                    for k, v in action.args.get("fields", {}).items()
+                },
+            )
         return ActResult(True, self.url)
 
     def close(self):
@@ -185,11 +237,35 @@ class FakeBackend:
 
 
 # --- §12 shape ---------------------------------------------------------------------------------------------
-STEP_KEYS = {"step_id", "run_id", "phase", "source_id", "objective_id", "tdd_path", "mode", "observed", "requested",
-             "executed", "evaluated", "parent_step_id", "value_ids", "ts", "generated_by"}
+STEP_KEYS = {
+    "step_id",
+    "run_id",
+    "phase",
+    "source_id",
+    "objective_id",
+    "tdd_path",
+    "mode",
+    "observed",
+    "requested",
+    "executed",
+    "evaluated",
+    "parent_step_id",
+    "value_ids",
+    "ts",
+    "generated_by",
+}
 OPTIONAL = {"event", "usage", "verify", "repair", "gate", "screenshot_key", "screen", "session_id"}
-EVENTS = {"escalation", "crystallization", "repair", "hard_stop", "verify", "action_gate", "limit_kill",
-          "quarantine", None}
+EVENTS = {
+    "escalation",
+    "crystallization",
+    "repair",
+    "hard_stop",
+    "verify",
+    "action_gate",
+    "limit_kill",
+    "quarantine",
+    None,
+}
 KEY_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -199,7 +275,11 @@ def check_step(step: dict) -> None:
     assert step["mode"] in {"D0", "D1", "S1", "S2"} and step["phase"] == 5
     assert step.get("event") in EVENTS
     gen = step["generated_by"]
-    assert set(gen) == {"backend", "model", "at"} and gen["backend"] in {"recorded", "vultr", "jev"} and gen["model"]
+    assert (
+        set(gen) == {"backend", "model", "at"}
+        and gen["backend"] in {"recorded", "vultr", "jev"}
+        and gen["model"]
+    )
     if step.get("screenshot_key"):
         assert KEY_RE.match(step["screenshot_key"])
     event = step.get("event")
@@ -222,7 +302,10 @@ def check_step(step: dict) -> None:
     if "screen" in step:
         s = step["screen"]
         assert set(s) == {"flagged", "jev_choice", "jev_confidence", "safety_verdict", "reason", "by"}
-        assert s["safety_verdict"] in {"safe", "unsafe", "unavailable"} and s["by"] in {"gateway", "controller"}
+        assert s["safety_verdict"] in {"safe", "unsafe", "unavailable"} and s["by"] in {
+            "gateway",
+            "controller",
+        }
         assert isinstance(s["reason"], str) and s["reason"]
         assert (step.get("event") == "quarantine") == s["flagged"]
     if "usage" in step:

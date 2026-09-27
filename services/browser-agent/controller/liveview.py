@@ -73,8 +73,9 @@ class FrameSource:
 
     def start(self) -> None:
         if self.mode == "live" and self._thread is None:
-            self._thread = threading.Thread(target=self._screencast, name=f"ba-live-{self.session_id[:12]}",
-                                            daemon=True)
+            self._thread = threading.Thread(
+                target=self._screencast, name=f"ba-live-{self.session_id[:12]}", daemon=True
+            )
             self._thread.start()
 
     def _screencast(self) -> None:
@@ -112,8 +113,10 @@ class FrameSource:
                 with contextlib.suppress(Exception):  # seed a frame at once; screencast only sends on change
                     shot = cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": 60})
                     self.put(base64.b64decode(shot["data"]), "image/jpeg")
-                cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 60, "maxWidth": 1280,
-                                                  "everyNthFrame": 1})
+                cdp.send(
+                    "Page.startScreencast",
+                    {"format": "jpeg", "quality": 60, "maxWidth": 1280, "everyNthFrame": 1},
+                )
             if page is not None:
                 page.wait_for_timeout(self.poll_s * 1000)  # pumps CDP events on this thread
             else:
@@ -317,8 +320,9 @@ def _handler(hub: LiveViewHub) -> type[BaseHTTPRequestHandler]:
         def _page(self, sid: str, token: str, source: FrameSource) -> None:
             mode = "" if source.mode == "live" else " · latest capture, not live"
             caption = f"Live view · {html.escape(sid)} · read-only · ends when the session closes{mode}"
-            body = PAGE.format(sid=html.escape(sid), caption=caption,
-                               stream=html.escape(f"/live/{sid}/stream?t={token}")).encode()
+            body = PAGE.format(
+                sid=html.escape(sid), caption=caption, stream=html.escape(f"/live/{sid}/stream?t={token}")
+            ).encode()
             self._headers(200, "text/html; charset=utf-8", len(body))
             self.wfile.write(body)
 
@@ -333,8 +337,12 @@ def _handler(hub: LiveViewHub) -> type[BaseHTTPRequestHandler]:
                     if frame is None or seq_now == seq:
                         continue
                     seq = seq_now
-                    self.wfile.write(f"--{BOUNDARY}\r\nContent-Type: {ctype}\r\nContent-Length: {len(frame)}"
-                                     f"\r\n\r\n".encode() + frame + b"\r\n")
+                    self.wfile.write(
+                        f"--{BOUNDARY}\r\nContent-Type: {ctype}\r\nContent-Length: {len(frame)}"
+                        f"\r\n\r\n".encode()
+                        + frame
+                        + b"\r\n"
+                    )
                     self.wfile.flush()
                     time.sleep(0.03)  # at most ~30 frames/s to one viewer
             except (BrokenPipeError, ConnectionResetError):
@@ -350,11 +358,17 @@ def _handler(hub: LiveViewHub) -> type[BaseHTTPRequestHandler]:
 
 EXPOSE_ENV = "BA_LIVEVIEW_EXPOSE"  # "netbird" = one expose per session; unset = the shared hub above
 EXPOSE_BIN_ENV = "BA_LIVEVIEW_EXPOSE_BIN"  # default "netbird"
-EXPOSE_ARGS_ENV = "BA_LIVEVIEW_EXPOSE_ARGS"  # optional extra args, shlex-split (e.g. --with-user-groups approvers)
+EXPOSE_ARGS_ENV = (
+    "BA_LIVEVIEW_EXPOSE_ARGS"  # optional extra args, shlex-split (e.g. --with-user-groups approvers)
+)
 EXPOSE_TIMEOUT_ENV = "BA_LIVEVIEW_EXPOSE_TIMEOUT_S"  # default 20 s to see the "URL:" line
 PORTS_ENV = "BA_LIVEVIEW_PORTS"  # per-session listener ports, "8710-8759" (default) or "0" for ephemeral
 URL_LINE = re.compile(r"^\s*URL:\s*(https?://\S+)\s*$")
-CHILD_ENV_KEYS = ("PATH", "HOME", "LANG")  # the expose child never sees the controller's env (admin token, keys)
+CHILD_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+)  # the expose child never sees the controller's env (admin token, keys)
 
 
 def _port_range(raw: str) -> list[int]:
@@ -380,7 +394,9 @@ class _Exposure:
 
     def _read(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
-        for line in self.proc.stdout:  # keep draining for the child's whole life so it never blocks on a full pipe
+        for (
+            line
+        ) in self.proc.stdout:  # keep draining for the child's whole life so it never blocks on a full pipe
             if len(self.lines) < 50:
                 self.lines.append(line.rstrip()[:200])
             m = URL_LINE.match(line)
@@ -394,8 +410,16 @@ class _Exposure:
         t0 = time.monotonic()
         env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
         try:
-            self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                         env=env, text=True, bufsize=1, start_new_session=True)
+            self.proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
         except OSError as exc:
             return f"cannot start {os.path.basename(argv[0])}: {type(exc).__name__}"
         threading.Thread(target=self._read, name=f"ba-expose-{self.session_id[:12]}", daemon=True).start()
@@ -430,8 +454,15 @@ class ExposedLiveView:
 
     _live: ClassVar[set[ExposedLiveView]] = set()
 
-    def __init__(self, host: str = "127.0.0.1", ports: list[int] | None = None, binary: str = "netbird",
-                 extra_args: list[str] | None = None, timeout_s: float = 20.0, name_prefix: str = "pa-live"):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        ports: list[int] | None = None,
+        binary: str = "netbird",
+        extra_args: list[str] | None = None,
+        timeout_s: float = 20.0,
+        name_prefix: str = "pa-live",
+    ):
         self.host = host
         self.ports = ports or [0]
         self.binary = binary
@@ -445,11 +476,13 @@ class ExposedLiveView:
 
     @classmethod
     def from_env(cls) -> ExposedLiveView:
-        return cls(host=os.environ.get(HOST_ENV, "").strip() or "127.0.0.1",
-                   ports=_port_range(os.environ.get(PORTS_ENV, "8710-8759")),
-                   binary=os.environ.get(EXPOSE_BIN_ENV, "").strip() or "netbird",
-                   extra_args=shlex.split(os.environ.get(EXPOSE_ARGS_ENV, "")),
-                   timeout_s=float(os.environ.get(EXPOSE_TIMEOUT_ENV, "") or 20))
+        return cls(
+            host=os.environ.get(HOST_ENV, "").strip() or "127.0.0.1",
+            ports=_port_range(os.environ.get(PORTS_ENV, "8710-8759")),
+            binary=os.environ.get(EXPOSE_BIN_ENV, "").strip() or "netbird",
+            extra_args=shlex.split(os.environ.get(EXPOSE_ARGS_ENV, "")),
+            timeout_s=float(os.environ.get(EXPOSE_TIMEOUT_ENV, "") or 20),
+        )
 
     def _listener(self) -> LiveViewHub | None:
         with self._lock:
@@ -470,7 +503,14 @@ class ExposedLiveView:
             log.warning("live view for %s: no free port in %s", session_id, self.ports)
             return None, None
         exp = _Exposure(session_id, hub)
-        argv = [self.binary, "expose", str(hub.port), "--with-name-prefix", self.name_prefix, *self.extra_args]
+        argv = [
+            self.binary,
+            "expose",
+            str(hub.port),
+            "--with-name-prefix",
+            self.name_prefix,
+            *self.extra_args,
+        ]
         error = exp.start(argv, self.timeout_s)
         if error:
             exp.stop()
@@ -481,7 +521,9 @@ class ExposedLiveView:
         with self._lock:
             self.exposures[session_id] = exp
         token = _local_url.split("?t=", 1)[1] if _local_url and "?t=" in _local_url else None
-        log.info("live view for %s published at %s in %.1fs", session_id, urlsplit(exp.url).hostname, exp.startup_s)
+        log.info(
+            "live view for %s published at %s in %.1fs", session_id, urlsplit(exp.url).hostname, exp.startup_s
+        )
         return f"{exp.url}/live/{session_id}?t={token}", source
 
     def unregister(self, session_id: str) -> None:

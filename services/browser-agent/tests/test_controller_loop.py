@@ -27,29 +27,49 @@ def make_session(tmp_path: Path, gateway, *, backend=None, start_url=None, limit
     allowed = ["registry.example"] if isinstance(backend, FakeBackend) else ["127.0.0.1"]
     if backend is None:
         from backends.native.backend import NativeBackend
+
         backend = NativeBackend()
-    steps = StepLog(tmp_path / "steps.jsonl", run_id="run-test", session_id="bas-test", source_id="registry-example")
-    session = Session(session_id="bas-test", backend=backend, gateway=gateway, steps=steps,
-                      captures=LocalCaptureStore(tmp_path / "lake"), allowed_domains=allowed,
-                      case_dir=tmp_path / "case", job_id="job:test-0001", limits=limits or Limits(),
-                      source_id="registry-example", artifact_paths=["04-local/registry__identity/tdd.md"],
-                      start_url=start_url, prescreen=prescreen)
+    steps = StepLog(
+        tmp_path / "steps.jsonl", run_id="run-test", session_id="bas-test", source_id="registry-example"
+    )
+    session = Session(
+        session_id="bas-test",
+        backend=backend,
+        gateway=gateway,
+        steps=steps,
+        captures=LocalCaptureStore(tmp_path / "lake"),
+        allowed_domains=allowed,
+        case_dir=tmp_path / "case",
+        job_id="job:test-0001",
+        limits=limits or Limits(),
+        source_id="registry-example",
+        artifact_paths=["04-local/registry__identity/tdd.md"],
+        start_url=start_url,
+        prescreen=prescreen,
+    )
     session.open()
     return session, tmp_path / "steps.jsonl"
 
 
 @pytest.mark.browser
 def test_open_goal_is_reached(site, tmp_path):
-    plan = [("navigate", {"url": site.url("search.html"), "expectation": "the search page"}),
-            by_name("type", "Nombre de la entidad", text="Entidad Ejemplo", expectation="query typed"),
-            by_name("click", "Buscar", expectation="a results list"),
-            by_name("click", "Entidad Ejemplo 01", expectation="the entity's detail page"),
-            ("extract", {"fields": {"legal_name": "#legal-name", "tax_id": "#tax-id", "address": "#address"}}),
-            ("done", {"status": "achieved", "summary": "identity fields captured"})]
+    plan = [
+        ("navigate", {"url": site.url("search.html"), "expectation": "the search page"}),
+        by_name("type", "Nombre de la entidad", text="Entidad Ejemplo", expectation="query typed"),
+        by_name("click", "Buscar", expectation="a results list"),
+        by_name("click", "Entidad Ejemplo 01", expectation="the entity's detail page"),
+        ("extract", {"fields": {"legal_name": "#legal-name", "tax_id": "#tax-id", "address": "#address"}}),
+        ("done", {"status": "achieved", "summary": "identity fields captured"}),
+    ]
     # Jev: confident on navigation and the result click, unsure on typing and the search submit -> vision.
-    gw = FakeGateway(plan, progress=[0.97, 0.5, 0.2, 0.95],
-                     vision=['{"verdict": "achieved", "confidence": 0.8}',
-                             'Sure! ```json\n{"verdict":"achieved","confidence":0.88,"reason":"results"}\n```'])
+    gw = FakeGateway(
+        plan,
+        progress=[0.97, 0.5, 0.2, 0.95],
+        vision=[
+            '{"verdict": "achieved", "confidence": 0.8}',
+            'Sure! ```json\n{"verdict":"achieved","confidence":0.88,"reason":"results"}\n```',
+        ],
+    )
     session, path = make_session(tmp_path, gw)
     try:
         result = session.run_goal("Find Entidad Ejemplo 01 and record its legal name, tax id and address")
@@ -71,7 +91,11 @@ def test_open_goal_is_reached(site, tmp_path):
     # CONTRACT v1.0.5 (proposed): each extracted value cites the extract step that captured it
     for item in result["extracted"].values():
         cited = by_id[item["step_id"]]
-        assert cited["requested"]["tool"] == "extract" and item["captured_at"] == cited["ts"] and item["selector"]
+        assert (
+            cited["requested"]["tool"] == "extract"
+            and item["captured_at"] == cited["ts"]
+            and item["selector"]
+        )
     for v in verifies:
         assert by_id[v["parent_step_id"]]["requested"]["tool"] in {"navigate", "type", "click"}
     m = closed["metrics"]
@@ -92,11 +116,17 @@ def KEY(value: str) -> bool:
 
 
 def _run_submit(site, tmp_path, answer: dict | None, timeout_s: float = 20):
-    plan = [by_name("click", "Send complaint", expectation="more results"),
-            ("done", {"status": "not_achievable", "summary": "the only way on is a form I may not submit"})]
+    plan = [
+        by_name("click", "Send complaint", expectation="more results"),
+        ("done", {"status": "not_achievable", "summary": "the only way on is a form I may not submit"}),
+    ]
     gw = FakeGateway(plan, jev_tier="SAFE")  # Jev says SAFE; the code floor still forces HIGH
-    session, path = make_session(tmp_path, gw, start_url=site.url("submit.html"),
-                                 limits=Limits(approval_timeout_s=timeout_s, approval_poll_s=0.05))
+    session, path = make_session(
+        tmp_path,
+        gw,
+        start_url=site.url("submit.html"),
+        limits=Limits(approval_timeout_s=timeout_s, approval_poll_s=0.05),
+    )
     out: dict = {}
     worker = threading.Thread(target=lambda: out.update(session.run_goal("See more results")))
     worker.start()
@@ -119,9 +149,17 @@ def _run_submit(site, tmp_path, answer: dict | None, timeout_s: float = 20):
 
 @pytest.mark.browser
 def test_disguised_submit_is_denied(site, tmp_path):
-    out, steps, meta, _ = _run_submit(site, tmp_path, {
-        "approver": "reviewer", "date": "2026-09-26", "checkpoint": "action", "decision": "deny",
-        "reason": "this posts a complaint"})
+    out, steps, meta, _ = _run_submit(
+        site,
+        tmp_path,
+        {
+            "approver": "reviewer",
+            "date": "2026-09-26",
+            "checkpoint": "action",
+            "decision": "deny",
+            "reason": "this posts a complaint",
+        },
+    )
     assert meta["checkpoint"] == "action" and meta["risk_tier"] == "HIGH" and meta["phase"] == 5
     assert meta["job_id"] == "job:test-0001" and KEY(meta["screenshot_key"])
     assert "Send complaint" in meta["intended_action"]
@@ -138,13 +176,19 @@ def test_disguised_submit_is_denied(site, tmp_path):
 @pytest.mark.browser
 def test_disguised_submit_runs_after_approval(site, tmp_path):
     before = len(site.posts)
-    _, steps, _, _ = _run_submit(site, tmp_path, {
-        "approver": "reviewer", "date": "2026-09-26", "checkpoint": "action", "decision": "approve"})
+    _, steps, _, _ = _run_submit(
+        site,
+        tmp_path,
+        {"approver": "reviewer", "date": "2026-09-26", "checkpoint": "action", "decision": "approve"},
+    )
     gates = [s["gate"]["outcome"] for s in steps if s.get("event") == "action_gate"]
     assert gates == ["pending_approval", "allowed"]
     assert len(site.posts) == before + 1 and site.posts[-1][0] == "/complaint"
-    assert any(s["requested"].get("tool") == "click" and s["evaluated"].get("ok") for s in steps
-               if s.get("event") is None)
+    assert any(
+        s["requested"].get("tool") == "click" and s["evaluated"].get("ok")
+        for s in steps
+        if s.get("event") is None
+    )
 
 
 @pytest.mark.browser
@@ -157,10 +201,12 @@ def test_unanswered_approval_times_out_as_deny(site, tmp_path):
 
 
 def _hostile_plan(site):
-    return [by_name("click", "Claim your prize", expectation="the prize page"),
-            ("navigate", {"url": "http://evil.invalid/exfil", "expectation": "the form"}),
-            ("navigate", {"url": site.url("search.html"), "expectation": "the registry search"}),
-            ("done", {"status": "achieved", "summary": "back on the registry"})]
+    return [
+        by_name("click", "Claim your prize", expectation="the prize page"),
+        ("navigate", {"url": "http://evil.invalid/exfil", "expectation": "the form"}),
+        ("navigate", {"url": site.url("search.html"), "expectation": "the registry search"}),
+        ("done", {"status": "achieved", "summary": "back on the registry"}),
+    ]
 
 
 @pytest.mark.browser
@@ -178,7 +224,11 @@ def test_hostile_page_flagged_by_gateway_is_quarantined(site, tmp_path):
     quarantine = [s for s in steps if s.get("event") == "quarantine"]
     assert len(quarantine) == 1
     q = quarantine[0]
-    assert q["screen"]["flagged"] and q["screen"]["by"] == "gateway" and q["screen"]["safety_verdict"] == "unavailable"
+    assert (
+        q["screen"]["flagged"]
+        and q["screen"]["by"] == "gateway"
+        and q["screen"]["safety_verdict"] == "unavailable"
+    )
     assert q["evaluated"]["status"] == "quarantined_continue"
     assert q["executed"]["discarded_proposal"]["tool"] == "click"  # the flagged prompt's action never ran
     assert q["requested"]["tool"] == "plan"  # the planner step that saw the flag is the quarantine step
@@ -209,7 +259,9 @@ def test_hostile_page_flagged_by_controller_never_reaches_the_planner(site, tmp_
         session.close()
     steps = read_steps(path)
     q = [s for s in steps if s.get("event") == "quarantine"]
-    assert len(q) == 1 and q[0]["screen"]["by"] == "controller" and q[0]["screen"]["jev_choice"] == "injection"
+    assert (
+        len(q) == 1 and q[0]["screen"]["by"] == "controller" and q[0]["screen"]["jev_choice"] == "injection"
+    )
     assert all(HOSTILE not in p for p in gw.planner_prompts)
     assert result["status"] == "achieved"
 
@@ -239,9 +291,12 @@ def test_exhausted_budget_is_a_hard_stop(tmp_path):
 
 def test_jev_can_raise_but_not_lower_the_tier(tmp_path):
     # Jev rates following a link HIGH: the approval gate opens (and times out to a deny).
-    gw = FakeGateway([("click", {"element_id": "e2"}), ("done", {"status": "not_achievable"})], jev_tier="HIGH")
-    session, path = make_session(tmp_path, gw, backend=FakeBackend(),
-                                 limits=Limits(approval_timeout_s=0.2, approval_poll_s=0.05))
+    gw = FakeGateway(
+        [("click", {"element_id": "e2"}), ("done", {"status": "not_achievable"})], jev_tier="HIGH"
+    )
+    session, path = make_session(
+        tmp_path, gw, backend=FakeBackend(), limits=Limits(approval_timeout_s=0.2, approval_poll_s=0.05)
+    )
     session.run_goal("Open the entity")
     session.close()
     gates = [s["gate"] for s in read_steps(path) if s.get("event") == "action_gate"]
@@ -250,14 +305,16 @@ def test_jev_can_raise_but_not_lower_the_tier(tmp_path):
 
 
 def test_not_achieved_retries_then_gives_up(tmp_path):
-    gw = FakeGateway([("click", {"element_id": "e2", "expectation": "detail page"})] * 5, progress=0.1,
-                     vision=['{"verdict": "not_achieved", "confidence": 0.9}'] * 5)
+    gw = FakeGateway(
+        [("click", {"element_id": "e2", "expectation": "detail page"})] * 5,
+        progress=0.1,
+        vision=['{"verdict": "not_achieved", "confidence": 0.9}'] * 5,
+    )
     session, _ = make_session(tmp_path, gw, backend=FakeBackend(), limits=Limits(max_attempts=2))
     result = session.run_goal("Open the entity")
     session.close()
     assert result["status"] == "not_achieved"
     assert "check: not_achieved" in gw.planner_prompts[1]  # the planner was told about the failed check
-
 
 
 def test_dead_browser_target_stops_the_session_cleanly(tmp_path):

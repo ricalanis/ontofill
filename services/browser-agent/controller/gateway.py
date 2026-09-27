@@ -21,8 +21,12 @@ class ScreenedGatewayClient(GatewayClient):
 
     def _post(self, path: str, body: dict, step_id: str | None) -> dict:
         self.last_gate = None
-        r = httpx.post(f"{self.base_url.rstrip('/')}{path}", json=body, headers=self._headers(step_id),
-                       timeout=self.timeout)
+        r = httpx.post(
+            f"{self.base_url.rstrip('/')}{path}",
+            json=body,
+            headers=self._headers(step_id),
+            timeout=self.timeout,
+        )
         gate = r.headers.get(GATE_HEADER)
         self.last_gate = gate.strip().lower() if gate else None
         if r.status_code >= 400:

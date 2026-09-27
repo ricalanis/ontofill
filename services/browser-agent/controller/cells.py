@@ -54,12 +54,20 @@ class Cell:
             return value
         if not isinstance(value, dict) or not value.get("cell_id"):
             raise CellError(f"provider returned no cell_id: {type(value).__name__}")
-        known = {k: value[k] for k in ("cdp_url", "brain_url", "live_view_port", "isolation", "created_at")
-                 if value.get(k) is not None}
+        known = {
+            k: value[k]
+            for k in ("cdp_url", "brain_url", "live_view_port", "isolation", "created_at")
+            if value.get(k) is not None
+        }
         extra = {k: v for k, v in value.items() if k not in cls.__dataclass_fields__}
-        return cls(cell_id=str(value["cell_id"]), backend=value.get("backend", backend),
-                   placement=value.get("placement", placement), allowed_domains=_domains(allowed_domains),
-                   meta=extra, **{"cdp_url": None, **known})
+        return cls(
+            cell_id=str(value["cell_id"]),
+            backend=value.get("backend", backend),
+            placement=value.get("placement", placement),
+            allowed_domains=_domains(allowed_domains),
+            meta=extra,
+            **{"cdp_url": None, **known},
+        )
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -72,8 +80,13 @@ class CellError(RuntimeError):
 
 
 class CellProvider(Protocol):
-    def create(self, backend: str, allowed_domains: list[str], limits: dict | None = None,
-               placement: str = "sandbox_vm") -> Cell | dict: ...
+    def create(
+        self,
+        backend: str,
+        allowed_domains: list[str],
+        limits: dict | None = None,
+        placement: str = "sandbox_vm",
+    ) -> Cell | dict: ...
 
     def destroy(self, cell_id: str) -> None: ...
 
@@ -87,7 +100,9 @@ def _domains(allowed_domains) -> tuple[str, ...]:
 def _limits_key(limits: dict | None) -> tuple:
     """Only the caps a provider applies at create time matter for matching a warm cell."""
     limits = limits or {}
-    return tuple((k, limits.get(k)) for k in ("memory_mb", "cpus", "pids", "timeout_s") if limits.get(k) is not None)
+    return tuple(
+        (k, limits.get(k)) for k in ("memory_mb", "cpus", "pids", "timeout_s") if limits.get(k) is not None
+    )
 
 
 def _ms(t0: float) -> float:
@@ -97,8 +112,14 @@ def _ms(t0: float) -> float:
 class CellPool:
     """Warm pool per backend; lease one cell per session; recycle = destroy + recreate, never reuse."""
 
-    def __init__(self, provider: CellProvider, k_native: int = 1, k_skyvern: int = 0, placement: str = "sandbox_vm",
-                 background: bool = True):
+    def __init__(
+        self,
+        provider: CellProvider,
+        k_native: int = 1,
+        k_skyvern: int = 0,
+        placement: str = "sandbox_vm",
+        background: bool = True,
+    ):
         if placement not in PLACEMENTS:
             raise ValueError(f"placement must be one of {PLACEMENTS}")
         self.provider = provider
@@ -127,8 +148,13 @@ class CellPool:
         with self._lock:
             if cell.cell_id in self._retired or cell.cell_id in self._leased:
                 raise CellError(f"provider returned a cell id already used: {cell.cell_id}")
-            self.records[cell.cell_id] = {"backend": backend, "create_ms": _ms(t0), "lease_ms": None,
-                                          "destroy_ms": None, "warm": None}
+            self.records[cell.cell_id] = {
+                "backend": backend,
+                "create_ms": _ms(t0),
+                "lease_ms": None,
+                "destroy_ms": None,
+                "warm": None,
+            }
         return cell
 
     def _destroy(self, cell: Cell) -> float:
@@ -144,7 +170,9 @@ class CellPool:
         with self._lock:
             rec = self.records.setdefault(cell.cell_id, {})
             rec["destroy_ms"] = ms
-            if isinstance(teardown, dict):  # the engine substrate returns {state, job_record} (six checkpoints)
+            if isinstance(
+                teardown, dict
+            ):  # the engine substrate returns {state, job_record} (six checkpoints)
                 rec["teardown"] = {k: teardown[k] for k in ("state", "job_record") if k in teardown}
         return ms
 
@@ -235,7 +263,9 @@ class CellPool:
             self._leased[cell.cell_id] = cell
             rec = self.records.setdefault(cell.cell_id, {"backend": backend})
             rec.update(lease_ms=_ms(t0), warm=warm)
-        self.prewarm(backend, domains, limits)  # the most recent domain set is what the next session likely needs
+        self.prewarm(
+            backend, domains, limits
+        )  # the most recent domain set is what the next session likely needs
         return cell
 
     def release(self, cell: Cell | str) -> dict:
@@ -294,8 +324,9 @@ class ModuleProvider:
         self.module = module
 
     def create(self, backend, allowed_domains, limits=None, placement="sandbox_vm"):
-        return self.module.create(backend=backend, allowed_domains=allowed_domains, limits=limits,
-                                  placement=placement)
+        return self.module.create(
+            backend=backend, allowed_domains=allowed_domains, limits=limits, placement=placement
+        )
 
     def destroy(self, cell_id):
         return self.module.destroy(cell_id)
@@ -320,8 +351,10 @@ def provider_from_env(name: str | None = None) -> CellProvider | None:
         try:
             import ontofill.cells as substrate  # the engine's cell substrate (CONTRACT §13a), when installed
         except ImportError as exc:
-            raise CellError("BA_CELL_PROVIDER=ontofill but the engine's cell substrate (ontofill.cells) is not "
-                            "installed in this environment") from exc
+            raise CellError(
+                "BA_CELL_PROVIDER=ontofill but the engine's cell substrate (ontofill.cells) is not "
+                "installed in this environment"
+            ) from exc
         return ModuleProvider(substrate)
     raise CellError(f"unknown {PROVIDER_ENV}={name!r} (none | docker-stub | ontofill-http | ontofill)")
 
@@ -332,5 +365,8 @@ def pool_from_env() -> CellPool | None:
         return None
     # Engine cells start their timeout clock at create, so a warm pool would age them: default K=0 there.
     default_k = "0" if getattr(provider, "name", "") == "ontofill-http" else "1"
-    return CellPool(provider, k_native=int(os.environ.get(K_NATIVE_ENV, default_k)),
-                    k_skyvern=int(os.environ.get(K_SKYVERN_ENV, "0")))
+    return CellPool(
+        provider,
+        k_native=int(os.environ.get(K_NATIVE_ENV, default_k)),
+        k_skyvern=int(os.environ.get(K_SKYVERN_ENV, "0")),
+    )

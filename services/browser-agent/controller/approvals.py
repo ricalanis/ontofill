@@ -46,29 +46,56 @@ class ApprovalDecision:
         return self.decision == "approve"
 
     def as_dict(self) -> dict:
-        return {"decision": self.decision, "reason": self.reason, "approver": self.approver,
-                "timed_out": self.timed_out}
+        return {
+            "decision": self.decision,
+            "reason": self.reason,
+            "approver": self.approver,
+            "timed_out": self.timed_out,
+        }
 
 
-def request(case_dir: Path, *, intended_action: str, risk_tier: str, screenshot_key: str, job_id: str,
-            reason: str, artifact_paths: list[str], generated_by: dict, detail: dict | None = None) -> ApprovalRequest:
+def request(
+    case_dir: Path,
+    *,
+    intended_action: str,
+    risk_tier: str,
+    screenshot_key: str,
+    job_id: str,
+    reason: str,
+    artifact_paths: list[str],
+    generated_by: dict,
+    detail: dict | None = None,
+) -> ApprovalRequest:
     request_id = f"act-{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     rel_dir = f"05-actions/{request_id}"
     req = ApprovalRequest(request_id, Path(case_dir) / rel_dir, rel_dir)
     req.dir.mkdir(parents=True, exist_ok=False)
-    meta = {"phase": 5, "checkpoint": "action", "requested_at": now(), "reason": reason,
-            "artifact_paths": artifact_paths or [f"{rel_dir}/APPROVAL_PENDING.md"],
-            "intended_action": intended_action, "risk_tier": risk_tier, "job_id": job_id,
-            "screenshot_key": screenshot_key, "generated_by": generated_by}
-    body = [f"# Approval pending: action\n\nThe browser agent wants to **{intended_action}**.\n",
-            f"Risk tier **{risk_tier}**: {reason}.\n",
-            ("Answer with an `APPROVED` file in this directory: "
-             '`{"approver", "date", "checkpoint": "action", "decision": "approve"|"deny", "reason"}`. '
-             "No answer before the timeout counts as a deny.\n")]
+    meta = {
+        "phase": 5,
+        "checkpoint": "action",
+        "requested_at": now(),
+        "reason": reason,
+        "artifact_paths": artifact_paths or [f"{rel_dir}/APPROVAL_PENDING.md"],
+        "intended_action": intended_action,
+        "risk_tier": risk_tier,
+        "job_id": job_id,
+        "screenshot_key": screenshot_key,
+        "generated_by": generated_by,
+    }
+    body = [
+        f"# Approval pending: action\n\nThe browser agent wants to **{intended_action}**.\n",
+        f"Risk tier **{risk_tier}**: {reason}.\n",
+        (
+            "Answer with an `APPROVED` file in this directory: "
+            '`{"approver", "date", "checkpoint": "action", "decision": "approve"|"deny", "reason"}`. '
+            "No answer before the timeout counts as a deny.\n"
+        ),
+    ]
     if detail:
         body.append("\n```json\n" + json.dumps(detail, indent=2, ensure_ascii=False) + "\n```\n")
-    req.pending_path.write_text(f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---\n"
-                                + "\n".join(body))
+    req.pending_path.write_text(
+        f"---\n{yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)}---\n" + "\n".join(body)
+    )
     return req
 
 
@@ -84,8 +111,9 @@ def read_decision(req: ApprovalRequest) -> ApprovalDecision | None:
     decision = data.get("decision")
     if decision == "approve" and data.get("checkpoint", "action") == "action":
         return ApprovalDecision("approve", str(data.get("reason") or "approved"), data.get("approver"))
-    return ApprovalDecision("deny", str(data.get("reason") or f"decision {decision!r} is not an approval"),
-                            data.get("approver"))
+    return ApprovalDecision(
+        "deny", str(data.get("reason") or f"decision {decision!r} is not an approval"), data.get("approver")
+    )
 
 
 def wait(req: ApprovalRequest, timeout_s: float, poll_s: float = 0.5, cancelled=None) -> ApprovalDecision:
@@ -95,5 +123,7 @@ def wait(req: ApprovalRequest, timeout_s: float, poll_s: float = 0.5, cancelled=
         if found:
             return found
         if time.monotonic() >= deadline or (cancelled and cancelled()):
-            return ApprovalDecision("deny", f"no answer within {timeout_s:g} s (fail-safe deny)", timed_out=True)
+            return ApprovalDecision(
+                "deny", f"no answer within {timeout_s:g} s (fail-safe deny)", timed_out=True
+            )
         time.sleep(max(0.01, min(poll_s, deadline - time.monotonic())))

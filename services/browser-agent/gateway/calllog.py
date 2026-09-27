@@ -9,8 +9,23 @@ from pathlib import Path
 
 
 class CallLog:
-    FIELDS = ("ts", "session_id", "run_id", "step_id", "upstream", "purpose", "model", "status", "input_tokens",
-              "output_tokens", "est_usd", "est_tokens", "gate", "latency_ms", "prompt_chars")
+    FIELDS = (
+        "ts",
+        "session_id",
+        "run_id",
+        "step_id",
+        "upstream",
+        "purpose",
+        "model",
+        "status",
+        "input_tokens",
+        "output_tokens",
+        "est_usd",
+        "est_tokens",
+        "gate",
+        "latency_ms",
+        "prompt_chars",
+    )
 
     def __init__(self, path: str | Path):
         self.path = Path(path)

@@ -43,12 +43,15 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        return cls(vultr_base=config.env(config.VULTR_BASE_ENV), jev_base=config.env(config.JEV_BASE_ENV),
-                   vultr_key=os.environ.get(config.VULTR_KEY_ENV), jev_key=os.environ.get(config.JEV_KEY_ENV),
-                   admin_token=os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV),
-                   log_path=os.environ.get(config.GATEWAY_LOG_ENV) or ".cache/gateway-calls.jsonl",
-                   service_tokens=os.environ.get("BA_GATEWAY_SERVICE_TOKENS"))
-
+        return cls(
+            vultr_base=config.env(config.VULTR_BASE_ENV),
+            jev_base=config.env(config.JEV_BASE_ENV),
+            vultr_key=os.environ.get(config.VULTR_KEY_ENV),
+            jev_key=os.environ.get(config.JEV_KEY_ENV),
+            admin_token=os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV),
+            log_path=os.environ.get(config.GATEWAY_LOG_ENV) or ".cache/gateway-calls.jsonl",
+            service_tokens=os.environ.get("BA_GATEWAY_SERVICE_TOKENS"),
+        )
 
 
 def spent_from_log(path: str, session_id: str) -> float:
@@ -74,11 +77,17 @@ def screen_summary(gate: dict | None) -> dict | None:
         if c.get("flagged"):
             jev, safety = c.get("jev") or {}, c.get("safety") or {}
             verdict = safety.get("verdict")
-            return {"flagged": True, "jev_choice": jev.get("choice"), "jev_confidence": jev.get("confidence"),
-                    "safety_verdict": verdict if verdict in ("safe", "unsafe") else "unavailable",
-                    "reason": c.get("reason") or ("injection" if jev.get("choice") == "injection" else "unsafe"),
-                    "by": "gateway", "ts": time.time()}
+            return {
+                "flagged": True,
+                "jev_choice": jev.get("choice"),
+                "jev_confidence": jev.get("confidence"),
+                "safety_verdict": verdict if verdict in ("safe", "unsafe") else "unavailable",
+                "reason": c.get("reason") or ("injection" if jev.get("choice") == "injection" else "unsafe"),
+                "by": "gateway",
+                "ts": time.time(),
+            }
     return None
+
 
 def _bearer(request: Request) -> str | None:
     auth = request.headers.get("authorization") or ""
@@ -93,8 +102,9 @@ async def _json(request: Request):
 
 
 def _vultr_tokens(usage: dict) -> tuple[int, int]:
-    return int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0), \
-        int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    return int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0), int(
+        usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    )
 
 
 def _prompt_chars(messages) -> int:
@@ -116,8 +126,13 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
     log = CallLog(settings.log_path)
     for spec in [s.strip() for s in (settings.service_tokens or "").split(",") if s.strip()]:
         name, token_hash, budget, *flags = spec.split(":")
-        store.register_service(name, token_hash.strip().lower(), float(budget), spent_from_log(settings.log_path, name),
-                               tagged_only="tagged" in flags)
+        store.register_service(
+            name,
+            token_hash.strip().lower(),
+            float(budget),
+            spent_from_log(settings.log_path, name),
+            tagged_only="tagged" in flags,
+        )
     app = FastAPI(title="browser-agent inference gateway", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.log, app.state.screener = store, log, screener
 
@@ -129,21 +144,51 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
         return store.authorize(_bearer(request))
 
     def reporter(session, step_id):
-        def report(*, upstream, purpose, model, status, usage, latency_ms, gate=None, prompt_chars=None,
-                   est_tokens=False):
+        def report(
+            *,
+            upstream,
+            purpose,
+            model,
+            status,
+            usage,
+            latency_ms,
+            gate=None,
+            prompt_chars=None,
+            est_tokens=False,
+        ):
             if upstream == "jev":
-                inp, out = int((usage or {}).get("input_tokens") or 0), int((usage or {}).get("output_tokens") or 0)
+                inp, out = (
+                    int((usage or {}).get("input_tokens") or 0),
+                    int((usage or {}).get("output_tokens") or 0),
+                )
                 usd = jev_usd(inp)
             else:
                 inp, out = _vultr_tokens(usage or {})
                 usd = vultr_usd(model, inp, out)
             if status == 200:
-                store.charge(session.session_id, usd, flagged=bool(gate and gate.get("flagged")),
-                             flag=screen_summary(gate))
-            log.write(session_id=session.session_id, run_id=session.run_id, step_id=step_id, upstream=upstream,
-                      purpose=purpose, model=model, status=status, input_tokens=inp, output_tokens=out,
-                      est_usd=round(usd, 8), est_tokens=est_tokens or None, gate=gate,
-                      latency_ms=round(latency_ms, 1) if latency_ms is not None else None, prompt_chars=prompt_chars)
+                store.charge(
+                    session.session_id,
+                    usd,
+                    flagged=bool(gate and gate.get("flagged")),
+                    flag=screen_summary(gate),
+                )
+            log.write(
+                session_id=session.session_id,
+                run_id=session.run_id,
+                step_id=step_id,
+                upstream=upstream,
+                purpose=purpose,
+                model=model,
+                status=status,
+                input_tokens=inp,
+                output_tokens=out,
+                est_usd=round(usd, 8),
+                est_tokens=est_tokens or None,
+                gate=gate,
+                latency_ms=round(latency_ms, 1) if latency_ms is not None else None,
+                prompt_chars=prompt_chars,
+            )
+
         return report
 
     # --- session-token endpoints -------------------------------------------------------------------------------
@@ -156,7 +201,9 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list) or not body.get("model"):
             raise HTTPException(400, "model and messages are required")
         report = reporter(session, step_id)
-        messages, gate = await run_in_threadpool(screener.screen, body["messages"], report, session.tagged_only)
+        messages, gate = await run_in_threadpool(
+            screener.screen, body["messages"], report, session.tagged_only
+        )
         forward = {**body, "messages": messages}
         gate_header = "flagged" if gate.get("flagged") else "clean"
         chars = _prompt_chars(body["messages"])
@@ -165,19 +212,43 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
         try:
             data, ms = await run_in_threadpool(up.chat, forward)
         except UpstreamError as exc:
-            report(upstream="vultr", purpose="chat", model=body["model"], status=exc.status or 502, usage={},
-                   latency_ms=None, gate=gate, prompt_chars=chars)
+            report(
+                upstream="vultr",
+                purpose="chat",
+                model=body["model"],
+                status=exc.status or 502,
+                usage={},
+                latency_ms=None,
+                gate=gate,
+                prompt_chars=chars,
+            )
             return JSONResponse({"error": exc.detail}, status_code=502, headers={"X-BA-Gate": gate_header})
-        report(upstream="vultr", purpose="chat", model=body["model"], status=200, usage=data.get("usage") or {},
-               latency_ms=ms, gate=gate, prompt_chars=chars)
+        report(
+            upstream="vultr",
+            purpose="chat",
+            model=body["model"],
+            status=200,
+            usage=data.get("usage") or {},
+            latency_ms=ms,
+            gate=gate,
+            prompt_chars=chars,
+        )
         return JSONResponse(data, headers={"X-BA-Gate": gate_header})
 
     async def _stream(forward, model, report, gate, gate_header, chars):
         try:
             client, resp = await run_in_threadpool(up.chat_stream, forward)
         except UpstreamError as exc:
-            report(upstream="vultr", purpose="chat", model=model, status=exc.status or 502, usage={},
-                   latency_ms=None, gate=gate, prompt_chars=chars)
+            report(
+                upstream="vultr",
+                purpose="chat",
+                model=model,
+                status=exc.status or 502,
+                usage={},
+                latency_ms=None,
+                gate=gate,
+                prompt_chars=chars,
+            )
             return JSONResponse({"error": exc.detail}, status_code=502, headers={"X-BA-Gate": gate_header})
         t0 = time.monotonic()
 
@@ -203,8 +274,17 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
                 client.close()
                 est = usage is None
                 usage = usage or {"prompt_tokens": chars // 4, "completion_tokens": out_chars // 4}
-                report(upstream="vultr", purpose="chat", model=model, status=200, usage=usage,
-                       latency_ms=(time.monotonic() - t0) * 1000, gate=gate, prompt_chars=chars, est_tokens=est)
+                report(
+                    upstream="vultr",
+                    purpose="chat",
+                    model=model,
+                    status=200,
+                    usage=usage,
+                    latency_ms=(time.monotonic() - t0) * 1000,
+                    gate=gate,
+                    prompt_chars=chars,
+                    est_tokens=est,
+                )
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"X-BA-Gate": gate_header})
 
@@ -225,14 +305,27 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
             raise HTTPException(400, "state and questions are required")
         report = reporter(session, step_id)
         try:
-            data, ms, _rid = await run_in_threadpool(up.jev, {"model": settings.jev_model, "state": body["state"],
-                                     "questions": body["questions"]})
+            data, ms, _rid = await run_in_threadpool(
+                up.jev, {"model": settings.jev_model, "state": body["state"], "questions": body["questions"]}
+            )
         except UpstreamError as exc:
-            report(upstream="jev", purpose="decision", model=settings.jev_model, status=exc.status or 502, usage={},
-                   latency_ms=None)
+            report(
+                upstream="jev",
+                purpose="decision",
+                model=settings.jev_model,
+                status=exc.status or 502,
+                usage={},
+                latency_ms=None,
+            )
             return JSONResponse({"error": exc.detail}, status_code=502)
-        report(upstream="jev", purpose="decision", model=data.get("model") or settings.jev_model, status=200,
-               usage=data.get("usage") or {}, latency_ms=ms)
+        report(
+            upstream="jev",
+            purpose="decision",
+            model=data.get("model") or settings.jev_model,
+            status=200,
+            usage=data.get("usage") or {},
+            latency_ms=ms,
+        )
         return data
 
     # --- admin endpoints (controller only) ---------------------------------------------------------------------
@@ -284,8 +377,11 @@ def create_app(settings: Settings | None = None, store: SessionStore | None = No
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(create_app(), host=os.environ.get("BA_GATEWAY_HOST", "127.0.0.1"),
-                port=int(os.environ.get("BA_GATEWAY_PORT", "8700")))
+    uvicorn.run(
+        create_app(),
+        host=os.environ.get("BA_GATEWAY_HOST", "127.0.0.1"),
+        port=int(os.environ.get("BA_GATEWAY_PORT", "8700")),
+    )
 
 
 if __name__ == "__main__":

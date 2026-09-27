@@ -36,8 +36,13 @@ class LocalCaptureStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():  # immutable: the first write wins
                 path.write_bytes(data)
-                meta = {"content_type": content_type, "url": url, "captured_at": now(), "source_id": source_id,
-                        "step_id": step_id}
+                meta = {
+                    "content_type": content_type,
+                    "url": url,
+                    "captured_at": now(),
+                    "source_id": source_id,
+                    "step_id": step_id,
+                }
                 path.with_name(path.name + ".meta.json").write_text(json.dumps(meta))
         return key
 
