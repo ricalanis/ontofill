@@ -95,6 +95,40 @@ def _captures(step: dict, run) -> list[dict]:
     return out
 
 
+def parse_outcome(step: dict) -> dict | None:
+    """What a file.parse step made of a captured document: format, rows, sheet, and whether the row sample cap was
+    reached (then the file has at least that many rows; the count is not the whole file)."""
+    rows = _field(step, "row_count")
+    if not isinstance(rows, int) or isinstance(rows, bool):
+        return None
+    cap = _field(step, "max_rows")
+    fmt = _field(step, "format")
+    fmt = fmt if isinstance(fmt, str) and fmt != "auto" else None
+    sheet = _field(step, "sheet") or _field(step, "sheet_name")
+    capped = isinstance(cap, int) and rows >= cap
+    return {
+        "format": fmt,
+        "rows": rows,
+        "max_rows": cap if isinstance(cap, int) else None,
+        "sheet": sheet if isinstance(sheet, str) else None,
+        "capped": capped,
+        "text": " · ".join(
+            x
+            for x in (
+                fmt,
+                f"sheet {sheet}" if isinstance(sheet, str) else None,
+                (
+                    f"{rows}+ rows (sample cap {cap} reached; the file has more)"
+                    if capped
+                    else f"{rows} row{'s' if rows != 1 else ''} parsed"
+                )
+                + (f" of a {cap}-row sample" if isinstance(cap, int) and not capped else ""),
+            )
+            if x
+        ),
+    }
+
+
 def collect(a: Artifacts, case_id: str, rid: str, steps: list[dict], run) -> list[dict]:
     base = f"/cases/{case_id}"
     pages: dict[tuple, dict] = {}
@@ -122,6 +156,7 @@ def collect(a: Artifacts, case_id: str, rid: str, steps: list[dict], run) -> lis
                     "bronze_key": None,
                     "content_type": None,
                     "captures": 0,
+                    "parsed": None,
                     "steps": 0,
                     "_steps": set(),
                     "verdicts": [],
@@ -134,6 +169,9 @@ def collect(a: Artifacts, case_id: str, rid: str, steps: list[dict], run) -> lis
                 p["bronze_key"] = c["bronze"]
                 p["content_type"] = (a.bronze_meta(c["bronze"]) or {}).get("content_type")
             p["captures"] += 1
+            parsed = parse_outcome(s)
+            if parsed and not p["parsed"]:
+                p["parsed"] = parsed
             p["_steps"].add(s.get("step_id"))
             if v not in p["verdicts"]:
                 p["verdicts"].append(v)

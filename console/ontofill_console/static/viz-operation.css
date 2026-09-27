@@ -60,3 +60,6 @@ a.it:hover > * { background: var(--strip-hover); }
   .op-objections { margin-left: 0; }
   .op-links { margin-left: 0; }
 }
+
+.pg-parsed { margin: var(--space-3xs, 2px) 0 0; font-size: var(--text-xs); color: var(--fg-2); overflow-wrap: anywhere; }
+.pg-parsed--capped { color: var(--fg); font-weight: 600; }

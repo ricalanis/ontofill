@@ -171,3 +171,44 @@ def test_blocked_captures_name_the_host_and_the_redirect_chain(client, cases_dir
     assert "egress blocked: procure.example" in jstrip["detail"] and "invalid" not in jstrip["detail"]
     row = next(c for c in m["cells"] if c["job_id"] == "job:egress1")
     assert row["host"] == "procure.example"
+
+
+def test_pages_show_a_document_parse_outcome(client, cases_dir):
+    """A captured document shows what file.parse made of it, and says when the row sample cap was reached."""
+    base = {"run_id": RUN, "phase": 3, "mode": "S1", "value_ids": [], "observed": "document"}
+    rows = [
+        {
+            **base,
+            "step_id": f"step:{RUN}:parse1",
+            "source_id": "source-link-doc1",
+            "requested": {
+                "tool": "file.parse",
+                "url": "https://files.example/list.xls",
+                "bronze_key": "sha256:" + "a" * 64,
+                "max_rows": 300,
+                "format": "auto",
+            },
+            "executed": {"bronze_key": "sha256:" + "a" * 64, "format": "xls", "row_count": 15, "sheet": "Hoja1"},
+            "evaluated": "ok",
+            "ts": (T0 + timedelta(seconds=40)).isoformat(),
+        },
+        {
+            **base,
+            "step_id": f"step:{RUN}:parse2",
+            "source_id": "source-link-doc2",
+            "requested": {"tool": "file.parse", "url": "https://files.example/big.xls", "max_rows": 300},
+            "executed": {"bronze_key": "sha256:" + "b" * 64, "format": "xls", "row_count": 300},
+            "evaluated": "ok",
+            "ts": (T0 + timedelta(seconds=41)).isoformat(),
+        },
+    ]
+    with (run_dir(cases_dir) / "trace.live.jsonl").open("a") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    m = client.get(f"/cases/libraries/api/viz/pages?run={RUN}&all=1").json()
+    cards = {c["path"]: c for g in m["groups"] for c in g["cards"]}
+    assert cards["/list.xls"]["parsed"]["text"] == "xls · sheet Hoja1 · 15 rows parsed of a 300-row sample"
+    assert cards["/big.xls"]["parsed"]["capped"] is True
+    assert "300+ rows (sample cap 300 reached; the file has more)" in cards["/big.xls"]["parsed"]["text"]
+    page = client.get(f"/cases/libraries/pages?run={RUN}&all=1").text
+    assert "15 rows parsed of a 300-row sample" in page and "pg-parsed--capped" in page

@@ -47,6 +47,7 @@
         {% else %}<span class="noimg">{{ p.content_type or "no screenshot" }}</span>{% endif %}
         <p class="pg-path">{{ p.path or p.host or "(no url)" }}</p>
         <p><span class="chip st-{{ p.css }}">{{ p.verdict_label }}</span> {{ p.mode or "—" }}{% if p.also %} · also {{ p.also|join(", ") }}{% endif %}{% if p.steps > 1 %} · {{ p.steps }} steps{% endif %}</p>
+        {% if p.parsed %}<p class="pg-parsed mono{% if p.parsed.capped %} pg-parsed--capped{% endif %}" title="file.parse on the captured document">{{ p.parsed.text }}</p>{% endif %}
         <p>{{ p.ts[:19]|replace("T", " ") if p.ts else "—" }}</p>
       </a>
     </li>
