@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from jsonschema import Draft202012Validator
-
+from ontofill.inference import ModelValidationExhausted, complete_validated
 from ontofill.refiner.export import _compare
 
 MAX_OUTER_ITERATIONS = 3  # initial pass plus at most two reopen passes
@@ -196,8 +195,18 @@ def decide_outer_gap(
         f"Budget remaining USD: {None if budget_usd is None else budget_usd - spent}."
     )
     before = len(getattr(decision, "call_log", []))
-    choice = decision.complete_json("outer.gap_decision", prompt, REOPEN_SCHEMA)
-    Draft202012Validator(REOPEN_SCHEMA).validate(choice)
+    try:
+        choice = complete_validated(decision, "outer.gap_decision", prompt, REOPEN_SCHEMA)
+    except ModelValidationExhausted as exc:
+        return OuterDecision(
+            iteration,
+            gaps,
+            None,
+            f"Gap decision invalid after {exc.attempts} attempts: {exc.reason}",
+            "human",
+            usage,
+            spent,
+        )
     calls = getattr(decision, "call_log", [])[before:]
     if calls:
         parts = [call.get("usage") for call in calls]

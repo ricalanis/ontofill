@@ -2,9 +2,18 @@
 
 from ontofill.inference.decision import (
     DecisionClient,
+    ModelValidationExhausted,
     RecordedDecisionClient,
     VultrDecisionClient,
+    complete_validated,
     generated_by,
 )
 
-__all__ = ["DecisionClient", "RecordedDecisionClient", "VultrDecisionClient", "generated_by"]
+__all__ = [
+    "DecisionClient",
+    "ModelValidationExhausted",
+    "RecordedDecisionClient",
+    "VultrDecisionClient",
+    "complete_validated",
+    "generated_by",
+]

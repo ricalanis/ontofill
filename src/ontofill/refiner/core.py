@@ -18,6 +18,7 @@ from pyshacl import validate as shacl_validate
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
+from ontofill.inference import ModelValidationExhausted, complete_validated
 from ontofill.refiner.provenance import validate_generated_by, validate_run_provenance
 
 ONTO = Namespace("https://ontofill.dev/ontology/")
@@ -500,6 +501,11 @@ def classify_entities(
     )
     if not nodes or not entities:
         return {}
+    entity_ids = [entity["id"] for entity in entities]
+    if len(entity_ids) != len(set(entity_ids)):
+        raise ValueError("classification input contains duplicate entity IDs")
+    known = set(nodes)
+    by_id = {entity["id"]: entity for entity in entities}
     prompt = (
         "Assign each entity to the taxonomy nodes it demonstrably belongs to, using only its "
         "evidenced values. Choose zero or more node_id values from the approved nodes; never invent a "
@@ -508,25 +514,27 @@ def classify_entities(
         f"Approved nodes: {json.dumps(nodes, ensure_ascii=False)}. "
         f"Entities: {json.dumps([_classification_input(e) for e in entities], ensure_ascii=False)}"
     )
-    response = decision.complete_json("refine.classify_entities", prompt, CLASSIFICATION_SCHEMA)
-    Draft202012Validator(CLASSIFICATION_SCHEMA).validate(response)
-    known = set(nodes)
-    entity_ids = [entity["id"] for entity in entities]
-    if len(entity_ids) != len(set(entity_ids)):
-        raise ValueError("classification input contains duplicate entity IDs")
-    by_id = {entity["id"]: entity for entity in entities}
-    assignment_ids = [item["entity_id"] for item in response["assignments"]]
-    if any(entity_id not in by_id for entity_id in assignment_ids):
-        raise ValueError("classification assigns an unknown entity")
-    if len(assignment_ids) != len(set(assignment_ids)):
-        raise ValueError("classification assigns an entity more than once")
-    if set(assignment_ids) != set(by_id):
-        raise ValueError("classification must assign every entity exactly once")
+
+    def validate_assignments(response: dict) -> None:
+        assignment_ids = [item["entity_id"] for item in response["assignments"]]
+        if any(entity_id not in by_id for entity_id in assignment_ids):
+            raise ValueError("classification assigns an unknown entity")
+        if len(assignment_ids) != len(set(assignment_ids)):
+            raise ValueError("classification assigns an entity more than once")
+        if set(assignment_ids) != set(by_id):
+            raise ValueError("classification must assign every entity exactly once")
+        if any(node not in known for item in response["assignments"] for node in item["node_ids"]):
+            raise ValueError("classification assigns an unknown taxonomy node")
+
+    response = complete_validated(
+        decision,
+        "refine.classify_entities",
+        prompt,
+        CLASSIFICATION_SCHEMA,
+        validate_assignments,
+    )
     assignments: dict[str, list[str]] = {}
     for item in response["assignments"]:
-        unknown = [node for node in item["node_ids"] if node not in known]
-        if unknown:
-            raise ValueError("classification assigns an unknown taxonomy node")
         assignments[item["entity_id"]] = sorted(item["node_ids"])
     return assignments
 
@@ -669,10 +677,15 @@ def refine_observations(
     classified = False
     if decision is not None:
         levels = taxonomy_levels(ontology)
-        assignments = classify_entities(entities, levels, decision)
-        for entity in entities:
-            entity["classified_as"] = assignments.get(entity["id"], [])
-        classified = True
+        try:
+            assignments = classify_entities(entities, levels, decision)
+        except ModelValidationExhausted:
+            for entity in entities:
+                entity["classified_as"] = []
+        else:
+            for entity in entities:
+                entity["classified_as"] = assignments.get(entity["id"], [])
+            classified = True
     return Refinement(entities=entities, rejected=rejected, classified=classified)
 
 

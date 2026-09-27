@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from ontofill import workflow
 from ontofill.case.checkpoints import write_json
-from ontofill.inference import RecordedDecisionClient, generated_by
+from ontofill.inference import ModelValidationExhausted, RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.outer_gap import OuterDecision
 from ontofill.phases.p5_execute import (
@@ -385,8 +388,9 @@ def test_gap_report_routes_by_ontology_property_overlap() -> None:
     assert routed == [{"criterion_id": "hours-gap", "properties": ["name"], "iteration": 2}]
 
 
+@pytest.mark.parametrize("failure_kind", ["none", "p4", "p5"])
 def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, failure_kind
 ) -> None:
     case = tmp_path / "case"
     case.mkdir()
@@ -412,6 +416,8 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
     }
     draft_calls: list[str] = []
     batch_calls: list[list[str]] = []
+    failed_id = objectives[0]["id"] if failure_kind == "p4" else None
+    p5_failed_id = objectives[0]["id"] if failure_kind == "p5" else None
 
     monkeypatch.setattr(
         workflow,
@@ -443,6 +449,8 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
 
     def draft_local_scope(_case, _prd, _ontology, objective, *_args, **_kwargs):
         draft_calls.append(objective["id"])
+        if objective["id"] == failed_id:
+            raise ModelValidationExhausted("phase4.local_scope", "three invalid model answers", 3)
         tdd = {"target_fields": objective["target_fields"]}
         if objective["id"] == "objective-membership":
             tdd["membership"] = {
@@ -454,7 +462,22 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
 
     def execute_batch(**kwargs):
         batch_calls.append([item["id"] for item in kwargs["objectives"]])
-        return [ExecutionResult([], [], [], "csv") for _ in kwargs["objectives"]]
+        ordered = [
+            *[
+                item
+                for item in kwargs["objectives"]
+                if not kwargs["tdds"][item["id"]].get("membership")
+            ],
+            *[
+                item
+                for item in kwargs["objectives"]
+                if kwargs["tdds"][item["id"]].get("membership")
+            ],
+        ]
+        return [
+            ExecutionResult([], [], [], "csv", item["id"] == p5_failed_id, "invalid mapping")
+            for item in ordered
+        ]
 
     monkeypatch.setattr(workflow, "draft_local_scope", draft_local_scope)
     monkeypatch.setattr(workflow, "execute_objectives", execute_batch)
@@ -486,15 +509,32 @@ def test_workflow_drafts_and_submits_all_selected_objectives_in_one_pass(
     )
 
     selected_ids = [item["id"] for item in objectives]
+    run_id = f"mock-{uuid.uuid4().hex[:12]}"
+    lake = FileLake(tmp_path / "lake")
     result = workflow.run_case(
         case,
-        run_id=f"mock-{uuid.uuid4().hex[:12]}",
+        run_id=run_id,
         decision=decision,
         preview_past_checkpoints=True,
         search_client=SimpleNamespace(trace=[], jobs=[]),
         store=MemorySilverStore(),
-        lake=FileLake(tmp_path / "lake"),
+        lake=lake,
     )
     assert result == 0
     assert draft_calls == selected_ids
-    assert batch_calls == [selected_ids]
+    assert batch_calls == [[item for item in selected_ids if item != failed_id]]
+    status = json.loads(lake.read_key(f"runs/{case.name}/{run_id}/status.json"))
+    source_health = {item["source_id"]: item["health"] for item in status["sources"]}
+    if failure_kind != "none":
+        assert source_health[objectives[0]["source_id"]]["failed"] == 1
+        assert all(source_health[item["source_id"]]["ok"] == 1 for item in objectives[1:])
+    if failure_kind == "p4":
+        steps = [
+            json.loads(line)
+            for line in lake.read_key(f"runs/{case.name}/{run_id}/trace.live.jsonl").splitlines()
+        ]
+        assert any(
+            step["source_id"] == objectives[0]["source_id"]
+            and step["evaluated"].get("reason", "").endswith("three invalid model answers")
+            for step in steps
+        )

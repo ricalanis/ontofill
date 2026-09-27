@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
-from jsonschema import Draft202012Validator
 from ontofill_scrape import SearchClient, source_discover
 
 from ontofill.case.checkpoints import load_json, require_approval, write_json
 from ontofill.contracts import validate_document
-from ontofill.inference import DecisionClient, generated_by
+from ontofill.inference import (
+    DecisionClient,
+    ModelValidationExhausted,
+    complete_validated,
+    generated_by,
+)
 from ontofill.inference.page_content import screened_page_content
 from ontofill.phases.p3_fanout.authority import authority_result, source_class, source_fingerprint
 
@@ -53,15 +58,63 @@ def _queries(brief: str, gap_labels: tuple[str, ...], decision: DecisionClient) 
             }
         },
     }
-    result = decision.complete_json(
+    result = complete_validated(
+        decision,
         "phase3.plan_search",
         "Propose public web search queries from these ontology gaps. Use the brief's geography. "
         "Do not propose or invent any source URL. "
         f"Brief: {summary}. Gaps: {list(gap_labels)}.",
         schema,
     )
-    Draft202012Validator(schema).validate(result)
     return tuple(result["queries"])
+
+
+def _record_validation_failure(
+    search_client, decision: DecisionClient, purpose: str, error: ModelValidationExhausted
+) -> None:
+    trace = getattr(search_client, "trace", None)
+    if not isinstance(trace, list):
+        trace = []
+        try:
+            search_client.trace = trace
+        except (AttributeError, TypeError):
+            return
+    run_id = getattr(search_client, "run_id", None)
+    if not isinstance(run_id, str) or not run_id:
+        providers = getattr(search_client, "providers", ())
+        run_id = next(
+            (
+                candidate
+                for provider in providers
+                if isinstance((candidate := getattr(provider, "run_id", None)), str) and candidate
+            ),
+            None,
+        )
+    if not isinstance(run_id, str) or not run_id:
+        return
+    trace.append(
+        {
+            "step_id": f"step:{uuid.uuid4().hex}",
+            "run_id": run_id,
+            "phase": 3,
+            "source_id": None,
+            "objective_id": None,
+            "tdd_path": "03-fanout/objectives.json",
+            "mode": "D1",
+            "observed": {"model_purpose": purpose},
+            "requested": {"tool": purpose},
+            "executed": {"status": "failed"},
+            "evaluated": {
+                "status": "failed",
+                "reason": "ModelValidationExhausted",
+                "detail": error.reason,
+            },
+            "parent_step_id": None,
+            "value_ids": [],
+            "ts": datetime.now(UTC).isoformat(),
+            "generated_by": generated_by(decision),
+        }
+    )
 
 
 def _metadata(client, url: str) -> dict:
@@ -173,13 +226,13 @@ def _choose(entries: list[tuple], gaps: tuple[str, ...], decision, max_sources: 
         }
         for i, item in enumerate(ranked)
     ]
-    result = decision.complete_json(
+    result = complete_validated(
+        decision,
         "phase3.select_sources",
         "Select relevant captured sources by index only; do not invent URLs. "
         f"Gaps: {gaps}. Candidates: {json.dumps(listing, ensure_ascii=False)}",
         schema,
     )
-    Draft202012Validator(schema).validate(result)
     return [ranked[index] for index in result["indexes"]]
 
 
@@ -224,7 +277,16 @@ def discover_objectives(
 
     candidates = {}
     labels = {item["id"]: item["label"] for item in ontology["properties"]}
-    queries = _queries(brief, tuple(labels[property_id] for property_id in gaps), decision)
+    try:
+        queries = _queries(brief, tuple(labels[property_id] for property_id in gaps), decision)
+    except ModelValidationExhausted as exc:
+        _record_validation_failure(search_client, decision, "phase3.plan_search", exc)
+        summary = " ".join(
+            line.strip()
+            for line in brief.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )[:140]
+        queries = (" ".join((summary, *(labels[property_id] for property_id in gaps))),)
     for query in queries:
         for found in source_discover(brief, search_client, limit=30, query=query):
             candidates.setdefault(found.url, found)
@@ -236,7 +298,15 @@ def discover_objectives(
         entries.append((found, objective, manifest, trusted))
     if not entries:
         raise ValueError("search captured no usable source candidates")
-    selected = _choose(entries, gaps, decision, max_sources)
+    try:
+        selected = _choose(entries, gaps, decision, max_sources)
+    except ModelValidationExhausted as exc:
+        _record_validation_failure(search_client, decision, "phase3.select_sources", exc)
+        selected = sorted(
+            entries,
+            key=lambda item: int(100 * item[1]["expected_contribution"]) + (8 if item[3] else 0),
+            reverse=True,
+        )[:max_sources]
     provenance = generated_by(decision)
     existing = (
         previous

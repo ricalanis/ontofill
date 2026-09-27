@@ -22,11 +22,10 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
-from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from ontofill_scrape.models import ToolFailure
 
-from ontofill.inference import DecisionClient
+from ontofill.inference import DecisionClient, complete_validated
 
 USER_AGENT = "ontofill-discovery/0.1 (+https://github.com/ricalanis/ontofill)"
 _ENGINE_ROOT = Path(__file__).resolve().parents[4]
@@ -394,8 +393,7 @@ class ModelLeadProvider(LeadProvider):
         )
         query_text = {query.property_id: query.text for query in context.queries}
         try:
-            result = self.decision.complete_json(self.PURPOSE, prompt, schema)
-            Draft202012Validator(schema).validate(result)
+            result = complete_validated(self.decision, self.PURPOSE, prompt, schema)
         except PROVIDER_ERRORS as exc:  # a provider never stops discovery
             self._attempt("; ".join(query_text.values()), f"error: {type(exc).__name__}", 0)
             return []

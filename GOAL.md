@@ -1,5 +1,16 @@
 # Goal
+Retry invalid model outputs with bounded, logged validation feedback while keeping P3, refiner, and repair failures scoped to their source or step.
+DONE: `agent-progress run --task r22-other-semantic-retries-lint-successor --paths src/ontofill/phases/p3_fanout/phase.py,src/ontofill/phases/p3_fanout/leads.py,src/ontofill/phases/p3_fanout/discovery_loop.py,src/ontofill/phases/p3_fanout/site_graph.py,src/ontofill/refiner/core.py,src/ontofill/repair/pattern_a.py,tests/test_discovery_phase.py,tests/test_discovery_providers.py,tests/test_discovery_loop.py,tests/test_site_graph.py,tests/test_refiner.py,tests/test_pattern_a.py --check focused-pytest-ruff-lint-successor --strategy direct-trace-attribute-assignment -- sh -c 'uv run pytest -q tests/test_r22_validation.py tests/test_discovery_phase.py tests/test_discovery_providers.py tests/test_discovery_loop.py tests/test_site_graph.py tests/test_refiner.py tests/test_pattern_a.py && uv run ruff check src/ontofill/phases/p3_fanout/phase.py src/ontofill/phases/p3_fanout/leads.py src/ontofill/phases/p3_fanout/discovery_loop.py src/ontofill/phases/p3_fanout/site_graph.py src/ontofill/refiner/core.py src/ontofill/repair/pattern_a.py tests/test_discovery_phase.py tests/test_discovery_providers.py tests/test_discovery_loop.py tests/test_site_graph.py tests/test_refiner.py tests/test_pattern_a.py && uv run ruff format --check src/ontofill/phases/p3_fanout/phase.py src/ontofill/phases/p3_fanout/leads.py src/ontofill/phases/p3_fanout/discovery_loop.py src/ontofill/phases/p3_fanout/site_graph.py src/ontofill/refiner/core.py src/ontofill/repair/pattern_a.py tests/test_discovery_phase.py tests/test_discovery_providers.py tests/test_discovery_loop.py tests/test_site_graph.py tests/test_refiner.py tests/test_pattern_a.py'` passed: 63 tests; Ruff check and format clean.
+Result covers source-scoped site-graph exhaustion, unclassified refiner coverage, step-scoped repair exhaustion, sandbox parse error propagation, and legacy injected-search fallbacks.
+Constraints: own only P3 fanout, refiner core, repair Pattern A, and focused tests; no P2/P4/P5/workflow edits, live capture, push, or merge.
+Branch/worktree: `r22-other` from `origin/main` b4af713 plus the root-owned helper dependency; commit and report without pushing.
+
+## Project goal
 Deliver a generic Ontofill engine for any open brief, with evidence-backed export, live Vultr decisions, and real zero-inbound Vultr/NetBird infrastructure.
+
+R22 outcome: every typed model decision gets bounded feedback on schema or semantic validation errors, each attempt is traceable, and exhaustion pauses a prerequisite phase or fails only the affected source while the run continues.
+
+DONE R22: recorded invalid-then-valid decisions produce two trace attempts and a usable artifact; three invalid P5 mappings fail one source while another proceeds; an exhausted P2 schema pauses without writing an invalid ontology; full pytest and Ruff gates pass.
 
 R16 outcome: a live browser cell survives idle CDP gaps, reports a dead browser or target as stopped with a failed job proof, and completes a bounded five-minute gVisor session.
 

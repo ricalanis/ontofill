@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,7 +21,8 @@ from ontofill.case.checkpoints import (
     write_markdown,
 )
 from ontofill.contracts import load_schema, model_output_schema, validate_document
-from ontofill.inference import DecisionClient, generated_by
+from ontofill.inference import DecisionClient, ModelValidationExhausted, generated_by
+from ontofill.inference.page_content import screened_page_content
 
 _ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _DATATYPES = {
@@ -99,6 +101,76 @@ NODE_LABELS_SCHEMA = {
 
 _GOOD_LABELS = {"Good-Overlapping", "Good-Exclusive"}
 _TAXONOMY_ALGORITHM_VERSION = "r10-separate-critic-v1"
+_VALIDATION_ATTEMPTS = 3
+_VALIDATION_ERROR_LIMIT = 600
+
+
+class OntologyDraftUnavailable(RuntimeError):
+    """A P2 model step exhausted its bounded schema or semantic repair attempts."""
+
+    def __init__(self, purpose: str, attempts: int, reason: str) -> None:
+        self.purpose = purpose
+        self.attempts = attempts
+        self.reason = reason
+        noun = "attempt" if attempts == 1 else "attempts"
+        super().__init__(f"{purpose} remained invalid after {attempts} {noun}: {reason}")
+
+
+ValidationErrorCallback = Callable[[str, int, str], None]
+
+
+def _bounded_validation_error(error: Exception) -> str:
+    reason = str(error)
+    if not reason:
+        reason = error.__class__.__name__
+    return reason[:_VALIDATION_ERROR_LIMIT]
+
+
+def _complete_validated_json(
+    decision: DecisionClient,
+    purpose: str,
+    prompt: str,
+    schema: dict,
+    validate: Callable[[dict], None],
+    on_validation_error: ValidationErrorCallback | None = None,
+) -> dict:
+    """Run a P2 model step with bounded JSON Schema and semantic repair feedback."""
+    current_prompt = prompt
+    for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
+        try:
+            response = decision.complete_json(purpose, current_prompt, schema)
+        except ModelValidationExhausted as exc:
+            reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
+            if on_validation_error is not None:
+                on_validation_error(exc.purpose, exc.attempts, reason)
+            raise OntologyDraftUnavailable(exc.purpose, exc.attempts, reason) from exc
+        except (ValidationError, ValueError) as exc:
+            validation_error: ValidationError | ValueError | None = exc
+        else:
+            try:
+                Draft202012Validator(schema).validate(response)
+                validate(response)
+            except ModelValidationExhausted as exc:
+                reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
+                if on_validation_error is not None:
+                    on_validation_error(exc.purpose, exc.attempts, reason)
+                raise OntologyDraftUnavailable(exc.purpose, exc.attempts, reason) from exc
+            except (ValidationError, ValueError) as exc:
+                validation_error = exc
+            else:
+                return response
+
+        reason = _bounded_validation_error(validation_error)
+        if on_validation_error is not None:
+            on_validation_error(purpose, attempt, reason)
+        if attempt == _VALIDATION_ATTEMPTS:
+            raise OntologyDraftUnavailable(purpose, attempt, reason) from validation_error
+        current_prompt += (
+            f"\nThe previous response failed validation on attempt {attempt}. "
+            "Return a complete corrected object. Validator error: "
+            f"{screened_page_content(reason)}"
+        )
+    raise AssertionError("bounded validation attempts did not return or raise")
 
 
 def _digest(value: object) -> str:
@@ -106,7 +178,12 @@ def _digest(value: object) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def label_taxonomy_nodes(decision: DecisionClient, taxonomies: list[dict]) -> list[dict]:
+def label_taxonomy_nodes(
+    decision: DecisionClient,
+    taxonomies: list[dict],
+    *,
+    on_validation_error: ValidationErrorCallback | None = None,
+) -> list[dict]:
     """Grade every proposed node with a separate critic from another model family.
 
     The generator proposes the tree; this critic supplies each node's `critic_label`. Returns the
@@ -125,20 +202,31 @@ def label_taxonomy_nodes(decision: DecisionClient, taxonomies: list[dict]) -> li
         "do not add, drop or rename nodes. Return one label per proposed node. "
         f"Proposed nodes: {json.dumps(nodes, ensure_ascii=False)}"
     )
-    response = decision.complete_json("critic.phase2.taxonomy_nodes", prompt, NODE_LABELS_SCHEMA)
-    Draft202012Validator(NODE_LABELS_SCHEMA).validate(response)
-    label_keys = [(item["factor_id"], item["node_id"]) for item in response["labels"]]
-    if len(label_keys) != len(set(label_keys)):
-        raise ValueError("the taxonomy critic returned duplicate node labels")
     expected_keys = [(item["factor_id"], item["node_id"]) for item in nodes]
     if len(expected_keys) != len(set(expected_keys)):
         raise ValueError("proposed taxonomy nodes must have unique factor and node IDs")
+
+    def validate_labels(response: dict) -> None:
+        label_keys = [(item["factor_id"], item["node_id"]) for item in response["labels"]]
+        if len(label_keys) != len(set(label_keys)):
+            raise ValueError("the taxonomy critic returned duplicate node labels")
+        if set(label_keys) != set(expected_keys):
+            raise ValueError("the taxonomy critic must label every proposed node exactly once")
+
+    response = _complete_validated_json(
+        decision,
+        "critic.phase2.taxonomy_nodes",
+        prompt,
+        NODE_LABELS_SCHEMA,
+        validate_labels,
+        on_validation_error,
+    )
+    label_keys = [(item["factor_id"], item["node_id"]) for item in response["labels"]]
     labels = {
         key: item["critic_label"] for key, item in zip(label_keys, response["labels"], strict=True)
     }
     expected = set(expected_keys)
-    if set(labels) != expected:
-        raise ValueError("the taxonomy critic must label every proposed node exactly once")
+    assert set(labels) == expected
     graded = []
     for tax in taxonomies:
         children = [
@@ -157,12 +245,19 @@ def label_taxonomy_nodes(decision: DecisionClient, taxonomies: list[dict]) -> li
     return graded
 
 
-def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
+def draft_factors(
+    case_dir: Path,
+    prd: dict,
+    decision: DecisionClient,
+    *,
+    on_validation_error: ValidationErrorCallback | None = None,
+) -> dict:
     path = case_dir / "02-ontology/factors/factors.json"
     revisions = checkpoint_revisions(
         path.parent,
         "factors",
         ["factors.json", "factors.md", "factors.input.sha256"],
+        archive_denial=False,
         case_dir=case_dir,
     )
     digest = _digest([prd, revisions])
@@ -190,24 +285,40 @@ def draft_factors(case_dir: Path, prd: dict, decision: DecisionClient) -> dict:
     )
     schema = model_output_schema("factors")
     schema["properties"].pop("revisions", None)
-    for attempt in range(2):
-        factors = decision.complete_json("phase2.factors", prompt, schema)
+
+    def validate_factors(response: dict) -> None:
+        factor_ids = [item["id"] for item in response["factors"]]
+        if len(factor_ids) != len(set(factor_ids)):
+            raise ValueError("factor IDs must be unique")
         review = getattr(decision, "review_json", None)
-        if review is None:
-            break
-        verdict = review(
-            "phase2.factors",
-            factors,
-            "Factors are distinct, grounded factors do not claim unsupported evidence, and the set covers the PRD's main variation",
-        )
-        if verdict["accepted"]:
-            break
-        if attempt:
-            raise ValueError("Vultr critic rejected factors after repair")
-        prompt += f"\nRepair this material issue: {verdict['reason']}"
+        if review is not None:
+            verdict = review(
+                "phase2.factors",
+                response,
+                "Factors are distinct, grounded factors do not claim unsupported evidence, and the set covers the PRD's main variation",
+            )
+            if not verdict["accepted"]:
+                raise ValueError(f"Vultr critic rejected factors: {verdict['reason']}")
+
+    factors = _complete_validated_json(
+        decision,
+        "phase2.factors",
+        prompt,
+        schema,
+        validate_factors,
+        on_validation_error,
+    )
     factors["revisions"] = revisions
     factors["generated_by"] = generated_by(decision)
     validate_document("factors", factors)
+    archived_revisions = checkpoint_revisions(
+        path.parent,
+        "factors",
+        ["factors.json", "factors.md", "factors.input.sha256"],
+        case_dir=case_dir,
+    )
+    if archived_revisions != revisions:
+        raise ValueError("factor checkpoint revisions changed while drafting")
     marker = path.parent / "APPROVED"
     if marker.exists():
         marker.rename(marker.with_name(f"APPROVED.stale.{digest[:12]}"))
@@ -238,7 +349,14 @@ def accepted_factors(case_dir: Path, factors: dict) -> list[dict]:
     return selected
 
 
-def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionClient) -> dict:
+def draft_ontology(
+    case_dir: Path,
+    prd: dict,
+    factors: dict,
+    decision: DecisionClient,
+    *,
+    on_validation_error: ValidationErrorCallback | None = None,
+) -> dict:
     path = case_dir / "02-ontology/ontology.json"
     queries_path = case_dir / "02-ontology/dod-queries.json"
     chosen = accepted_factors(case_dir, factors)
@@ -246,6 +364,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         path.parent,
         "ontology",
         ["ontology.json", "ontology.md", "ontology.input.sha256", "dod-queries.json", "shapes.ttl"],
+        archive_denial=False,
         case_dir=case_dir,
     )
     digest = _digest([prd, chosen, revisions, _TAXONOMY_ALGORITHM_VERSION])
@@ -262,6 +381,7 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
                 validate_document("ontology", ontology)
                 validate_document("dod-queries", load_json(queries_path))
                 _validate_ontology(ontology)
+                _validate_queries(prd, ontology, load_json(queries_path))
             except (ValidationError, ValueError):
                 pass
             else:
@@ -272,27 +392,40 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         f"Human revisions override prior proposals: {json.dumps(revisions, ensure_ascii=False)}. "
         f"Approved factors: {chosen}. PRD: {prd}"
     )
-    for attempt in range(2):
-        response = decision.complete_json("phase2.taxonomies", prompt, TAXONOMY_SCHEMA)
-        review = getattr(decision, "review_json", None)
-        if review is None:
-            break
-        verdict = review(
-            "phase2.taxonomies",
-            response,
-            "Every approved factor has one taxonomy; children are mutually coherent and grounded in approved factors",
-        )
-        if verdict["accepted"]:
-            break
-        if attempt:
-            raise ValueError("Vultr critic rejected taxonomies after repair")
-        prompt += f"\nRepair this material issue: {verdict['reason']}"
-    Draft202012Validator(TAXONOMY_SCHEMA).validate(response)
     factor_ids = {factor["id"] for factor in chosen}
-    if {tax["factor_id"] for tax in response["taxonomies"]} != factor_ids:
-        raise ValueError("taxonomies must cover exactly the approved factors")
+
+    def validate_taxonomies(response: dict) -> None:
+        received_ids = [tax["factor_id"] for tax in response["taxonomies"]]
+        if len(received_ids) != len(set(received_ids)) or set(received_ids) != factor_ids:
+            raise ValueError("taxonomies must cover exactly the approved factors")
+        for taxonomy in response["taxonomies"]:
+            node_ids = [child["id"] for child in taxonomy["children"]]
+            if len(node_ids) != len(set(node_ids)):
+                raise ValueError("taxonomy child IDs must be unique within each factor")
+        review = getattr(decision, "review_json", None)
+        if review is not None:
+            verdict = review(
+                "phase2.taxonomies",
+                response,
+                "Every approved factor has one taxonomy; children are mutually coherent and grounded in approved factors",
+            )
+            if not verdict["accepted"]:
+                raise ValueError(f"Vultr critic rejected taxonomies: {verdict['reason']}")
+
+    response = _complete_validated_json(
+        decision,
+        "phase2.taxonomies",
+        prompt,
+        TAXONOMY_SCHEMA,
+        validate_taxonomies,
+        on_validation_error,
+    )
     # The generator never grades itself: a separate critic labels each proposed node.
-    taxonomies = label_taxonomy_nodes(decision, response["taxonomies"])
+    taxonomies = label_taxonomy_nodes(
+        decision,
+        response["taxonomies"],
+        on_validation_error=on_validation_error,
+    )
     proposal = _schema_proposal()
     case_spec = {
         "question": (case_dir / "brief.md").read_text(encoding="utf-8")[:3000],
@@ -318,8 +451,8 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
         "Do not invent observations. Keep the response concise. "
         f"Approved case specification: {json.dumps(case_spec, ensure_ascii=False)}"
     )
-    for attempt in range(2):
-        proposed = decision.complete_json("phase2.schema", schema_prompt, proposal)
+
+    def validate_schema(proposed: dict) -> None:
         ontology = {
             "version": "1",
             "prd_path": "01-scope/prd.json",
@@ -331,22 +464,42 @@ def draft_ontology(case_dir: Path, prd: dict, factors: dict, decision: DecisionC
             "generated_by": generated_by(decision),
             "revisions": revisions,
         }
-        try:
-            Draft202012Validator(proposal).validate(proposed)
-            validate_document("ontology", ontology)
-            _validate_ontology(ontology)
-        except (ValidationError, ValueError) as exc:
-            if attempt:
-                raise
-            schema_prompt += (
-                f"\nRepair the previous schema: {str(exc)[:300]}. "
-                "Regenerate a complete schema with valid class/property references."
-            )
-        else:
-            break
-    queries = _draft_dod_queries(prd, ontology, decision)
-    validate_document("dod-queries", queries)
-    _validate_queries(prd, ontology, queries)
+        validate_document("ontology", ontology)
+        _validate_ontology(ontology)
+
+    proposed = _complete_validated_json(
+        decision,
+        "phase2.schema",
+        schema_prompt,
+        proposal,
+        validate_schema,
+        on_validation_error,
+    )
+    ontology = {
+        "version": "1",
+        "prd_path": "01-scope/prd.json",
+        "factors": chosen,
+        "taxonomies": taxonomies,
+        **proposed,
+        "shacl_path": "02-ontology/shapes.ttl",
+        "dod_queries_path": "02-ontology/dod-queries.json",
+        "generated_by": generated_by(decision),
+        "revisions": revisions,
+    }
+    queries = _draft_dod_queries(
+        prd,
+        ontology,
+        decision,
+        on_validation_error=on_validation_error,
+    )
+    archived_revisions = checkpoint_revisions(
+        path.parent,
+        "ontology",
+        ["ontology.json", "ontology.md", "ontology.input.sha256", "dod-queries.json", "shapes.ttl"],
+        case_dir=case_dir,
+    )
+    if archived_revisions != revisions:
+        raise ValueError("ontology checkpoint revisions changed while drafting")
     marker = path.parent / "APPROVED"
     if marker.exists():
         marker.rename(marker.with_name(f"APPROVED.stale.{digest[:12]}"))
@@ -533,7 +686,13 @@ def _validate_typed_literal(value: object, datatype: str) -> None:
         raise ValueError(f"equals predicate literal does not match datatype {datatype}")
 
 
-def _draft_dod_queries(prd: dict, ontology: dict, decision: DecisionClient) -> dict:
+def _draft_dod_queries(
+    prd: dict,
+    ontology: dict,
+    decision: DecisionClient,
+    *,
+    on_validation_error: ValidationErrorCallback | None = None,
+) -> dict:
     schema = model_output_schema("dod-queries")
     prompt = (
         "Compile every approved definition-of-done criterion into exactly one safe declarative "
@@ -547,11 +706,31 @@ def _draft_dod_queries(prd: dict, ontology: dict, decision: DecisionClient) -> d
         f"Properties: {ontology['properties']}. Relations: {ontology['relations']}. "
         f"Source classes: {ontology.get('source_classes', [])}."
     )
-    result = decision.complete_json("phase2.dod_queries", prompt, schema)
-    result["generated_by"] = generated_by(decision)
-    result["prd_path"] = "01-scope/prd.json"
-    result["ontology_version"] = ontology["version"]
-    return result
+
+    def validate_queries(response: dict) -> None:
+        document = {
+            **response,
+            "generated_by": generated_by(decision),
+            "prd_path": "01-scope/prd.json",
+            "ontology_version": ontology["version"],
+        }
+        validate_document("dod-queries", document)
+        _validate_queries(prd, ontology, document)
+
+    response = _complete_validated_json(
+        decision,
+        "phase2.dod_queries",
+        prompt,
+        schema,
+        validate_queries,
+        on_validation_error,
+    )
+    return {
+        **response,
+        "generated_by": generated_by(decision),
+        "prd_path": "01-scope/prd.json",
+        "ontology_version": ontology["version"],
+    }
 
 
 def _validate_queries(prd: dict, ontology: dict, document: dict) -> None:

@@ -143,6 +143,32 @@ def test_ontology_reopen_waits_for_human_review(tmp_path, monkeypatch) -> None:
     assert status["checkpoint_pending"] == "ontology"
 
 
+def test_invalid_outer_decision_pauses_step_after_three_traced_attempts(
+    tmp_path, monkeypatch
+) -> None:
+    bad = {"reopen": 99, "reason": "Synthetic invalid choice"}
+    _case, _scratch, lake, code, outer, _metrics = _run_library_case(
+        tmp_path, monkeypatch, target=2, reopen=[bad, bad, bad]
+    )
+
+    assert code == 3
+    assert [step["loop"]["stop_reason"] for step in outer] == ["human"]
+    assert "invalid after 3 attempts" in outer[0]["evaluated"]["reason"]
+    run_id = outer[0]["run_id"]
+    steps = [
+        json.loads(line)
+        for line in lake.read_key(f"runs/case/{run_id}/trace.live.jsonl").splitlines()
+    ]
+    attempts = [
+        step
+        for step in steps
+        if step.get("requested", {}).get("tool") == "decision.complete_json"
+        and step["observed"].get("artifact") == "outer.gap_decision"
+    ]
+    assert len(attempts) == 3
+    assert all(step["evaluated"]["status"] == "invalid_response" for step in attempts)
+
+
 def test_gap_fields_derive_only_from_approved_ontology_queries() -> None:
     metrics = {"dod": [{"criterion_id": "c", "actual": 0, "target": 1, "met": False}]}
     queries = {

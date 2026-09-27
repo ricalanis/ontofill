@@ -1,5 +1,14 @@
 # Strategy and assumptions
 
+## R22 typed decision strategy (2026-09-27)
+- First focused managed check: 13 passed, 2 failed. Both existing inference tests expected `TypeError` on exhausted malformed model output, while the new typed `ModelValidationExhausted` initially inherited `ValueError`. The output still failed closed; this was an exception-compatibility regression, not a retry or safety failure.
+- Revised strategy: make the typed exhaustion a `TypeError` subtype, preserving existing callers while exposing purpose, exact bounded reason, and attempt count for phase-specific pause/source isolation. Keep schema/semantic retries bounded and leave network/approval failures outside the retry class.
+- P4 regression: 18 passed, 3 failed because existing tests expected the immediate raw `ValueError` from one malformed model answer. The changed contract retries three times and raises typed exhaustion, so the tests now assert that type, three attempts, and no artifact write; a new test proves invalid-then-valid correction.
+- Multi-source/outer regression: 32 passed, 3 failed because adding `call_log` to the recorded client exposed it to the outer budget accounting, and its recorded calls had no `usage`. The outer decision correctly refused an unpriced call, but that broke recorded loop previews. Recorded test calls now carry explicit zero-token, zero-cost usage, so preview budget accounting remains deterministic and every attempt can appear in trace.
+- P5 workflow status test: 6 passed, 1 failed because its fake `execute_objectives` returned results in input order, while the real executor and workflow both run ordinary objectives before complete-list membership objectives. The failed-result fixture was assigned to the wrong source by `zip`, so the health assertion was wrong. The fake now returns the same membership-last order as production; the three source-health variants pass.
+- First R22 core+P2+P5 full gate: 403 passed, 1 failed, 5 skipped. The one failure was a pre-existing CLI-output assertion for zero-budget PRD pauses: the new combined exception handler changed the printed reason from `budget exhausted` to `draft unavailable`, while status and artifact safety still passed. The handler now preserves the exact budget phrase for `PrdDraftUnavailable` and uses `model validation exhausted` only for the new typed case.
+- Final R22 integration gate attempt 1: 415 passed, 4 failed, 5 skipped. All four failures were older R10 classifier tests that queued one invalid answer and expected an immediate `ValueError`; the new contract retries up to three times and emits `ModelValidationExhausted`. They now queue three invalid answers and assert the exact objection reaches answer two. The standalone refiner tests already covered invalid-then-valid and fail-closed unclassified behavior; no production classifier logic changed for this correction.
+
 ## R17 integrated gate strategy (2026-09-27)
 - Attempt 1, `r17-integration-main`: 77 passed, 7 failed, 3 skipped. Four replay fixtures omitted the synthetic parser; three assertions assumed raw HTML or capture-only trace. Static fixture corrections preceded the authorized retry.
 - Attempt 2, `r17-integration-authorized-fixture-fix-retry`: 82 passed, 2 failed, 3 skipped. Dead hypothesis: a repeated real parser run could preserve byte-identical live trace, and export failure should erase proof that the parser pod ran. The parser generates a new six-checkpoint job each time; `refine_case` retains that proof and rolls back only unexported replay value steps.
@@ -179,3 +188,50 @@ Attempt 1 exited 1 with 11 passed and 2 failed. The existing `refine_case` refus
 The parent authorized one managed successor after the distinct SHACL-fixture failure and directed use of the transparent task name `r11-bronze-refine-authorized-successor`. The only correction for this attempt is to create the empty file named by the test ontology's `shacl_path`, allowing `refine_case` to reach export and rollback assertions. The exact gate is `uv run pytest -q tests/test_bronze_replay.py tests/test_cli.py`; run it once under the new task and stop if it fails.
 
 The authorized successor gate passed: 13 tests in 0.44 seconds. This verifies the fixture reaches the export spy, new-property gold export succeeds, repeated refine does not duplicate the replay trace row, and the original trace bytes are restored after an injected export failure. No live or network run was performed.
+
+## R22 P2 validation retries
+
+The focused recorded tests passed on the first managed attempt. The initial Ruff check then failed because `Callable` was imported from `typing` instead of `collections.abc` and the test file had an unused import; the format check identified line wrapping and blank-line normalization in the P2 phase and new test. These were style issues and are fixed. The compile smoke command also used `python`, which is unavailable in this environment; the project uses `uv run` for Python commands. The managed Ruff check and format check passed after these corrections.
+
+The first combined R22 P2 regression check passed 22 tests but failed the older duplicate-taxonomy-label fixture: it queued one invalid critic response while the new contract correctly requests up to three. The fixture now queues three invalid responses and asserts typed step exhaustion. The corrected managed regression set passed all 23 P2 focused and existing tests.
+
+The final managed integration check passed 30 tests, including the shared inference retry tests and P2 schema, semantic, exhaustion, and checkpoint-preservation cases. Ruff lint and format checks passed. Bounded validator feedback is screened before it is added to a repair prompt.
+
+## R22 P1 schema and semantic retry
+
+P1 now validates the normalized PRD after each model draft and retries schema or local authority-policy failures up to three times with screened validator feedback. Exhaustion raises `PrdDraftUnavailable` before checkpoint writes, approval archival, or critic calls. Vultr's three section requests are adapted behind the same complete-PRD validation; the shared inference client retains per-request call-log records.
+
+The first managed focused run passed 22 tests and failed one legacy expectation: `PhaseLoop` records its initial `gather` trace before the invalid draft raises. The test now asserts that this is the only trace role emitted before pause. The managed focused run then passed all 23 tests. The first Ruff check found RUF012 on the synthetic exhaustion fixture's mutable class-level call log; the fixture now initializes that list per instance. The managed Ruff and format gate passed, with all three P1-owned code/test files clean.
+
+## R22 semantic validation retry strategy (2026-09-27)
+- The task branch starts at `origin/main` b4af713. The root-owned helper commit 96d6135 was cherry-picked as a dependency, yielding branch commit a2bf9f5; no helper source is owned here.
+- Replace direct typed model calls in the owned P3, refiner, and repair paths with `complete_validated`. Put existing response-specific checks inside callbacks that raise `ValueError`, so the helper can feed back the exact validation reason and log each failed attempt.
+- Retry only model schema/semantic failures. Preserve P3's source-specific site-graph failure step, make exhausted taxonomy classification return no assignments (unknown coverage), and turn generated/patch-code exhaustion into a repair failure result.
+- Do not route capture, sandbox, safety, approval, parsing, filesystem, or other non-model failures through a retry validator. Keep model-produced repair code in the existing sandbox test loop.
+- Gate is one managed focused pytest/Ruff run, with no live providers or captures.
+
+### R22 managed gate continuation
+
+The first managed `r22-other-semantic-retries` run exited after 61 tests passed
+and one Pattern A assertion failed: parse trace rows have no `repair` field, so
+the new assertion must filter for `event == "repair"`. The second run passed all
+62 tests and Ruff format, then stopped at Ruff I001 because `classify_entities`
+was imported ahead of the `ontofill.refiner` package imports. That import order
+is corrected.
+
+The user’s Sat 22:14 standing authorization in
+`coord/briefs/codex-authorizations.md`
+allows continued attempts until success while recording causes. The transparent
+successor gate also covers a legacy P3 injected-search fix: exhausted typed
+query planning records a failed phase-3 step and uses the deterministic query;
+exhausted source selection records its failed step and falls back to the bounded
+ranked candidates. The attempt remains isolated to synthetic responses.
+
+The first transparent successor passed all 63 tests and Ruff format, then Ruff
+reported B010 for assigning a constant-name `setattr` to the injected search
+client. The helper now uses direct attribute assignment, still catching only
+objects that cannot accept a trace attribute.
+
+## R22 P1 recorded-preview follow-up
+
+The root integration gate passed 406 tests and failed two workflow preview tests because `_preview_decision` intentionally supplies no trusted publisher. Strict PRD semantic retry consumed its single recorded response and paused before it could persist a preview with authority open issues. `draft_prd` now exposes `mock_preview=False`; only a recorded decision may enable it, and it skips only the authority rejection during retry validation. The final phase check still records authority objections as `open_issues`, and the preview fingerprint has a separate `mock-preview` marker so a valid preview draft cannot be reused by strict mode. The managed focused preview and strict-regression tests passed: 25 tests.

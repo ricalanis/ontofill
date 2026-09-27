@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
 from ontofill.refiner import (
     MemorySilverStore,
@@ -15,6 +16,7 @@ from ontofill.refiner import (
     refine_observations,
     stable_value_id,
 )
+from ontofill.refiner.core import classify_entities
 from ontofill.refiner.export import _query_actual
 
 RUN_ID = "mock-books"
@@ -327,6 +329,7 @@ def test_refinement_preserves_typed_values_missing_and_conflict(tmp_path: Path) 
     result = refine_observations(
         store.list_for_run(RUN_ID), ontology=ontology(), generated_by=RECORDED
     )
+    assert result.classified is False
     assert len(result.rejected) == 1
     assert "ISO date" in result.rejected[0]["reason"]
     book, library = result.entities
@@ -348,6 +351,46 @@ def test_refinement_preserves_typed_values_missing_and_conflict(tmp_path: Path) 
         )
         == 0
     )
+
+
+def test_taxonomy_classifier_retries_semantic_invalid_output() -> None:
+    decision = RecordedDecisionClient(
+        {
+            "refine.classify_entities": [
+                {"assignments": [{"entity_id": "Unknown:one", "node_ids": []}]},
+                {"assignments": [{"entity_id": "Book:one", "node_ids": ["edition:local"]}]},
+            ]
+        }
+    )
+    entities = [{"id": "Book:one", "properties": {"book_id": {"status": "missing"}}}]
+
+    assert classify_entities(entities, {"edition": [["edition:local"]]}, decision) == {
+        "Book:one": ["edition:local"]
+    }
+    assert len(decision.calls) == 2
+    reason = "classification assigns an unknown entity"
+    assert decision.call_log[0]["status"] == "validation_failed"
+    assert decision.call_log[0]["reason"] == reason
+    assert reason in decision.calls[1][1]
+
+
+def test_classifier_exhaustion_returns_unclassified_coverage(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    invalid = {"assignments": [{"entity_id": "Unknown:one", "node_ids": []}]}
+    decision = RecordedDecisionClient({"refine.classify_entities": [invalid, invalid, invalid]})
+
+    result = refine_observations(
+        [observed(lake, "book_id", "B-1")],
+        ontology=ontology(),
+        generated_by=RECORDED,
+        decision=decision,
+    )
+
+    assert result.classified is False
+    assert result.entities[0]["classified_as"] == []
+    assert result.entities[0]["properties"]["book_id"]["value"] == "B-1"
+    assert len(decision.call_log) == 3
+    assert all(item["status"] == "validation_failed" for item in decision.call_log)
 
 
 def test_dod_property_count_requires_all_and_completeness_uses_approved_ratio() -> None:

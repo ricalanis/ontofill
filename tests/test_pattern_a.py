@@ -6,12 +6,16 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from ontofill.inference import RecordedDecisionClient, generated_by
 from ontofill.lake import FileLake
 from ontofill.phases.p5_execute import execute_objective
 from ontofill.refiner import MemorySilverStore
+from ontofill.repair import repair_html_extractor
 from ontofill.repair.runner import RepairExecution
 from ontofill.runfeed import RunFeed
+from ontofill.sandbox.parse import SandboxParseError
 from tests.r17_helpers import SyntheticParseExecutor
 
 _HTML = """<html><table>
@@ -302,3 +306,128 @@ def test_repaired_existing_html_macro_is_promoted_as_next_version(tmp_path: Path
         "v1",
         "v2",
     ]
+
+
+def _repair_html(
+    *,
+    tmp_path: Path,
+    lake: FileLake,
+    decision: RecordedDecisionClient,
+    provenance: dict,
+    objective: dict,
+    ontology: dict,
+    html_key: str,
+    executor: _Executor | None,
+    parse_executor=None,
+):
+    return repair_html_extractor(
+        case_dir=tmp_path,
+        lake=lake,
+        capture_key=html_key,
+        expected=_EXPECTED,
+        decision=decision,
+        run_id="mock-r4-validation-exhaustion",
+        source_id=objective["source_id"],
+        objective_id=objective["id"],
+        tdd_path="04-local/source-r4__objective-r4/tdd.json",
+        source_type=objective["source_type"],
+        target_fields=["identifier", "name", "capacity"],
+        ontology_fingerprint="synthetic-ontology-fingerprint",
+        generated_by=provenance,
+        parent_step_id="step:parent",
+        executor=executor,
+        parse_executor=parse_executor or SyntheticParseExecutor(),
+    )
+
+
+def test_html_repair_generation_validation_exhaustion_fails_step_without_running_code(
+    tmp_path: Path,
+) -> None:
+    lake, _unused, _provenance, objective, ontology, _tdd, _capture, html_key = _fixture(tmp_path)
+    decision = RecordedDecisionClient({"phase5.repair_generate": [{}, {}, {}]})
+    provenance = generated_by(decision)
+    executor = _Executor(_EXPECTED)
+
+    result = _repair_html(
+        tmp_path=tmp_path,
+        lake=lake,
+        decision=decision,
+        provenance=provenance,
+        objective=objective,
+        ontology=ontology,
+        html_key=html_key,
+        executor=executor,
+    )
+
+    assert result.passed is False
+    assert result.failure_reason.startswith("model_validation_exhausted: ")
+    assert executor.codes == []
+    assert len(decision.call_log) == 3
+    assert all(item.get("reason") for item in decision.call_log)
+    assert not (tmp_path / "05-macros/source-r4").exists()
+
+
+def test_html_repair_patch_validation_exhaustion_fails_repair_without_extra_sandbox_run(
+    tmp_path: Path,
+) -> None:
+    lake, _unused, _provenance, objective, ontology, _tdd, _capture, html_key = _fixture(tmp_path)
+    decision = RecordedDecisionClient(
+        {
+            "phase5.repair_generate": [{"code": _BROKEN_CODE}],
+            "phase5.repair_patch": [{}, {}, {}],
+        }
+    )
+    provenance = generated_by(decision)
+    executor = _Executor(_EXPECTED, fail_once=True)
+
+    result = _repair_html(
+        tmp_path=tmp_path,
+        lake=lake,
+        decision=decision,
+        provenance=provenance,
+        objective=objective,
+        ontology=ontology,
+        html_key=html_key,
+        executor=executor,
+    )
+
+    assert result.passed is False
+    assert result.failure_reason == "patch_error"
+    assert executor.codes == [_BROKEN_CODE]
+    assert [item["repair"]["result"] for item in result.trace if item.get("event") == "repair"] == [
+        "fail"
+    ]
+    assert len(decision.call_log) == 4
+    assert [item["purpose"] for item in decision.call_log] == [
+        "phase5.repair_generate",
+        "phase5.repair_patch",
+        "phase5.repair_patch",
+        "phase5.repair_patch",
+    ]
+    assert all(item.get("reason") for item in decision.call_log[1:])
+    assert not (tmp_path / "05-macros/source-r4").exists()
+
+
+def test_html_repair_does_not_swallow_sandbox_parse_errors(tmp_path: Path) -> None:
+    lake, _decision, provenance, objective, ontology, _tdd, _capture, html_key = _fixture(tmp_path)
+
+    class FailingParseExecutor:
+        def run_from_file(self, *_args, **_kwargs):
+            raise SandboxParseError("synthetic sandbox isolation failure", job_record={}, trace=())
+
+    decision = RecordedDecisionClient({"phase5.repair_generate": [{"code": _BROKEN_CODE}]})
+
+    with pytest.raises(SandboxParseError, match="synthetic sandbox isolation failure"):
+        _repair_html(
+            tmp_path=tmp_path,
+            lake=lake,
+            decision=decision,
+            provenance=provenance,
+            objective=objective,
+            ontology=ontology,
+            html_key=html_key,
+            executor=None,
+            parse_executor=FailingParseExecutor(),
+        )
+
+    assert decision.calls == []

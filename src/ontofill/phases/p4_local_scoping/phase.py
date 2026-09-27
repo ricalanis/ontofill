@@ -9,11 +9,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
-from jsonschema import Draft202012Validator
 
 from ontofill.case.checkpoints import load_json, write_json
 from ontofill.contracts import load_schema, validate_document
-from ontofill.inference.decision import DecisionClient, RecordedDecisionClient, VultrDecisionClient
+from ontofill.inference.decision import (
+    DecisionClient,
+    RecordedDecisionClient,
+    VultrDecisionClient,
+    complete_validated,
+)
 from ontofill.inference.page_content import screened_page_content
 from ontofill.phases.p3_fanout.site_graph import site_graph_context
 
@@ -249,53 +253,61 @@ def draft_local_scope(
         + (f". Maximum task budget USD: {budget_usd}" if budget_usd is not None else "")
     )
     response_schema = _response_schema()
-    response = decision.complete_json("phase4.local_scope", prompt, response_schema)
-    Draft202012Validator(response_schema).validate(response)
-    if not set(response["global_requirement_ids"]).issubset(requirements):
-        raise ValueError("local PRD references a requirement outside the global PRD")
-    for step in response["steps"]:
-        if step["starting_mode"] not in step["allowed_modes"]:
-            raise ValueError("TDD step starting mode must be in allowed_modes")
-
     provenance = {"backend": backend, "model": model, "at": datetime.now(UTC).isoformat()}
-    local = {
-        "source_id": source_id,
-        "objective_id": objective_id,
-        "global_prd_path": "01-scope/prd.json",
-        "global_requirement_ids": response["global_requirement_ids"],
-        "target_fields": target_fields,
-        "local_definition_of_done": response["local_definition_of_done"],
-        "ontology_recommendations": [],
-        "generated_by": provenance,
-    }
-    tdd = {
-        "source_id": source_id,
-        "objective_id": objective_id,
-        "local_prd_path": (relative_dir / "local-prd.json").as_posix(),
-        "ontology_version": ontology["version"],
-        "source_url": source_url,
-        "allowed_domains": [source_host],
-        "target_fields": target_fields,
-        "target_volume": response["target_volume"],
-        "extraction_method": response["extraction_method"],
-        "validation_rules": response["validation_rules"],
-        "rate_limit_per_minute": response["rate_limit_per_minute"],
-        "budget_usd": min(response["budget_usd"], budget_usd)
-        if budget_usd is not None
-        else response["budget_usd"],
-        "steps": response["steps"],
-        "allowed_tools": (
-            ["file.fetch", "file.parse", "emit.observation"]
-            if response["extraction_method"] in {"download", "pdf", "api"}
-            else ["page.snapshot", "page.query", "emit.observation"]
-        ),
-        "generated_by": provenance,
-    }
-    if response.get("membership") is not None:
-        tdd["membership"] = response["membership"]
-    _validate_membership(tdd, ontology, target_fields)
-    validate_document("local-prd", local)
-    validate_document("tdd", tdd)
+    candidate: tuple[dict, dict] | None = None
+
+    def validate_response(response: dict) -> None:
+        nonlocal candidate
+        if not set(response["global_requirement_ids"]).issubset(requirements):
+            raise ValueError("local PRD references a requirement outside the global PRD")
+        for step in response["steps"]:
+            if step["starting_mode"] not in step["allowed_modes"]:
+                raise ValueError("TDD step starting mode must be in allowed_modes")
+        local = {
+            "source_id": source_id,
+            "objective_id": objective_id,
+            "global_prd_path": "01-scope/prd.json",
+            "global_requirement_ids": response["global_requirement_ids"],
+            "target_fields": target_fields,
+            "local_definition_of_done": response["local_definition_of_done"],
+            "ontology_recommendations": [],
+            "generated_by": provenance,
+        }
+        tdd = {
+            "source_id": source_id,
+            "objective_id": objective_id,
+            "local_prd_path": (relative_dir / "local-prd.json").as_posix(),
+            "ontology_version": ontology["version"],
+            "source_url": source_url,
+            "allowed_domains": [source_host],
+            "target_fields": target_fields,
+            "target_volume": response["target_volume"],
+            "extraction_method": response["extraction_method"],
+            "validation_rules": response["validation_rules"],
+            "rate_limit_per_minute": response["rate_limit_per_minute"],
+            "budget_usd": min(response["budget_usd"], budget_usd)
+            if budget_usd is not None
+            else response["budget_usd"],
+            "steps": response["steps"],
+            "allowed_tools": (
+                ["file.fetch", "file.parse", "emit.observation"]
+                if response["extraction_method"] in {"download", "pdf", "api"}
+                else ["page.snapshot", "page.query", "emit.observation"]
+            ),
+            "generated_by": provenance,
+        }
+        if response.get("membership") is not None:
+            tdd["membership"] = response["membership"]
+        _validate_membership(tdd, ontology, target_fields)
+        validate_document("local-prd", local)
+        validate_document("tdd", tdd)
+        candidate = local, tdd
+
+    response = complete_validated(
+        decision, "phase4.local_scope", prompt, response_schema, validate_response
+    )
+    assert candidate is not None
+    local, tdd = candidate
     write_json(local_path, local)
     write_json(tdd_path, tdd)
     _write_markdown(

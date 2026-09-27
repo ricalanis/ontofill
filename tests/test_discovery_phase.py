@@ -2,9 +2,10 @@ from datetime import UTC, datetime
 
 from ontofill_scrape import SearchResult
 
+from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
-from ontofill.phases.p3_fanout.phase import discover_objective
+from ontofill.phases.p3_fanout.phase import _choose, _queries, discover_objective
 from ontofill.phases.p3_fanout.search import parse_search_results
 from ontofill.sandbox import parse_bronze
 from tests.genericity.fixtures.discovery import discovery_case
@@ -19,6 +20,69 @@ class SyntheticSearch:
     def search(self, query: str):
         self.queries.append(query)
         return [SearchResult("https://directory.example.test/rooms", "Public room directory")]
+
+
+def test_live_search_planning_retries_invalid_typed_outputs() -> None:
+    decision = RecordedDecisionClient(
+        {
+            "phase3.plan_search": [
+                {"queries": ["no"]},
+                {"queries": ["public room directory Example City"]},
+            ],
+            "phase3.select_sources": [
+                {"indexes": [1], "reason": "outside the captured candidate list"},
+                {"indexes": [0], "reason": "matches the requested gap"},
+            ],
+        }
+    )
+    decision.backend = "vultr"
+    assert _queries("Find public rooms in Example City", ("Opening hours",), decision) == (
+        "public room directory Example City",
+    )
+
+    candidate = SearchResult(
+        "https://directory.example.test/rooms", "Public room directory", "Public room data"
+    )
+    entry = (
+        candidate,
+        {"expected_contribution": 1.0, "source_type": "catalog"},
+        {"authority": "auto"},
+        True,
+    )
+    assert _choose([entry], ("opening_hours",), decision, 1) == [entry]
+    assert len(decision.calls) == 4
+    for failed, retry in ((0, 1), (2, 3)):
+        reason = str(decision.call_log[failed]["reason"])
+        assert decision.call_log[failed]["status"] == "invalid_response"
+        assert reason in decision.calls[retry][1]
+
+
+def test_legacy_injected_search_scopes_exhausted_decisions_to_failed_steps(tmp_path) -> None:
+    ontology = discovery_case(tmp_path)
+    search = SyntheticSearch()
+    search.trace = []
+    search.run_id = "mock-p3-validation-fallback"
+    decision = RecordedDecisionClient(
+        {
+            "phase3.plan_search": [{"queries": ["x"]}] * 3,
+            "phase3.select_sources": [{"indexes": [1], "reason": "not a captured candidate"}] * 3,
+        }
+    )
+    decision.backend = "vultr"
+
+    result = discover_objective(tmp_path, ontology, decision, search)
+
+    assert result["objectives"]
+    assert len(search.queries) == 1
+    assert "Example City" in search.queries[0]
+    assert len(decision.calls) == 6
+    assert [step["requested"]["tool"] for step in search.trace] == [
+        "phase3.plan_search",
+        "phase3.select_sources",
+    ]
+    assert all(step["evaluated"]["reason"] == "ModelValidationExhausted" for step in search.trace)
+    for step in search.trace:
+        validate_document("trace-step", step)
 
 
 def test_discovery_uses_brief_and_records_selected_result(tmp_path) -> None:

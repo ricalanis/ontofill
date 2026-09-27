@@ -23,7 +23,12 @@ from ontofill.case.checkpoints import (
     write_prd_budget_pending,
 )
 from ontofill.contracts import model_output_schema, validate_document
-from ontofill.inference import DecisionClient, generated_by
+from ontofill.inference import (
+    DecisionClient,
+    ModelValidationExhausted,
+    complete_validated,
+    generated_by,
+)
 from ontofill.phase_loop import CheckResult, LoopBudget, PhaseLoop
 
 NUMBER_TOKEN = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?\s*%?")
@@ -85,6 +90,19 @@ GROUNDING_NOTE = re.compile(
 
 class PrdDraftUnavailable(Exception):
     """The phase loop stopped before it could produce an approvable PRD."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        purpose: str | None = None,
+        attempts: int | None = None,
+        reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.purpose = purpose
+        self.attempts = attempts
+        self.reason = reason
 
 
 def _contains_number(text: str, expected: float, *, percent_metric: bool = False) -> bool:
@@ -465,25 +483,33 @@ def draft_prd(
     budget_usd: float | None = None,
     run_id: str = "draft-prd",
     emit: Callable[[dict], None] | None = None,
+    mock_preview: bool = False,
 ) -> dict:
     output = case_dir / "01-scope/prd.json"
     brief_path = case_dir / "brief.md"
     brief = brief_path.read_text(encoding="utf-8").strip()
     if not brief:
         raise ValueError("case brief is empty")
+    if mock_preview and decision.backend != "recorded":
+        raise ValueError("mock PRD previews require a recorded decision client")
     artifact_names = ["prd.json", "prd.md", "prd.input.sha256"]
     revisions = checkpoint_revisions(
         output.parent, "prd", artifact_names, archive_denial=False, case_dir=case_dir
     )
-    digest = hashlib.sha256(
-        json.dumps([brief, revisions, "prd-steering-v4"], ensure_ascii=False).encode()
-    ).hexdigest()
+    digest_parts = [brief, revisions, "prd-steering-v4"]
+    if mock_preview:
+        digest_parts.append("mock-preview")
+    digest = hashlib.sha256(json.dumps(digest_parts, ensure_ascii=False).encode()).hexdigest()
     # Migrate a cached draft made by the previous fingerprint formula while the
     # runner still supplies its original budget. This changes only the cache key;
     # the reviewed PRD bytes and any digest-bound approval stay untouched.
-    legacy_digest = hashlib.sha256(
-        json.dumps([brief, revisions, budget_usd, "prd-steering-v4"], ensure_ascii=False).encode()
-    ).hexdigest()
+    legacy_digest = None
+    if not mock_preview:
+        legacy_digest = hashlib.sha256(
+            json.dumps(
+                [brief, revisions, budget_usd, "prd-steering-v4"], ensure_ascii=False
+            ).encode()
+        ).hexdigest()
     fingerprint_path = output.with_suffix(".input.sha256")
     if output.exists():
         document = load_json(output)
@@ -492,16 +518,17 @@ def draft_prd(
             if fingerprint_path.exists()
             else None
         )
-        if document.get("generated_by", {}).get(
-            "backend"
-        ) == decision.backend and cached_digest in {digest, legacy_digest}:
+        cache_matches = cached_digest == digest or (
+            legacy_digest is not None and cached_digest == legacy_digest
+        )
+        if document.get("generated_by", {}).get("backend") == decision.backend and cache_matches:
             try:
                 validate_document("global-prd", document)
             except ValidationError:
                 pass
             else:
                 if _authority_policy_check(document, revisions).passed:
-                    if cached_digest == legacy_digest and cached_digest != digest:
+                    if legacy_digest is not None and cached_digest == legacy_digest:
                         fingerprint_path.write_text(digest + "\n", encoding="utf-8")
                     return document
     prompt = (
@@ -543,8 +570,35 @@ def draft_prd(
         ("definition_of_done",),
     )
 
-    def complete(task: str) -> dict:
-        if decision.backend == "vultr":
+    def normalize_prd(raw: dict) -> dict:
+        result = deepcopy(raw)
+        _apply_human_authority_revisions(result, revisions)
+        _remove_grounding_notes(result)
+        _ground_criteria(result, brief, revisions, budget_usd)
+        result["revisions"] = revisions
+        result["generated_by"] = generated_by(decision)
+        return result
+
+    def validate_prd(raw: dict) -> None:
+        document = normalize_prd(raw)
+        validate_document("global-prd", document)
+        if document["brief_path"] != "brief.md":
+            raise ValueError("PRD brief_path must be brief.md")
+        authority = _authority_policy_check(document, revisions)
+        if not authority.passed and not mock_preview:
+            raise ValueError("; ".join(authority.objections))
+
+    class SectionedPrdDecision:
+        """Keep Vultr's smaller response schemas behind the full-draft retry contract."""
+
+        backend = decision.backend
+        model = decision.model
+
+        @property
+        def call_log(self):
+            return getattr(decision, "call_log", None)
+
+        def complete_json(self, _purpose: str, task: str, _schema: dict) -> dict:
             result = {"version": "1", "brief_path": "brief.md"}
             for names in sections:
                 section_schema = {
@@ -574,14 +628,25 @@ def draft_prd(
                 result.update(
                     decision.complete_json("phase1.prd.section", section_prompt, section_schema)
                 )
-        else:
-            result = decision.complete_json("phase1.prd", task, base_schema)
-        _apply_human_authority_revisions(result, revisions)
-        _remove_grounding_notes(result)
-        _ground_criteria(result, brief, revisions, budget_usd)
-        result["revisions"] = revisions
-        result["generated_by"] = generated_by(decision)
-        return result
+            return result
+
+    model_decision = SectionedPrdDecision() if decision.backend == "vultr" else decision
+
+    def complete(task: str) -> dict:
+        try:
+            raw = complete_validated(
+                model_decision,
+                "phase1.prd",
+                task,
+                base_schema,
+                validate_prd,
+                max_attempts=3,
+            )
+        except ModelValidationExhausted as exc:
+            raise PrdDraftUnavailable(
+                str(exc), purpose=exc.purpose, attempts=exc.attempts, reason=exc.reason
+            ) from exc
+        return normalize_prd(raw)
 
     review = getattr(decision, "review_json", None)
 
@@ -639,14 +704,19 @@ def draft_prd(
         emit=emit,
         call_log=getattr(decision, "call_log", None),
     )
-    result = loop.run(
-        gather=lambda _iteration, previous: {"previous": previous},
-        propose=propose,
-        critique=critique,
-        revise=revise,
-        check=check,
-        objection_addressed=_objection_subject_changed,
-    )
+    try:
+        result = loop.run(
+            gather=lambda _iteration, previous: {"previous": previous},
+            propose=propose,
+            critique=critique,
+            revise=revise,
+            check=check,
+            objection_addressed=_objection_subject_changed,
+        )
+    except ModelValidationExhausted as exc:
+        raise PrdDraftUnavailable(
+            str(exc), purpose=exc.purpose, attempts=exc.attempts, reason=exc.reason
+        ) from exc
     if result.artifact is None:
         if not (output.parent / "APPROVED").exists():
             write_prd_budget_pending(output.parent, generated_by(decision))

@@ -10,6 +10,7 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
+from ontofill.inference import ModelValidationExhausted, RecordedDecisionClient
 from ontofill.phases.p4_local_scoping import draft_local_scope
 
 RESPONSE = {
@@ -134,8 +135,9 @@ def test_invalid_source_or_requirement_fails_without_writing_artifacts(tmp_path)
 
     bad_response = {**RESPONSE, "global_requirement_ids": ["invented-requirement"]}
     bad_decision = FakeDecision("recorded", "recorded-example", bad_response)
-    with pytest.raises(ValueError):
+    with pytest.raises(ModelValidationExhausted, match="outside the global PRD"):
         draft_local_scope(tmp_path, PRD, ONTOLOGY, OBJECTIVE, bad_decision)
+    assert len(bad_decision.calls) == 3
     assert not artifact_dir(tmp_path).exists()
 
 
@@ -143,8 +145,9 @@ def test_step_starting_mode_must_be_allowed(tmp_path) -> None:
     response = copy.deepcopy(RESPONSE)
     response["steps"][0]["allowed_modes"] = ["D0"]
     decision = FakeDecision("recorded", "recorded-example", response)
-    with pytest.raises(ValueError):
+    with pytest.raises(ModelValidationExhausted, match="starting mode"):
         draft_local_scope(tmp_path, PRD, ONTOLOGY, OBJECTIVE, decision)
+    assert len(decision.calls) == 3
 
 
 def test_membership_tdd_matches_class_identifier_and_screens_source_prompt(tmp_path) -> None:
@@ -186,13 +189,13 @@ def test_membership_tdd_matches_class_identifier_and_screens_source_prompt(tmp_p
     wrong_identifier = copy.deepcopy(response)
     wrong_identifier["membership"]["identifier_property_id"] = "other_id"
     invalid_decision = FakeDecision("recorded", "recorded-example", wrong_identifier)
-    with pytest.raises(ValueError, match="membership identifier"):
+    with pytest.raises(ModelValidationExhausted, match="membership identifier"):
         draft_local_scope(tmp_path / "invalid", PRD, ontology, objective, invalid_decision)
 
     browser_first = copy.deepcopy(response)
     browser_first["steps"][0]["starting_mode"] = "S1"
     browser_first["steps"][0]["allowed_modes"] = ["S1"]
-    with pytest.raises(ValueError, match="downloaded D0 list"):
+    with pytest.raises(ModelValidationExhausted, match="downloaded D0 list"):
         draft_local_scope(
             tmp_path / "browser-first",
             PRD,
@@ -200,3 +203,16 @@ def test_membership_tdd_matches_class_identifier_and_screens_source_prompt(tmp_p
             objective,
             FakeDecision("recorded", "recorded-example", browser_first),
         )
+
+
+def test_invalid_local_scope_is_revised_before_any_artifact_is_written(tmp_path) -> None:
+    bad = {**RESPONSE, "global_requirement_ids": ["invented-requirement"]}
+    decision = RecordedDecisionClient({"phase4.local_scope": [bad, copy.deepcopy(RESPONSE)]})
+
+    local, tdd = draft_local_scope(tmp_path, PRD, ONTOLOGY, OBJECTIVE, decision)
+
+    assert local["global_requirement_ids"] == ["req-1"]
+    assert tdd["source_id"] == OBJECTIVE["source_id"]
+    assert len(decision.call_log) == 2
+    assert decision.call_log[0]["status"] == "validation_failed"
+    assert "outside the global PRD" in decision.calls[1][1]

@@ -9,7 +9,7 @@ import json
 import os
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -17,6 +17,8 @@ from urllib.parse import urlsplit
 import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+
+from ontofill.inference.page_content import screened_page_content
 
 GENERATOR_PREFERENCES = ("glm-5.3-flash", "glm-5.3")
 EXTRACTION_PREFERENCES = ("qwen3.8-flash-next", "glm-5.3", "glm-5.3-flash")
@@ -106,6 +108,62 @@ class DecisionClient(Protocol):
     model: str
 
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict: ...
+
+
+class ModelValidationExhausted(TypeError):
+    """A model step exhausted bounded attempts to satisfy its output contract."""
+
+    def __init__(self, purpose: str, reason: str, attempts: int) -> None:
+        super().__init__(f"{purpose} failed validation after {attempts} attempts: {reason}")
+        self.purpose = purpose
+        self.reason = reason
+        self.attempts = attempts
+
+
+def _validation_reason(error: Exception) -> str:
+    reason = error.message if isinstance(error, ValidationError) else str(error)
+    return " ".join(reason.split())[:300] or "invalid model response"
+
+
+def complete_validated(
+    decision: DecisionClient,
+    purpose: str,
+    prompt: str,
+    schema: dict,
+    validator: Callable[[dict], None] | None = None,
+    *,
+    max_attempts: int = 3,
+) -> dict:
+    """Retry only malformed model output, with the exact bounded objection fed back."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    for attempt in range(1, max_attempts + 1):
+        call_log = getattr(decision, "call_log", None)
+        call_start = len(call_log) if isinstance(call_log, list) else 0
+        try:
+            result = decision.complete_json(purpose, prompt, schema)
+            Draft202012Validator(schema).validate(result)
+            if validator is not None:
+                validator(result)
+        except ModelValidationExhausted:
+            raise
+        except (ValidationError, ValueError) as exc:
+            reason = _validation_reason(exc)
+            if isinstance(call_log, list) and len(call_log) > call_start:
+                record = call_log[-1]
+                if record.get("status") == "ok":
+                    record["status"] = "validation_failed"
+                record["reason"] = reason
+            if attempt == max_attempts:
+                raise ModelValidationExhausted(purpose, reason, attempt) from exc
+            prompt += (
+                "\nThe previous response failed validation: "
+                f"{screened_page_content(reason)}. "
+                "Correct this exact error and return a complete valid object."
+            )
+        else:
+            return result
+    raise AssertionError("bounded validation loop did not return or raise")
 
 
 def generated_by(decision: DecisionClient) -> dict[str, str]:
@@ -275,7 +333,7 @@ class VultrDecisionClient:
         last_error: Exception | None = None
         use_json_schema = False
         retry_model: str | None = None
-        max_attempts = 3 if document_request else 2
+        max_attempts = 3
         for attempt in range(max_attempts):
             selected = retry_model or (
                 model
@@ -355,6 +413,7 @@ class VultrDecisionClient:
                     if isinstance(exc, ValueError) and record.get("finish_reason") == "length"
                     else "invalid_response"
                 )
+                record["reason"] = _validation_reason(exc)
                 last_error = exc
                 if record["status"] == "length" and structured_request and not document_request:
                     break
@@ -363,12 +422,22 @@ class VultrDecisionClient:
                 self.decisions_by_backend["vultr"] += 1
                 self.last_model = selected
                 return result
+            reason = record.get("reason")
+            feedback = (
+                f"The previous response failed validation: {screened_page_content(str(reason))}. "
+                if reason
+                else ""
+            )
             request["messages"][1]["content"] += (
-                "\nReturn one complete object matching the schema through the requested output method."
+                f"\n{feedback}Return one complete object matching the schema through the requested output method."
             )
             if document_request and attempt + 1 < max_attempts:
                 time.sleep(0.05 * (2**attempt))
         attempts = attempt + 1
+        if isinstance(last_error, (ValidationError, ValueError, TypeError, KeyError, IndexError)):
+            raise ModelValidationExhausted(
+                purpose, _validation_reason(last_error), attempts
+            ) from last_error
         noun = "attempt" if attempts == 1 else "attempts"
         raise TypeError(
             f"Vultr returned no valid typed decision after {attempts} {noun}"
@@ -401,12 +470,30 @@ class RecordedDecisionClient:
         self.model = "recorded-response"
         self.responses = {purpose: deque(items) for purpose, items in responses.items()}
         self.calls: list[tuple[str, str]] = []
+        self.call_log: list[dict[str, object]] = []
 
     def complete_json(self, purpose: str, prompt: str, schema: dict) -> dict:
         self.calls.append((purpose, prompt))
+        record: dict[str, object] = {
+            "purpose": purpose,
+            "model": self.model,
+            "backend": self.backend,
+            "at": datetime.now(UTC).isoformat(),
+            "attempt": len(self.calls),
+            "status": "invalid_response",
+            "usage": {
+                "model": self.model,
+                "backend": self.backend,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "est_usd": 0,
+            },
+        }
+        self.call_log.append(record)
         queue = self.responses.get(purpose)
         if not queue:
             raise AssertionError(f"no recorded response for {purpose}")
         result = queue.popleft()
         Draft202012Validator(schema).validate(result)
+        record["status"] = "ok"
         return result

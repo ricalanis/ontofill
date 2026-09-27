@@ -10,6 +10,7 @@ import pytest
 from ontofill.case.checkpoints import load_verified_approval, require_approval
 from ontofill.inference import RecordedDecisionClient, VultrDecisionClient
 from ontofill.phases.p1_scope.phase import (
+    PrdDraftUnavailable,
     _apply_human_authority_revisions,
     _authority_policy_check,
     _ground_criteria,
@@ -409,7 +410,7 @@ def test_objection_subject_in_rationale_needs_semantic_correction() -> None:
     assert _objection_subject_changed(before, corrected, objection)
 
 
-def test_live_prd_cannot_clear_tier_objection_by_critic_flip(tmp_path) -> None:
+def test_live_prd_semantic_exhaustion_pauses_before_critic_or_write(tmp_path) -> None:
     (tmp_path / "brief.md").write_text(
         "Find 5 reading rooms, with 80% of required fields per room.", encoding="utf-8"
     )
@@ -448,21 +449,17 @@ def test_live_prd_cannot_clear_tier_objection_by_critic_flip(tmp_path) -> None:
         client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
     steps: list[dict] = []
-    document = draft_prd(tmp_path, decision, budget_usd=1, emit=steps.append)
-    assert critic_calls == 2
-    assert any(
-        "Prior objection subject unchanged: authority_policy tier contradiction" in issue
-        for issue in document["open_issues"]
-    )
-    assert any("rationale claims primary" in issue for issue in document["open_issues"])
-    assert (tmp_path / "01-scope/prd.json").exists()
-    assert steps[-1]["loop"]["stop_reason"] == "max_iterations"
-    digests = [
-        step["loop"]["draft_sha256"]
-        for step in steps
-        if step["loop"]["role"] in {"propose", "critique", "revise", "check"}
-    ]
-    assert len(set(digests)) == 1
+    with pytest.raises(PrdDraftUnavailable) as raised:
+        draft_prd(tmp_path, decision, budget_usd=1, emit=steps.append)
+    assert raised.value.purpose == "phase1.prd"
+    assert raised.value.attempts == 3
+    assert "rationale claims primary" in raised.value.reason
+    assert critic_calls == 0
+    assert len(decision.call_log) == 9
+    assert decision.call_log[-1]["status"] == "validation_failed"
+    assert decision.call_log[-1]["reason"] == raised.value.reason
+    assert not (tmp_path / "01-scope/prd.json").exists()
+    assert [step["loop"]["role"] for step in steps] == ["gather"]
 
 
 def test_schema_valid_cached_prd_with_invalid_authority_is_regenerated(tmp_path) -> None:

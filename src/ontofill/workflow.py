@@ -22,12 +22,21 @@ from ontofill.case.checkpoints import (
     require_approval,
     write_json,
 )
-from ontofill.inference import RecordedDecisionClient, VultrDecisionClient, generated_by
+from ontofill.inference import (
+    ModelValidationExhausted,
+    RecordedDecisionClient,
+    VultrDecisionClient,
+    generated_by,
+)
 from ontofill.lake import FileLake, lake_for_case
 from ontofill.outer_gap import decide_outer_gap, outer_trace_step, prior_reopens
 from ontofill.phase_loop import LoopBudget
 from ontofill.phases.p1_scope.phase import PrdDraftUnavailable, draft_prd
-from ontofill.phases.p2_ontology.phase import draft_factors, draft_ontology
+from ontofill.phases.p2_ontology.phase import (
+    OntologyDraftUnavailable,
+    draft_factors,
+    draft_ontology,
+)
 from ontofill.phases.p3_fanout.authority import authority_result, source_fingerprint
 from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop
 from ontofill.phases.p3_fanout.leads import default_lead_providers
@@ -412,17 +421,47 @@ def _publish_steps(feed: RunFeed, trace: list[dict]) -> None:
 
 
 def _publish_decision_calls(
-    feed: RunFeed, trace: list[dict], decision: object, start: int, run_id: str, phase: int
+    feed: RunFeed,
+    trace: list[dict],
+    decision: object,
+    start: int,
+    run_id: str,
+    phase: int,
+    *,
+    source_id: str | None = None,
+    objective_id: str | None = None,
+    tdd_path: str | None = None,
+    include_usage: bool = True,
 ) -> None:
     for call in getattr(decision, "call_log", [])[start:]:
         provenance = {key: call[key] for key in ("backend", "model", "at")}
         step = _trace_step(run_id, phase, provenance, "decision.complete_json", call["purpose"])
         step["mode"] = "D1"
-        if call.get("usage") is not None:
+        step["source_id"] = source_id or call.get("source_id")
+        step["objective_id"] = objective_id or call.get("objective_id")
+        step["tdd_path"] = tdd_path or call.get("tdd_path")
+        if isinstance(call.get("attempt"), int):
+            step["requested"]["attempt"] = call["attempt"]
+        if isinstance(call.get("semantic_attempt"), int):
+            step["requested"]["semantic_attempt"] = call["semantic_attempt"]
+        if include_usage and call.get("usage") is not None:
             step["usage"] = call["usage"]
         step["evaluated"] = {"status": call.get("status", "ok")}
+        if isinstance(call.get("reason"), str):
+            step["evaluated"]["reason"] = call["reason"]
         _publish_steps(feed, [step])
         trace.append(step)
+
+
+def _mark_validation_error(decision: object, purpose: str, attempt: int, reason: str) -> None:
+    """Bind a local semantic rejection to its typed model-call trace record."""
+    for call in reversed(getattr(decision, "call_log", [])):
+        if call.get("purpose") == purpose:
+            if call.get("status") == "ok":
+                call["status"] = "validation_failed"
+            call["semantic_attempt"] = attempt
+            call["reason"] = reason
+            return
 
 
 def _publish_unreported_decisions(
@@ -665,6 +704,7 @@ def run_case(
                 feed.append_step(step)
                 trace.append(step)
 
+            prd_call_start = len(getattr(decision, "call_log", []))
             try:
                 prd = draft_prd(
                     case_dir,
@@ -672,11 +712,29 @@ def run_case(
                     budget_usd=budget_usd,
                     run_id=run_id,
                     emit=emit_prd_loop,
+                    mock_preview=mock,
                 )
-            except PrdDraftUnavailable:
-                feed.update_status(state="paused", phase=1, checkpoint_pending="prd")
-                print("state=paused checkpoint_pending=prd reason=PRD draft budget exhausted")
+            except (PrdDraftUnavailable, ModelValidationExhausted) as exc:
+                feed.update_status(
+                    state="paused", phase=1, checkpoint_pending="prd", reason=str(exc)
+                )
+                reason = (
+                    "model validation exhausted"
+                    if isinstance(exc, ModelValidationExhausted) or getattr(exc, "purpose", None)
+                    else "PRD draft budget exhausted"
+                )
+                print(f"state=paused checkpoint_pending=prd reason={reason}")
                 return 3
+            finally:
+                _publish_decision_calls(
+                    feed,
+                    trace,
+                    decision,
+                    prd_call_start,
+                    run_id,
+                    1,
+                    include_usage=False,
+                )
             step = _trace_step(run_id, 1, provenance, "phase1.prd", "01-scope/prd.json")
             if from_phase <= 1:
                 _publish_steps(feed, [step])
@@ -705,8 +763,23 @@ def run_case(
             if from_phase <= 2:
                 feed.update_status(state="running", phase=2)
             decision_start = len(getattr(decision, "call_log", []))
-            factors = draft_factors(case_dir, prd, decision)
-            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
+            try:
+                factors = draft_factors(
+                    case_dir,
+                    prd,
+                    decision,
+                    on_validation_error=lambda purpose, attempt, reason: _mark_validation_error(
+                        decision, purpose, attempt, reason
+                    ),
+                )
+            except (OntologyDraftUnavailable, ModelValidationExhausted) as exc:
+                feed.update_status(
+                    state="paused", phase=2, checkpoint_pending="factors", reason=str(exc)
+                )
+                print("state=paused checkpoint_pending=factors reason=model validation exhausted")
+                return 3
+            finally:
+                _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
             step = _trace_step(
                 run_id, 2, provenance, "phase2.factors", "02-ontology/factors/factors.json"
             )
@@ -727,8 +800,24 @@ def run_case(
                     _report_pause("factors", case_dir / "02-ontology/factors", mock)
                     return 3
             decision_start = len(getattr(decision, "call_log", []))
-            ontology = draft_ontology(case_dir, prd, factors, decision)
-            _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
+            try:
+                ontology = draft_ontology(
+                    case_dir,
+                    prd,
+                    factors,
+                    decision,
+                    on_validation_error=lambda purpose, attempt, reason: _mark_validation_error(
+                        decision, purpose, attempt, reason
+                    ),
+                )
+            except (OntologyDraftUnavailable, ModelValidationExhausted) as exc:
+                feed.update_status(
+                    state="paused", phase=2, checkpoint_pending="ontology", reason=str(exc)
+                )
+                print("state=paused checkpoint_pending=ontology reason=model validation exhausted")
+                return 3
+            finally:
+                _publish_decision_calls(feed, trace, decision, decision_start, run_id, 2)
             step = _trace_step(
                 run_id, 2, provenance, "phase2.ontology", "02-ontology/ontology.json"
             )
@@ -833,6 +922,7 @@ def run_case(
                 feed.update_status(state="running", phase=4)
             selected_objectives = objectives["objectives"]
             tdds: dict[str, dict] = {}
+            local_failures: dict[str, str] = {}
             local_gaps = local_reopen.get("observed", {}).get("gaps", []) if local_reopen else []
             for objective in selected_objectives:
                 relevant_gaps = _gaps_for_objective(local_gaps, objective)
@@ -840,15 +930,43 @@ def run_case(
                     {**objective, "gap_report": relevant_gaps} if relevant_gaps else objective
                 )
                 decision_start = len(getattr(decision, "call_log", []))
-                _, tdd = draft_local_scope(
-                    case_dir,
-                    prd,
-                    ontology,
-                    local_objective,
-                    decision,
-                    budget_usd=budget_usd,
-                )
-                _publish_decision_calls(feed, trace, decision, decision_start, run_id, 4)
+                try:
+                    _, tdd = draft_local_scope(
+                        case_dir,
+                        prd,
+                        ontology,
+                        local_objective,
+                        decision,
+                        budget_usd=budget_usd,
+                    )
+                except ModelValidationExhausted as exc:
+                    local_failures[objective["id"]] = str(exc)
+                    failed_step = _trace_step(
+                        run_id,
+                        4,
+                        provenance,
+                        "phase4.local_scope",
+                        f"04-local/{objective['source_id']}__{objective['id']}/tdd.json",
+                    )
+                    failed_step["source_id"] = objective["source_id"]
+                    failed_step["objective_id"] = objective["id"]
+                    failed_step["executed"] = {"artifact": None}
+                    failed_step["evaluated"] = {"status": "failed", "reason": str(exc)}
+                    _publish_steps(feed, [failed_step])
+                    trace.append(failed_step)
+                    continue
+                finally:
+                    _publish_decision_calls(
+                        feed,
+                        trace,
+                        decision,
+                        decision_start,
+                        run_id,
+                        4,
+                        source_id=objective["source_id"],
+                        objective_id=objective["id"],
+                        tdd_path=f"04-local/{objective['source_id']}__{objective['id']}/tdd.json",
+                    )
                 tdds[objective["id"]] = tdd
                 step = _trace_step(
                     run_id,
@@ -894,13 +1012,16 @@ def run_case(
             if fetch is not None:
                 kwargs["fetch"] = fetch
             decision_start = len(getattr(decision, "call_log", []))
+            runnable_objectives = [
+                item for item in selected_objectives if item["id"] not in local_failures
+            ]
             execution_order = [
-                *[item for item in selected_objectives if not tdds[item["id"]].get("membership")],
-                *[item for item in selected_objectives if tdds[item["id"]].get("membership")],
+                *[item for item in runnable_objectives if not tdds[item["id"]].get("membership")],
+                *[item for item in runnable_objectives if tdds[item["id"]].get("membership")],
             ]
             executions = execute_objectives(
                 case_dir=case_dir,
-                objectives=selected_objectives,
+                objectives=runnable_objectives,
                 ontology=ontology,
                 tdds=tdds,
                 lake=lake,
@@ -962,16 +1083,29 @@ def run_case(
                 decisions_by_backend=getattr(decision, "decisions_by_backend", None),
                 taxonomy_classified=refined.classified,
             )
-            outer = decide_outer_gap(
-                metrics=metrics,
-                dod_queries=dod_queries,
-                ontology=ontology,
-                objectives=objectives,
-                decision=decision,
-                provenance=provenance,
-                trace=export_trace,
-                budget_usd=budget_usd,
-            )
+            outer_call_start = len(getattr(decision, "call_log", []))
+            try:
+                outer = decide_outer_gap(
+                    metrics=metrics,
+                    dod_queries=dod_queries,
+                    ontology=ontology,
+                    objectives=objectives,
+                    decision=decision,
+                    provenance=provenance,
+                    trace=export_trace,
+                    budget_usd=budget_usd,
+                )
+            finally:
+                _publish_decision_calls(
+                    feed,
+                    trace,
+                    decision,
+                    outer_call_start,
+                    run_id,
+                    5,
+                    include_usage=False,
+                )
+            export_trace = _persisted_run_trace(lake, case_id, run_id, trace)
             outer_step = outer_trace_step(run_id, outer)
             feed.append_step(outer_step)
             trace.append(outer_step)
@@ -989,8 +1123,13 @@ def run_case(
                 decisions_by_backend=getattr(decision, "decisions_by_backend", None),
                 taxonomy_classified=refined.classified,
             )
-            sources = [
-                {
+            sources = []
+            for objective in selected_objectives:
+                execution = execution_by_id.get(objective["id"])
+                failed = objective["id"] in local_failures or bool(
+                    execution and getattr(execution, "failed", False)
+                )
+                source = {
                     "source_id": objective["source_id"],
                     "source_type": objective["source_type"],
                     **(
@@ -998,16 +1137,15 @@ def run_case(
                         if objective.get("discovered_by") is not None
                         else {}
                     ),
-                    "format": execution.format,
                     "health": {
-                        "ok": 1,
-                        "failed": 0,
-                        "yield": len(execution.observations),
+                        "ok": 0 if failed else 1,
+                        "failed": int(failed),
+                        "yield": len(execution.observations) if execution else 0,
                     },
                 }
-                for objective in selected_objectives
-                for execution in [execution_by_id[objective["id"]]]
-            ]
+                if execution is not None:
+                    source["format"] = execution.format
+                sources.append(source)
             if outer.reopen == 2:
                 _request_ontology_gap_review(
                     case_dir,

@@ -7,9 +7,9 @@ import json
 
 import pytest
 
-from ontofill.inference import RecordedDecisionClient
+from ontofill.inference import ModelValidationExhausted, RecordedDecisionClient
 from ontofill.lake import FileLake
-from ontofill.phases.p2_ontology.phase import draft_ontology
+from ontofill.phases.p2_ontology.phase import OntologyDraftUnavailable, draft_ontology
 from ontofill.refiner import Observation, classify_entities, refine_observations, taxonomy_levels
 
 RECORDED = {"backend": "recorded", "model": "synthetic", "at": "2026-01-01T00:00:00Z"}
@@ -209,14 +209,17 @@ def test_legacy_ontology_cache_is_regenerated_and_critic_regrades_nodes(tmp_path
 def test_critic_rejects_duplicate_node_labels(tmp_path) -> None:
     (tmp_path / "brief.md").write_text("Check library access.", encoding="utf-8")
     decision = _client("Good-Exclusive")
-    decision.responses["critic.phase2.taxonomy_nodes"][0] = {
+    invalid_labels = {
         "labels": [
             {"factor_id": "access", "node_id": "internet", "critic_label": "Bad"},
             {"factor_id": "access", "node_id": "internet", "critic_label": "Good-Exclusive"},
         ]
     }
+    critic_responses = decision.responses["critic.phase2.taxonomy_nodes"]
+    critic_responses.clear()
+    critic_responses.extend([invalid_labels, invalid_labels, invalid_labels])
 
-    with pytest.raises(ValueError, match="duplicate node labels"):
+    with pytest.raises(OntologyDraftUnavailable, match="duplicate node labels"):
         draft_ontology(tmp_path, _prd(), _factors(), decision)
 
 
@@ -425,15 +428,12 @@ def test_classification_rejects_an_unknown_node(tmp_path) -> None:
     entities = refine_observations(
         [_observation(lake, "library:a", "Alpha")], ontology=model, generated_by=RECORDED
     ).entities
-    decision = RecordedDecisionClient(
-        {
-            "refine.classify_entities": [
-                {"assignments": [{"entity_id": "library:a", "node_ids": ["access:invented"]}]}
-            ]
-        }
-    )
-    with pytest.raises(ValueError, match="unknown taxonomy node"):
+    invalid = {"assignments": [{"entity_id": "library:a", "node_ids": ["access:invented"]}]}
+    decision = RecordedDecisionClient({"refine.classify_entities": [invalid] * 3})
+    with pytest.raises(ModelValidationExhausted, match="unknown taxonomy node"):
         classify_entities(entities, taxonomy_levels(model), decision)
+    assert len(decision.calls) == 3
+    assert "unknown taxonomy node" in decision.calls[1][1]
 
 
 @pytest.mark.parametrize(
@@ -471,10 +471,13 @@ def test_classification_requires_exactly_one_assignment_per_entity(
         ontology=model,
         generated_by=RECORDED,
     ).entities
-    decision = RecordedDecisionClient({"refine.classify_entities": [{"assignments": assignments}]})
+    invalid = {"assignments": assignments}
+    decision = RecordedDecisionClient({"refine.classify_entities": [invalid] * 3})
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ModelValidationExhausted, match=message):
         classify_entities(entities, taxonomy_levels(model), decision)
+    assert len(decision.calls) == 3
+    assert message in decision.calls[1][1]
 
 
 def test_classification_input_is_evidence_only(tmp_path) -> None:

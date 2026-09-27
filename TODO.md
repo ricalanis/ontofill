@@ -1,5 +1,25 @@
 # Work list
 
+## R22 model validation retries (priority before R21)
+- [x] Add bounded validator-error feedback with one trace record per attempt in the typed decision path.
+- [x] Make P2 prerequisites pause on exhausted validation without changing approved artifacts.
+- [x] Make P4/P5 validation failures local to the source and continue the other sources.
+- [x] Verify recorded two-attempt recovery and three-attempt source isolation; run full pytest and Ruff.
+FILES: `src/ontofill/inference/`, phase modules, `src/ontofill/workflow.py`, focused tests.
+TASK: prevent one malformed typed model answer from failing the whole run.
+DONE: R22 recorded proof plus full gate and safe deployment.
+FORMAT: Ruff check and format on edited Python files.
+
+## R22: bounded retries for semantic inference outputs outside P2/P4/P5
+- [x] Add focused synthetic regressions for P3 discovery/site-graph validation retries, legacy injected-search exhaustion, refiner classification exhaustion, and repair generation/patch exhaustion.
+- [x] Route owned model outputs through `complete_validated`, keeping semantic checks inside validators and preserving source/step-scoped failure behavior.
+- [x] Commit the verified slice without pushing and report the SHA.
+FILES: `src/ontofill/phases/p3_fanout/{phase.py,leads.py,discovery_loop.py,site_graph.py}`, `src/ontofill/refiner/core.py`, `src/ontofill/repair/pattern_a.py`, focused tests.
+TASK: Retry schema and semantic model-output failures at most three times with exact feedback and call-log status; do not retry safety, sandbox, capture, or approval failures.
+DONE: the managed gate in `GOAL.md` passes, exhausted refiner classification stays unclassified, and P3/repair failures remain source/step scoped.
+FORMAT: Ruff check/format for owned modules and focused tests.
+CHECK: `r22-other-semantic-retries-lint-successor` / `focused-pytest-ruff-lint-successor` passed 63 tests plus Ruff check/format. The two earlier distinct test/ruff causes and the authorized successor history are recorded in `NOTES.md`.
+
 ## R8b attribution merge
 - [x] Merge the reviewed containment gateway attribution fix without changing other demo behavior.
 - [x] Verify the emitted quarantine step ID matches the gateway request and no existing investigation run can be targeted.

@@ -12,14 +12,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
-
-from ontofill.inference import DecisionClient
+from ontofill.inference import DecisionClient, ModelValidationExhausted, complete_validated
 from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
 from ontofill.repair.runner import CaptureCase, RepairExecutor, RepairFeedback, run_code_repair
 from ontofill.sandbox import SandboxLimits
-from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
+from ontofill.sandbox.parse import ParseExecutor, parse_bronze
 
 _SAFE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _VERSION = re.compile(r"v([1-9][0-9]*)\Z")
@@ -128,8 +126,7 @@ def _generate_code(
         + screened_page_content(summary)
         + " Return the complete extractor source in the code field."
     )
-    result = decision.complete_json("phase5.repair_generate", prompt, _code_schema())
-    Draft202012Validator(_code_schema()).validate(result)
+    result = complete_validated(decision, "phase5.repair_generate", prompt, _code_schema())
     return result["code"]
 
 
@@ -150,8 +147,7 @@ def _patch_code(decision: DecisionClient):
             + screened_page_content(feedback.code_diff)
             + " Return only the complete replacement source in the code field."
         )
-        result = decision.complete_json("phase5.repair_patch", prompt, schema)
-        Draft202012Validator(schema).validate(result)
+        result = complete_validated(decision, "phase5.repair_patch", prompt, schema)
         return result["code"]
 
     return patch
@@ -234,38 +230,38 @@ def repair_html_extractor(
         return HtmlRepairResult(False, (), (), failure_reason="empty_d1_output")
     parse_trace: tuple[dict, ...] = ()
     sandbox_jobs: tuple[dict, ...] = ()
-    try:
-        source_root = _source_root(case_dir, source_id)
-        compatible = _read_compatible_macro(
-            source_root,
-            ontology_fingerprint=ontology_fingerprint,
-            target_fields=target_fields,
-            backend=generated_by["backend"],
+    source_root = _source_root(case_dir, source_id)
+    compatible = _read_compatible_macro(
+        source_root,
+        ontology_fingerprint=ontology_fingerprint,
+        target_fields=target_fields,
+        backend=generated_by["backend"],
+    )
+    if compatible is None:
+        parsed = parse_bronze(
+            lake,
+            capture_key,
+            format="html",
+            max_rows=300,
+            run_id=run_id,
+            source_id=source_id,
+            objective_id=objective_id,
+            tdd_path=tdd_path,
+            phase=5,
+            generated_by=generated_by,
+            executor=parse_executor,
         )
-        if compatible is None:
-            parsed = parse_bronze(
-                lake,
-                capture_key,
-                format="html",
-                max_rows=300,
-                run_id=run_id,
-                source_id=source_id,
-                objective_id=objective_id,
-                tdd_path=tdd_path,
-                phase=5,
-                generated_by=generated_by,
-                executor=parse_executor,
+        parse_trace = parsed.trace
+        sandbox_jobs = (parsed.job_record,)
+        if parsed.challenge_detected:
+            return HtmlRepairResult(
+                False,
+                parse_trace,
+                (),
+                failure_reason="captured_page_is_challenge",
+                sandbox_jobs=sandbox_jobs,
             )
-            parse_trace = parsed.trace
-            sandbox_jobs = (parsed.job_record,)
-            if parsed.challenge_detected:
-                return HtmlRepairResult(
-                    False,
-                    parse_trace,
-                    (),
-                    failure_reason="captured_page_is_challenge",
-                    sandbox_jobs=sandbox_jobs,
-                )
+        try:
             initial_code = _generate_code(
                 decision,
                 parsed_summary=json.dumps(
@@ -282,40 +278,32 @@ def repair_html_extractor(
                 target_fields=target_fields,
                 source_type=source_type,
             )
-            prior_version = None
-        else:
-            prior_version, initial_code = compatible
-        outcome = run_code_repair(
-            lake=lake,
-            captures=[CaptureCase(capture_key, tuple(expected))],
-            initial_code=initial_code,
-            patch=_patch_code(decision),
-            run_id=run_id,
-            source_id=source_id,
-            objective_id=objective_id,
-            tdd_path=tdd_path,
-            generated_by=generated_by,
-            limits=limits,
-            max_attempts=max_attempts,
-            parent_step_id=parent_step_id,
-            executor=executor,
-        )
-    except SandboxParseError as exc:
-        return HtmlRepairResult(
-            False,
-            exc.trace,
-            (),
-            failure_reason=exc.reason,
-            sandbox_jobs=(exc.job_record,),
-        )
-    except Exception as exc:  # noqa: BLE001 - inference or storage failure safely escalates to S1
-        return HtmlRepairResult(
-            False,
-            parse_trace,
-            (),
-            failure_reason=type(exc).__name__,
-            sandbox_jobs=sandbox_jobs,
-        )
+        except ModelValidationExhausted as exc:
+            return HtmlRepairResult(
+                False,
+                parse_trace,
+                (),
+                failure_reason=f"model_validation_exhausted: {exc.reason}",
+                sandbox_jobs=sandbox_jobs,
+            )
+        prior_version = None
+    else:
+        prior_version, initial_code = compatible
+    outcome = run_code_repair(
+        lake=lake,
+        captures=[CaptureCase(capture_key, tuple(expected))],
+        initial_code=initial_code,
+        patch=_patch_code(decision),
+        run_id=run_id,
+        source_id=source_id,
+        objective_id=objective_id,
+        tdd_path=tdd_path,
+        generated_by=generated_by,
+        limits=limits,
+        max_attempts=max_attempts,
+        parent_step_id=parent_step_id,
+        executor=executor,
+    )
 
     if not outcome.passed:
         return HtmlRepairResult(

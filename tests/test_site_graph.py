@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 
 from ontofill.case.checkpoints import write_json
 from ontofill.contracts import validate_document
+from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
 from ontofill.phases.p3_fanout.site_graph import (
     build_site_graph,
@@ -401,6 +402,97 @@ def test_site_graph_failure_traces_are_valid_run_feed_steps(tmp_path: Path) -> N
         len(lake.read_key("runs/synthetic-case/mock-synthetic-run/trace.live.jsonl").splitlines())
         == 2
     )
+
+
+def test_site_graph_validation_exhaustion_is_scoped_to_one_source(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    second_source_id = "source-second"
+    second_url = "https://second.example.invalid/"
+    second_objective = {
+        **OBJECTIVE,
+        "id": "objective-second",
+        "source_id": second_source_id,
+        "source_url": second_url,
+    }
+    objectives = {
+        **OBJECTIVES,
+        "objectives": [OBJECTIVE, second_objective],
+    }
+    for objective in objectives["objectives"]:
+        source_dir = case_dir / "03-fanout/sources" / objective["source_id"]
+        write_json(
+            source_dir / "candidate.json",
+            {
+                "fingerprint": objective["source_fingerprint"],
+                "capture_key": objective["confirmed_bronze_key"],
+                "covers": ["record_id", "name"],
+                "authority": "auto",
+            },
+        )
+
+    invalid = {
+        "label": "listing",
+        "property_hints": [
+            {"sample_index": 0, "property_id": "record_id", "evidence_quote": "Record ID"},
+            {"sample_index": 0, "property_id": "record_id", "evidence_quote": "Record ID"},
+        ],
+    }
+    valid = {"label": "other", "property_hints": []}
+    decision = RecordedDecisionClient(
+        {"phase3.site_graph_page_type": [invalid, invalid, invalid, valid, valid, valid]}
+    )
+    decision.backend = "vultr"
+    provenance = {**PROVENANCE, "backend": "vultr"}
+    lake = FileLake(tmp_path / "lake")
+
+    def capture(url: str, **kwargs: dict) -> dict:
+        result = copy.deepcopy(_capture_result(lake))
+        if url == second_url:
+            for page in result["pages"]:
+                page["url"] = page["url"].replace(SOURCE_URL, second_url)
+                page["requested_url"] = page["requested_url"].replace(SOURCE_URL, second_url)
+                page["final_url"] = page["final_url"].replace(SOURCE_URL, second_url)
+                page["redirect_chain"] = [
+                    item.replace(SOURCE_URL, second_url) for item in page["redirect_chain"]
+                ]
+                if page.get("parent_url"):
+                    page["parent_url"] = page["parent_url"].replace(SOURCE_URL, second_url)
+            for edge in result["edges"]:
+                edge["from_url"] = edge["from_url"].replace(SOURCE_URL, second_url)
+                edge["to_url"] = edge["to_url"].replace(SOURCE_URL, second_url)
+        result["job_id"] = kwargs["job_id"]
+        for page in result["pages"]:
+            if page.get("status") is not None:
+                page["job_id"] = kwargs["job_id"]
+        return {**result, "trace": [], "page_trace": [], "proof": {"status": 200}}
+
+    result = run_confirmed_source_spiders(
+        case_dir=case_dir,
+        objectives=objectives,
+        ontology=ONTOLOGY,
+        decision=decision,
+        lake=lake,
+        run_id="run-synthetic-site-graph-validation",
+        capture=capture,
+        provenance=provenance,
+        parse_executor=SyntheticParseExecutor(),
+    )
+
+    assert len(decision.calls) == 6
+    assert [item["status"] for item in decision.call_log[:3]] == [
+        "validation_failed",
+        "validation_failed",
+        "validation_failed",
+    ]
+    assert all(
+        item["reason"] == "page type classifier returned a duplicate property hint"
+        for item in decision.call_log[:3]
+    )
+    assert "page type classifier returned a duplicate property hint" in decision.calls[1][1]
+    assert set(result["graphs"]) == {second_source_id}
+    failures = [step for step in result["trace"] if step["evaluated"]["status"] == "failed"]
+    assert len(failures) == 1
+    assert failures[0]["source_id"] == SOURCE_ID
 
 
 def test_p4_uses_site_graph_as_bounded_starting_context(tmp_path: Path) -> None:
