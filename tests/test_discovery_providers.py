@@ -23,6 +23,7 @@ from ontofill.phases.p3_fanout.search import (
 )
 from ontofill.sandbox import parse as parse_module
 from ontofill.sandbox import parse_bronze
+from tests.approval_support import bind_approval
 from tests.genericity.fixtures.discovery import discovery_case
 from tests.r17_helpers import SyntheticParseExecutor
 
@@ -203,41 +204,52 @@ def test_unrecognized_source_is_queued_with_stale_approval_rejected(tmp_path) ->
     pending = (directory / "APPROVAL_PENDING.md").read_text()
     assert yaml.safe_load(pending.split("---", 2)[1])["checkpoint"] == "source"
     live = {"backend": "vultr", "model": "synthetic-test", "at": datetime.now(UTC).isoformat()}
+    relative = (directory / "candidate.json").relative_to(tmp_path).as_posix()
     (directory / "APPROVED").write_text(
         json.dumps(
-            {
-                "approver": "Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "source",
-                "source_fingerprint": "0" * 64,
-            }
+            bind_approval(
+                tmp_path,
+                [relative],
+                {
+                    "approver": "Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "source",
+                    "source_fingerprint": "0" * 64,
+                },
+            )
         )
     )
     assert not require_approval(
         directory,
         phase=3,
         checkpoint="source",
-        artifact_paths=["candidate.json"],
+        artifact_paths=[relative],
         generated_by=live,
         source_fingerprint=objective["source_fingerprint"],
+        case_dir=tmp_path,
     )
     (directory / "APPROVED").write_text(
         json.dumps(
-            {
-                "approver": "Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "source",
-                "source_fingerprint": objective["source_fingerprint"],
-            }
+            bind_approval(
+                tmp_path,
+                [relative],
+                {
+                    "approver": "Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "source",
+                    "source_fingerprint": objective["source_fingerprint"],
+                },
+            )
         )
     )
     assert require_approval(
         directory,
         phase=3,
         checkpoint="source",
-        artifact_paths=["candidate.json"],
+        artifact_paths=[relative],
         generated_by=live,
         source_fingerprint=objective["source_fingerprint"],
+        case_dir=tmp_path,
     )
     policy = json.loads((tmp_path / "01-scope/prd.json").read_text())["authority_policy"]
     assert authority_result("https://city.example.test/list", policy=policy)[0]

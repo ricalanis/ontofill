@@ -38,7 +38,7 @@
   },
   "allOf": [
     {
-      "if": {"required": ["checkpoint"], "properties": {"checkpoint": {"enum": ["prd", "factors", "ontology", "action"]}}},
+      "if": {"required": ["checkpoint"], "properties": {"checkpoint": {"enum": ["prd", "factors", "ontology", "source", "action"]}}},
       "then": {"required": ["artifact_sha256", "identity_source"]}
     },
     {

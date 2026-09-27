@@ -21,11 +21,19 @@ from ontofill_scrape import Observation as ToolObservation
 from ontofill_scrape.models import ParsedFile, ParsedRow
 
 from ontofill.browser_agent import BrowserAgentClient
-from ontofill.case.checkpoints import load_json, write_json
+from ontofill.case.checkpoints import ApprovalArtifactMismatch, load_json, write_json
 from ontofill.inference import DecisionClient, ModelValidationExhausted, complete_validated
 from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
 from ontofill.phases.p5_execute.controller import execute_controller
+from ontofill.phases.p5_execute.source_review import (
+    MAX_NEW_LINK_CANDIDATES_PER_OBJECTIVE,
+    SourceReviewPending,
+    canonical_link_url,
+    link_candidate_directory,
+    review_link_candidate,
+    reviewable_download_host,
+)
 from ontofill.refiner import Observation, SilverStore
 from ontofill.repair import repair_html_extractor
 from ontofill.repair.runner import RepairExecutor
@@ -209,7 +217,7 @@ def _format(url: str) -> str | None:
     parsed = urlsplit(url)
     names = [parsed.path, *parse_qs(parsed.query).get("name", [])]
     for name in names:
-        match = re.search(r"\.(csv|xlsx|xlsm|json)(?:$|[?#])", name, re.IGNORECASE)
+        match = re.search(r"\.(csv|xls|xlsx|xlsm|json)(?:$|[?#])", name, re.IGNORECASE)
         if match:
             return match.group(1).lower()
     return None
@@ -223,10 +231,11 @@ def _document_format(url: str, content_type: str) -> str:
         "application/csv": "csv",
         "application/json": "json",
         "application/pdf": "pdf",
+        "application/vnd.ms-excel": "xls",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
         "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
     }
-    return by_mime.get(mime) or _format(url) or "auto"
+    return _format(url) or by_mime.get(mime) or "auto"
 
 
 def _parsed_links(result) -> tuple[PageLink, ...]:
@@ -595,7 +604,7 @@ def _membership_result(
     membership = tdd.get("membership")
     if not membership or membership.get("complete") is not True:
         return ExecutionResult([], [], [], parsed.format)
-    if parsed.format not in {"csv", "xlsx", "json"}:
+    if parsed.format not in {"csv", "xls", "xlsx", "json"}:
         return ExecutionResult([], [], [], parsed.format)
 
     properties = {item["id"]: item for item in ontology["properties"]}
@@ -882,11 +891,120 @@ def execute_objective(
         )
         return ExecutionResult(result.observations, [*traces, *result.trace], jobs, "html")
 
-    candidates = [
-        link
-        for link in (_parsed_links(page_parse) if page_parse is not None else ())
-        if _format(link.url) and (urlsplit(link.url).hostname or "") in tdd["allowed_domains"]
-    ]
+    candidates = []
+    approved_link_targets: dict[str, tuple[str, str]] = {}
+    pending_links: list[tuple[str, Path, str]] = []
+    authority_policy = {}
+    prd_path = case_dir / "01-scope/prd.json"
+    if prd_path.is_file():
+        prd = load_json(prd_path)
+        authority_policy = prd.get("authority_policy", {})
+    if page_parse is not None:
+        parent_capture_key = page.get("html_key")
+        page_url = page.get("url")
+        seen_link_urls: set[str] = set()
+        new_external_candidates = 0
+        for link_index, link in enumerate(_parsed_links(page_parse)):
+            document_format = _format(link.url)
+            if document_format is None:
+                continue
+            try:
+                parsed_link = urlsplit(link.url)
+                host = (parsed_link.hostname or "").casefold().rstrip(".")
+                canonical_url = canonical_link_url(link.url)
+            except ValueError:
+                continue
+            if not host or canonical_url in seen_link_urls:
+                continue
+            seen_link_urls.add(canonical_url)
+            is_allowed = any(
+                host == domain.casefold().rstrip(".")
+                or host.endswith("." + domain.casefold().rstrip("."))
+                for domain in tdd["allowed_domains"]
+            )
+            if is_allowed:
+                candidates.append(link)
+                continue
+            if not isinstance(parent_capture_key, str) or not isinstance(page_url, str):
+                continue
+            review_host = reviewable_download_host(link.url, tdd["allowed_domains"])
+            if review_host is None:
+                continue
+            candidate_dir = link_candidate_directory(case_dir, source_id, link.url)
+            existing_candidate = (candidate_dir / "candidate.json").is_file()
+            if (
+                not existing_candidate
+                and new_external_candidates >= MAX_NEW_LINK_CANDIDATES_PER_OBJECTIVE
+            ):
+                continue
+            if not existing_candidate:
+                new_external_candidates += 1
+            try:
+                review_status, approved_url, review_dir = review_link_candidate(
+                    case_dir=case_dir,
+                    parent_source_id=source_id,
+                    parent_page_url=page_url,
+                    parent_capture_key=parent_capture_key,
+                    link_url=link.url,
+                    link_text=link.text,
+                    link_index=link_index,
+                    allowed_domains=tdd["allowed_domains"],
+                    authority_policy=authority_policy,
+                    provenance=provenance,
+                    screenshot_key=page.get("screenshot_key"),
+                    parent_step_id=(
+                        page["trace"][0].get("step_id")
+                        if page.get("trace") and isinstance(page["trace"][0], dict)
+                        else None
+                    ),
+                )
+            except ApprovalArtifactMismatch:
+                raise
+            except ValueError:
+                # Unsupported URLs and links from non-trusted parents never become candidates.
+                continue
+            if review_status == "pending":
+                pending_links.append((link.url, review_dir, document_format))
+            elif review_status == "approved" and approved_url is not None:
+                approved_host = reviewable_download_host(approved_url, tdd["allowed_domains"])
+                if approved_host is None:
+                    raise ValueError(
+                        "approved source link is not an off-domain public document URL"
+                    )
+                candidates.append(link)
+                approved_link_targets[link.url] = (approved_host, approved_url)
+            # A valid DENY is intentionally omitted from this run's candidates.
+    if pending_links:
+        for link_url, review_dir, _document_format in pending_links:
+            traces.append(
+                {
+                    "step_id": f"step:{uuid.uuid4().hex}",
+                    "run_id": run_id,
+                    "phase": 5,
+                    "source_id": source_id,
+                    "objective_id": objective_id,
+                    "tdd_path": tdd_path,
+                    "mode": "D0",
+                    "observed": {"parent_page_url": page["url"], "link_url": link_url},
+                    "requested": {"tool": "source.review", "checkpoint": "source"},
+                    "executed": {"network_request": False},
+                    "evaluated": {
+                        "status": "pending_approval",
+                        "approval_path": review_dir.relative_to(case_dir).as_posix(),
+                    },
+                    "parent_step_id": traces[-1]["step_id"] if traces else None,
+                    "value_ids": [],
+                    "ts": datetime.now(UTC).isoformat(),
+                    "generated_by": provenance,
+                }
+            )
+        pending_dir = pending_links[0][1]
+        raise SourceReviewPending(
+            directory=pending_dir,
+            trace=traces,
+            sandbox_jobs=jobs,
+            reason="off-domain document link requires digest-bound source approval",
+        )
     candidate_count = len(candidates)
     downloaded = None
     repair_trace: list[dict] = []
@@ -989,7 +1107,16 @@ def execute_objective(
                     provenance=provenance,
                 )
             )
-        downloaded = fetch(candidates[choice["index"]].url, include_bytes=False, **kwargs)
+        selected = candidates[choice["index"]]
+        approved_target = approved_link_targets.get(selected.url)
+        selected_url = approved_target[1] if approved_target else selected.url
+        fetch_kwargs = dict(kwargs)
+        if approved_target is not None:
+            exact_host = approved_target[0]
+            # Approval is for this candidate only; it must not widen browser/P4 domains.
+            fetch_kwargs["allowed_domains"] = [exact_host]
+            fetch_kwargs["exact_hosts"] = [exact_host]
+        downloaded = fetch(selected_url, include_bytes=False, **fetch_kwargs)
         traces.extend(downloaded["trace"])
         jobs.append(downloaded)
         try:
@@ -1200,7 +1327,7 @@ def execute_objective(
             reason = "non_complete_http_response"
         elif downloaded.get("content_type", "").split(";", 1)[0].strip().casefold() == "text/html":
             reason = "downloaded_html_instead_of_list_file"
-        elif parsed.format not in {"csv", "xlsx", "json"}:
+        elif parsed.format not in {"csv", "xls", "xlsx", "json"}:
             reason = "unsupported_list_format"
         elif len({row.sheet for row in parsed.rows}) > 1:
             reason = "membership_requires_single_list_table"
@@ -1384,25 +1511,33 @@ def execute_objectives(
     call_log = getattr(decision, "call_log", None)
     for objective in ordered:
         call_start = len(call_log) if isinstance(call_log, list) else 0
-        result = execute_objective(
-            case_dir=case_dir,
-            objective=objective,
-            ontology=ontology,
-            tdd=tdds[objective["id"]],
-            lake=lake,
-            run_id=run_id,
-            decision=decision,
-            store=store,
-            provenance=provenance,
-            capture=capture,
-            fetch=fetch,
-            feed=feed,
-            browser_client=browser_client,
-            browser_steps_root=browser_steps_root,
-            browser_captures_root=browser_captures_root,
-            repair_executor=repair_executor,
-            parse_executor=parse_executor,
-        )
+        try:
+            result = execute_objective(
+                case_dir=case_dir,
+                objective=objective,
+                ontology=ontology,
+                tdd=tdds[objective["id"]],
+                lake=lake,
+                run_id=run_id,
+                decision=decision,
+                store=store,
+                provenance=provenance,
+                capture=capture,
+                fetch=fetch,
+                feed=feed,
+                browser_client=browser_client,
+                browser_steps_root=browser_steps_root,
+                browser_captures_root=browser_captures_root,
+                repair_executor=repair_executor,
+                parse_executor=parse_executor,
+            )
+        except SourceReviewPending as exc:
+            exc.trace = [*(trace for item in results for trace in item.trace), *exc.trace]
+            exc.sandbox_jobs = [
+                *(job for item in results for job in item.sandbox_jobs),
+                *exc.sandbox_jobs,
+            ]
+            raise
         if isinstance(call_log, list):
             source_id = objective["source_id"]
             objective_id = objective["id"]

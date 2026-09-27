@@ -107,6 +107,12 @@ DONE C4: `uv run pytest -q && uv run ruff check src tests packages infra && uv r
 
 DONE R3: `uv run pytest -q tests/test_p5_controller.py tests/genericity && uv run ruff check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py && uv run ruff format --check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py`; a fake controller reaches P5 through S1, emits only evidence-validated target properties, and drains verify/action_gate/quarantine into `trace.jsonl`.
 
+## R40 — P5 off-domain downloads
+An off-domain document link on a trusted captured source page becomes a digest-bound source-review candidate; only an exact, verified approval permits sandboxed D0 GET and networkless parsing.
+DONE (P5-owned slice): managed `agent-progress` check `r40-p5-download-review / p5-owned-final` passed 65 tests, Ruff lint/format, both approval-schema JSON checks, and `git diff --check`. The slice proves pending/deny/stale/approve behavior, stable candidate bytes across recapture, exact-host sandbox fetch, and same-domain allowlist behavior.
+Integration remains open for the parent-owned workflow pause bridge and parse-pod `.xls` implementation before the full R40 gate is claimed.
+Constraints: no automatic fetch; do not widen the current browser session allowlist; parent page and link evidence remain attached; never emit values without bronze-backed parse evidence.
+
 ## R11 bronze replay integration
 Have `refine_case` rebuild current-ontology observations from successful trace-referenced bronze captures, persist parented replay steps before the one gold export, and restore the prior live trace if export fails.
 

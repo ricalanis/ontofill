@@ -12,6 +12,18 @@ from jsonschema import ValidationError
 
 from ontofill.contracts import validate_document
 
+_DIGEST_PROTECTED_CHECKPOINTS = {"prd", "factors", "ontology", "source", "action"}
+
+
+def _checkpoint_case_dir(directory: Path, checkpoint: str, case_dir: Path | None) -> Path:
+    if case_dir is not None:
+        return case_dir
+    if checkpoint == "factors":
+        return directory.parents[1]
+    if checkpoint == "source":
+        return directory.parents[2]
+    return directory.parent
+
 
 class ApprovalArtifactMismatch(ValueError):
     """The review is bound to different artifact bytes."""
@@ -50,12 +62,12 @@ def load_verified_approval(
     try:
         validate_document("approved", document)
     except ValidationError as exc:
-        if checkpoint in {"prd", "factors", "ontology", "action"}:
+        if checkpoint in _DIGEST_PROTECTED_CHECKPOINTS:
             raise ApprovalArtifactMismatch(checkpoint) from exc
         raise
     if document.get("checkpoint") != checkpoint:
         raise ValueError(f"wrong checkpoint in {marker}")
-    if checkpoint in {"prd", "factors", "ontology", "action"}:
+    if checkpoint in _DIGEST_PROTECTED_CHECKPOINTS:
         try:
             verify_approval_artifacts(case_dir, document, expected_paths)
         except ApprovalArtifactMismatch as exc:
@@ -90,7 +102,7 @@ def checkpoint_revisions(
     )
     active_denial = None
     if approved.exists():
-        root = case_dir or (directory.parents[1] if checkpoint == "factors" else directory.parent)
+        root = _checkpoint_case_dir(directory, checkpoint, case_dir)
         relative = (directory / artifact_names[0]).relative_to(root).as_posix()
         marker = load_verified_approval(approved, root, [relative], checkpoint)
         if marker.get("decision", "approve") == "deny":
@@ -171,7 +183,7 @@ def require_approval(
     """Return False and leave a review file until a valid APPROVED marker exists."""
     approved = directory / "APPROVED"
     if approved.exists():
-        root = case_dir or (directory.parents[1] if checkpoint == "factors" else directory.parent)
+        root = _checkpoint_case_dir(directory, checkpoint, case_dir)
         document = load_verified_approval(approved, root, artifact_paths, checkpoint)
         if (
             generated_by["backend"] == "vultr"

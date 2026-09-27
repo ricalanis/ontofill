@@ -1620,6 +1620,7 @@ def fetch_url(
     url: str,
     *,
     allowed_domains: list[str],
+    exact_hosts: list[str] | None = None,
     lake: FileLake | S3Lake,
     run_id: str,
     source_id: str,
@@ -1632,13 +1633,20 @@ def fetch_url(
 ) -> dict:
     """Fetch a discovered file inside the same contained network and store raw bytes."""
     domains = _domains(allowed_domains)
+    exact = _domains(exact_hosts) if exact_hosts is not None else None
+    if exact is not None and not set(exact).issubset(domains):
+        raise ValueError("exact_hosts must be a subset of allowed_domains")
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
     budget = SandboxLimits.from_value(limits)
     started_monotonic = time.monotonic()
     request = {"url": url, "allowed_domains": domains, "fetch": "bytes", "limits": budget.as_dict()}
-    if not _allowed_host(url, domains):
+    if exact is not None:
+        request["exact_hosts"] = exact
+    if not _allowed_host(url, domains) or (
+        exact is not None and (urlsplit(url).hostname or "").lower().rstrip(".") not in exact
+    ):
         row = _trace(
             step_id=step_id,
             run_id=run_id,
@@ -1701,6 +1709,7 @@ def fetch_url(
             "0.25",
             "-e",
             "ALLOWED_DOMAINS=" + ",".join(domains),
+            *(["-e", "EXACT_ALLOWED_HOSTS=" + ",".join(exact)] if exact is not None else []),
             egress_image,
         )
         _docker("network", "connect", "bridge", proxy_name)
@@ -1764,7 +1773,10 @@ def fetch_url(
             if not secrets["ok"]:
                 raise CaptureError("sandbox secret hygiene proof failed")
             final_url = result["url"]
-            if not _allowed_host(final_url, domains):
+            if not _allowed_host(final_url, domains) or (
+                exact is not None
+                and (urlsplit(final_url).hostname or "").lower().rstrip(".") not in exact
+            ):
                 raise CaptureError("fetch redirected outside the TDD allowlist")
             content = (output / "payload.bin").read_bytes()
             captured_at = datetime.now(UTC).isoformat()

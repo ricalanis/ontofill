@@ -77,12 +77,16 @@ def test_retained_auto_source_is_rechecked_against_revised_authority_policy(tmp_
     )
     (sources / "APPROVED").write_text(
         json.dumps(
-            {
-                "approver": "Example Reviewer",
-                "date": "2026-09-26",
-                "checkpoint": "source",
-                "source_fingerprint": old_fingerprint,
-            }
+            bind_approval(
+                tmp_path,
+                ["03-fanout/sources/source-one/candidate.json"],
+                {
+                    "approver": "Example Reviewer",
+                    "date": "2026-09-26",
+                    "checkpoint": "source",
+                    "source_fingerprint": old_fingerprint,
+                },
+            )
         ),
         encoding="utf-8",
     )

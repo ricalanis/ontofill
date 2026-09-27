@@ -197,6 +197,20 @@ TASK: Connect P5's S1 path to BrowserAgentClient while preserving evidence and c
 DONE: `uv run pytest -q tests/test_p5_controller.py tests/genericity && uv run ruff check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py && uv run ruff format --check src/ontofill/phases/p5_execute src/ontofill/browser_agent.py tests/test_p5_controller.py`.
 FORMAT: Ruff check and format across edited engine/test files.
 
+## R40: P5 off-domain document review
+- [x] Add a failing synthetic test for an off-domain download link: persist parent/page/link bronze evidence and a digest-bound source checkpoint, with no GET before approval.
+  - CHECK: `uv run pytest -q tests/test_r40_p5_download_review.py tests/test_source_candidate_schema.py` fails on the missing review behavior.
+- [x] Implement additive candidate provenance, exact digest/fingerprint approval validation, deny/stale refusal, exact-host sandbox GET, and networkless D0 parsing.
+  - CHECK: `uv run pytest -q tests/test_r40_p5_download_review.py` proves each approval branch and parse lineage.
+- [ ] Compose the parent-owned workflow pause bridge and parser-owned capped `.xls` pod implementation; preserve allowed-domain GET behavior and the browser-agent guard.
+  - CHECK: focused synthetic workflow/controller assertions show pending source review pauses before export and same-domain GET remains allowed.
+- [x] Run the managed focused P5, candidate-schema, Ruff, and format gates; commit locally without pushing.
+  - CHECK: R40 DONE command, Ruff, `git diff --check`, and protected-path scan pass; report the commit SHA.
+FILES: `src/ontofill/phases/p5_execute/`, `src/ontofill/workflow.py` only for a P5 source-review pause seam, `src/ontofill/case/checkpoints.py`, `schemas/source-candidate.schema.json`, `schemas/approved.schema.json`, R40 synthetic tests, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Treat off-domain document links published by a trusted captured source as review leads, then fetch and parse only after an approval bound to exact candidate bytes.
+DONE (P5-owned slice): candidate evidence names the parent source/page, bronze capture, screenshot, link index/text and URL; missing/stale digests refuse, deny skips without re-requesting, and an approved exact-host D0 capture is parsed networklessly before evidence emission. Parent workflow and parser commits are still needed for a full R40 claim.
+FORMAT: Ruff check and format on all edited engine/schema/test files.
+
 ## Critical path: brief 10d and CONTRACT v0.9.7
 - [x] Make every live P1 revision consume all critic objections and prior failed checks, with deterministic human percent/tier grounding and specific-domain review.
 - [x] Generate and validate a replacement PRD before archiving a denied draft; keep current artifacts and approval intact on inference failure.

@@ -94,7 +94,7 @@
           "link_index": {"type": "integer", "minimum": 0, "maximum": 299},
           "content_type": {"type": "string", "minLength": 1, "maxLength": 200},
           "size_bytes": {"type": ["integer", "null"], "minimum": 0},
-          "document_format": {"enum": ["csv", "xlsx", "xlsm", "json", "pdf"]}
+          "document_format": {"enum": ["csv", "xls", "xlsx", "xlsm", "json", "pdf"]}
         },
         "allOf": [
           {
@@ -102,6 +102,22 @@
             "then": {"required": ["form_index"]}
           }
         ]
+      }
+    },
+    "link_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_source_id", "parent_page_url", "parent_capture_key", "link_url", "link_text"
+      ],
+      "properties": {
+        "parent_source_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "parent_page_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "parent_capture_key": {"$ref": "common.schema.json#/$defs/bronze_key"},
+        "link_url": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "link_text": {"type": "string", "maxLength": 500},
+        "link_index": {"type": "integer", "minimum": 0, "maximum": 299},
+        "step_id": {"type": "string", "minLength": 1, "maxLength": 200}
       }
     },
     "generated_by": {"$ref": "common.schema.json#/$defs/generated_by"}
@@ -128,6 +144,13 @@
     {
       "if": {"properties": {"artifact_kind": {"const": "download"}}, "required": ["artifact_kind"]},
       "then": {"required": ["document_key", "document_content_type"]}
+    },
+    {
+      "if": {"properties": {"provider": {"const": "sandbox_page_link"}}, "required": ["provider"]},
+      "then": {
+        "required": ["link_provenance", "authority_tier", "authority_reason"],
+        "properties": {"authority": {"const": "review"}}
+      }
     }
   ]
 }
