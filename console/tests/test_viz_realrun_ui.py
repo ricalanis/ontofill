@@ -71,9 +71,6 @@ def test_real_run_pages_fit(server, width):
         browser.close()
 
 
-@pytest.mark.xfail(strict=True, reason="approvals.html (web template, not a viz view): the ledger table overflows at "
-                   "390 px with the browser agent's real request dirs (05-actions/act-<ts>-<hex>); fix in its owner's "
-                   "template/CSS, then drop this xfail")
 def test_approvals_list_fits_phone_with_real_action_dirs(server):
     with playwright.sync_playwright() as p:
         browser = p.chromium.launch()

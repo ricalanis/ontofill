@@ -21,3 +21,5 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
 .question__text p + p { margin-top: var(--space-2xs); font-size: var(--text-base); font-weight: 400; }
 .question__src { font-size: var(--text-xs); color: var(--color-ink-3); }
 .case-question { display: block; font-weight: 400; font-size: var(--text-sm); color: var(--color-ink-2); max-width: 70ch; overflow-wrap: anywhere; }
+
+.ledger--approvals td, .ledger--approvals th { overflow-wrap: anywhere; }

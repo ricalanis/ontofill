@@ -154,7 +154,9 @@ class Run:
             return "Unknown"
         prop = self.domain.title_property(entity.get("class"))
         f = (entity.get("properties") or {}).get(prop or "") or {}
-        return str(f.get("value")) if f.get("value") not in (None, "") else entity["id"]
+        if f.get("value") not in (None, ""):
+            return str(f.get("value"))
+        return str(self.identifier(entity) or entity["id"])  # no title published: the identifier reads better than the id
 
     def identifier(self, entity: dict | None) -> str | None:
         prop = self.domain.identifier_property((entity or {}).get("class"))
