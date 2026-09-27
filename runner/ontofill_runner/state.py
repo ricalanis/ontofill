@@ -1,11 +1,11 @@
 """The runner's state directory, shared with the console.
 
-    <state>/KILL                     present = kill switch on (the console toggles it; the runner obeys)
-    <state>/events.jsonl             runner events, append-only (the console inbox reads it)
-    <state>/cases/<id>/control.json  written by the console: {"paused": bool, "start_requested": {...} | null}
-    <state>/cases/<id>/status.json   written by the runner: state, run_id, checkpoint, times, reason, spend
-    <state>/cases/<id>/lock          flock held while an engine child runs for the case
-    <state>/cases/<id>/engine-<run>.log   the child's output (0600; never shown in full)
+<state>/KILL                     present = kill switch on (the console toggles it; the runner obeys)
+<state>/events.jsonl             runner events, append-only (the console inbox reads it)
+<state>/cases/<id>/control.json  written by the console: {"paused": bool, "start_requested": {...} | null}
+<state>/cases/<id>/status.json   written by the runner: state, run_id, checkpoint, times, reason, spend
+<state>/cases/<id>/lock          flock held while an engine child runs for the case
+<state>/cases/<id>/engine-<run>.log   the child's output (0600; never shown in full)
 """
 
 from __future__ import annotations
@@ -98,8 +98,10 @@ class State:
         return cur
 
     def event(self, case_id: str | None, kind: str, detail: str = "", **extra) -> None:
-        append_line(self.root / "events.jsonl", {"ts": now(), "case_id": case_id, "kind": kind,
-                                                  "detail": detail[:2000], **extra})
+        append_line(
+            self.root / "events.jsonl",
+            {"ts": now(), "case_id": case_id, "kind": kind, "detail": detail[:2000], **extra},
+        )
 
 
 def _front_matter(text: str) -> dict:

@@ -39,9 +39,11 @@ class S3Lake:
 
     def list_dirs(self, prefix: str) -> list[str]:
         pages = self.client.get_paginator("list_objects_v2").paginate(
-            Bucket=self.bucket, Prefix=prefix.rstrip("/") + "/", Delimiter="/")
-        return sorted(cp["Prefix"].rstrip("/").rsplit("/", 1)[-1] for page in pages
-                      for cp in page.get("CommonPrefixes", []))
+            Bucket=self.bucket, Prefix=prefix.rstrip("/") + "/", Delimiter="/"
+        )
+        return sorted(
+            cp["Prefix"].rstrip("/").rsplit("/", 1)[-1] for page in pages for cp in page.get("CommonPrefixes", [])
+        )
 
 
 class CaseLake:
@@ -97,7 +99,7 @@ class CaseLake:
         total = 0.0
         for line in (raw or b"").decode(errors="replace").splitlines():
             try:
-                usage = (json.loads(line).get("usage") or {})
+                usage = json.loads(line).get("usage") or {}
             except (ValueError, AttributeError):
                 continue
             if isinstance(usage, dict):

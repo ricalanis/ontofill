@@ -26,10 +26,16 @@ def setup(tmp_path):
     (run / "status.json").write_text(json.dumps({"state": "paused", "checkpoint_pending": "prd"}))
     envfile = tmp_path / "engine.env"
     envfile.write_text("ENGINE_SECRET=do-not-log-me\n")
-    cfg = Config(cases={"c1": CaseSpec("c1", case, lake)}, state_dir=tmp_path / "state", poll_s=0.1,
-                 engine_cmd=f"{sys.executable} {FAKE} {{case_dir}} --to-phase {{to_phase}} --run-id {{run_id}} "
-                            f"--budget-usd {{budget}} --lake {lake}",
-                 engine_env_file=envfile, budgets={"c1": 1.0}, kill_grace_s=2)
+    cfg = Config(
+        cases={"c1": CaseSpec("c1", case, lake)},
+        state_dir=tmp_path / "state",
+        poll_s=0.1,
+        engine_cmd=f"{sys.executable} {FAKE} {{case_dir}} --to-phase {{to_phase}} --run-id {{run_id}} "
+        f"--budget-usd {{budget}} --lake {lake}",
+        engine_env_file=envfile,
+        budgets={"c1": 1.0},
+        kill_grace_s=2,
+    )
     yield {"case": case, "lake": lake, "cfg": cfg, "calls": tmp_path / "c" / "calls.jsonl"}
     # a fake engine the runner no longer tracks (e.g. a sleep-mode child around a kill) must not outlive its test
     subprocess.run(["pkill", "-f", str(case)], check=False)
@@ -125,7 +131,8 @@ def test_budget_cap_stops_before_launch(setup, monkeypatch):
     monkeypatch.setenv("FAKE_MODE", "done")
     approve(setup)
     (setup["lake"] / "runs" / "c1" / "run-abc" / "trace.live.jsonl").write_text(
-        json.dumps({"usage": {"est_usd": 1.5}}) + "\n")
+        json.dumps({"usage": {"est_usd": 1.5}}) + "\n"
+    )
     r = Runner(setup["cfg"], env=dict(os.environ))
     r.poll_once()
     assert not calls(setup)
@@ -207,8 +214,9 @@ def test_start_request_launches_a_new_run_once(setup, monkeypatch):
     (setup["lake"] / "runs").rename(setup["lake"] / "runs-old")  # a case with no run yet
     ctl = setup["cfg"].state_dir / "cases" / "c1" / "control.json"
     ctl.parent.mkdir(parents=True)
-    ctl.write_text(json.dumps({"paused": False, "start_requested": {"by": "group:approvers", "at": "t1",
-                                                                     "to_phase": 2}}))
+    ctl.write_text(
+        json.dumps({"paused": False, "start_requested": {"by": "group:approvers", "at": "t1", "to_phase": 2}})
+    )
     r = Runner(setup["cfg"], env=dict(os.environ))
     run_until_idle(r)
     c = calls(setup)
@@ -301,11 +309,19 @@ def test_registry_is_reread_each_tick_with_budget_clamp_and_archive(setup, tmp_p
     assert set(r.cfg.cases) == {"c1"}
     new = root / "n1" / "case"
     new.mkdir(parents=True)
-    (root / "cases.json").write_text(json.dumps({"version": 1, "cases": [
-        {"id": "n1", "path": "n1/case", "budget_usd": 50, "to_phase": 2},
-        {"id": "old", "path": "old/case", "archived": True},
-        {"id": "esc", "path": "../outside/case"},
-        {"id": "c1", "path": str(setup["case"]), "budget_usd": 0.5}]}))
+    (root / "cases.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "cases": [
+                    {"id": "n1", "path": "n1/case", "budget_usd": 50, "to_phase": 2},
+                    {"id": "old", "path": "old/case", "archived": True},
+                    {"id": "esc", "path": "../outside/case"},
+                    {"id": "c1", "path": str(setup["case"]), "budget_usd": 0.5},
+                ],
+            }
+        )
+    )
     r.poll_once()
     assert set(r.cfg.cases) == {"c1", "n1"}  # archived and escaping entries are ignored
     assert r.case_budget("n1") == 5.0 and r.case_budget("c1") == 0.5  # clamped by the global cap

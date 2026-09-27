@@ -167,8 +167,11 @@ class Runner:
             for cid in self.cfg.cases:
                 st = self.state.status(cid)
                 if st.get("spent_usd_global") != round(glob, 4) or "spent_usd_global_basis" not in st:
-                    self.state.set_status(cid, spent_usd_global=round(glob, 4),
-                                          spent_usd_global_basis="gateway call log, every principal and session")
+                    self.state.set_status(
+                        cid,
+                        spent_usd_global=round(glob, 4),
+                        spent_usd_global_basis="gateway call log, every principal and session",
+                    )
         for cid in self.cfg.cases:
             try:
                 self._reap(cid)
@@ -210,14 +213,27 @@ class Runner:
             if status.get("seen_start_at") != start.get("at"):
                 self.state.set_status(cid, seen_start_at=start.get("at"))
                 self.state.event(cid, "start_requested", f"by {start.get('by') or '?'}")
-            trigger = {"kind": "started", "run_id": "run-" + uuid.uuid4().hex[:12],
-                       "to_phase": int(start.get("to_phase") or self.case_to_phase(cid)),
-                       "handled_start_at": start["at"]}
-        elif (status.get("state") == "killed" and not killed and status.get("run_id") == run_id and run_id
-              and lstatus.get("state") not in ("paused", "done", "completed", "finished")):
+            trigger = {
+                "kind": "started",
+                "run_id": "run-" + uuid.uuid4().hex[:12],
+                "to_phase": int(start.get("to_phase") or self.case_to_phase(cid)),
+                "handled_start_at": start["at"],
+            }
+        elif (
+            status.get("state") == "killed"
+            and not killed
+            and status.get("run_id") == run_id
+            and run_id
+            and lstatus.get("state") not in ("paused", "done", "completed", "finished")
+        ):
             # this runner stopped the run mid-phase with the kill switch; with the switch lifted, relaunch the SAME run
-            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.case_to_phase(cid), "after_kill": True,
-                       "last_trigger": f"after-kill:{run_id}:{status.get('updated_at') or ''}"}
+            trigger = {
+                "kind": "resumed",
+                "run_id": run_id,
+                "to_phase": self.case_to_phase(cid),
+                "after_kill": True,
+                "last_trigger": f"after-kill:{run_id}:{status.get('updated_at') or ''}",
+            }
         elif lstatus.get("state") == "paused" and lstatus.get("checkpoint_pending"):
             cp = lstatus["checkpoint_pending"]
             sha = decision_for(spec.case_dir, cp)
@@ -229,12 +245,21 @@ class Runner:
                 if status.get("state") == "failed":
                     return  # a failed resume stays failed until a new decision or a console "resume"
                 again = "the engine paused again at this checkpoint after the decision"
-                self._transition(cid, "waiting_approval", run_id=run_id, checkpoint=cp,
-                                 reason=f"{again}: {lstatus['reason']}" if lstatus.get("reason")
-                                 else f"{again}; see the run")
+                self._transition(
+                    cid,
+                    "waiting_approval",
+                    run_id=run_id,
+                    checkpoint=cp,
+                    reason=f"{again}: {lstatus['reason']}" if lstatus.get("reason") else f"{again}; see the run",
+                )
                 return
-            trigger = {"kind": "resumed", "run_id": run_id, "to_phase": self.case_to_phase(cid), "last_trigger": key,
-                       "checkpoint": cp}
+            trigger = {
+                "kind": "resumed",
+                "run_id": run_id,
+                "to_phase": self.case_to_phase(cid),
+                "last_trigger": key,
+                "checkpoint": cp,
+            }
         elif lstatus.get("state") in ("done", "completed", "finished"):
             self._transition(cid, "done", run_id=run_id, checkpoint=None)
             return
@@ -254,10 +279,20 @@ class Runner:
         budget = self.case_budget(cid)
         over_global = self.cfg.global_usd is not None and glob is not None and glob >= self.cfg.global_usd
         if spent >= budget or over_global:
-            why = (f"global spend ${glob:.2f} ≥ ${self.cfg.global_usd:.2f}" if over_global
-                   else f"case spend ${spent:.2f} ≥ ${budget:.2f}")
-            self._transition(cid, "budget_stop", why, run_id=trigger["run_id"], spent_usd_case=round(spent, 4),
-                             spent_usd_global=None if glob is None else round(glob, 4), reason=why)
+            why = (
+                f"global spend ${glob:.2f} ≥ ${self.cfg.global_usd:.2f}"
+                if over_global
+                else f"case spend ${spent:.2f} ≥ ${budget:.2f}"
+            )
+            self._transition(
+                cid,
+                "budget_stop",
+                why,
+                run_id=trigger["run_id"],
+                spent_usd_case=round(spent, 4),
+                spent_usd_global=None if glob is None else round(glob, 4),
+                reason=why,
+            )
             return
         self._launch(cid, trigger, remaining=budget - spent, spent=spent, glob=glob)
 
@@ -278,30 +313,52 @@ class Runner:
             return
         os.ftruncate(lock_fd, 0)
         run_id = trigger["run_id"]
-        cmd = shlex.split(self.cfg.engine_cmd.format(case_dir=shlex.quote(str(spec.case_dir)),
-                                                     to_phase=trigger["to_phase"], run_id=run_id,
-                                                     budget=f"{self.case_budget(cid):.2f}"))
+        cmd = shlex.split(
+            self.cfg.engine_cmd.format(
+                case_dir=shlex.quote(str(spec.case_dir)),
+                to_phase=trigger["to_phase"],
+                run_id=run_id,
+                budget=f"{self.case_budget(cid):.2f}",
+            )
+        )
         env = dict(self.env) | load_env_file(self.cfg.engine_env_file)
         log_path = cdir / f"engine-{run_id}.log"
         fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "ab") as out:
-            proc = subprocess.Popen(cmd, cwd=self.cfg.engine_dir or None, env=env, stdout=out,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
+            proc = subprocess.Popen(
+                cmd,
+                cwd=self.cfg.engine_dir or None,
+                env=env,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         os.write(lock_fd, str(proc.pid).encode())
         self.children[cid] = Child(proc, run_id, trigger["kind"], lock_fd, log_path)
         at = now()
         # while it runs no checkpoint is pending: the one just decided is kept apart (resumed_from_checkpoint)
-        fields = {"run_id": run_id, "pid": proc.pid, "reason": None, "spent_usd_case": round(spent, 4),
-                  "spent_usd_global": None if glob is None else round(glob, 4), "checkpoint": None,
-                  "resumed_from_checkpoint": trigger.get("checkpoint"), "engine_stop": None}
+        fields = {
+            "run_id": run_id,
+            "pid": proc.pid,
+            "reason": None,
+            "spent_usd_case": round(spent, 4),
+            "spent_usd_global": None if glob is None else round(glob, 4),
+            "checkpoint": None,
+            "resumed_from_checkpoint": trigger.get("checkpoint"),
+            "engine_stop": None,
+        }
         fields["last_resumed_at" if trigger["kind"] == "resumed" else "last_started_at"] = at
         for key in ("last_trigger", "handled_start_at"):
             if trigger.get(key):
                 fields[key] = trigger[key]
         self.state.set_status(cid, state="running", running_since=at, **fields)
-        detail = ("resumed after the kill switch was lifted" if trigger.get("after_kill")
-                  else f"resumed after the {trigger.get('checkpoint')} decision" if trigger["kind"] == "resumed"
-                  else f"new run to phase {trigger['to_phase']}")
+        detail = (
+            "resumed after the kill switch was lifted"
+            if trigger.get("after_kill")
+            else f"resumed after the {trigger.get('checkpoint')} decision"
+            if trigger["kind"] == "resumed"
+            else f"new run to phase {trigger['to_phase']}"
+        )
         self.state.event(cid, trigger["kind"], detail, run_id=run_id)
         log.info("case %s: %s %s (pid %s)", cid, trigger["kind"], run_id, proc.pid)
 
@@ -347,22 +404,56 @@ class Runner:
             lstatus = {}
         why = lstatus.get("reason") or last_reason_line(child.log_path)
         # how the engine stopped, from its run status and its own last line; replaces any earlier record
-        stop = {"exit_code": rc, "at": now(), "state": lstatus.get("state"), "phase": lstatus.get("phase"),
-                "checkpoint_pending": lstatus.get("checkpoint_pending"), "reason": why}
+        stop = {
+            "exit_code": rc,
+            "at": now(),
+            "state": lstatus.get("state"),
+            "phase": lstatus.get("phase"),
+            "checkpoint_pending": lstatus.get("checkpoint_pending"),
+            "reason": why,
+        }
         if child.stop_reason == "killed":  # interrupted, not answered: lifting the switch resumes it
-            self._transition(cid, "killed", "stopped by the kill switch", run_id=run_id, pid=None, last_trigger=None,
-                             checkpoint=None, engine_stop=stop)
+            self._transition(
+                cid,
+                "killed",
+                "stopped by the kill switch",
+                run_id=run_id,
+                pid=None,
+                last_trigger=None,
+                checkpoint=None,
+                engine_stop=stop,
+            )
         elif child.stop_reason == "budget_stop":
             self._usd_cache.pop((cid, run_id), None)  # the run just grew: re-read its trace for the final spend
-            self._transition(cid, "budget_stop", "stopped: budget reached", run_id=run_id, pid=None,
-                             reason="budget reached while running", last_trigger=None, checkpoint=None,
-                             engine_stop=stop, spent_usd_case=round(self.case_spent(cid, run_id), 4))
+            self._transition(
+                cid,
+                "budget_stop",
+                "stopped: budget reached",
+                run_id=run_id,
+                pid=None,
+                reason="budget reached while running",
+                last_trigger=None,
+                checkpoint=None,
+                engine_stop=stop,
+                spent_usd_case=round(self.case_spent(cid, run_id), 4),
+            )
         elif rc == PAUSED_EXIT:
             cp = lstatus.get("checkpoint_pending")
-            self.state.set_status(cid, state="waiting_approval", run_id=run_id, checkpoint=cp, pid=None,
-                                  reason=lstatus.get("reason"), engine_stop=stop)
-            self.state.event(cid, "paused_at_checkpoint", f"waiting for the {cp} decision"
-                             + (f" (engine: {lstatus['reason']})" if lstatus.get("reason") else ""), run_id=run_id)
+            self.state.set_status(
+                cid,
+                state="waiting_approval",
+                run_id=run_id,
+                checkpoint=cp,
+                pid=None,
+                reason=lstatus.get("reason"),
+                engine_stop=stop,
+            )
+            self.state.event(
+                cid,
+                "paused_at_checkpoint",
+                f"waiting for the {cp} decision" + (f" (engine: {lstatus['reason']})" if lstatus.get("reason") else ""),
+                run_id=run_id,
+            )
         elif rc == NEEDS_HUMAN_EXIT:
             reason = lstatus.get("reason")
             if (
@@ -391,17 +482,26 @@ class Runner:
                 )
             else:
                 detail = f"engine exited {rc}\n{tail(child.log_path)}"
-                self.state.set_status(cid, state="failed", run_id=run_id, pid=None, reason=f"engine exited {rc}",
-                                      engine_stop=stop)
+                self.state.set_status(
+                    cid, state="failed", run_id=run_id, pid=None, reason=f"engine exited {rc}", engine_stop=stop
+                )
                 self.state.event(cid, "failed", detail, run_id=run_id)
         elif rc == 0:
-            self._transition(cid, "done", "the run finished", run_id=run_id, pid=None, checkpoint=None,
-                             engine_stop=stop)
+            self._transition(
+                cid, "done", "the run finished", run_id=run_id, pid=None, checkpoint=None, engine_stop=stop
+            )
         else:
             detail = f"engine exited {rc}\n{tail(child.log_path)}"
             where = f" in phase {lstatus['phase']}" if lstatus.get("phase") else ""
-            self.state.set_status(cid, state="failed", run_id=run_id, pid=None, checkpoint=None, engine_stop=stop,
-                                  reason=f"engine exited {rc}{where}" + (f": {why}" if why else ""))
+            self.state.set_status(
+                cid,
+                state="failed",
+                run_id=run_id,
+                pid=None,
+                checkpoint=None,
+                engine_stop=stop,
+                reason=f"engine exited {rc}{where}" + (f": {why}" if why else ""),
+            )
             self.state.event(cid, "failed", detail, run_id=run_id)
 
     def shutdown(self) -> None:

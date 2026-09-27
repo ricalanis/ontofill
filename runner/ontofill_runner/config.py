@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CASE_ID = re.compile(r"^[a-z0-9-]{1,40}$")
-DEFAULT_ENGINE_CMD = ("uv run --no-sync ontofill run {case_dir} --to-phase {to_phase} --run-id {run_id} "
-                      "--budget-usd {budget}")
+DEFAULT_ENGINE_CMD = (
+    "uv run --no-sync ontofill run {case_dir} --to-phase {to_phase} --run-id {run_id} --budget-usd {budget}"
+)
 
 
 @dataclass(frozen=True)
