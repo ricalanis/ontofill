@@ -1,3 +1,15 @@
+# R48 primary-entity anchor integration
+
+FILES: `src/ontofill/phases/p3_fanout/{discovery_loop,leads}.py`, focused tests, GOAL/TODO/status.
+TASK: compose held list recall with ontology/linking-relation anchor and CKAN metadata ranking.
+DONE: managed full gate plus genericity guard and pre-push scan; status READY with SHA.
+FORMAT: Ruff, clean diff.
+
+1. [x] Cherry-pick prior bounded list-recall patch on current public main.
+2. [ ] Review worker anchor queries and CKAN provider ranking; merge scoped commits.
+3. [ ] Run recorded focused and full gates, scan and push main.
+4. [ ] Post READY; no VM pull while run-fb09d5cbb4a4 runs.
+
 # R51b P3 wall-clock budget accounting
 
 - [x] Distinguish wall-clock exhaustion from USD/unpriced budget stops in `PhaseLoop` and trace/metrics schemas.

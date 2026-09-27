@@ -1,3 +1,7 @@
+# Current goal: R48 primary-entity discovery anchor
+
+Before broad search, use the inferred ontology to seek row-level datasets for the primary class or a linking relation. Search every trusted/discovered open-data portal through sandboxed CKAN, rank resource metadata by entity granularity, then require normal sandbox capture and authority checks. DONE: synthetic anchor, CKAN and aggregate-ranking tests plus full pytest, Ruff, schema/diff checks; public push only after scan; no VM deploy while the active run exists.
+
 # Current goal: R51b P3 wall-clock budget accounting
 
 Scale the P3 wall-clock allowance with its budgeted iteration count, capped at 3600 seconds, while preserving the independent USD cap. Report wall-clock exhaustion as `wall_clock` rather than `budget`, including in trace and metrics schemas; preserve P3's needs-human pause on exhaustion.
