@@ -39,7 +39,10 @@ PERCENT_METRIC = re.compile(
 )
 SECONDARY_REQUEST = re.compile(r"secondary|secundari|cross[ -]?check|contraste", re.IGNORECASE)
 PRIMARY_REQUEST = re.compile(r"\bprimary\b|\bprimari[oa]s?\b|\bprincipal(?:es)?\b", re.IGNORECASE)
+_DOTTED_ABBREVIATION = re.compile(r"\b(?:[A-Za-zÀ-ÿ]{1,2}\.\s*){2,}")
 SECONDARY_STOPWORDS = {
+    "are",
+    "as",
     "check",
     "cross",
     "crosschecks",
@@ -48,6 +51,12 @@ SECONDARY_STOPWORDS = {
     "keep",
     "kept",
     "only",
+    "de",
+    "del",
+    "is",
+    "las",
+    "los",
+    "of",
     "requested",
     "remain",
     "secondary",
@@ -56,6 +65,7 @@ SECONDARY_STOPWORDS = {
     "source",
     "sources",
     "supplementary",
+    "son",
     "the",
     "them",
     "these",
@@ -137,13 +147,29 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", plain))
 
 
-def _secondary_clauses(revisions: list[dict]) -> list[str]:
+def _revision_clauses(reason: str) -> list[str]:
+    """Split prose without treating dotted abbreviations as sentence boundaries."""
+    protected = _DOTTED_ABBREVIATION.sub(lambda match: match.group().replace(".", "\ue000"), reason)
     return [
-        clause.strip()
-        for revision in revisions
-        for clause in re.split(r";\s*|(?<=[.!?])\s+|\n+", revision["reason"])
-        if SECONDARY_REQUEST.search(clause)
+        part.replace("\ue000", ".").strip()
+        for part in re.split(r";\s*|(?<=[.!?])\s+|\n+", protected)
+        if part.strip()
     ]
+
+
+def _secondary_clauses(revisions: list[dict]) -> list[str]:
+    clauses: list[str] = []
+    for revision in revisions:
+        previous = ""
+        for fragment in _revision_clauses(revision["reason"]):
+            if SECONDARY_REQUEST.search(fragment):
+                clause = fragment
+                if not _secondary_subjects(clause) and previous:
+                    clause = f"{previous} {clause}"
+                if _secondary_subjects(clause):
+                    clauses.append(clause)
+            previous = fragment
+    return clauses
 
 
 def _subject_tokens(text: str) -> set[str]:
@@ -192,8 +218,15 @@ def _named_secondary_matches(
     )
     referenced_jurisdictions = _tokens(subject_text) & all_jurisdiction_aliases
     named_codes = {token.casefold() for token in re.findall(r"\b[A-Z]{2,}\b", subject_text)}
+    dotted_codes = {
+        token.casefold()
+        for abbreviation in _DOTTED_ABBREVIATION.finditer(subject_text)
+        for token in re.findall(r"[A-Za-zÀ-ÿ]+", abbreviation.group())
+    }
     known_publisher_tokens = set().union(*publisher_tokens.values()) if publisher_tokens else set()
-    unexplained_codes = named_codes - all_jurisdiction_aliases - known_publisher_tokens
+    unexplained_codes = (
+        named_codes - dotted_codes - all_jurisdiction_aliases - known_publisher_tokens
+    )
     if unexplained_codes:
         return []
     jurisdiction_scoped = bool(referenced_jurisdictions)
@@ -354,7 +387,7 @@ def _apply_human_authority_revisions(document: dict, revisions: list[dict]) -> N
         token[:4] for token in _tokens(jurisdiction) - JURISDICTION_SCOPE_WORDS if len(token) >= 4
     }
     for revision in revisions:
-        for clause in re.split(r";\s*|(?<=[.!?])\s+|\n+", revision["reason"]):
+        for clause in _revision_clauses(revision["reason"]):
             marker = PRIMARY_REQUEST.search(clause)
             if marker is None or SECONDARY_REQUEST.search(clause):
                 continue
@@ -417,14 +450,13 @@ def _authority_policy_check(document: dict, revisions: list[dict]) -> CheckResul
         objections.append("Authority policy needs a primary publisher in the case jurisdiction")
     secondary = [item for item in publishers if item.get("tier") == "secondary" and item["domains"]]
     for clause in _secondary_clauses(revisions):
-        subjects = _secondary_subjects(clause)
-        if not subjects or any(
-            not _named_secondary_matches(subject_text, subject, secondary)
-            for subject_text, subject in subjects
-        ):
-            objections.append(
-                f"Human secondary cross-check lacks a named publisher/domain: {clause}"
-            )
+        for subject_text, subject in _secondary_subjects(clause):
+            if not _named_secondary_matches(subject_text, subject, secondary):
+                named_subject = " ".join(subject_text.split())[:160]
+                objections.append(
+                    f"Human SECONDARY subject '{named_subject}' needs a SECONDARY-tier publisher "
+                    "whose kind names that subject and whose domains include a specific publisher domain"
+                )
     return CheckResult(not objections, tuple(objections))
 
 
@@ -607,6 +639,9 @@ def draft_prd(
         "At least one in-scope publisher must be primary. Do not duplicate publisher kinds or domains. "
         "Mark authoritative publishers tier=primary, supplementary human-requested "
         "cross-check lists tier=secondary, and uncertain domains tier=review. "
+        "For each human-requested secondary subject, make a secondary publisher kind name "
+        "that subject in the human's language and give the publisher a specific domain. "
+        "The human revision need not name the domain; you must name it in the policy. "
         "Secondary and review publishers are never auto authority; "
         "if a human-requested cross-check has no supportable domain, leave it unresolved "
         "for human review rather than inventing an empty trusted publisher. "

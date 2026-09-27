@@ -312,7 +312,7 @@ def test_shared_generic_word_does_not_demote_unrelated_publishers() -> None:
     _apply_human_authority_revisions(document, revision)
     assert all(item.get("tier", "primary") == "primary" for item in publishers)
     assert any(
-        "Human secondary cross-check lacks" in issue
+        "SECONDARY-tier publisher" in issue and "community listing" in issue
         for issue in _authority_policy_check(document, revision).objections
     )
 

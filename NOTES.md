@@ -245,6 +245,10 @@ The root integration gate passed 406 tests and failed two workflow preview tests
 
 ## R26 managed check causes
 
+## R26b focused check cause
+
+The first existing P1 gate passed 37 tests and failed one assertion that still searched for the old generic secondary-source objection text. The checker now names the unmatched human subject and the required SECONDARY publisher/domain. The test has been updated to assert that actionable reason while preserving its invariant: a shared generic word cannot demote unrelated publishers.
+
 The baseline recorded check failed in the intended five places: PRD/P2 output budgets and retries, plus missing multi-error pause diagnostics. After the implementation, the first focused check exposed an existing extraction contract: a truncated extraction call must escalate from Qwen to GLM. A one-line follow-up accidentally altered the HTTP schema-mode branch instead of the length branch, so the second focused check failed for the same cause. The next strategy targets the length branch explicitly and retains extraction fallback while retrying PRD/P2 on their selected model.
 
 The first full integration run passed 418 tests and failed three existing R22 assertions because my attempted status normalization changed recorded schema failures from `invalid_response` to `validation_failed`. Those are distinct trace statuses: the latter is reserved for semantic validation after a syntactically valid answer. The normalization was reverted, and the new R26 test now asserts the existing `invalid_response` status plus its visible validator reason.

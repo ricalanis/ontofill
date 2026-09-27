@@ -1,4 +1,8 @@
 # Goal
+R26b: a human secondary-source clause remains intact across common abbreviations, and a PRD with a matching secondary publisher kind plus a specific domain passes the authority check. Missing publishers receive actionable, subject-specific feedback before approval.
+DONE: the exact archived ES and EN denial reasons pass a recorded PRD check with domain-bearing secondary publishers; a missing publisher names the unmatched subject; `uv run pytest -q`, Ruff lint/format, pre-push scan and VM fast-forward pass. The live case is resumed only by the orchestrator through the console.
+
+## Prior R26 goal
 R26: truncated PRD and ontology model decisions retry with a larger output budget; a paused P1 run records bounded validator objections in its CLI output, status reason, and S3 live trace. The case's actual trace location is verified without editing the case.
 DONE: `agent-progress run --task r26-output-diagnostics --paths src/ontofill/inference/decision.py,src/ontofill/workflow.py,tests/test_inference.py,tests/test_r26_diagnostics.py --check full-engine-gate --strategy adaptive-document-budget -- sh -c 'uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox'` passes, followed by a clean pre-push scan and control VM fast-forward.
 
