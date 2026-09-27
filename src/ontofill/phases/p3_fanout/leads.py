@@ -211,6 +211,7 @@ def is_open_data_portal(lead: Mapping, ontology: Mapping) -> bool:
                 "resource_type",
                 "source_class",
                 "source_class_label",
+                "url",
                 "title",
                 "snippet",
                 "query",

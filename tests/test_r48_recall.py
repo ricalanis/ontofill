@@ -18,6 +18,7 @@ from ontofill.phases.p3_fanout.discovery_loop import (
     _parsed_document_headers,
     _record_granularity,
 )
+from ontofill.phases.p3_fanout.leads import Lead
 from ontofill.sandbox import parse as parse_module
 from tests.r17_helpers import SyntheticParseExecutor
 from tests.test_discovery_loop import PAGE, POLICY, FakeVultr, StaticProvider, _library_case, _loop
@@ -80,6 +81,116 @@ def test_portal_card_is_explored_one_level_before_rejecting_root(tmp_path) -> No
     assert root in capture.calls and child in capture.calls
     assert child in {objective["source_url"] for objective in result["objectives"]}
     assert not any(capture.calls.count(url) > 1 for url in capture.calls)
+
+
+def test_nested_spanish_open_data_page_is_explored_one_level_only(tmp_path) -> None:
+    ontology = _library_case(tmp_path, POLICY)
+    root = "https://data.example.test/catalogo/datos-abiertos"
+    child = "https://data.example.test/datasets/records"
+    grandchild = "https://data.example.test/datasets/records/branch-1"
+
+    class PortalProvider(StaticProvider):
+        def leads(self, context):
+            self.calls += 1
+            wanted = {query.property_id for query in context.queries}
+            found = [
+                Lead(
+                    root,
+                    "Official data directory",
+                    "Public records",
+                    self.name,
+                    "official directory",
+                    props,
+                )
+                for props in self.urls.values()
+                if wanted & set(props)
+            ]
+            self._attempt("datos abiertos", "ok" if found else "empty", len(found))
+            return found
+
+    provider = PortalProvider("synthetic", {root: ("name",)})
+    pages = {
+        root: '<html><body><h1>Official portal</h1><a href="/datasets/records">Listado de registros</a></body></html>',
+        child: PAGE.format(title="Branch directory").replace(
+            "</body>", '<a href="/datasets/records/branch-1">Branch details</a></body>'
+        ),
+        grandchild: PAGE.format(title="Branch detail"),
+    }
+    loop, capture = _loop(
+        tmp_path,
+        [provider],
+        pages,
+        budget=LoopBudget(max_iterations=3, wall_seconds=60),
+    )
+    result = loop.discover_sources(tmp_path, ontology, RecordedDecisionClient({}), gaps=("name",))
+
+    assert root in capture.calls and child in capture.calls
+    assert grandchild not in capture.calls
+    assert child in {objective["source_url"] for objective in result["objectives"]}
+
+
+def test_primary_entity_searches_expand_spanish_list_terms_with_property() -> None:
+    ontology = {
+        "primary_class": "person",
+        "classes": [
+            {
+                "id": "person",
+                "label": "Contribuyente",
+                "label_plural": "Contribuyentes",
+                "identifier_property": "record_id",
+                "title_property": "name",
+            }
+        ],
+        "properties": [
+            {"id": "record_id", "label": "RFC", "domain": "person"},
+            {"id": "name", "label": "Nombre", "domain": "person"},
+            {"id": "status", "label": "Estatus fiscal", "domain": "person", "dod": True},
+        ],
+    }
+    brief = "Necesitamos una fuente pública para identificar cada registro en México."
+    loop = object.__new__(DiscoveryLoop)
+    tried: set[str] = set()
+    queries = []
+    for iteration in range(1, 4):
+        planned = loop._plan_queries(
+            RecordedDecisionClient({}),
+            brief,
+            ontology,
+            {"jurisdiction": "México", "trusted_publishers": []},
+            ["status"],
+            iteration,
+            tried,
+        )
+        query = next(item.text for item in planned if not item.text.startswith("site:"))
+        queries.append(query.casefold())
+        tried.add(query)
+
+    assert "listado de contribuyentes estatus fiscal rfc" in queries[0]
+    assert "relación de contribuyentes estatus fiscal rfc" in queries[1]
+    assert "datos abiertos estatus fiscal contribuyentes rfc" in queries[2]
+
+    class QueryPlanner:
+        backend = "vultr"
+        model = "synthetic-query-planner"
+
+        def complete_json(self, purpose, prompt, schema):
+            assert purpose == "phase3.plan_queries"
+            self.prompt = prompt
+            return {"queries": [{"property_id": "status", "query": "official entity source"}]}
+
+    planner = QueryPlanner()
+    planned = loop._plan_queries(
+        planner,
+        brief,
+        ontology,
+        {"jurisdiction": "México", "trusted_publishers": []},
+        ["status"],
+        1,
+        set(),
+    )
+    assert "listado de contribuyentes estatus fiscal rfc" in planned[0].text.casefold()
+    assert "relación de contribuyentes estatus fiscal rfc" in planner.prompt.casefold()
+    assert "datos abiertos estatus fiscal contribuyentes rfc" in planner.prompt.casefold()
 
 
 def test_blank_portal_is_inconclusive_and_capture_error_is_recorded(tmp_path) -> None:

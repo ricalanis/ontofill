@@ -442,6 +442,14 @@ Selected strategy: model each robots response with `robots_status` (`available`,
 
 The managed red baseline failed 11 new assertions: ordinary 4xx stopped before fetching pages (except pre-existing 404 handling), no robots status was present, and the graph dropped the normalized status. After implementation, the same task/check/strategy passed 31 focused tests, Ruff lint/format, JSON schema parsing, and `git diff --check`. No live request was made.
 
+# R48 generic entity-list recall
+
+Based the slice on `origin/main` at `79ce513`. The existing R48 fixture only covered a root page linking to a child, while `_plan_queries` gave local-language guidance to the model but used English channel templates in fallback and delayed its `list` channel until round four. Nested open-data result URLs were excluded by the generic root-path depth check.
+
+For primary-entity DoD properties, derive local-language list query examples from the ontology plural, target property, and identifier/title label. Spanish examples are generic (`listado de`, `relación de`, `datos abiertos`) and are included in the model prompt; selected model queries also receive the matching ontology-derived scaffold. The deterministic path rotates through the same concepts. Keep all domain nouns supplied by ontology/brief data. Open-data detection now also checks the candidate URL, and nested portal pages recognized by those cues can surface a bounded child; depth-one children are not recrawled.
+
+The synthetic tests use a generic Spanish record class and a nested `/datos-abiertos` fixture, with no real-case files or approval markers. Managed focused gate attempt 1 passed 40 tests and Ruff lint but failed only the formatter check on the newly added conditional; after formatting, attempt 2 passed 40 tests, Ruff lint/format, and `git diff --check`. Separate managed genericity/no-case-vocabulary gate passed 5 tests. No live browse, real-case read, push, or deployment was performed.
+
 
 # R40 malformed XLS parse diagnostics (2026-09-27)
 

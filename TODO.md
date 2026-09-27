@@ -531,3 +531,14 @@ Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2
 2. [x] Port engine attribution and trace observer onto current main, leaving gateway-owned files aside.
 3. [x] Run the full managed gate: 590 passed, 5 skipped; Ruff lint/format clean.
 4. [ ] Pre-push scan, public push, and PA hand-off for gateway logging.
+
+## R48 generic entity-list recall
+
+- [x] Add synthetic recorded coverage for ontology-derived Spanish list/open-data queries on a primary-entity DoD property, including the model-planner prompt path.
+- [x] Allow nested open-data pages to surface same-host children at one link depth, without recursion.
+- [x] Run the managed focused P3 check, Ruff, and diff check; commit locally and report the SHA.
+
+FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `src/ontofill/phases/p3_fanout/leads.py`, `tests/test_r48_recall.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Make generic primary-entity list searches explicit and explore captured open-data pages one level below their landing URL.
+DONE: `uv run pytest -q tests/test_r48_recall.py` proves the recorded query and one-level portal regressions; Ruff lint/format and `git diff --check` pass for the owned files.
+FORMAT: `uv run ruff check src/ontofill/phases/p3_fanout/discovery_loop.py src/ontofill/phases/p3_fanout/leads.py tests/test_r48_recall.py && uv run ruff format --check src/ontofill/phases/p3_fanout/discovery_loop.py src/ontofill/phases/p3_fanout/leads.py tests/test_r48_recall.py`.

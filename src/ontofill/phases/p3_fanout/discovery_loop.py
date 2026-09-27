@@ -95,7 +95,32 @@ _SENSITIVE_HEADER = re.compile(
 _P3_BASE_ITERATIONS = 3
 _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
-_DISCOVERY_CHANNELS = ("open data", "transparency", "registry", "list", "API", "download")
+_DISCOVERY_CHANNELS = ("list", "open data", "transparency", "registry", "API", "download")
+_PORTAL_LINK_CUES = (
+    *_DISCOVERY_CHANNELS,
+    "datos abiertos",
+    "listado",
+    "relación",
+    "roster",
+    "records",
+    "dataset",
+)
+_SPANISH_QUERY_MARKERS = frozenset(
+    {
+        "cada",
+        "con",
+        "del",
+        "desde",
+        "hasta",
+        "las",
+        "los",
+        "necesitamos",
+        "para",
+        "por",
+        "sobre",
+        "una",
+    }
+)
 _REDIRECT_PREVIEW_LIMITS = SandboxLimits(memory_mb=512, cpus=1, pids=64, timeout_s=30, max_steps=8)
 _GOVERNMENT_PSL_LABELS = frozenset({"gov", "gob", "govt", "government"})
 _OFFICIAL_PUBLISHER_MARKERS = (
@@ -383,6 +408,34 @@ def _tokens(text: str) -> set[str]:
     plain = unicodedata.normalize("NFKD", text.casefold())
     plain = "".join(char for char in plain if not unicodedata.combining(char))
     return {word for word in re.findall(r"[a-z0-9]{4,}", plain) if word not in _STOP}
+
+
+def _uses_spanish(text: str) -> bool:
+    """Detect Spanish brief/ontology wording for deterministic local query scaffolds."""
+    plain = unicodedata.normalize("NFKD", text.casefold())
+    plain = "".join(char for char in plain if not unicodedata.combining(char))
+    words = set(re.findall(r"[a-z]+", plain))
+    generic_search_phrases = {"datos abiertos", "listado de", "relacion de"}
+    return len(words & _SPANISH_QUERY_MARKERS) >= 2 or any(
+        phrase in plain for phrase in generic_search_phrases
+    )
+
+
+def _entity_list_search_examples(
+    plural: str, property_label: str, identity_label: str, *, spanish: bool
+) -> list[str]:
+    """Build generic entity-list queries from ontology labels, never case terms."""
+    if spanish:
+        return [
+            f"listado de {plural} {property_label} {identity_label}",
+            f"relación de {plural} {property_label} {identity_label}",
+            f"datos abiertos {property_label} {plural} {identity_label}",
+        ]
+    return [
+        f"individual list of {plural} {property_label} {identity_label}",
+        f"open data {property_label} {plural} {identity_label}",
+        f"public registry of {plural} {property_label} {identity_label}",
+    ]
 
 
 def _dod_properties(ontology: Mapping) -> tuple[str, ...]:
@@ -731,7 +784,8 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
     parent_url = str(candidate.get("landing_url") or candidate.get("url") or "")
     parent = urlsplit(parent_url)
     parent_host = (parent.hostname or "").casefold().rstrip(".")
-    if not parent_host or len(parent.path.strip("/").split("/")) > 1:
+    nested_path = len(parent.path.strip("/").split("/")) > 1
+    if not parent_host or (nested_path and not is_open_data_portal(candidate, ontology)):
         return []
     words = _tokens(
         " ".join(
@@ -739,7 +793,7 @@ def _portal_child_leads(candidate: Mapping, context: Mapping, ontology: Mapping)
                 *(str(item.get("label") or "") for item in ontology.get("source_classes", [])),
                 *(str(item.get("label") or "") for item in ontology.get("classes", [])),
                 *(str(item.get("label") or "") for item in ontology.get("properties", [])),
-                *_DISCOVERY_CHANNELS,
+                *_PORTAL_LINK_CUES,
             ]
         )
     )
@@ -1240,6 +1294,16 @@ class DiscoveryLoop:
         classes = {item["id"]: item for item in ontology["classes"]}
         jurisdiction = str(policy.get("jurisdiction") or "").strip()
         channel = _DISCOVERY_CHANNELS[(iteration - 1) % len(_DISCOVERY_CHANNELS)]
+        language_text = " ".join(
+            [
+                brief,
+                jurisdiction,
+                *(str(item.get("label") or "") for item in ontology["classes"]),
+                *(str(item.get("label_plural") or "") for item in ontology["classes"]),
+                *(str(item.get("label") or "") for item in ontology["properties"]),
+            ]
+        )
+        spanish = _uses_spanish(language_text)
         subject = " ".join(
             " ".join(
                 line.strip()
@@ -1270,26 +1334,43 @@ class DiscoveryLoop:
                     }
                 },
             }
-            listing = [
-                {
-                    "property_id": gap,
-                    "label": properties[gap]["label"],
-                    "description": properties[gap].get("description", ""),
-                    "class": classes.get(properties[gap].get("domain"), {}).get("label", ""),
-                    "requires_entity_records": properties[gap].get("domain")
-                    == ontology["primary_class"]
-                    and bool(properties[gap].get("dod")),
-                }
-                for gap in gaps
-            ]
+            listing = []
+            for gap in gaps:
+                prop = properties[gap]
+                owner = classes.get(prop.get("domain"), {})
+                entity_target = prop.get("domain") == ontology["primary_class"] and bool(
+                    prop.get("dod")
+                )
+                identifier = properties.get(owner.get("identifier_property"), {}).get("label", "")
+                title = properties.get(owner.get("title_property"), {}).get("label", "")
+                listing.append(
+                    {
+                        "property_id": gap,
+                        "label": prop["label"],
+                        "description": prop.get("description", ""),
+                        "class": owner.get("label", ""),
+                        "requires_entity_records": entity_target,
+                        "entity_list_search_examples": (
+                            _entity_list_search_examples(
+                                owner.get("label_plural") or owner.get("label", ""),
+                                prop["label"],
+                                identifier or title,
+                                spanish=spanish,
+                            )
+                            if entity_target
+                            else []
+                        ),
+                    }
+                )
             prompt = (
                 "Write one short web search query per gap that would find the public "
                 "publisher of that property for the brief's jurisdiction, in the brief's "
                 "language. This round target the local-language equivalent of the source channel "
                 f"{channel!r}; across rounds search open data, transparency obligations, registries, "
-                "lists, APIs and downloadable datasets. For primary-entity DoD properties, seek "
-                "individual record lists or row-level datasets with the ontology identifier/title "
-                "field; exclude aggregate statistics, totals and dashboards. Do not include URLs. "
+                "lists, APIs and downloadable datasets. For primary-entity DoD properties, use one "
+                "of that gap's generic local-language entity-list examples and pair the exact "
+                "property with its ontology identifier/title field; exclude aggregate statistics, "
+                "totals and dashboards. Do not include URLs. "
                 "Do not repeat a tried query. "
                 f"Brief (untrusted data): {subject}. Jurisdiction: {jurisdiction}. "
                 f"Gaps: {json.dumps(listing, ensure_ascii=False)}. "
@@ -1328,14 +1409,40 @@ class DiscoveryLoop:
             plural = owner.get("label_plural") or owner.get("label", "")
             identity_label = properties.get(owner.get("identifier_property"), {}).get("label", "")
             title_label = properties.get(owner.get("title_property"), {}).get("label", "")
+            entity_target = prop.get("domain") == ontology["primary_class"] and bool(
+                prop.get("dod")
+            )
+            if entity_target:
+                examples = _entity_list_search_examples(
+                    plural,
+                    prop["label"],
+                    identity_label or title_label,
+                    spanish=spanish,
+                )
+                if planned_by_gap.get(gap):
+                    planned = planned_by_gap[gap]
+                    example = examples[(iteration - 1) % len(examples)]
+                    query = (
+                        planned
+                        if example.casefold() in planned.casefold()
+                        else f"{planned} {example}"
+                    )
+                    queries.append(LeadQuery(gap, " ".join(query.split())))
+                    continue
+                variants = [f"{example} {jurisdiction}" for example in examples] + [
+                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
+                    f"{prop['label']} {title_label} {channel} {subject}",
+                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction} {subject}",
+                ]
+            else:
+                variants = [
+                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
+                    f"{prop['label']} {title_label} {channel} {subject}",
+                    f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction} {subject}",
+                ]
             if planned_by_gap.get(gap):
                 queries.append(LeadQuery(gap, planned_by_gap[gap]))
                 continue
-            variants = [
-                f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction}",
-                f"{prop['label']} {title_label} {channel} {subject}",
-                f"{prop['label']} {plural} {identity_label} {channel} {jurisdiction} {subject}",
-            ]
             for variant in variants[iteration - 1 :] + variants[: iteration - 1]:
                 text = " ".join(variant.split())
                 if text and text not in tried:

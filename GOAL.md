@@ -242,3 +242,9 @@ DONE: the synthetic N-link batch, dedupe, approval/deny continuation and omissio
 Give every P3 typed decision a trace step whose ID matches the gateway request, with run and semantic purpose headers. Keep the gateway's PA-owned implementation separate for its review.
 
 DONE: recorded P3 attribution checks and the full engine gate pass with no unowned service edits; public delivery waits on the normal scan and gateway hand-off.
+
+## Current task: R48 generic entity-list recall
+
+Make P3 pair primary-entity DoD properties with generic local-language list and open-data terms, and explore one bounded level below nested official data portals.
+
+DONE: `uv run pytest -q tests/test_r48_recall.py` proves ontology-derived property/identifier query patterns for Spanish list and open-data searches, including the model-planner path, and nested portal traversal stops after one link. Ruff lint/format and `git diff --check` pass for the owned files.
