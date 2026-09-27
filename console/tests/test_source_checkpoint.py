@@ -137,3 +137,13 @@ def test_readonly_source_review_has_no_form(cases_dir):
     html = client(cases_dir, identity="readonly").get(PAGE).text
     assert "Source to review" in html and "www.gob.mx" in html
     assert 'method="post"' not in html and 'value="deny"' not in html
+
+
+def test_unknown_tier_and_kind_read_as_not_suggested(cases_dir):
+    d = write_source_request(cases_dir)
+    c = json.loads((d / "candidate.json").read_text())
+    c.update(authority_tier="unknown", source_type=None)
+    (d / "candidate.json").write_text(json.dumps(c))
+    html = client(cases_dir).get(PAGE, headers=GROUPS).text
+    assert "none suggested: the engine could not classify this publisher" in html and "not classified" in html
+    assert "<b>unknown</b>" not in html

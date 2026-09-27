@@ -11,8 +11,8 @@
   <dl class="kv src-kv">
     <dt>Lands on</dt><dd>{% if landing and safe_url(landing) %}<a class="mono" href="{{ landing }}" target="_blank" rel="noopener noreferrer nofollow">{{ landing }}</a>{% else %}<span class="mono">{{ landing or "—" }}</span>{% endif %}</dd>
     <dt>Redirects</dt><dd>{% if s.redirect_chain and s.redirect_chain|length > 1 %}<ol class="src-chain">{% for u in s.redirect_chain %}<li class="mono" title="{{ u }}">{{ host_of(u) }}</li>{% endfor %}</ol>{% else %}<span class="muted">none: it answers where it was asked</span>{% endif %}</dd>
-    <dt>Publisher kind</dt><dd class="mono">{{ s.source_type or "—" }}</dd>
-    <dt>Suggested tier</dt><dd>{% if s.authority_tier %}<b>{{ tier_words.get(s.authority_tier, s.authority_tier) }}</b>{% else %}—{% endif %}</dd>
+    <dt>Publisher kind</dt><dd>{% if s.source_type %}<span class="mono">{{ s.source_type }}</span>{% else %}<span class="muted">not classified</span>{% endif %}</dd>
+    <dt>Suggested tier</dt><dd>{% if s.authority_tier in tier_words %}<b>{{ tier_words[s.authority_tier] }}</b>{% else %}<span class="muted">none suggested{% if s.authority_tier and s.authority_tier != "unknown" %} ({{ s.authority_tier }}){% endif %}: the engine could not classify this publisher</span>{% endif %}</dd>
     <dt>Why it asks you</dt><dd>{{ s.authority_reason or "no reason recorded" }}</dd>
     <dt>Would cover</dt><dd>{% if s.covers %}{% for p in s.covers %}<span class="chip st-none mono">{{ p }}</span> {% endfor %}{% else %}<span class="muted">no definition-of-done property yet</span>{% endif %}</dd>
     {% if s.discovered_by %}<dt>Found by</dt><dd><span class="mono">{{ s.discovered_by.provider or s.provider or "—" }}</span>{% if s.discovered_by.query %} · query <q>{{ s.discovered_by.query }}</q>{% endif %}{% if s.discovered_by.at %} · <span class="mono">{{ s.discovered_by.at[:16]|replace("T", " ") }} UTC</span>{% endif %}</dd>
