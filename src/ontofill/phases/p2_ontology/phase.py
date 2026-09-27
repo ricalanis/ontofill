@@ -313,11 +313,7 @@ def _complete_validated_json(
             reason = exc.reason[:_VALIDATION_ERROR_LIMIT]
             if on_validation_error is not None:
                 on_validation_error(exc.purpose, exc.attempts, reason)
-            if (
-                attempt == _VALIDATION_ATTEMPTS
-                and last_salvageable_response is not None
-                and last_salvageable_error is not None
-            ):
+            if last_salvageable_response is not None and last_salvageable_error is not None:
                 recovered = recover(last_salvageable_response, last_salvageable_error)
                 if recovered is not None:
                     return recovered

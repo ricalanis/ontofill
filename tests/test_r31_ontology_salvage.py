@@ -594,7 +594,7 @@ def test_final_malformed_draft_salvages_latest_structurally_valid_candidate(tmp_
         nonlocal schema_attempts
         if purpose == "phase2.schema":
             schema_attempts += 1
-            if schema_attempts == 3:
+            if schema_attempts == 2:
                 decision.calls.append((purpose, prompt))
                 raise ModelValidationExhausted(
                     purpose, "synthetic malformed final schema response", 3
@@ -606,8 +606,8 @@ def test_final_malformed_draft_salvages_latest_structurally_valid_candidate(tmp_
     ontology = draft_ontology(tmp_path, prd, _factors(), decision)
 
     _assert_generic_core_repair(tmp_path, ontology)
-    assert schema_attempts == 3
-    assert len([item for item in decision.calls if item[0] == "phase2.schema"]) == 3
+    assert schema_attempts == 2
+    assert len([item for item in decision.calls if item[0] == "phase2.schema"]) == 2
 
 
 def test_core_field_feedback_names_prd_phrase_and_primary_dod_candidates() -> None:
