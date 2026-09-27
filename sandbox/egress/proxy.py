@@ -17,6 +17,11 @@ ALLOWED = frozenset(
     for domain in os.environ.get("ALLOWED_DOMAINS", "").split(",")
     if domain.strip()
 )
+EXACT_ALLOWED_HOSTS = frozenset(
+    host.strip().lower().rstrip(".")
+    for host in os.environ.get("EXACT_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+)
 HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -96,6 +101,8 @@ def allowed(host: str | None) -> bool:
     if not host:
         return False
     normalized = host.lower().rstrip(".")
+    if EXACT_ALLOWED_HOSTS:
+        return normalized in EXACT_ALLOWED_HOSTS and normalized in ALLOWED
     return any(normalized == domain or normalized.endswith("." + domain) for domain in ALLOWED)
 
 

@@ -1,4 +1,12 @@
-# Current goal: R35/R36 source capability and capture diagnostics
+# Current goal: R33b exact-host redirect preview boundary
+
+Give `capture_url` an opt-in exact-host allowlist for the redirect-review preview. The per-job egress proxy must refuse subdomains and sibling hosts before network contact, while the existing domain-and-subdomain policy remains the default for other captures.
+
+DONE (currently failing on this base): recorded proxy and engine tests prove exact target allowed, subdomain blocked, no widening through the legacy allowlist; managed focused pytest/Ruff and full engine gate pass. Integrate with the R33b P3 worker before push. No real case, approval file, console or browser-agent edit.
+
+Scope: `src/ontofill/sandbox/capture.py`, `sandbox/egress/proxy.py`, synthetic tests, task notes; no P3 module edits in this worktree.
+
+# Prior goal: R35/R36 source capability and capture diagnostics
 
 Integrate authority-checked P3 access-path capability with sandbox document capture and bounded navigation diagnostics. A captured registry search form can become a source; a blog cannot. Binary downloads are captured as bronze documents through the same gVisor proxy, and navigation/DNS/TLS failures remain distinguishable in job and trace receipts.
 

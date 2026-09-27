@@ -956,6 +956,7 @@ def capture_url(
     url: str,
     *,
     allowed_domains: list[str],
+    exact_hosts: list[str] | None = None,
     lake: FileLake | S3Lake,
     run_id: str,
     source_id: str,
@@ -970,10 +971,15 @@ def capture_url(
 ) -> dict:
     """Capture a public page or one bounded gVisor spider job."""
     domains = _domains(allowed_domains)
+    exact = _domains(exact_hosts) if exact_hosts is not None else None
+    if exact is not None and not set(exact).issubset(domains):
+        raise ValueError("exact_hosts must be a subset of allowed_domains")
     step_id = f"step:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
     settings = _spider_settings(spider_options) if spider_options is not None else None
+    if exact is not None and settings is not None:
+        raise ValueError("exact_hosts is only supported for a single-page capture")
     if settings is not None:
         if redirect_domain is None:
             redirect_domain = registrable_domain(urlsplit(url).hostname or "")
@@ -988,10 +994,14 @@ def capture_url(
         "capture": ["site_graph"] if settings is not None else ["html", "a11y", "screenshot"],
         "limits": budget.as_dict(),
     }
+    if exact is not None:
+        request["exact_hosts"] = exact
     if settings is not None:
         request["spider"] = settings
         request["job_id"] = job_id
-    if not _allowed_host(url, domains):
+    if not _allowed_host(url, domains) or (
+        exact is not None and (urlsplit(url).hostname or "").lower().rstrip(".") not in exact
+    ):
         reason = "domain_not_allowed"
         row = _trace(
             step_id=step_id,
@@ -1117,6 +1127,7 @@ def capture_url(
             "0.25",
             "-e",
             "ALLOWED_DOMAINS=" + ",".join(domains),
+            *(["-e", "EXACT_ALLOWED_HOSTS=" + ",".join(exact)] if exact is not None else []),
             egress_image,
         )
         _docker("network", "connect", "bridge", proxy_name)

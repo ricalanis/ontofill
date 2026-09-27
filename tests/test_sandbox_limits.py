@@ -169,6 +169,20 @@ def test_proxy_diagnostics_distinguish_dns_from_rejected_addresses_and_hide_ip_l
     assert statuses == [(502, "DNS resolution failed")]
 
 
+def test_proxy_exact_host_mode_refuses_subdomains_before_connect(monkeypatch) -> None:
+    path = Path(__file__).resolve().parents[1] / "sandbox/egress/proxy.py"
+    spec = importlib.util.spec_from_file_location("sandbox_egress_exact_host", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "ALLOWED", frozenset({"records.example.org"}))
+    monkeypatch.setattr(module, "EXACT_ALLOWED_HOSTS", frozenset({"records.example.org"}))
+
+    assert module.allowed("records.example.org")
+    assert not module.allowed("child.records.example.org")
+    assert not module.allowed("other.example.org")
+
+
 @pytest.mark.skipif(
     os.environ.get("ONTOFILL_RUN_CONTAINMENT") != "1",
     reason="set ONTOFILL_RUN_CONTAINMENT=1 to run disposable runsc containment proof",

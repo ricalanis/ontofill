@@ -1,4 +1,10 @@
-# R35/R36 integration
+# R33b exact-host sandbox boundary
+
+- [ ] Add a failing recorded proxy test: exact preview host allowed; its subdomain and sibling refused despite the legacy domain allowlist.
+- [ ] Add an opt-in validated `exact_hosts` capture argument and proxy environment, preserving existing default behavior; assert the proxy launch receives it.
+- [ ] Run managed focused check and commit, then integrate with the R33b P3 worker for a full gate.
+
+# Prior R35/R36 integration
 
 - [ ] Review R35 capability evidence: exact captured access path, authority verdict, bounded form metadata, persistence in source/objective; registry accepted, blog refused.
 - [ ] Review R36 navigation/document/DNS core: no egress bypass, no unbounded payload/error, bronze lineage and six-checkpoint job, additive schemas. TLS/AIA is a later slice.

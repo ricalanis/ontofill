@@ -712,6 +712,52 @@ def test_disallowed_target_fails_before_browser(tmp_path) -> None:
     validate_trace_rows(raised.value.trace)
 
 
+def test_exact_host_capture_passes_narrow_proxy_policy_and_refuses_subdomain(
+    tmp_path, monkeypatch
+) -> None:
+    target = "https://records.example.org/catalog"
+    _mock_capture_runtime(monkeypatch, target=target, final_url=target)
+    module = importlib.import_module("ontofill.sandbox.capture")
+    commands = []
+
+    def fake_docker(*args, **_kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(module, "_docker", fake_docker)
+    capture_url(
+        target,
+        allowed_domains=["records.example.org"],
+        exact_hosts=["records.example.org"],
+        lake=FileLake(tmp_path / "lake"),
+        run_id="synthetic-run",
+        source_id="synthetic-source",
+        objective_id=None,
+        tdd_path="04-local/synthetic-tdd.json",
+    )
+    proxy_runs = [
+        args
+        for args in commands
+        if args and args[0] == "run" and "ALLOWED_DOMAINS=records.example.org" in args
+    ]
+    assert len(proxy_runs) == 1
+    assert "EXACT_ALLOWED_HOSTS=records.example.org" in proxy_runs[0]
+
+    commands.clear()
+    with pytest.raises(CaptureBlocked, match="not allowed"):
+        capture_url(
+            "https://child.records.example.org/catalog",
+            allowed_domains=["records.example.org"],
+            exact_hosts=["records.example.org"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+    assert commands == []
+
+
 def test_live_docker_capture_and_egress_gate(
     docker_ready, synthetic_server, tmp_path, monkeypatch
 ) -> None:
