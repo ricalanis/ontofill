@@ -3,9 +3,10 @@
 ## Current delivery gate: live cells and brief 10b PRD steering
 - [x] Push the runsc cell relay, preflight diagnostics, control-VM SSH bootstrap and repair-pod stdin transport; deploy the cell service on the control VM.
 - [x] Prove the destructive loop stays inside a capped runsc pod and that the repair path emits a limit stop.
-- [ ] Complete native cell create → CDP browser action → six checkpoints → destroy on the live sandbox VM; the full check is paused under the two-attempt progress guard.
+- [x] Complete native cell create → CDP browser action → blocked navigation → six checkpoints → destroy on the live sandbox VM.
 - [x] Close three independent-review PRD regressions: human secondary publisher cannot auto-trust, revised policy invalidates old auto authority, and denied/percent numbers cannot become human-grounded counts.
 - [x] Rerun brief 10b combined tests and scratch live denial, push the PRD fix, and fast-forward the control VM for the user's rerun.
+- [ ] Fix brief 10c: each accepted P1 revision must change the relevant draft and carry auditable loop digests; authority policy needs at least one in-jurisdiction primary publisher with domains, no empty trusted domain lists or duplicates.
 - [x] Prove the narrow brain-to-gateway rule live: gateway ALLOWED, control SSH BLOCKED, hands-to-gateway BLOCKED; clean up disposable containers/networks.
 - [ ] Complete brief 11 outer/P3/P2/P4 loops in order after P1; an outer-loop worker owns the first slice.
 FILES: `src/ontofill/sandbox/`, `sandbox/`, `infra/vultr/`, `src/ontofill/phases/p1_scope/`, `src/ontofill/phases/p3_fanout/`, `src/ontofill/workflow.py`, `schemas/`, `tests/`.
