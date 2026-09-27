@@ -18,6 +18,16 @@ TASK: Make separate-critic taxonomy classification visible and honest in product
 DONE: `uv run pytest -q tests/test_r10_workflow.py tests/test_r10_taxonomy.py tests/test_workflow.py`.
 FORMAT: `uv run ruff check src/ontofill/workflow.py tests/test_r10_workflow.py && uv run ruff format --check src/ontofill/workflow.py tests/test_r10_workflow.py`.
 
+## R9b: screened page content in engine prompts
+- [x] Add a synthetic recorded test for P3 selection and captured-page prompt spans; wrap the unwrapped P3 candidate title/snippet.
+- [x] Assert P5 extracted-page spans and hostile page-derived repair stderr remain inside escaped `<page_content>` boundaries.
+- [x] Keep the new gateway token preferred and prove fallback to the legacy environment name with synthetic values.
+- [ ] Run the focused managed test and Ruff checks, then commit the isolated branch.
+FILES: `src/ontofill/inference/page_content.py`, `src/ontofill/inference/decision.py`, `src/ontofill/phases/p3_fanout/`, `src/ontofill/phases/p5_execute/`, `src/ontofill/repair/`, focused tests.
+TASK: Keep every page-derived string sent by the engine inside a gateway-screenable content span.
+DONE: `uv run pytest -q tests/test_r9b_prompt_screening.py tests/test_pattern_a.py tests/test_inference.py` and Ruff check/format for the edited engine and test files.
+FORMAT: Ruff check and format on changed Python files.
+
 ## R16: cell browser liveness and idle CDP
 - [x] Reproduce the relay idle close with a failing local test and seek the demo cell's memory/timeout evidence; no demo job feed was available.
 - [x] Keep the in-pod CDP bridge and sidecar relay open across idle polls; detect browser/target death in status and action counting, with an honest failed job record and measured memory (synthetic gate).

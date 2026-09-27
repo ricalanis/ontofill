@@ -31,3 +31,10 @@ Run every selected source objective in each P5 pass, count gap iterations indepe
 Status: implementation and most recorded checks are complete. The corrected workflow scheduling seam is unverified because progress-guard escalation barred another focused run; root will run the broader main integration gate after merge. See `NOTES.md` for the two failed hypotheses and exact remaining check. Do not claim the new workflow seam passed.
 
 Constraints: only this worktree/branch; no controller, app, console, case, main, or coordination-file edits; keep R3/R7 work modular; preserve genericity; use the announced membership TDD contract; do not push or merge.
+
+## R9b prompt screening closure
+Wrap all captured page content sent to P3/P5 and page-derived repair stderr in safe `<page_content>` spans, with `ONTOFILL_GATEWAY_TOKEN` preferred and the legacy token accepted as fallback.
+
+DONE R9b: `uv run pytest -q tests/test_r9b_prompt_screening.py tests/test_pattern_a.py tests/test_inference.py` and Ruff check/format for the edited engine and test files.
+
+Constraints: synthetic-only prompts and tokens; no secrets, console/browser-agent edits, coordination status updates, pushes, merges, or deployment.
