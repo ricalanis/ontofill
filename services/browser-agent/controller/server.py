@@ -19,7 +19,7 @@ from controller.backend import CALL_ERRORS, ActResult
 from controller.captures import LocalCaptureStore
 from controller.cells import Cell, CellError, CellPool, pool_from_env
 from controller.gateway import ScreenedGatewayClient
-from controller.liveview import LiveViewHub, RecordingCaptures
+from controller.liveview import ExposedLiveView, LiveViewHub, RecordingCaptures, live_view_from_env
 from controller.loop import Limits, Session
 from shared import config
 from shared.gateway_client import GatewayAdmin
@@ -42,15 +42,16 @@ class Broker:
 
     def __init__(self, *, admin=None, gateway_factory=None, backend_factory=None, steps_dir: Path | None = None,
                  captures_dir: Path | None = None, case_dir: Path | None = None, pool: CellPool | None | bool = None,
-                 liveview: LiveViewHub | None | bool = None):
+                 liveview: LiveViewHub | ExposedLiveView | None | bool = None):
         gateway_url = config.env(config.GATEWAY_URL_ENV)
         admin_token = os.environ.get(config.GATEWAY_ADMIN_TOKEN_ENV)
         if admin is None and admin_token:
             admin = GatewayAdmin(gateway_url, admin_token)
         self.admin = admin
         self.gateway_factory = gateway_factory or (lambda token: ScreenedGatewayClient(gateway_url, token))
-        # Live view (read-only screencast per session); None = from BA_LIVEVIEW_PORT (default 8702, 0 = off).
-        self.liveview = LiveViewHub.from_env() if liveview is None else (liveview or None)
+        # Live view (read-only screencast per session); None = from env: BA_LIVEVIEW_EXPOSE=netbird publishes one
+        # `netbird expose` per session, else the shared hub on BA_LIVEVIEW_PORT (default 8702, 0 = off).
+        self.liveview = live_view_from_env() if liveview is None else (liveview or None)
         self.backend_factory = backend_factory or (
             lambda cdp_url: _default_backend(cdp_url, debug_port=self.liveview is not None and not cdp_url))
         self.steps_dir = Path(steps_dir or os.environ.get(STEPS_DIR_ENV) or "runs/browser-agent/steps")
@@ -119,16 +120,18 @@ class Broker:
             if cell is not None:
                 self.pool.release(cell)
             raise
-        live_view_url = None
+        live_view_url, live_view_error = None, None
         if self.liveview is not None:  # the URL (with its view token) goes to the caller only, never into steps
             live_view_url, source = self.liveview.register(session_id, cdp_url or getattr(backend, "cdp_endpoint", None))
             captures.source = source
+            live_view_error = (getattr(self.liveview, "errors", None) or {}).get(session_id)
         with self._lock:
             self.sessions[session_id] = session
             if cell is not None:
                 self.cells[session_id] = cell
         return {"session_id": session_id, "live_view_url": live_view_url, "url": opened.get("url"),
                 "steps_path": str(steps.path),
+                **({"live_view": {"error": live_view_error}} if live_view_error and not live_view_url else {}),
                 **({"cell_id": cell_info["cell_id"], "isolation": cell_info["isolation"]} if cell_info else {})}
 
     def act(self, session_id: str, goal: str | None = None, action: dict | None = None) -> dict:
@@ -181,6 +184,8 @@ class Broker:
     def close_all(self) -> None:
         for session_id in list(self.sessions):
             self.close(session_id)
+        if isinstance(self.liveview, ExposedLiveView):  # no expose child outlives the broker
+            self.liveview.shutdown()
         if self.pool is not None:
             self.pool.shutdown()
 

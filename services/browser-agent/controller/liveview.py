@@ -17,13 +17,18 @@ from `netbird expose` on the control plane (`BA_LIVEVIEW_PUBLIC_BASE`); the toke
 
 from __future__ import annotations
 
+import atexit
 import base64
 import contextlib
 import hmac
 import html
 import logging
 import os
+import re
 import secrets
+import shlex
+import signal
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -339,3 +344,167 @@ def _handler(hub: LiveViewHub) -> type[BaseHTTPRequestHandler]:
             self.close_connection = True
 
     return Handler
+
+
+# --- per-session `netbird expose` (NetBird approach 4: a URL that dies with the cell) ------------------------------
+
+EXPOSE_ENV = "BA_LIVEVIEW_EXPOSE"  # "netbird" = one expose per session; unset = the shared hub above
+EXPOSE_BIN_ENV = "BA_LIVEVIEW_EXPOSE_BIN"  # default "netbird"
+EXPOSE_ARGS_ENV = "BA_LIVEVIEW_EXPOSE_ARGS"  # optional extra args, shlex-split (e.g. --with-user-groups approvers)
+EXPOSE_TIMEOUT_ENV = "BA_LIVEVIEW_EXPOSE_TIMEOUT_S"  # default 20 s to see the "URL:" line
+PORTS_ENV = "BA_LIVEVIEW_PORTS"  # per-session listener ports, "8710-8759" (default) or "0" for ephemeral
+URL_LINE = re.compile(r"^\s*URL:\s*(https?://\S+)\s*$")
+CHILD_ENV_KEYS = ("PATH", "HOME", "LANG")  # the expose child never sees the controller's env (admin token, keys)
+
+
+def _port_range(raw: str) -> list[int]:
+    raw = (raw or "").strip()
+    if raw in ("", "0"):
+        return [0]
+    lo, _, hi = raw.partition("-")
+    lo_i = int(lo)
+    return list(range(lo_i, int(hi or lo_i) + 1))
+
+
+class _Exposure:
+    """One session: its own listener (a single-session hub) plus its own `netbird expose` child process."""
+
+    def __init__(self, session_id: str, hub: LiveViewHub):
+        self.session_id = session_id
+        self.hub = hub
+        self.proc: subprocess.Popen | None = None
+        self.url: str | None = None
+        self.lines: list[str] = []
+        self.startup_s: float | None = None
+        self._found = threading.Event()
+
+    def _read(self) -> None:
+        assert self.proc is not None and self.proc.stdout is not None
+        for line in self.proc.stdout:  # keep draining for the child's whole life so it never blocks on a full pipe
+            if len(self.lines) < 50:
+                self.lines.append(line.rstrip()[:200])
+            m = URL_LINE.match(line)
+            if m and not self._found.is_set():
+                self.url = m.group(1).rstrip("/")
+                self._found.set()
+        self._found.set()  # the child exited: wake the waiter either way
+
+    def start(self, argv: list[str], timeout_s: float) -> str | None:
+        """Spawn the expose and wait for its URL; returns an error string, or None on success."""
+        t0 = time.monotonic()
+        env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
+        try:
+            self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                         env=env, text=True, bufsize=1, start_new_session=True)
+        except OSError as exc:
+            return f"cannot start {os.path.basename(argv[0])}: {type(exc).__name__}"
+        threading.Thread(target=self._read, name=f"ba-expose-{self.session_id[:12]}", daemon=True).start()
+        self._found.wait(timeout_s)
+        self.startup_s = time.monotonic() - t0
+        if self.url:
+            return None
+        if self.proc.poll() is not None:
+            return f"expose exited ({self.proc.returncode}) without a URL"
+        return f"no URL from expose within {timeout_s:g}s"
+
+    def stop(self, term_wait_s: float = 5.0) -> None:
+        self.hub.shutdown()  # the view first: open streams end, the port closes
+        proc, self.proc = self.proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        for sig, wait in ((signal.SIGTERM, term_wait_s), (signal.SIGKILL, 2.0)):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, sig)  # its own process group: nothing it spawned survives it
+            try:
+                proc.wait(wait)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+
+
+class ExposedLiveView:
+    """Per-session live view published with `netbird expose`: at register, a dedicated listener on
+    BA_LIVEVIEW_HOST:<port from BA_LIVEVIEW_PORTS> and an expose child for it; at unregister, the child is stopped
+    (NetBird removes the service at once) and the listener closed, so the URL itself dies with the session. The
+    per-session view token stays as defense in depth. Same interface as LiveViewHub for the Broker."""
+
+    _live: ClassVar[set[ExposedLiveView]] = set()
+
+    def __init__(self, host: str = "127.0.0.1", ports: list[int] | None = None, binary: str = "netbird",
+                 extra_args: list[str] | None = None, timeout_s: float = 20.0, name_prefix: str = "pa-live"):
+        self.host = host
+        self.ports = ports or [0]
+        self.binary = binary
+        self.extra_args = list(extra_args or [])
+        self.timeout_s = timeout_s
+        self.name_prefix = name_prefix
+        self.exposures: dict[str, _Exposure] = {}
+        self.errors: dict[str, str] = {}
+        self._lock = threading.Lock()
+        ExposedLiveView._live.add(self)
+
+    @classmethod
+    def from_env(cls) -> ExposedLiveView:
+        return cls(host=os.environ.get(HOST_ENV, "").strip() or "127.0.0.1",
+                   ports=_port_range(os.environ.get(PORTS_ENV, "8710-8759")),
+                   binary=os.environ.get(EXPOSE_BIN_ENV, "").strip() or "netbird",
+                   extra_args=shlex.split(os.environ.get(EXPOSE_ARGS_ENV, "")),
+                   timeout_s=float(os.environ.get(EXPOSE_TIMEOUT_ENV, "") or 20))
+
+    def _listener(self) -> LiveViewHub | None:
+        with self._lock:
+            used = {e.hub.port for e in self.exposures.values()}
+        for port in self.ports:
+            if port and port in used:
+                continue
+            hub = LiveViewHub(port=port, host=self.host)
+            if hub.start():
+                return hub
+        return None
+
+    def register(self, session_id: str, cdp_url: str | None) -> tuple[str | None, FrameSource | None]:
+        self.errors.pop(session_id, None)
+        hub = self._listener()
+        if hub is None:
+            self.errors[session_id] = "no free live-view port"
+            log.warning("live view for %s: no free port in %s", session_id, self.ports)
+            return None, None
+        exp = _Exposure(session_id, hub)
+        argv = [self.binary, "expose", str(hub.port), "--with-name-prefix", self.name_prefix, *self.extra_args]
+        error = exp.start(argv, self.timeout_s)
+        if error:
+            exp.stop()
+            self.errors[session_id] = error
+            log.warning("live view for %s not published: %s", session_id, error)
+            return None, None
+        _local_url, source = hub.register(session_id, cdp_url)
+        with self._lock:
+            self.exposures[session_id] = exp
+        token = _local_url.split("?t=", 1)[1] if _local_url and "?t=" in _local_url else None
+        log.info("live view for %s published at %s in %.1fs", session_id, urlsplit(exp.url).hostname, exp.startup_s)
+        return f"{exp.url}/live/{session_id}?t={token}", source
+
+    def unregister(self, session_id: str) -> None:
+        with self._lock:
+            exp = self.exposures.pop(session_id, None)
+        if exp is not None:
+            exp.stop()
+
+    def shutdown(self) -> None:
+        for sid in list(self.exposures):
+            self.unregister(sid)
+        ExposedLiveView._live.discard(self)
+
+
+def live_view_from_env() -> LiveViewHub | ExposedLiveView | None:
+    """BA_LIVEVIEW_EXPOSE=netbird → one `netbird expose` per session; otherwise the shared hub (BA_LIVEVIEW_PORT)."""
+    if os.environ.get(EXPOSE_ENV, "").strip().lower() == "netbird":
+        return ExposedLiveView.from_env()
+    return LiveViewHub.from_env()
+
+
+@atexit.register
+def _stop_all_exposures() -> None:  # no expose child outlives the controller
+    for view in list(ExposedLiveView._live):
+        with contextlib.suppress(Exception):
+            view.shutdown()

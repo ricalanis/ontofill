@@ -130,13 +130,30 @@ itself (a minimal viewer), `/stream` (MJPEG, `multipart/x-mixed-replace`) and `/
 - Screencast frames are sent only when the page changes, so an idle page shows its last frame. Measured on a local
   docker-stub cell: first frame immediately (a seed screenshot), about 26 ms from a DOM change to its frame.
 
+**Per-session `netbird expose` (production; NetBird approach 4, a URL that dies with the cell).** With
+`BA_LIVEVIEW_EXPOSE=netbird`, `session.open` starts a listener for that session only (on `BA_LIVEVIEW_HOST`, the
+control NetBird IP in production, port from `BA_LIVEVIEW_PORTS`, default `8710-8759`) and spawns
+`netbird expose <port> --with-name-prefix pa-live` for it, reading the `URL:` line from the child's merged
+stdout/stderr (the success block goes to stderr) within `BA_LIVEVIEW_EXPOSE_TIMEOUT_S` (default 20).
+`live_view_url` is then `<exposed URL>/live/<session_id>?t=<view token>`: the token stays as defense in depth.
+`session.close` stops the view, sends SIGTERM to the expose's process group (NetBird removes the service at once;
+SIGKILL after 5 s) and closes the listener, so the URL itself stops working. `close_all` and interpreter exit do
+the same for any session left open. If the expose cannot start or prints no URL in time, the session still opens,
+with `live_view_url: null` and `live_view: {"error": ...}`. The child runs with a minimal environment (PATH, HOME,
+LANG) and no NetBird auth flags; `BA_LIVEVIEW_EXPOSE_ARGS` (shlex-split) adds extra flags, e.g.
+`--with-user-groups approvers`. `BA_LIVEVIEW_EXPOSE_BIN` overrides the binary (default `netbird`). Logs carry the
+exposed host only, never the token.
+
 ## Deployment (CONTRACT v0.9.4)
 
 On the control VM the gateway binds the control plane's NetBird IP so Skyvern brains on the sandbox host can reach
 it (and nothing else; the sandbox's narrow brain → gateway rule is the substrate's): `BA_GATEWAY_HOST=<control NetBird
 IP>`, `BA_GATEWAY_PORT=8700`; brains get `OPENAI_COMPATIBLE_API_BASE=http://<control NetBird IP>:8700/v1`. The engine's
-cell API (`serve_cells`) and the live view stay on loopback; publish a live view with `netbird expose` and set
-`BA_LIVEVIEW_PUBLIC_BASE` (the live view must then bind the control NetBird IP: `BA_LIVEVIEW_HOST`, since the proxy dials the peer IP, not loopback). `BA_CELLS_TIMEOUT_S` (default 600) bounds a cell create, which builds images on a fresh host.
+cell API (`serve_cells`) stays on loopback. Publish live views per session: `BA_LIVEVIEW_EXPOSE=netbird`,
+`BA_LIVEVIEW_HOST=<control NetBird IP>` (the proxy dials the peer IP, never loopback), `BA_LIVEVIEW_PORTS=8710-8759`,
+Peer Expose enabled for the control plane's group, and the controller running as a user that can reach the NetBird
+daemon. No always-on expose unit and no `BA_LIVEVIEW_PUBLIC_BASE` are needed then (that shared-hub mode remains for
+development). `BA_CELLS_TIMEOUT_S` (default 600) bounds a cell create, which builds images on a fresh host.
 
 ## Environment
 
