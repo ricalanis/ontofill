@@ -28,3 +28,13 @@
 {% macro legend() %}
 <p class="legend" aria-label="State legend">{% for k in ["need", "run", "pause", "block", "quar", "done"] %}<span class="chip st-{{ k }}">{{ STATE_WORDS[k] }}</span>{% endfor %}</p>
 {% endmacro %}
+
+{# Live streaming marker (static/viz-live.js). `lv` is the view-model's live_marker: while lv.on the page re-fetches
+   itself and swaps only its [data-live-region] elements; off_label names the static state (a finished or recorded run). #}
+{% macro live_indicator(lv, off_label="recorded") %}
+<p class="live-ind" data-live-root data-live="{{ 1 if lv.on else 0 }}"{% if lv.poll_ms %} data-live-poll="{{ lv.poll_ms }}"{% endif %}>
+  {% if lv.on %}<span class="chip st-run">live · <span data-live-updated aria-live="polite" aria-atomic="true">updated {% if lv.hhmmss %}<time datetime="{{ lv.updated_at }}" title="{{ lv.updated_at }} (UTC)">{{ lv.hhmmss }}</time>{% else %}—{% endif %}</span></span>
+  <small class="live-ind__note">refreshes in place every {{ (lv.poll_ms / 1000)|round(1) }} s while the run moves</small>
+  {% elif off_label %}<span class="chip st-done" title="{% if lv.updated_at %}last update {{ lv.updated_at }} (UTC); {% endif %}not refreshing">{{ off_label }}</span>{% endif %}
+</p>
+{% endmacro %}

@@ -1,17 +1,23 @@
 {% extends "base.html" %}
 {% import "viz/_macros.html" as v %}
 {% block title %}Needs you{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-live.css"><script src="/static/viz-live.js" defer></script>{% endblock %}
 {% block main %}
 {{ v.head("Needs you", "What the engine is doing across every case, and what is waiting for a person: checkpoints first, then anything blocked or contained, then runs in motion.", "*/APPROVAL_PENDING.md · runs/<case>/<run>/status.json · trace.live.jsonl · jobs.jsonl") }}
+{{ v.live_indicator(m.live, "no run in motion") }}
 {{ v.legend() }}
+<div data-live-region="strips">
 {% if m.strips %}
 <ul class="strips">
   {% for i in m.strips %}<li>{{ v.strip(i.state, i.case_id ~ " · " ~ i.title, i.detail, i.when, i.href) }}</li>{% endfor %}
 </ul>
 {% else %}{{ v.empty(m.empty, "All quiet") }}{% endif %}
+</div>
 
+<div data-live-region="cases">
 <h2 class="section-h">Cases</h2>
 <ul class="strips">
   {% for c in m.cases %}<li>{{ v.strip("need" if c.needs_you else "none", c.title, c.question or "No brief.md yet", (c.needs_you ~ " waiting") if c.needs_you else "", "/cases/" ~ c.id) }}</li>{% endfor %}
 </ul>
+</div>
 {% endblock %}

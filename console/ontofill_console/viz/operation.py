@@ -30,6 +30,8 @@ DECIDERS = [  # key, label, colour token
     ("recorded", "Recorded (simulated)", "--st-pause"), ("human", "Person", "--fg-2"), ("other", "Other", "--st-quar")]
 MODE_CSS = {"D0": "--st-done", "D1": "--st-run", "S1": "--st-need", "S2": "--st-quar", "none": "--line-strong"}
 ROLE_COLS = ("propose", "critique", "revise", "check")
+LIVE_WINDOW_S = 120  # a run whose status moved in the last 2 minutes (and is not done/failed) counts as in motion
+LIVE_POLL_MS = 2500  # static/viz-live.js re-fetches the page this often while it carries data-live="1"
 
 
 # helpers ------------------------------------------------------------------------------------------------------------
@@ -88,6 +90,31 @@ def share(counts: dict[str, int], usd: dict[str, float], order, total: int) -> l
             rows.append({"key": key, "label": label, "n": n, "pct": round(100 * n / total, 1) if total else 0,
                          "usd": round(usd[key], 4) if key in usd else None, "css": css})
     return rows
+
+
+def last_activity(status: dict, steps: list[dict]) -> str | None:
+    """The newest of status.updated_at and the last step's ts: what the live indicator calls "updated"."""
+    stamps = [(t, raw) for raw in (status.get("updated_at"), *(s.get("ts") for s in steps[-5:]))
+              if (t := parse_ts(raw))]
+    return max(stamps)[1] if stamps else None
+
+
+def is_live(status: dict, now: datetime | None = None) -> bool:
+    """In motion: state running, or updated within LIVE_WINDOW_S and not done/failed. Finished runs stay static."""
+    state = status.get("state")
+    if state == "running":
+        return True
+    if state in ("done", "failed"):
+        return False
+    ts = parse_ts(status.get("updated_at"))
+    return bool(ts and ((now or datetime.now(UTC)) - ts).total_seconds() <= LIVE_WINDOW_S)
+
+
+def live_marker(on: bool, updated_at: str | None) -> dict:
+    """What templates/viz/_macros.html live_indicator renders; `on` makes the page poll itself (static/viz-live.js)."""
+    t = parse_ts(updated_at)
+    return {"on": on, "updated_at": updated_at, "hhmmss": t.astimezone(UTC).strftime("%H:%M:%S") if t else None,
+            "poll_ms": LIVE_POLL_MS if on else None}
 
 
 # view-model pieces ----------------------------------------------------------------------------------------------------
@@ -247,7 +274,7 @@ def model(case, run_id: str | None = None) -> dict:
                "run_href": f"{base}/runs/{quote(rid)}" if rid else None, "sources": SOURCES}
     if not rid:
         why = case.lake_error or "no run feed under runs/<case>/ yet"
-        m.update(selected=None, pipe=[], threads=[], reopens=[], deciders=[], modes=[], live_view=[], backend=None,
+        m.update(live=live_marker(False, None), selected=None, pipe=[], threads=[], reopens=[], deciders=[], modes=[], live_view=[], backend=None,
                  n_steps=0, usd_total=None, priced_steps=0, cost_empty=None, threads_empty=None,
                  empty=gap(None, f"Runs of this case, their P1–P5 pipeline, loop threads and who decided each step. "
                                  f"The engine has not published a run feed for this case ({why}).",
@@ -278,6 +305,7 @@ def model(case, run_id: str | None = None) -> dict:
     threads = threads_model(steps)
     selected = next((r for r in strips if r["run_id"] == rid), None)
     m.update(
+        live=live_marker(is_live(status, now), last_activity(status, steps)),
         selected=selected, n_steps=len(steps), backend=backend_of(metrics, [*steps, status]),
         state=status.get("state") or ("running" if steps else "waiting"), phase=status.get("phase"),
         checkpoint=status.get("checkpoint_pending"), updated_at=status.get("updated_at"),

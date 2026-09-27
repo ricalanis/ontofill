@@ -12,7 +12,8 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 
 from .. import live
-from .core import Artifacts, VizContext, age, gap
+from .core import Artifacts, VizContext, age, gap, parse_ts
+from .operation import is_live, last_activity, live_marker
 
 ORDER = 0
 CP_LABELS = {"prd": "PRD", "factors": "Factors", "ontology": "Ontology", "action": "Action before submit"}
@@ -53,7 +54,8 @@ def case_items(case, now: datetime) -> list[dict]:
             detail.insert(0, f"paused at {status['checkpoint_pending']}")
         items.append({"state": state, "case_id": case.id, "kind": "run", "title": f"Run {rid}: {status.get('state') or 'no status yet'}",
                       "detail": " · ".join(x for x in detail if x), "when": age(status.get("updated_at"), now),
-                      "since": status.get("updated_at"), "href": f"{base}/runs/{rid}"})
+                      "since": status.get("updated_at"), "href": f"{base}/runs/{rid}",
+                      "live": is_live(status, now), "activity": last_activity(status, steps)})
         for s in steps:
             if s.get("kind") == "quarantine":
                 d = s.get("detail") or {}
@@ -79,7 +81,9 @@ def model(settings) -> dict:
         cases.append({"id": case.id, "title": case.title, "question": case.brief,
                       "needs_you": sum(1 for i in mine if i["state"] == "need")})
     items.sort(key=lambda i: (RANK.get(i["state"], 9), i["since"] or ""))
-    return {"strips": items, "cases": cases, "needs_you": sum(1 for i in items if i["state"] == "need"),
+    moving = [i["activity"] for i in items if i.get("live")]
+    newest = max(moving, key=lambda ts: parse_ts(ts) or datetime.min.replace(tzinfo=UTC), default=None)
+    return {"live": live_marker(bool(moving), newest), "strips": items, "cases": cases, "needs_you": sum(1 for i in items if i["state"] == "need"),
             "empty": None if items else gap(None, "Checkpoints waiting for a person, runs in motion, quarantined pages and "
                                                   "limit kills across every registered case.",
                                             "*/APPROVAL_PENDING.md, runs/<case>/<run>/status.json, trace.live.jsonl")}

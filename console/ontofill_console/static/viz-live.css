@@ -1,0 +1,15 @@
+/* viz · live streaming indicator and changed-region highlight (static/viz-live.js). Colours only through tokens.css. */
+
+.live-ind { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); margin: 0 0 var(--space-sm); }
+.live-ind time { font: inherit; }
+.live-ind__note { color: var(--fg-3); font: var(--text-xs) var(--font-mono); }
+.live-ind .chip.st-run::before { animation: live-glyph 2.4s ease-in-out infinite; }
+
+[data-live-region].live-changed { animation: live-changed 1.6s var(--ease-out, ease-out); }
+
+@keyframes live-glyph { 50% { opacity: .45; } }
+@keyframes live-changed { from { box-shadow: 0 0 0 2px var(--st-run); } to { box-shadow: 0 0 0 2px transparent; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-ind .chip.st-run::before, [data-live-region].live-changed { animation: none; }
+}
