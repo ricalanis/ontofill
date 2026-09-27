@@ -17,6 +17,8 @@ from ontofill.phases.p3_fanout import discovery_loop as discovery_module
 from ontofill.phases.p3_fanout.discovery_loop import DiscoveryLoop, NoConfirmedSources
 from ontofill.sandbox import CaptureBlocked
 from ontofill.sandbox import parse as parse_module
+from ontofill.sandbox.capture import CaptureError
+from ontofill.sandbox.domains import same_registrable_domain
 from tests.r17_helpers import SyntheticParseExecutor
 from tests.test_discovery_loop import POLICY, StaticProvider, _library_case
 from tests.test_r35_p3_capability import CapabilityCritic
@@ -39,6 +41,26 @@ def _chain_block(source: str, destination: str) -> CaptureBlocked:
             "proof": {
                 "dispatch_result": {
                     "reason": "redirect_outside_allowlist",
+                    "redirect_chain": chain,
+                }
+            },
+        },
+    )
+
+
+def _tls_aia_failure(source: str, destination: str) -> CaptureError:
+    chain = [source, destination]
+    return CaptureError(
+        "synthetic TLS intermediate fetch failure",
+        [],
+        {
+            "url": destination,
+            "status": 0,
+            "redirect_chain": chain,
+            "capture_reason": "tls_aia_failure",
+            "proof": {
+                "dispatch_result": {
+                    "reason": "tls_aia_failure",
                     "redirect_chain": chain,
                 }
             },
@@ -78,6 +100,93 @@ def _new_loop(
 ORIGIN = "https://libraries.example.test/branches"
 TARGET = "https://registry.other.test/catalog"
 TARGET_HOST = urlsplit(TARGET).hostname
+
+
+def test_same_host_http_upgrade_failure_does_not_mint_review_candidate(tmp_path: Path) -> None:
+    ontology = _library_case(tmp_path, policy=POLICY)
+    source = "http://portal.example.test/branches"
+    destination = "https://portal.example.test/branches"
+    decision = CapabilityCritic()
+    lake = FileLake(tmp_path / "lake")
+    calls: list[str] = []
+    preview = _preview_html()
+
+    def capture(url: str, **_kwargs) -> dict:
+        calls.append(url)
+        if url == source:
+            raise _tls_aia_failure(source, destination)
+        assert url == destination
+        key = lake.put_bytes(preview.encode(), {"url": url})
+        return {
+            "url": url,
+            "redirect_chain": [url],
+            "status": 200,
+            "html_key": key,
+            "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
+            "trace": [],
+        }
+
+    loop = _new_loop(lake, capture, decision, run_id="run-r33b-same-host-failure")
+    candidate = {
+        "url": source,
+        "title": "Synthetic portal",
+        "snippet": "Synthetic public records",
+        "property_ids": ["opening_hours"],
+        "iteration": 1,
+        "providers": ["synthetic_redirect"],
+        "score": 0.0,
+    }
+
+    assert loop._capture_lead(candidate, POLICY, ontology, decision, tmp_path) is None
+    assert candidate["status"] == "capture_failed"
+    assert candidate["capture_reason"] == "tls_aia_failure"
+    assert candidate["capture_outcome"] == "failed"
+    assert calls == [source]
+    source_root = tmp_path / "03-fanout/sources"
+    assert not list(source_root.glob("*/candidate.json"))
+    assert not list(source_root.glob("*/APPROVAL_PENDING.md"))
+
+
+def test_cross_host_sibling_redirect_still_requires_review_under_same_psl_root(
+    tmp_path: Path,
+) -> None:
+    ontology = _library_case(tmp_path, policy=POLICY)
+    destination = "https://catalog.example.test/branches"
+    assert (urlsplit(destination).hostname or "") != (urlsplit(ORIGIN).hostname or "")
+    assert same_registrable_domain(ORIGIN, destination)
+    decision = CapabilityCritic()
+    lake = FileLake(tmp_path / "lake")
+    calls: list[str] = []
+    preview = _preview_html()
+
+    def capture(url: str, **_kwargs) -> dict:
+        calls.append(url)
+        if url == ORIGIN:
+            raise _chain_block(ORIGIN, destination)
+        assert url == destination
+        key = lake.put_bytes(preview.encode(), {"url": url})
+        return {
+            "url": url,
+            "redirect_chain": [url],
+            "status": 200,
+            "html_key": key,
+            "screenshot_key": lake.put_bytes(b"synthetic screenshot"),
+            "trace": [],
+        }
+
+    loop = _new_loop(lake, capture, decision, run_id="run-r33b-same-registrable-host")
+
+    with pytest.raises(NoConfirmedSources) as stopped:
+        loop.discover_sources(tmp_path, ontology, decision, gaps=("opening_hours",))
+
+    assert stopped.value.checkpoint_pending == "source"
+    assert calls == [ORIGIN, destination]
+    packet_path = next((tmp_path / "03-fanout/sources").glob("*/candidate.json"))
+    packet = load_json(packet_path)
+    assert packet["url"] == destination
+    assert packet["authority"] == "review"
+    assert packet["redirect_chain"] == [ORIGIN, destination]
+    assert (packet_path.parent / "APPROVAL_PENDING.md").is_file()
 
 
 def test_redirect_preview_is_single_host_capture_with_critic_evidence_before_review(

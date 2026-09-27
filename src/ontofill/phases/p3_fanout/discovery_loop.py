@@ -978,6 +978,13 @@ class DiscoveryLoop:
                 canonical_chain.append(canonical)
         if len(canonical_chain) < 2:
             return None
+        hop_hosts = {
+            (urlsplit(item).hostname or "").casefold().rstrip(".") for item in canonical_chain
+        }
+        if len(hop_hosts) == 1:
+            # Same-host URL changes remain part of the original source. Its failed
+            # capture record carries the unreachable reason; do not mint a review lead.
+            return None
         destination = canonical_chain[-1]
         destination_host = urlsplit(destination).hostname or ""
         for existing_url, existing in self._redirect_frontier.items():
