@@ -4321,7 +4321,9 @@ class DiscoveryLoop:
             capture_queue_limit = max(1, self.max_captures)
             chosen: list[dict] = []
             per_host: dict[str, int] = {}
-            if followable_portals:
+            # A one-capture round must preserve the highest-ranked lead. There
+            # is no remaining slot to follow a portal child in that round.
+            if self.max_captures > 1 and followable_portals:
                 portal = followable_portals[0]
                 chosen.append(portal)
                 host = urlsplit(portal["url"]).hostname or ""
