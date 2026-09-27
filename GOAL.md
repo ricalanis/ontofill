@@ -46,6 +46,12 @@ DONE: `uv run pytest -q tests/test_r48_recall.py tests/test_discovery_loop.py te
 
 Constraints: synthetic tests only; no real case, approvals, credentials or PA-owned code. Public push after full gate and pre-push scan; VM deploy only after a fresh zero-engine check.
 
+## R48 CKAN entity-level anchor subgoal
+
+For each primary-class property gap, search every known CKAN portal with ontology-derived list and relation/API anchors; rank structured row-level resources above aggregate resources from bounded metadata only. DONE: `agent-progress run --task r48-ckan-anchor --paths src/ontofill/phases/p3_fanout/leads.py,tests/test_r48_ckan_anchor.py,tests/test_discovery_providers.py,GOAL.md,TODO.md,NOTES.md --check r48-ckan-anchor --strategy ontology-derived-query-pairs-and-bounded-resource-signals --hypothesis 'Prioritize one-row-per-primary-entity or linking-relation resources from matching column names, structured formats, and row counts; anchor every CKAN portal before consuming later query variants.' -- sh -c 'uv run pytest -q tests/test_r48_ckan_anchor.py tests/test_discovery_providers.py tests/test_discovery_loop.py tests/test_no_case_vocabulary.py && uv run ruff check src/ontofill/phases/p3_fanout/leads.py tests/test_r48_ckan_anchor.py tests/test_discovery_providers.py && uv run ruff format --check src/ontofill/phases/p3_fanout/leads.py tests/test_r48_ckan_anchor.py tests/test_discovery_providers.py && git diff --check'`.
+
+Constraints: only `leads.py`, the focused synthetic provider test, and these task notes; no `discovery_loop.py`, case, approval, push, merge, deploy, or active-run access.
+
 # Prior goal: R44 per-entity source granularity
 
 P4 independently refuses aggregate, unknown or missing primary-class DoD granularity before inference or TDD cache reuse. Its model prompt and validation rule specify one row/page per entity. A stale local TDD is invalidated when cited granularity evidence changes.

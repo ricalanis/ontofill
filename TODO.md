@@ -575,3 +575,14 @@ FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r48_recall
 TASK: Anchor primary-class source discovery to ontology entities/relations and make newly found portal context available in the same provider round.
 DONE: the scoped managed gate in `GOAL.md` passes all listed synthetic regressions and Ruff/diff checks.
 FORMAT: Ruff check/format for the two Python files.
+# R48 CKAN entity-level anchor subgoal
+
+FILES: `src/ontofill/phases/p3_fanout/leads.py`, `tests/test_r48_ckan_anchor.py`, `tests/test_discovery_providers.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Derive bounded per-gap CKAN list and relation/API searches from primary class, identifier/title, gap property, and ontology relations; rank entity-row resources from format, row-count, and matching column metadata without confirming authority or evidence.
+DONE: `agent-progress run --task r48-ckan-anchor --paths src/ontofill/phases/p3_fanout/leads.py,tests/test_r48_ckan_anchor.py,tests/test_discovery_providers.py,GOAL.md,TODO.md,NOTES.md --check r48-ckan-anchor --strategy ontology-derived-query-pairs-and-bounded-resource-signals --hypothesis 'Prioritize one-row-per-primary-entity or linking-relation resources from matching column names, structured formats, and row counts; anchor every CKAN portal before consuming later query variants.' -- sh -c 'uv run pytest -q tests/test_r48_ckan_anchor.py tests/test_discovery_providers.py tests/test_discovery_loop.py tests/test_no_case_vocabulary.py && uv run ruff check src/ontofill/phases/p3_fanout/leads.py tests/test_r48_ckan_anchor.py tests/test_discovery_providers.py && uv run ruff format --check src/ontofill/phases/p3_fanout/leads.py tests/test_r48_ckan_anchor.py tests/test_discovery_providers.py && git diff --check'`.
+FORMAT: `uv run ruff check` and `uv run ruff format --check` for the provider and focused synthetic test.
+
+1. [x] Add recorded tests for ontology-anchored portal queries, tight-cap portal fairness, and row-level resource ranking over an aggregate dashboard. `agent-progress run --task r48-ckan-anchor-red` recorded the expected red baseline: all three new tests failed on missing anchors, domain-first order, and zero metadata scores.
+2. [x] Implement bounded query planning and metadata scoring; keep scores ranking-only and preserve sandbox fetch plus downstream authority/capture gates.
+3. [x] Run the managed focused DONE gate, record outcome, and commit locally for root integration; do not push or deploy.
+   - `agent-progress run --task r48-ckan-anchor`: pass, 39 tests passed; Ruff check and format pass; `git diff --check` pass. Red baseline was recorded under `r48-ckan-anchor-red` with the three new assertions failing on current behavior.

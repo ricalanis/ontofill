@@ -485,3 +485,8 @@ fixture still used a capability-free paragraph but expected source review; it no
 has a real search form for the ontology property. This is a distinct fixture mismatch,
 not a weakened production guard.
 The combined managed retry passed 566 tests, 5 skips and Ruff lint/format/diff.
+# R48 CKAN entity-level anchor subgoal
+
+Selected strategy: keep `Lead` and persisted schema unchanged. Use `LeadContext.ontology` and each query's property ID to generate two short CKAN searches for primary-class DoD gaps: a complete-list/open-data structured-file query and an ontology-relation API query. Search query-major across the already-combined trusted/discovered portal list so every portal gets an anchor before later variants consume the bounded call cap. Derive all class/property/relation wording from the ontology and keep the language scaffold generic.
+
+Metadata remains untrusted lead metadata. Deterministic scoring reads only bounded package/resource format, row-count, and schema/column fields; it emits a bounded numeric score and does not set publisher authority, capability, or evidence. No new metadata is copied into inference prompts. The existing sandbox fetch callback and downstream capture/authority flow remain the only route to confirmation.

@@ -321,8 +321,8 @@ def test_ckan_queries_each_gap_at_trusted_and_discovered_open_data_portals() -> 
     assert provider.leads(context) == []
     assert calls == [
         ("trusted-data.example.test", "public suppliers"),
-        ("trusted-data.example.test", "supplier registration number"),
         ("discovered-data.example.test", "public suppliers"),
+        ("trusted-data.example.test", "supplier registration number"),
         ("discovered-data.example.test", "supplier registration number"),
     ]
     assert [(attempt["domain"], attempt["query"]) for attempt in provider.attempts] == calls
@@ -360,10 +360,10 @@ def test_ckan_records_the_call_cap_and_deduplicates_queries_and_hosts() -> None:
     assert [attempt["outcome"] for attempt in provider.attempts] == ["empty", "cap_reached"]
     assert provider.attempts[-1] == {
         "provider": "ckan",
-        "query": "supplier registration number",
+        "query": "public suppliers",
         "outcome": "cap_reached",
         "result_count": 0,
-        "domain": "first.example.test",
+        "domain": "second.example.test",
         "max_calls": 1,
         "calls": 1,
         "pending_queries": 3,

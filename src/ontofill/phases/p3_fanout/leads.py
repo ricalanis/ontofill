@@ -67,6 +67,52 @@ _P3_MAX_ITERATIONS = 12
 _P3_EXTRA_ITERATION_RESERVE_USD = 0.05
 _P3_QUERIES_PER_ITERATION = 4
 _TAVILY_CREDITS_PER_QUERY = 1
+_CKAN_MAX_SCORE = 8.0
+_CKAN_MAX_RESOURCES = 20
+_CKAN_QUERY_VARIANTS = 3
+_CKAN_ROW_COUNT_KEYS = frozenset(
+    {"row_count", "rows_count", "num_rows", "total_rows", "record_count", "num_records"}
+)
+_CKAN_MATCH_STOP = frozenset(
+    {"a", "an", "and", "de", "del", "el", "la", "las", "los", "of", "the", "to", "y"}
+)
+_CKAN_AGGREGATE_CUES = frozenset(
+    {
+        "aggregate",
+        "aggregated",
+        "dashboard",
+        "summary",
+        "statistics",
+        "totals",
+        "resumen",
+        "tablero",
+        "agregado",
+        "agregados",
+        "estadistica",
+        "estadistico",
+        "totales",
+    }
+)
+_CKAN_SPANISH_MARKERS = frozenset(
+    {
+        "cada",
+        "con",
+        "del",
+        "desde",
+        "hasta",
+        "las",
+        "los",
+        "necesitamos",
+        "para",
+        "por",
+        "que",
+        "registro",
+        "relacion",
+        "listado",
+        "datos",
+        "abiertos",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -686,7 +732,7 @@ class CkanLeadProvider(LeadProvider):
         return payload
 
     def leads(self, context: LeadContext) -> list[Lead]:
-        queries = tuple(dict.fromkeys(context.queries))
+        queries = _ckan_search_queries(context)
         if self.fetch_json is None:
             for query in queries:
                 self._attempt(
@@ -701,13 +747,13 @@ class CkanLeadProvider(LeadProvider):
             if domain not in self._unsupported
         ]
         found: list[Lead] = []
-        for domain_index, domain in enumerate(domains):
-            for query_index, query in enumerate(queries):
+        for query_index, query in enumerate(queries):
+            for domain_index, domain in enumerate(domains):
                 try:
                     payload = self._search(domain, query.text)
                 except ProviderUnavailable:
-                    pending = (len(domains) - domain_index - 1) * len(queries) + (
-                        len(queries) - query_index
+                    pending = (len(queries) - query_index - 1) * len(domains) + (
+                        len(domains) - domain_index
                     )
                     self._attempt(
                         query.text,
@@ -723,37 +769,306 @@ class CkanLeadProvider(LeadProvider):
                     self._unsupported.add(domain)
                     self._attempt(query.text, f"error: {type(exc).__name__}", 0, domain=domain)
                     break
-                leads = parse_ckan(payload, domain, query)
+                leads = parse_ckan(payload, domain, query, ontology=context.ontology)
                 found.extend(leads)
                 self._attempt(query.text, "ok" if leads else "empty", len(leads), domain=domain)
         return found
 
 
-def parse_ckan(payload: Mapping, domain: str, query: LeadQuery) -> list[Lead]:
+def _ckan_search_queries(context: LeadContext) -> tuple[LeadQuery, ...]:
+    """Search primary entity gaps with short ontology-derived CKAN anchors first."""
+    queries = tuple(dict.fromkeys(context.queries))
+    ontology = context.ontology
+    primary_id = ontology.get("primary_class")
+    properties = {
+        item["id"]: item
+        for item in ontology.get("properties", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    classes = {
+        item["id"]: item
+        for item in ontology.get("classes", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    primary = classes.get(primary_id)
+    if not isinstance(primary_id, str) or not isinstance(primary, Mapping):
+        return queries
+
+    entity_gaps: dict[str, LeadQuery] = {}
+    other_queries = []
+    for query in queries:
+        if properties.get(query.property_id, {}).get("domain") == primary_id:
+            entity_gaps.setdefault(query.property_id, query)
+        else:
+            other_queries.append(query)
+    if not entity_gaps:
+        return queries
+
+    language = " ".join(
+        [
+            context.brief,
+            *(str(item.get("label") or "") for item in classes.values()),
+            *(str(item.get("label") or "") for item in properties.values()),
+        ]
+    )
+    plain_language = _plain(language)
+    words = set(re.findall(r"[a-z]+", plain_language))
+    spanish = len(words & _CKAN_SPANISH_MARKERS) >= 2 or "listado completo" in plain_language
+    plural = str(primary.get("label_plural") or primary.get("label") or primary_id)[:72]
+    class_label = str(primary.get("label") or primary_id.replace("_", " "))[:72]
+    identities = []
+    for property_id in (primary.get("title_property"), primary.get("identifier_property")):
+        prop = properties.get(property_id, {})
+        label = prop.get("label") if isinstance(prop, Mapping) else None
+        value = str(label or property_id or "").replace("_", " ")[:64]
+        if value and value not in identities:
+            identities.append(value)
+    relations = [
+        str(item.get("label") or item.get("id") or "")[:64]
+        for item in ontology.get("relations", [])
+        if isinstance(item, Mapping) and item.get("domain") == primary_id
+    ][:2]
+    relation_text = " ".join(label for label in relations if label)
+    identity_text = " ".join(identities)
+    jurisdiction = str(context.policy.get("jurisdiction") or "")[:80]
+
+    variants: dict[str, tuple[str, ...]] = {}
+    for property_id in entity_gaps:
+        prop = properties[property_id]
+        gap = str(prop.get("label") or property_id.replace("_", " "))[:72]
+        if spanish:
+            variants[property_id] = (
+                f"listado completo {plural} {gap} {identity_text}",
+                f"datos abiertos {plural} {gap} {identity_text} CSV",
+                f"sistema de {relation_text or class_label} API {plural} {gap} {identity_text}",
+            )
+        else:
+            variants[property_id] = (
+                f"complete list {plural} {gap} {identity_text}",
+                f"open data {plural} {gap} {identity_text} CSV",
+                f"system {relation_text or class_label} API {plural} {gap} {identity_text}",
+            )
+
+    anchored = [
+        LeadQuery(
+            query.property_id, f"{variants[property_id][variant]} {jurisdiction}".strip()[:360]
+        )
+        for variant in range(_CKAN_QUERY_VARIANTS)
+        for property_id, query in entity_gaps.items()
+    ]
+    return tuple(dict.fromkeys((*anchored, *other_queries)))
+
+
+def _ckan_tokens(values: Sequence[str]) -> set[str]:
+    return {
+        word
+        for value in values
+        for word in re.findall(r"[a-z0-9]+", _plain(value.replace("_", " ")))
+        if len(word) > 1 and word not in _CKAN_MATCH_STOP
+    }
+
+
+def _ckan_column_names(*sources: Mapping) -> list[str]:
+    names: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str):
+            names.extend(part.strip()[:120] for part in re.split(r"[,|;]", value) if part.strip())
+        elif isinstance(value, Mapping):
+            nested = [value[key] for key in ("columns", "headers", "fields") if key in value]
+            if nested:
+                for child in nested:
+                    add(child)
+            else:
+                labels = [
+                    value[key]
+                    for key in ("name", "label", "title", "id")
+                    if isinstance(value.get(key), str)
+                ]
+                names.extend(str(label)[:120] for label in labels)
+                if not labels:
+                    names.extend(str(key)[:120] for key in list(value)[:100])
+        elif isinstance(value, (list, tuple)):
+            for item in value[:100]:
+                add(item)
+
+    for source in sources:
+        for key in ("columns", "column_names", "field_names", "headers", "fields"):
+            if key in source:
+                add(source[key])
+        schema = source.get("schema")
+        if isinstance(schema, Mapping):
+            for key in ("columns", "headers", "fields"):
+                if key in schema:
+                    add(schema[key])
+    return list(dict.fromkeys(names))
+
+
+def _ckan_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", _plain(str(value))).strip("_")
+
+
+def _ckan_row_count(*sources: Mapping) -> int | None:
+    counts: list[int] = []
+    for source in sources:
+        for key in _CKAN_ROW_COUNT_KEYS:
+            values = [source.get(key)]
+            extras = source.get("extras", [])
+            if isinstance(extras, (list, tuple)):
+                values.extend(
+                    item.get("value")
+                    for item in extras[:64]
+                    if isinstance(item, Mapping) and _ckan_key(item.get("key")) == key
+                )
+            for value in values:
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int) and value >= 0:
+                    counts.append(value)
+                elif isinstance(value, str) and re.fullmatch(r"[0-9,]{1,16}", value.strip()):
+                    counts.append(int(value.strip().replace(",", "")))
+    return max(counts) if counts else None
+
+
+def _ckan_structured_format(*sources: Mapping) -> bool:
+    for source in sources:
+        for key in ("format", "mimetype", "media_type"):
+            value = source.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = _plain(value)
+            if any(
+                token in normalized for token in ("csv", "excel", "xlsx", "json", "spreadsheetml")
+            ):
+                return True
+    return False
+
+
+def _ckan_resource_score(
+    package: Mapping, resource: Mapping, ontology: Mapping, query: LeadQuery
+) -> float:
+    properties = {
+        item["id"]: item
+        for item in ontology.get("properties", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    classes = {
+        item["id"]: item
+        for item in ontology.get("classes", [])
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    primary_id = ontology.get("primary_class")
+    prop = properties.get(query.property_id)
+    primary = classes.get(primary_id, {})
+    if (
+        not isinstance(prop, Mapping)
+        or prop.get("domain") != primary_id
+        or not isinstance(primary, Mapping)
+    ):
+        return 0.0
+
+    package_data = {key: value for key, value in package.items() if key != "resources"}
+    columns = _ckan_tokens(_ckan_column_names(package_data, resource))
+
+    def has_column(labels: Sequence[str]) -> bool:
+        return any(
+            tokens and tokens <= columns for tokens in (_ckan_tokens((label,)) for label in labels)
+        )
+
+    gap_match = has_column((str(prop.get("label") or ""), query.property_id))
+    identity_labels = []
+    for property_id in (primary.get("title_property"), primary.get("identifier_property")):
+        identity = properties.get(property_id, {})
+        identity_labels.extend((str(identity.get("label") or ""), str(property_id or "")))
+    identity_match = has_column(identity_labels)
+    relation_labels = [
+        str(item.get("label") or item.get("id") or "")
+        for item in ontology.get("relations", [])
+        if isinstance(item, Mapping) and item.get("domain") == primary_id
+    ][:8]
+    class_labels = [str(primary.get(key) or "") for key in ("label", "label_plural", "id")]
+    relation_match = has_column(relation_labels)
+    class_match = has_column(class_labels)
+
+    score = 1.5 if _ckan_structured_format(package_data, resource) else 0.0
+    row_count = _ckan_row_count(package_data, resource)
+    if row_count is not None:
+        score += 1.5 if row_count >= 100 else (1.0 if row_count > 1 else -0.5)
+    score += 2.25 if gap_match else 0.0
+    score += 2.25 if identity_match else 0.0
+    score += 1.0 if relation_match else 0.0
+    score += 0.5 if class_match else 0.0
+    score += 1.0 if gap_match and identity_match else 0.0
+
+    description = " ".join(
+        str(source.get(key) or "")[:300]
+        for source in (package_data, resource)
+        for key in ("title", "name", "notes", "description")
+    )
+    if _ckan_tokens((description,)) & _CKAN_AGGREGATE_CUES:
+        score -= 4.0
+    return max(0.0, min(_CKAN_MAX_SCORE, score))
+
+
+def _ckan_package_score(package: Mapping, ontology: Mapping, query: LeadQuery) -> float:
+    resources = package.get("resources", [])
+    if not isinstance(resources, (list, tuple)):
+        resources = []
+    candidates = [
+        _ckan_resource_score(package, resource, ontology, query)
+        for resource in resources[:_CKAN_MAX_RESOURCES]
+        if isinstance(resource, Mapping)
+    ]
+    return max(candidates or [_ckan_resource_score(package, {}, ontology, query)])
+
+
+def parse_ckan(
+    payload: Mapping,
+    domain: str,
+    query: LeadQuery,
+    *,
+    ontology: Mapping | None = None,
+) -> list[Lead]:
     if payload.get("success") is not True:
         return []
     found = []
-    for package in payload.get("result", {}).get("results", []):
+    result = payload.get("result", {})
+    packages = result.get("results", []) if isinstance(result, Mapping) else []
+    for package in packages if isinstance(packages, list) else []:
+        if not isinstance(package, Mapping):
+            continue
         name = package.get("name")
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
             continue
-        organization = (package.get("organization") or {}).get("title") or ""
-        notes = " ".join(str(package.get("notes") or "").split())[:400]
+        organization_data = package.get("organization")
+        raw_organization = (
+            organization_data.get("title") if isinstance(organization_data, Mapping) else None
+        )
+        organization = raw_organization[:160] if isinstance(raw_organization, str) else ""
+        raw_notes = package.get("notes")
+        notes = " ".join(raw_notes[:2000].split())[:400] if isinstance(raw_notes, str) else ""
+        raw_title = package.get("title")
+        title = raw_title[:300] if isinstance(raw_title, str) else name
+        resources = package.get("resources", [])
         formats = sorted(
             {
-                str(resource.get("format")).lower()
-                for resource in package.get("resources", [])
-                if resource.get("format")
+                resource["format"].lower()[:40]
+                for resource in resources[:_CKAN_MAX_RESOURCES]
+                if isinstance(resource, Mapping) and isinstance(resource.get("format"), str)
             }
+            if isinstance(resources, (list, tuple))
+            else set()
         )
+        snippet = " ".join(part for part in (organization, notes, " ".join(formats)) if part)[:700]
         found.append(
             Lead(
                 url=f"https://{domain}/dataset/{quote(name)}",
-                title=str(package.get("title") or name),
-                snippet=" ".join(part for part in (organization, notes, " ".join(formats)) if part),
+                title=title,
+                snippet=snippet,
                 discovered_by="ckan",
                 query=query.text,
                 property_ids=(query.property_id,),
+                score=_ckan_package_score(package, ontology or {}, query),
                 publisher=organization or None,
             )
         )
