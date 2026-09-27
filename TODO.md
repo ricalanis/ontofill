@@ -1,3 +1,12 @@
+# R38 robots unavailable policy
+
+1. [x] Add synthetic status regressions: ordinary robots 4xx allows pages under the page cap; 429, 5xx, timeout and unreachable keep the conservative stop. Baseline failed at the expected policy assertions.
+2. [x] Record normalized robots status through sandbox output and the P3 site-graph schema without changing the existing graph envelope version.
+3. [x] Run the focused managed pytest/Ruff/schema/diff DONE gate and commit the isolated branch; no push or live run. The gate passed 31 tests and all configured checks.
+FILES: `sandbox/agent-pod/spider_policy.py`, `src/ontofill/phases/p3_fanout/site_graph.py`, `schemas/site-graph.schema.json`, `tests/test_spider_policy.py`, `tests/test_site_graph.py`, `GOAL.md`, `TODO.md`, `NOTES.md`.
+TASK: Apply RFC 9309's unavailable versus unreachable distinction while honoring R38's stricter 429 stop, and preserve each robots outcome in the graph.
+DONE: the managed focused gate in `GOAL.md` passes with branch-specific synthetic coverage and schema validation.
+
 # R32 P2 structural DoD guards
 
 - `FILES`: `src/ontofill/phases/p2_ontology/phase.py`, `src/ontofill/refiner/export.py`, `schemas/dod-queries.schema.json`, `tests/test_r31_ontology_salvage.py`, `tests/test_r32_p2_guards.py`, `tests/test_refiner.py`, and task records.

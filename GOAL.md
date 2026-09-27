@@ -1,4 +1,12 @@
-# Current goal: R32 P2 structural guards and DoD share
+# Current goal: R38 robots unavailable policy
+
+Treat robots.txt HTTP 4xx except 429 as unavailable and allow bounded same-domain reads, while stopping conservatively on 429, 5xx, timeouts, and unreachable responses; persist the robots status in each site graph record.
+
+DONE: `agent-progress run --task r38-robots --paths sandbox/agent-pod/spider_policy.py,src/ontofill/phases/p3_fanout/site_graph.py,schemas/site-graph.schema.json,tests/test_spider_policy.py,tests/test_site_graph.py --check r38-focused --strategy robots-unavailable-status-in-policy-and-graph --hypothesis 'Model RFC unavailable versus unreachable robots responses explicitly, except that R38 keeps 429 conservative; preserve crawl allowlist, page cap, and graph validation.' -- sh -c 'uv run pytest -q tests/test_spider_policy.py tests/test_site_graph.py && uv run ruff check sandbox/agent-pod/spider_policy.py src/ontofill/phases/p3_fanout/site_graph.py tests/test_spider_policy.py tests/test_site_graph.py && uv run ruff format --check sandbox/agent-pod/spider_policy.py src/ontofill/phases/p3_fanout/site_graph.py tests/test_spider_policy.py tests/test_site_graph.py && python3 -m json.tool schemas/site-graph.schema.json >/dev/null && git diff --check'` passed: 31 focused tests, Ruff lint/format, JSON schema parsing, and whitespace check.
+
+Constraints: own only the sandbox spider policy, P3 site-graph serialization/schema, synthetic tests, and GOAL/TODO/NOTES. No case or APPROVED edits, console or browser-agent edits, credentials, live run, push, or deploy. Deployment waits for an orchestrator-confirmed no-engine VM window.
+
+# Prior goal: R32 P2 structural guards and DoD share
 
 Require per-entity completeness with approved target 0.8 to measure the share of primary entities linked by the intended relation that meet `min_ratio`, not a raw count. New queries name that relation explicitly; legacy approved queries derive it from their unique matching relation-count query. Keep the core-field class, relation-count class/direction, and rule-label guards, and preserve digest-approved artifact reuse.
 

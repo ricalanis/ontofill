@@ -474,6 +474,11 @@ def build_site_graph(
                     "crawl_delay_seconds": row.get("crawl_delay_seconds"),
                     "bronze_key": row.get("bronze_key"),
                 }
+                | (
+                    {"robots_status": row["robots_status"]}
+                    if isinstance(row.get("robots_status"), str)
+                    else {}
+                )
                 for row in raw_robots
                 if isinstance(row, Mapping)
             ],

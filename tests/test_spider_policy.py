@@ -111,6 +111,82 @@ def test_crawl_page_cap_settles_unfetched_edges() -> None:
     assert pending["reason"] == "page_cap"
 
 
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 451])
+def test_robots_unavailable_4xx_except_429_allows_pages_within_page_cap(status: int) -> None:
+    seed = "https://catalog.example.invalid/"
+    one = "https://catalog.example.invalid/one"
+    two = "https://catalog.example.invalid/two"
+    requested: list[str] = []
+
+    def fetch(url: str) -> dict:
+        requested.append(url)
+        if url.endswith("/robots.txt"):
+            return {
+                "status": status,
+                "final_url": url,
+                "body": b"User-agent: *\nDisallow: /\n",
+            }
+        if url == seed:
+            return _response(url, '<a href="/one">One</a><a href="/two">Two</a>')
+        return _response(url, "<p>Record</p>")
+
+    result = crawl_site(
+        seed,
+        policy=CrawlPolicy(allowed_domain="example.invalid", page_cap=2),
+        fetch=fetch,
+        sleep=lambda _: None,
+    )
+
+    assert requested == ["https://catalog.example.invalid/robots.txt", seed, one]
+    assert result["robots"][0]["http_status"] == status
+    assert result["robots"][0]["robots_status"] == "unavailable"
+    assert result["robots"][0]["decision"] == "allow"
+    assert result["fetched_pages"] == 2
+    assert result["attempted_pages"] == 2
+    assert result["stop_reason"] == "page_cap"
+    assert any(edge["to_url"] == two and edge["reason"] == "page_cap" for edge in result["edges"])
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "robots_status"),
+    [
+        (429, None, "rate_limited"),
+        (500, None, "unreachable"),
+        (503, None, "unreachable"),
+        (None, "timeout", "unreachable"),
+    ],
+)
+def test_robots_rate_limit_and_unreachable_statuses_conservatively_stop(
+    status: int | None, error: str | None, robots_status: str
+) -> None:
+    seed = "https://catalog.example.invalid/"
+    requested: list[str] = []
+
+    def fetch(url: str) -> dict:
+        requested.append(url)
+        return {
+            "status": status,
+            "final_url": url,
+            "body": b"User-agent: *\nAllow: /\n",
+            **({"error": error} if error else {}),
+        }
+
+    result = crawl_site(
+        seed,
+        policy=CrawlPolicy(allowed_domain="example.invalid", page_cap=2),
+        fetch=fetch,
+        sleep=lambda _: None,
+    )
+
+    assert requested == ["https://catalog.example.invalid/robots.txt"]
+    assert result["pages"] == []
+    assert result["fetched_pages"] == 0
+    assert result["stop_reason"] == "robots"
+    assert result["robots"][0]["http_status"] == status
+    assert result["robots"][0]["robots_status"] == robots_status
+    assert result["robots"][0]["decision"] == "conservative_stop"
+
+
 @pytest.mark.parametrize("status", [401, 403])
 def test_auth_status_stops_queued_urls_and_preserves_response_body(status: int) -> None:
     seed = "https://catalog.example.invalid/"

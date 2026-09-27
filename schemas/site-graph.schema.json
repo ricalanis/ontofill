@@ -64,6 +64,7 @@
         "origin": {"type": "string", "format": "uri", "pattern": "^https?://"},
         "url": {"type": "string", "format": "uri", "pattern": "^https?://"},
         "http_status": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 599}, {"type": "null"}]},
+        "robots_status": {"enum": ["available", "unavailable", "rate_limited", "unreachable", "redirect", "invalid"]},
         "decision": {"enum": ["allow", "disallow", "conservative_stop"]},
         "crawl_delay_seconds": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
         "bronze_key": {"anyOf": [{"$ref": "common.schema.json#/$defs/bronze_key"}, {"type": "null"}]}

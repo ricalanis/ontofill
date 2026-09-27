@@ -184,6 +184,7 @@ def _capture_result(lake: FileLake) -> dict:
                 "origin": "https://catalog.example.invalid",
                 "url": "https://catalog.example.invalid/robots.txt",
                 "http_status": 200,
+                "robots_status": "available",
                 "decision": "allow",
                 "crawl_delay_seconds": 0.0,
                 "bronze_key": lake.put_bytes(b"User-agent: *\nAllow: /\n"),
@@ -286,6 +287,11 @@ def test_site_graph_publishes_ontology_labeled_pages_and_keeps_unfetched_links_i
     decision = FakeDecision()
     lake = FileLake(tmp_path / "lake")
     capture_result = _capture_result(lake)
+    capture_result["robots"][0].update(
+        http_status=403,
+        robots_status="unavailable",
+        decision="allow",
+    )
     graph_trace: list[dict] = []
     envelope = build_site_graph(
         case_dir=tmp_path / "case",
@@ -319,6 +325,7 @@ def test_site_graph_publishes_ontology_labeled_pages_and_keeps_unfetched_links_i
         lake.read_key("runs/synthetic-case/mock-synthetic-run/trace.live.jsonl").splitlines()
     ) == len(graph_trace)
     graph = envelope["graph"]
+    assert graph["crawl"]["robots"][0]["robots_status"] == "unavailable"
     assert len(graph["types"]) == 3
     assert {item["label"]["kind"] for item in graph["types"]} == {
         "listing",

@@ -174,36 +174,53 @@ def _robot_state(
         "origin": origin,
         "url": robots_url,
         "http_status": status if isinstance(status, int) else None,
+        "robots_status": "unreachable" if status is None else "invalid",
         "decision": "conservative_stop",
         "crawl_delay_seconds": None,
         "body": body if isinstance(body, bytes) else b"",
     }
-    if status == 404:
+
+    if type(status) is int and 400 <= status <= 499:
+        if status == 429:
+            record["robots_status"] = "rate_limited"
+            return record, None, policy.delay_seconds, "robots"
+        record["robots_status"] = "unavailable"
         parser = RobotFileParser(robots_url)
         parser.parse([])
         record["decision"] = "allow"
         return record, parser, policy.delay_seconds, None
-    if (
-        response.get("too_large")
-        or status is None
-        or not isinstance(status, int)
-        or not 200 <= status < 300
-    ):
+
+    if status is None or (type(status) is int and 500 <= status <= 599):
+        record["robots_status"] = "unreachable"
+        return record, None, policy.delay_seconds, "robots"
+    if type(status) is int and 300 <= status <= 399:
+        record["robots_status"] = "redirect"
+        return record, None, policy.delay_seconds, "robots"
+    if type(status) is not int or not 200 <= status < 300 or response.get("too_large"):
+        record["robots_status"] = "invalid"
         return record, None, policy.delay_seconds, "robots"
     if response.get("final_url", robots_url) != robots_url:
+        record["robots_status"] = "redirect"
         return record, None, policy.delay_seconds, "robots"
     if not isinstance(body, bytes):
+        record["robots_status"] = "invalid"
         return record, None, policy.delay_seconds, "robots"
     parser = RobotFileParser(robots_url)
     try:
         parser.parse(body.decode("utf-8", errors="replace").splitlines())
     except (TypeError, ValueError):
+        record["robots_status"] = "invalid"
         return record, None, policy.delay_seconds, "robots"
     server_delay = parser.crawl_delay(policy.user_agent) or parser.crawl_delay("*") or 0
     if not isinstance(server_delay, (int, float)) or not isfinite(server_delay) or server_delay < 0:
+        record["robots_status"] = "invalid"
         return record, None, policy.delay_seconds, "robots"
     delay = max(policy.delay_seconds, float(server_delay))
-    record.update(decision="allow", crawl_delay_seconds=float(server_delay))
+    record.update(
+        robots_status="available",
+        decision="allow",
+        crawl_delay_seconds=float(server_delay),
+    )
     return record, parser, delay, None
 
 
