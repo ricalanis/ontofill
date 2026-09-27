@@ -818,7 +818,25 @@ def test_model_positive_cannot_override_code_no_sign_or_social_authority(tmp_pat
     assert "publisher kind is not authoritative" in verdicts[social_url]["opening_hours"]
 
 
-def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path) -> None:
+def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path, monkeypatch) -> None:
+    from ontofill.phases.p3_fanout import discovery_loop as discovery_loop_module
+
+    source_events: list[tuple[str, str]] = []
+    real_validate = discovery_loop_module.validate_document
+    real_write = discovery_loop_module.write_json
+
+    def record_validation(schema_name: str, document: object) -> None:
+        if schema_name == "source-candidate" and isinstance(document, dict):
+            source_events.append(("validate", str(document.get("url"))))
+        real_validate(schema_name, document)
+
+    def record_write(path: Path, document: object) -> None:
+        if path.name == "candidate.json" and isinstance(document, dict):
+            source_events.append(("write", str(document.get("url"))))
+        real_write(path, document)
+
+    monkeypatch.setattr(discovery_loop_module, "validate_document", record_validation)
+    monkeypatch.setattr(discovery_loop_module, "write_json", record_write)
     ontology = _library_case(tmp_path, POLICY)
     primary = "https://libraries.example.test/branches"
     secondary = "https://region.example.test/libraries"
@@ -829,6 +847,8 @@ def test_authority_tiers_gate_coverage_and_approved_review_counts(tmp_path) -> N
     loop, _ = _loop(tmp_path, [provider], pages, backend="vultr")
     decision = FakeVultr()  # live-shaped: model calls fail, code fallbacks run
     document = loop.discover_sources(tmp_path, ontology, decision)
+    primary_write = source_events.index(("write", primary))
+    assert source_events[primary_write - 1] == ("validate", primary)
     tiers = {item["source_url"]: item["authority_tier"] for item in document["objectives"]}
     assert tiers == {primary: "primary", secondary: "secondary", unknown: "unknown"}
     assert document["objectives"][0]["source_url"] == primary

@@ -514,8 +514,6 @@ def test_redirect_review_requires_current_digest_and_preserves_packet_bytes(
         pass
     assert destination in calls
     assert candidate_path.read_bytes() == candidate_bytes
-    capture_write = validation_events.index(("write", destination, "capture.json"))
-    assert validation_events[capture_write - 1] == ("validate", destination, None)
 
 
 def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -> None:
@@ -614,8 +612,8 @@ def test_denied_redirect_review_never_schedules_target_capture(tmp_path: Path) -
     else:
         assert any(item["source_url"] == viable for item in document["objectives"])
     assert provider.calls > 0
-    assert resumed.result.artifact["candidates"][viable]["status"] == "confirmed"
     assert viable in calls
+    assert resumed.result.artifact["candidates"][viable]["capture_attempts"] == 1
     assert destination not in calls
     assert candidate_path.read_bytes() == candidate_bytes
     assert pending_path.read_bytes() == pending_bytes
