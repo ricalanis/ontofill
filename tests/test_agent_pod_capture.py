@@ -177,6 +177,39 @@ def test_navigation_error_redacts_bearer_and_quoted_json_tokens(monkeypatch):
     assert "<redacted>" in message
 
 
+def test_render_wait_is_short_and_timeout_continues_with_the_current_page(monkeypatch):
+    module = _import_capture_module(monkeypatch)
+
+    class Page:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def wait_for_load_state(self, state, *, timeout):
+            self.calls.append((state, timeout))
+            raise module.PlaywrightError("network remains active")
+
+    page = Page()
+    assert asyncio.run(module._wait_for_render(page)) is False
+    assert page.calls == [("networkidle", module._RENDER_WAIT_MS)]
+    assert 0 < module._RENDER_WAIT_MS <= 5000
+
+
+def test_bot_protection_interstitial_is_classified_without_matching_regular_pages(
+    monkeypatch,
+):
+    module = _import_capture_module(monkeypatch)
+    assert module._is_bot_challenge(
+        "Access Denied",
+        "Processing your request. Please wait or resubmit your request.",
+        "<html><body>challenge interstitial</body></html>",
+    )
+    assert not module._is_bot_challenge(
+        "Open data registry",
+        "Search the public records and download the latest registry.",
+        "<html><body><form><input name='query'></form></body></html>",
+    )
+
+
 def test_document_rescue_rejects_403_and_bounds_unknown_length_responses(tmp_path, monkeypatch):
     module = _import_capture_module(monkeypatch)
 

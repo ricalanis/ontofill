@@ -1077,6 +1077,7 @@ def run_case(
                 search_client = DiscoveryLoop(
                     default_lead_providers(
                         decision,
+                        remaining_budget_usd=_remaining_budget_usd(decision, budget_usd),
                         search_client=lead_search,
                         fetch_json=_SandboxCkanJsonFetcher(
                             lake=lake,

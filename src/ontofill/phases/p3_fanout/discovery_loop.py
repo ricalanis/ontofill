@@ -54,6 +54,7 @@ from ontofill.phases.p3_fanout.leads import (
     LeadContext,
     LeadProvider,
     LeadQuery,
+    is_open_data_portal,
     public_url,
 )
 from ontofill.sandbox import CaptureBlocked, SandboxLimits
@@ -2650,6 +2651,13 @@ class DiscoveryLoop:
                 queries=queries,
                 iteration=iteration,
                 tried=tried_publishers,
+                open_data_portals=tuple(
+                    lead["url"]
+                    for lead in draft["leads"].values()
+                    if isinstance(lead, Mapping)
+                    and isinstance(lead.get("url"), str)
+                    and is_open_data_portal(lead, ontology)
+                ),
             )
             for provider in self.providers:
                 attempts_before = len(provider.attempts)
@@ -3245,6 +3253,7 @@ class DiscoveryLoop:
             }
             if hasattr(provider, "credits"):
                 yield_by[provider.name]["credits"] = provider.credits
+                yield_by[provider.name]["credit_cap"] = provider.max_credits
             if hasattr(provider, "cache_hits"):
                 yield_by[provider.name]["cache_hits"] = provider.cache_hits
         for lead in draft["leads"].values():

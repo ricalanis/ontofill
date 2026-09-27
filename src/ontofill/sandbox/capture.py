@@ -23,7 +23,11 @@ from urllib.parse import urlsplit
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox.domains import registrable_domain, same_registrable_domain
-from ontofill.sandbox.jobs import normalize_egress_events, normalize_navigation_attempts
+from ontofill.sandbox.jobs import (
+    _safe_error_message,
+    normalize_egress_events,
+    normalize_navigation_attempts,
+)
 from ontofill.sandbox.limits import SandboxLimits
 
 _DOMAIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
@@ -56,10 +60,14 @@ class CaptureError(RuntimeError):
         message: str,
         trace: list[dict] | None = None,
         result: dict | None = None,
+        *,
+        url: str | None = None,
     ) -> None:
-        super().__init__(message)
+        self.first_line = _safe_error_message(message)
+        super().__init__(self.first_line)
         self.trace = trace or []
         self.result = result
+        self.url = _safe_capture_url(url or (result or {}).get("url"))
 
 
 class CaptureBlocked(CaptureError):
@@ -68,6 +76,22 @@ class CaptureBlocked(CaptureError):
     def __init__(self, message: str, trace: list[dict], result: dict | None = None) -> None:
         super().__init__(message, trace, result)
         self.trace = trace
+
+
+def _safe_capture_url(value: object) -> str | None:
+    """Keep a public HTTP URL's path while omitting credentials, query, and fragment."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+            return None
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme.lower()}://{host}{port}{parsed.path}"[:2048]
+    except ValueError:
+        return None
 
 
 class CaptureIntegrityError(CaptureError):
@@ -1184,8 +1208,53 @@ def capture_url(
             )
             events = _events(proxy_name)
             if browser.returncode:
-                detail = (browser.stderr or browser.stdout).strip()[-2000:]
-                raise CaptureError(f"browser pod failed: {detail}; egress={events}")
+                detail = _safe_error_message(browser.stderr or browser.stdout)
+                safe_url = _safe_capture_url(url)
+                safe_events = normalize_egress_events(events)
+                navigation_attempts = [
+                    {
+                        "http_status": None,
+                        "elapsed_ms": min(
+                            120_000, max(0, round((time.monotonic() - started_monotonic) * 1000))
+                        ),
+                        "error": {"type": "BrowserPodError", "message": detail},
+                    }
+                ]
+                error_row = _trace(
+                    step_id=step_id,
+                    run_id=run_id,
+                    phase=phase,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    observed={"url": safe_url or "<invalid-url>", "redirect_chain": []},
+                    requested={"url": safe_url or "<invalid-url>", "allowed_domains": domains},
+                    executed={"network_request": True},
+                    evaluated={
+                        "status": "failed",
+                        "reason": "browser_pod_failed",
+                        "capture_reason": "browser_pod_failed",
+                        "navigation_attempts": navigation_attempts,
+                        "egress_events": safe_events,
+                    },
+                    ts=datetime.now(UTC).isoformat(),
+                    generated_by=provenance,
+                )
+                error_result = {
+                    "url": safe_url,
+                    "reason": "browser_pod_failed",
+                    "capture_reason": "browser_pod_failed",
+                    "navigation_error": "BrowserPodError",
+                    "navigation_attempts": navigation_attempts,
+                    "egress_events": safe_events,
+                    "trace": [error_row],
+                }
+                raise CaptureError(
+                    f"browser pod failed: {detail}",
+                    [error_row],
+                    error_result,
+                    url=safe_url,
+                )
             result = json.loads((output / "result.json").read_text(encoding="utf-8"))
             pod_result = result
             pod_identity = result.get("pod_identity")
@@ -1566,6 +1635,14 @@ def capture_url(
                 ),
             )
         )
+        raise
+    except CaptureError as exc:
+        if exc.url is None:
+            exc.url = _safe_capture_url(url)
+        if exc.result is None:
+            exc.result = {"url": exc.url, "error": exc.first_line}
+        elif exc.url is not None:
+            exc.result.setdefault("url", exc.url)
         raise
     finally:
         teardown = _cleanup_and_verify(proxy_name, browser_name, network)

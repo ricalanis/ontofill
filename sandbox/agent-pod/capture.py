@@ -42,6 +42,14 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?:\"[^\"]*\"|'[^']*'|bearer\s+[^\s,;]+|[^\s,;]+)"
 )
 _BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_RENDER_WAIT_MS = 3500
+_BOT_CHALLENGE_TEXT = (
+    "processing your request",
+    "checking your browser",
+    "verify you are human",
+    "verify that you are human",
+    "complete the security check",
+)
 
 
 class StepLimitReached(RuntimeError):
@@ -234,6 +242,39 @@ def _safe_error_message(error: Exception) -> str:
     clean = _SECRET_ASSIGNMENT.sub(r"\1<redacted>", clean)
     clean = _BEARER_CREDENTIAL.sub("Bearer <redacted>", clean)
     return " ".join(clean.split())[:512] or "Navigation failed"
+
+
+async def _wait_for_render(page) -> bool:
+    """Give client-rendered pages a short network-idle window, then continue."""
+    try:
+        await asyncio.wait_for(
+            page.wait_for_load_state("networkidle", timeout=_RENDER_WAIT_MS),
+            timeout=(_RENDER_WAIT_MS + 250) / 1000,
+        )
+    except (PlaywrightError, TimeoutError):
+        return False
+    return True
+
+
+def _is_bot_challenge(title: str, visible_text: str, html: str = "") -> bool:
+    """Recognize explicit security interstitials without interacting with them."""
+    visible = f"{title}\n{visible_text}"[:32_000].casefold()
+    if any(marker in visible for marker in _BOT_CHALLENGE_TEXT):
+        return True
+    markup = html[:100_000].casefold()
+    provider_marker = any(
+        marker in markup
+        for marker in (
+            "akamai",
+            "cf-chl-",
+            "/cdn-cgi/challenge-platform/",
+            "imperva",
+            "incapsula",
+        )
+    )
+    return provider_marker and any(
+        marker in markup for marker in ("challenge", "verify", "processing", "checking")
+    )
 
 
 def _navigation_attempt(started: float, status: object, error: Exception | None = None) -> dict:
@@ -632,8 +673,11 @@ async def capture() -> None:
                     },
                 )
                 return
+            await _wait_for_render(page)
             html = await page.content()
             accessibility = await page.locator("body").aria_snapshot()
+            title = await page.title()
+            bot_challenge = _is_bot_challenge(title, accessibility, html)
             budget.take()
             screenshot = await page.screenshot(full_page=True)
             (output / "page.html").write_text(html, encoding="utf-8")
@@ -646,6 +690,7 @@ async def capture() -> None:
                     "redirect_chain": navigation_chain or [target],
                     "status": http_status,
                     "navigation_attempts": [navigation_attempt],
+                    **({"capture_reason": "bot_challenge"} if bot_challenge else {}),
                     **preflight,
                     "steps": budget.steps,
                     "peak_memory_mb": peak_memory_mb(),

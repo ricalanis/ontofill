@@ -25,7 +25,7 @@ from ontofill.sandbox import (
     capture_url,
     fetch_url,
 )
-from ontofill.sandbox.capture import _allowed_host, _limit_row
+from ontofill.sandbox.capture import CaptureError, _allowed_host, _limit_row
 
 
 def validate_trace_rows(rows: list[dict]) -> None:
@@ -411,6 +411,79 @@ def test_navigation_failure_details_reach_job_and_trace_without_query_leaks(
         assert result["capture_reason"] == "dns_failed"
         assert row["evaluated"]["capture_reason"] == "dns_failed"
         assert job["outcome"]["capture_reason"] == "dns_failed"
+
+
+def test_bot_challenge_is_a_failed_capture_with_candidate_url_and_reason(tmp_path, monkeypatch):
+    target = "https://dept.example.test/records"
+    _mock_capture_runtime(
+        monkeypatch,
+        target=target,
+        final_url=target,
+        capture_reason="bot_challenge",
+        navigation_attempts=[{"http_status": 200, "elapsed_ms": 31, "error": None}],
+    )
+
+    with pytest.raises(CaptureBlocked) as raised:
+        capture_url(
+            target,
+            allowed_domains=["dept.example.test"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+
+    result = raised.value.result
+    assert result is not None
+    assert raised.value.url == target
+    assert result["url"] == target
+    assert result["capture_reason"] == "bot_challenge"
+    assert result["trace"][0]["observed"]["url"] == target
+    assert result["trace"][0]["evaluated"]["reason"] == "bot_challenge"
+    assert "html_key" not in result and "screenshot_key" not in result
+    validate_trace_rows(raised.value.trace)
+
+
+def test_browser_pod_error_keeps_safe_first_line_and_candidate_url(tmp_path, monkeypatch):
+    target = "https://dept.example.test/records?token=synthetic-secret"
+    _mock_capture_runtime(monkeypatch, target=target, final_url=target)
+    module = importlib.import_module("ontofill.sandbox.capture")
+    monkeypatch.setattr(
+        module,
+        "_run_agent_pod",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            ["docker", "run"],
+            1,
+            "",
+            "Chromium failed at https://dept.example.test/records?token=synthetic-secret\n"
+            "secret=second-line-secret",
+        ),
+    )
+
+    with pytest.raises(CaptureError) as raised:
+        capture_url(
+            target,
+            allowed_domains=["dept.example.test"],
+            lake=FileLake(tmp_path / "lake"),
+            run_id="synthetic-run",
+            source_id="synthetic-source",
+            objective_id=None,
+            tdd_path="04-local/synthetic-tdd.json",
+        )
+
+    error = raised.value
+    assert error.url == "https://dept.example.test/records"
+    assert error.result is not None
+    assert error.result["url"] == error.url
+    assert error.first_line == str(error)
+    assert len(str(error).splitlines()) == 1
+    assert "synthetic-secret" not in str(error)
+    assert "second-line-secret" not in str(error)
+    assert "second-line-secret" not in json.dumps(error.result)
+    assert error.trace
+    assert error.trace[0]["observed"]["url"] == error.url
+    validate_trace_rows(error.trace)
 
 
 def test_proxy_413_is_a_failed_document_capture_not_bronze_page(tmp_path, monkeypatch) -> None:
