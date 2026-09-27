@@ -230,6 +230,7 @@ class OntologyProposalErrors(ValueError):
         core_errors: list[str] | None = None,
         core_review: dict | None = None,
         drop_all_rules_reason: str | None = None,
+        relation_counts: dict[str, dict] | None = None,
     ) -> None:
         self.rule_errors = rule_errors
         self.relation_errors = relation_errors
@@ -237,6 +238,7 @@ class OntologyProposalErrors(ValueError):
         self.core_errors = core_errors or []
         self.core_review = core_review
         self.drop_all_rules_reason = drop_all_rules_reason
+        self.relation_counts = relation_counts
         messages = []
         if relation_errors:
             messages.extend(
@@ -860,12 +862,22 @@ def draft_ontology(
         validate_document("ontology", ontology)
         _validate_ontology(ontology)
         _validate_primary_dod_presence(prd, ontology)
-        relation_counts = _review_ontology_semantics(
-            prd,
-            ontology,
-            decision,
-            core_field_review=schema_reviews.pop("core_field_review_override", None),
-        )
+        if schema_reviews.pop("skip_semantic_critics_on_recovery", False):
+            core_review = schema_reviews.pop("core_field_review_override", None)
+            if core_review is not None:
+                _review_core_field_bindings(prd, ontology, decision, review_override=core_review)
+            return
+        try:
+            relation_counts = _review_ontology_semantics(
+                prd,
+                ontology,
+                decision,
+                core_field_review=schema_reviews.pop("core_field_review_override", None),
+            )
+        except OntologyProposalErrors as exc:
+            if exc.relation_counts is not None:
+                schema_reviews["relation_counts"] = exc.relation_counts
+            raise
         schema_reviews["relation_counts"] = relation_counts
 
     unresolved: list[dict] = []
@@ -890,6 +902,10 @@ def draft_ontology(
                 if reason is None:
                     retained.append(proposal)
                 else:
+                    if kind == "rule" and "human review" not in reason.casefold():
+                        reason = (
+                            f"{reason} Set aside after bounded P2 attempts; requires human review."
+                        )
                     set_aside.append(
                         {
                             "kind": kind,
@@ -945,6 +961,9 @@ def draft_ontology(
             return None
         unresolved.extend(set_aside)
         repairs.extend(repair_records)
+        if not any(item["kind"] == "relation" for item in set_aside):
+            schema_reviews["relation_counts"] = error.relation_counts
+            schema_reviews["skip_semantic_critics_on_recovery"] = True
         if error.core_review is not None:
             schema_reviews["core_field_review_override"] = error.core_review
         return recovered
@@ -1457,6 +1476,7 @@ def _review_ontology_semantics(
                 f"Rule critic could not return a valid assessment: {rule_blocker}. "
                 "Executable rules were set aside for human review."
             ),
+            relation_counts=relation_counts,
         )
     if rule_error is not None or core_error is not None:
         raise OntologyProposalErrors(
@@ -1468,6 +1488,7 @@ def _review_ontology_semantics(
             drop_all_rules_reason=(
                 rule_error.drop_all_rules_reason if rule_error is not None else None
             ),
+            relation_counts=relation_counts,
         )
     return relation_counts
 

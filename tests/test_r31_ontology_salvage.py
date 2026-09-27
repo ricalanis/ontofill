@@ -616,66 +616,82 @@ def test_mixed_core_and_rule_failures_salvage_before_final_schema_exhaustion(tmp
     candidate = deepcopy(candidates[-1])
     candidate["rules"] = [
         {
-            "id": "r1_complete_values",
-            "label": "All required values are present",
-            "checks": "Every record has each required value.",
-            "verify": ["Check the core fields"],
+            "id": "r1_branch_address_present",
+            "label": "Branch address is present",
+            "checks": "The branch address is present.",
+            "verify": ["Check for a nonempty address"],
+            "predicate": {"all": [{"op": "equals", "property": "address", "value": ""}]},
+        },
+        {
+            "id": "r2_wifi",
+            "label": "Wi-Fi availability is flagged",
+            "checks": "Flag a record when the Wi-Fi status is incomplete.",
+            "verify": ["Review the published Wi-Fi value"],
+            "predicate": {"all": [{"op": "equals", "property": "has_free_wifi", "value": True}]},
+        },
+        {
+            "id": "r3_hours_summary",
+            "label": "Hours summary is available",
+            "checks": "Flag a record when no hours summary is present.",
+            "verify": ["Check for an empty hours summary"],
+            "predicate": {"all": [{"op": "equals", "property": "hours_source", "value": ""}]},
+        },
+        {
+            "id": "r4_primary_key_match",
+            "label": "Record name matches code",
+            "checks": "The record name matches its code.",
+            "verify": ["Compare the record name and code"],
             "predicate": {
                 "all": [
                     {
                         "op": "same_value",
-                        "left_property": "address",
-                        "right_property": "address",
+                        "left_property": "record_name",
+                        "right_property": "record_code",
                     }
                 ]
             },
         },
         {
-            "id": "r2_primary_publisher",
-            "label": "Primary publisher is the catalog owner",
-            "checks": "The record is published by the primary agency.",
-            "verify": ["Check publisher scope"],
-            "predicate": {
-                "all": [
-                    {
-                        "op": "equals",
-                        "property": "primary_publisher",
-                        "value": "Example Publisher",
-                    }
-                ]
-            },
+            "id": "r5_source",
+            "label": "Source is present",
+            "checks": "Every record has a source citation.",
+            "verify": ["Check for an empty source citation"],
+            "predicate": {"all": [{"op": "equals", "property": "address_source", "value": ""}]},
         },
     ]
-    candidate["properties"].append(
-        {
-            "id": "primary_publisher",
-            "label": "Primary publisher",
-            "domain": "record",
-            "datatype": "string",
-            "dod": False,
-            "order": len(candidate["properties"]),
-            "description": "Synthetic publisher value",
-            "aligned_to": None,
-        }
-    )
     rejected_rules = {
         "assessments": [
             {
-                "rule_id": "r1_complete_values",
+                "rule_id": "r1_branch_address_present",
                 "matches": False,
-                "reason": "Comparing address to itself is tautological and proves no value is present.",
+                "reason": "An empty address is the missing-value violation flag, not a pass condition.",
             },
             {
-                "rule_id": "r2_primary_publisher",
+                "rule_id": "r2_wifi",
                 "matches": False,
-                "reason": "The equality fixes a publisher value outside the approved record scope.",
+                "reason": "Equality with true is too narrow to flag absent or unconfirmed Wi-Fi status.",
+            },
+            {
+                "rule_id": "r3_hours_summary",
+                "matches": False,
+                "reason": "An empty hours summary is the missing-value violation flag.",
+            },
+            {
+                "rule_id": "r4_primary_key_match",
+                "matches": True,
+                "reason": "The predicate compares the record name and its corresponding code.",
+            },
+            {
+                "rule_id": "r5_source",
+                "matches": False,
+                "reason": "An empty source citation is the missing-source violation flag.",
             },
         ]
     }
     decision = _decision(
         [deepcopy(candidate), deepcopy(candidate)],
         core_field_bindings=core_reviews * 2,
-        rule_semantics=[rejected_rules],
+        rule_semantics=[rejected_rules, rejected_rules],
     )
     decision.responses["phase2.dod_queries"].clear()
     decision.responses["phase2.dod_queries"].append(_completeness_query())
@@ -693,10 +709,6 @@ def test_mixed_core_and_rule_failures_salvage_before_final_schema_exhaustion(tmp
                 )
         if purpose == "critic.phase2.rule_semantics":
             rule_critic_attempts += 1
-            if rule_critic_attempts == 2:
-                raise ModelValidationExhausted(
-                    purpose, "synthetic final rule critic output is malformed", 3
-                )
         return complete_json(purpose, prompt, schema)
 
     decision.complete_json = mixed_exhaustion
@@ -708,15 +720,17 @@ def test_mixed_core_and_rule_failures_salvage_before_final_schema_exhaustion(tmp
     assert repaired["domain"] == "record"
     assert repaired["datatype"] == "string"
     assert repaired["dod"] is True
-    assert ontology["rules"] == []
+    assert [rule["id"] for rule in ontology["rules"]] == ["r4_primary_key_match"]
     validate_document("ontology", ontology)
     recommendations = json.loads(
         (tmp_path / "02-ontology/recommendations/unresolved.json").read_text(encoding="utf-8")
     )
     validate_document("ontology-recommendations", recommendations)
     assert {item["id"] for item in recommendations["unresolved"]} == {
-        "r1_complete_values",
-        "r2_primary_publisher",
+        "r1_branch_address_present",
+        "r2_wifi",
+        "r3_hours_summary",
+        "r5_source",
     }
     assert all(item["kind"] == "rule" for item in recommendations["unresolved"])
     assert all("human review" in item["reason"] for item in recommendations["unresolved"])
