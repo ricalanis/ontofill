@@ -18,6 +18,7 @@ from ontofill_scrape.models import ParsedFile, ParsedRow
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.refiner.core import Observation
+from ontofill.refiner.provenance import observation_source_metadata
 from ontofill.sandbox.parse import ParseExecutor, SandboxParseError, parse_bronze
 
 _BRONZE_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -504,6 +505,7 @@ def _replay_file(
             evidence=evidence,
             step_id=replay_step_id,
             generated_by=provenance,
+            **observation_source_metadata(objective),
         )
         observations.append(item)
         value_ids.add(item.value_id)

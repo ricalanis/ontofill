@@ -26,6 +26,7 @@ from ontofill.browser_agent import (
 from ontofill.lake import FileLake, S3Lake
 from ontofill.lake.storage import BRONZE_KEY
 from ontofill.refiner import Observation, SilverStore
+from ontofill.refiner.provenance import observation_source_metadata
 from ontofill.runfeed import RunFeed
 from ontofill.sandbox import append_job_record, validate_job_record
 
@@ -262,6 +263,7 @@ def _emit_rows(
     rows: list[dict],
     target_fields: list[str],
     ontology: dict,
+    objective: dict,
     allowed_domains: list[str],
     lake: FileLake | S3Lake,
     store: SilverStore,
@@ -279,6 +281,7 @@ def _emit_rows(
     classes = {item["id"]: item for item in ontology["classes"]}
     properties = {item["id"]: item for item in ontology["properties"]}
     targets = set(target_fields)
+    observation_metadata = observation_source_metadata(objective)
     controller_by_id, extract_steps = _extract_steps(controller_steps)
     emitted: list[Observation] = []
     trace: list[dict] = []
@@ -394,6 +397,7 @@ def _emit_rows(
                     evidence=evidence,
                     step_id=step_id,
                     generated_by=provenance,
+                    **observation_metadata,
                 )
                 tool_item = ToolObservation(
                     entity_id,
@@ -621,6 +625,7 @@ def execute_controller(
         rows=extracted_rows,
         target_fields=tdd["target_fields"],
         ontology=ontology,
+        objective=objective,
         allowed_domains=domains,
         lake=lake,
         store=store,

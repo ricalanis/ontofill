@@ -212,6 +212,20 @@ def test_replay_fills_new_ontology_property_and_exports_trace_lineage(tmp_path) 
     historical_objectives = json.loads(
         (case_dir / "03-fanout/objectives.json").read_text(encoding="utf-8")
     )
+    historical_objectives["objectives"][0].update(
+        {
+            "authority_tier": "primary",
+            "publisher_of_record": {
+                "kind": "Example Library Board",
+                "domain": "library.example.test",
+                "tier": "primary",
+                "basis": "approved_policy",
+            },
+        }
+    )
+    (case_dir / "03-fanout/objectives.json").write_text(
+        json.dumps(historical_objectives), encoding="utf-8"
+    )
     historical_tdd = json.loads((case_dir / TDD_PATH).read_text(encoding="utf-8"))
     historical_local_prd = json.loads(
         (case_dir / f"04-local/{SOURCE_ID}__{OBJECTIVE_ID}/local-prd.json").read_text(
@@ -237,6 +251,10 @@ def test_replay_fills_new_ontology_property_and_exports_trace_lineage(tmp_path) 
     assert [(item.entity_id, item.value) for item in added] == [
         ("Book:3e499e752620c6a90ed59a20", "North")
     ]
+    assert all(
+        (item.authority_tier, item.publisher_id) == ("primary", "name:example library board")
+        for item in replay.observations
+    )
     assert added[0].evidence == {
         "url": "https://example.invalid/catalog.csv",
         "bronze_key": bronze_key,

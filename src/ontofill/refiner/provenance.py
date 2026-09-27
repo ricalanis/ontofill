@@ -2,7 +2,49 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
+
+_AUTHORITY_TIERS = {"primary", "secondary", "low", "review", "unknown"}
+_PUBLISHER_BASES = {"approved_policy", "captured_page"}
+
+
+def observation_source_metadata(objective: Mapping[str, object]) -> dict[str, str | None]:
+    """Return tier and publisher identity from the confirmed P3 objective metadata."""
+    publisher = objective.get("publisher_of_record")
+    basis = publisher.get("basis") if isinstance(publisher, Mapping) else None
+    if not isinstance(basis, str) or basis not in _PUBLISHER_BASES:
+        publisher = None
+
+    tier = objective.get("authority_tier")
+    if not isinstance(tier, str) or tier not in _AUTHORITY_TIERS:
+        tier = "unknown"
+    if tier == "unknown" and publisher is not None:
+        publisher_tier = publisher.get("tier")
+        if isinstance(publisher_tier, str) and publisher_tier in _AUTHORITY_TIERS - {"unknown"}:
+            tier = publisher_tier
+
+    publisher_id: str | None = None
+    if publisher is not None:
+        # The publisher name joins approved mirrors and aliases; the domain is a fallback.
+        kind = publisher.get("kind")
+        if isinstance(kind, str):
+            normalized_kind = " ".join(kind.casefold().split())
+            if normalized_kind:
+                publisher_id = f"name:{normalized_kind}"
+        if publisher_id is None:
+            domain = publisher.get("domain")
+            if isinstance(domain, str):
+                normalized_domain = domain.strip().casefold().rstrip(".")
+                if (
+                    normalized_domain
+                    and len(normalized_domain) <= 253
+                    and not any(char.isspace() for char in normalized_domain)
+                    and not any(char in normalized_domain for char in "/\\?#@:")
+                ):
+                    publisher_id = f"domain:{normalized_domain}"
+
+    return {"authority_tier": tier, "publisher_id": publisher_id}
 
 
 def validate_generated_by(generated_by: dict[str, str]) -> dict[str, str]:

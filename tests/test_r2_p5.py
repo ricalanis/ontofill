@@ -59,6 +59,13 @@ def test_recorded_multisource_batch_flattens_json_and_derives_membership(tmp_pat
     objectives = [
         {
             **item,
+            "authority_tier": "secondary",
+            "publisher_of_record": {
+                "kind": "Example Public Data Office",
+                "domain": "publisher.example.test",
+                "tier": "secondary",
+                "basis": "approved_policy",
+            },
             "discovered_by": {
                 "provider": "recorded-multisource-fixture",
                 "at": "2026-01-01T00:00:00Z",
@@ -207,6 +214,11 @@ def test_recorded_multisource_batch_flattens_json_and_derives_membership(tmp_pat
     )
 
     assert [result.format for result in results] == ["csv", "json", "json", "csv"]
+    assert all(
+        (item.authority_tier, item.publisher_id) == ("secondary", "name:example public data office")
+        for result in results
+        for item in result.observations
+    )
     assert [
         step["objective_id"]
         for step in results[0].trace

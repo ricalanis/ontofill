@@ -35,6 +35,7 @@ from ontofill.phases.p5_execute.source_review import (
     reviewable_download_host,
 )
 from ontofill.refiner import Observation, SilverStore
+from ontofill.refiner.provenance import observation_source_metadata
 from ontofill.repair import repair_html_extractor
 from ontofill.repair.runner import RepairExecutor
 from ontofill.runfeed import RunFeed
@@ -609,6 +610,7 @@ def _membership_result(
     """Derive boolean values only from a fully captured downloadable file list."""
     source_id = objective["source_id"]
     objective_id = objective["id"]
+    observation_metadata = observation_source_metadata(objective)
     tdd_path = f"04-local/{source_id}__{objective_id}/tdd.json"
     membership = tdd.get("membership")
     if not membership or membership.get("complete") is not True:
@@ -747,6 +749,7 @@ def _membership_result(
                 evidence={**common_evidence, "selector": selector},
                 step_id=mapping_step["step_id"],
                 generated_by=provenance,
+                **observation_metadata,
             )
             emit(identity, selector)
         item = Observation(
@@ -758,6 +761,7 @@ def _membership_result(
             evidence=common_evidence,
             step_id=mapping_step["step_id"],
             generated_by=provenance,
+            **observation_metadata,
         )
         emit(item, selector)
 
@@ -813,6 +817,7 @@ def execute_objective(
     """Execute one approved TDD; every emitted value is a literal captured cell."""
     source_id = objective["source_id"]
     objective_id = objective["id"]
+    observation_metadata = observation_source_metadata(objective)
     tdd_path = f"04-local/{source_id}__{objective_id}/tdd.json"
     kwargs = {
         "allowed_domains": tdd["allowed_domains"],
@@ -1507,6 +1512,7 @@ def execute_objective(
                 evidence=evidence,
                 step_id=step_id,
                 generated_by=provenance,
+                **observation_metadata,
             )
             tool_item = ToolObservation(
                 entity_id,
