@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "viz/_macros.html" as v %}
+{% block title %}Pages visited{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/viz-operation.css">{% endblock %}
+{% block main %}
+{{ v.head("Pages visited", "Every page the engine opened in this run, by source: what it captured, in which mode, and how the step was judged. Each card opens its step on the run page.", m.sources) }}
+{% if m.question %}<p class="quote op-question">{{ m.question }}</p>{% endif %}
+
+{% if m.run_id %}
+<dl class="kv op-kv">
+  <dt>Run</dt><dd class="mono">{% if m.run_href %}<a href="{{ m.run_href }}">{{ m.run_id }}</a>{% else %}{{ m.run_id }}{% endif %} · {{ m.feed }}</dd>
+  <dt>Pages</dt><dd class="mono">{{ m.n_pages }} pages · {{ m.n_sources }} source{{ "s" if m.n_sources != 1 }} · {{ m.n_images }} with a screenshot</dd>
+  <dt>Site graphs</dt><dd class="mono">{{ m.n_site_graphs }}</dd>
+  {% if m.live_view_url %}<dt>Live view</dt><dd><a class="btn btn--quiet" href="{{ m.live_view_url }}" target="_blank" rel="noopener">Watch the agent's browser</a></dd>{% endif %}
+  {% if m.runs|length > 1 %}<dt>Other runs</dt><dd class="mono">{% for r in m.runs if r != m.run_id %}<a href="?run={{ r|urlencode }}">{{ r }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</dd>{% endif %}
+</dl>
+{% endif %}
+
+{% if m.n_pages %}
+<nav aria-label="Filter pages">
+  <p class="pg-filters"><span>source</span>
+    <a class="chip st-none" href="{{ m.clear_source }}"{% if not m.filter.source %} aria-current="true"{% endif %}>all</a>
+    {% for f in m.source_filters %}<a class="chip st-none" href="{{ f.href }}"{% if f.active %} aria-current="true"{% endif %}>{{ f.source_id }} {{ f.n }}</a>{% endfor %}
+  </p>
+  <p class="pg-filters"><span>verdict</span>
+    <a class="chip st-none" href="{{ m.clear_verdict }}"{% if not m.filter.verdict %} aria-current="true"{% endif %}>all</a>
+    {% for f in m.verdict_filters %}<a class="chip st-{{ f.css }}" href="{{ f.href }}"{% if f.active %} aria-current="true"{% endif %}>{{ f.label }} {{ f.n }}</a>{% endfor %}
+  </p>
+</nav>
+{% endif %}
+
+{% if m.empty %}{{ v.empty(m.empty, "No pages to show") }}{% endif %}
+
+{% for g in m.groups %}
+<section class="pg-source" aria-labelledby="src-{{ loop.index }}">
+  <header class="pg-source__head">
+    <h2 id="src-{{ loop.index }}" class="mono">{{ g.source_id }}</h2>
+    <span class="meta">{{ g.n_pages }} page{{ "s" if g.n_pages != 1 }} · {{ g.n_images }} screenshot{{ "s" if g.n_images != 1 }}</span>
+    {% if g.live_view_url %}<a class="btn btn--quiet" href="{{ g.live_view_url }}" target="_blank" rel="noopener">Watch this cell's browser</a>{% endif %}
+  </header>
+  {% if g.cards %}
+  <ul class="caps">
+    {% for p in g.cards %}
+    <li class="cap st-{{ p.css }}">
+      <a href="{{ p.step_href or p.raw or '#' }}" title="{{ p.url or p.screenshot_key or p.bronze_key }}">
+        {% if p.img %}<img src="{{ p.img }}" loading="lazy" decoding="async" alt="Capture of {{ p.host or g.source_id }}{{ p.path or '' }}">
+        {% else %}<span class="noimg">{{ p.content_type or "no screenshot" }}</span>{% endif %}
+        <p class="pg-path">{{ p.path or p.host or "(no url)" }}</p>
+        <p><span class="chip st-{{ p.css }}">{{ p.verdict_label }}</span> {{ p.mode or "—" }}{% if p.also %} · also {{ p.also|join(", ") }}{% endif %}{% if p.steps > 1 %} · {{ p.steps }} steps{% endif %}</p>
+        <p>{{ p.ts[:19]|replace("T", " ") if p.ts else "—" }}</p>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if g.more %}<p class="note"><a href="{{ m.all_href }}">Show all {{ g.n_pages }} pages of {{ g.source_id }}</a> ({{ g.more }} more)</p>{% endif %}
+  {% elif m.n_pages %}<p class="note">No page from this source matches the filters.</p>{% endif %}
+
+  {% set sg = g.site_graph %}
+  {% if sg and not sg.invalid %}
+  <div class="pg-graph">
+    <h3 class="section-h">Site graph · {{ sg.n_types }} page types · {{ sg.n_edges }} links · {{ sg.n_instances }} pages</h3>
+    <svg class="graph" style="--gw:{{ sg.width * 1.25 }}px" viewBox="0 0 {{ sg.width }} {{ sg.height }}" role="img" aria-label="Site graph of {{ g.source_id }}: {{ sg.n_types }} page types and {{ sg.n_edges }} links between them">
+      <defs><marker id="arr-{{ loop.index }}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z"/></marker></defs>
+      {% set gi = loop.index %}
+      {% for e in sg.edges %}<path class="edge{% if not e.followed %} edge--skip{% endif %}" d="{{ e.d }}" marker-end="url(#arr-{{ gi }})"><title>{{ e.from }} → {{ e.to }}: {{ e.n }} link{{ "s" if e.n != 1 }}{% if not e.followed %}, not followed{% endif %}</title></path>{% endfor %}
+      {% for n in sg.types %}
+      <g class="node{% if n.seed %} node--seed{% endif %}"><title>{{ n.label }}{% if n.template %} · {{ n.template }}{% endif %} · {{ n.n }} pages{% if n.hints %} · hints: {{ n.hints|join(", ") }}{% endif %}</title>
+        <rect x="{{ n.x }}" y="{{ n.y }}" width="176" height="46" rx="4"/>
+        <text x="{{ n.x + 8 }}" y="{{ n.y + 19 }}">{{ n.label_short }}</text>
+        <text class="sub" x="{{ n.x + 8 }}" y="{{ n.y + 36 }}">{{ n.sub }}</text>
+      </g>
+      {% endfor %}
+    </svg>
+    <div class="table-wrap pg-types"><table class="grid-table">
+      <thead><tr><th scope="col">Page type</th><th scope="col">URL template</th><th scope="col" class="num">Pages</th><th scope="col">Property hints</th><th scope="col">Sample pages</th></tr></thead>
+      <tbody>{% for n in sg.types %}<tr><td>{{ n.label }}{% if n.class_id %} <span class="mono">({{ n.class_id }})</span>{% endif %}</td><td class="mono">{{ n.template or "—" }}</td><td class="num">{{ n.n }}</td><td class="mono">{{ n.hints|join(", ") or "—" }}</td><td class="mono">{% for u in n.samples %}{% if safe_url(u) %}<a href="{{ u }}" rel="noopener noreferrer" target="_blank">{{ u|brief(60) }}</a>{% else %}{{ u|brief(60) }}{% endif %}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    <p class="note op-note">{% if sg.crawl %}crawl: {% for k, x in sg.crawl.items() %}{{ k|replace("_", " ") }} {{ x }}{% if not loop.last %} · {% endif %}{% endfor %} · {% endif %}{% if sg.coverage.uncovered %}not hinted by any page type: {{ sg.coverage.uncovered|join(", ") }} · {% endif %}{{ sg.path }}</p>
+  </div>
+  {% elif sg and sg.invalid %}
+  <p class="note op-note">{{ sg.path }} exists but has no page types this view can read.</p>
+  {% endif %}
+</section>
+{% endfor %}
+
+{% if m.graph_empty %}<h2 class="section-h">Site graphs</h2>{{ v.empty(m.graph_empty, "No site graph yet") }}{% endif %}
+{% endblock %}

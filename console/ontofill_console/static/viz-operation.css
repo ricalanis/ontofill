@@ -1,0 +1,62 @@
+/* viz · operation and pages visited. Tira components (tira.css) plus the few pieces these two views need.
+ * Colours only through tokens.css. */
+
+.op-question { margin: 0 0 var(--space-md); max-width: 90ch; }
+.op-runs li.is-selected .strip { outline: 2px solid var(--fg-2); outline-offset: -1px; }
+.op-run { margin-top: var(--space-lg); }
+.op-runhead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin-bottom: var(--space-xs); }
+.op-runhead h2 { margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
+.op-links { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); align-items: center; margin-left: auto; font-size: var(--text-sm); }
+.op-kv { margin-bottom: var(--space-xs); }
+.op-pipe .op-state { margin: 2px 0; }
+.op-pipe span.chip { display: inline-flex; white-space: normal; color: var(--c); }
+.op-pipe-key { margin-bottom: var(--space-sm); }
+.op-panels { margin-top: var(--space-md); }
+.op-note { color: var(--fg-3); font-size: var(--text-xs); margin: var(--space-2xs) 0 0; }
+
+/* loop iteration rows: # · propose · critique · revise · check */
+.op-thread { margin-bottom: var(--space-md); }
+.op-thread__head { margin: 0 0 var(--space-2xs); font-size: var(--text-sm); color: var(--fg-2); }
+.op-thread__head b { color: var(--fg); }
+.it { display: grid; grid-template-columns: 34px repeat(4, minmax(0, 1fr)); gap: 3px; font: 11px var(--font-mono); margin-bottom: 3px;
+  text-decoration: none; color: inherit; }
+.it > * { padding: 4px 6px; background: var(--strip); border: 1px solid var(--line); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+a.it:hover > * { background: var(--strip-hover); }
+.it--head > * { background: none; border-color: transparent; color: var(--fg-3); padding-block: 0; }
+.it .ok { box-shadow: inset 3px 0 var(--st-done); }
+.it .obj { box-shadow: inset 3px 0 var(--st-need); }
+.it .fail { box-shadow: inset 3px 0 var(--st-block); }
+.it .none { color: var(--fg-3); }
+.op-objections { list-style: none; margin: 2px 0 var(--space-xs) 37px; padding: 0; display: grid; gap: 2px; font-size: var(--text-sm); }
+.op-res { color: var(--fg-3); }
+
+/* pages visited */
+.pg-filters { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-xs); align-items: center; margin: 0 0 var(--space-xs);
+  font-size: var(--text-sm); }
+.pg-filters > span:first-child { color: var(--fg-3); font: var(--text-xs) var(--font-mono); min-width: 4.5rem; }
+.pg-filters a { text-decoration: none; }
+.pg-filters a[aria-current="true"] { background: var(--strip-hover); }
+.pg-filters a.chip.st-none { color: var(--fg-2); }
+.pg-source { margin-top: var(--space-lg); }
+.pg-source__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2xs) var(--space-sm); margin-bottom: var(--space-xs); }
+.pg-source__head h2 { margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
+.pg-source__head .meta { font: var(--text-xs) var(--font-mono); color: var(--fg-3); }
+.pg-source__head .btn { margin-left: auto; }
+.caps .cap a { display: block; text-decoration: none; color: inherit; }
+.caps .cap a:hover p { color: var(--fg); }
+.cap .pg-path { color: var(--fg); }
+.pg-graph { margin-top: var(--space-sm); }
+.pg-graph svg.graph { width: 100%; max-width: min(100%, var(--gw, 100%)); height: auto; }  /* app.css caps .graph at 168px */
+.pg-graph .graph .node--seed rect { stroke: var(--st-run); stroke-width: 2.5; }
+.pg-graph .graph .edge--skip { stroke-dasharray: 4 3; }
+.pg-graph .graph .elabel { fill: var(--fg-3); font: 10px var(--font-mono); }
+.pg-graph .graph marker path { fill: var(--line-strong); }
+.pg-types { margin-top: var(--space-xs); }
+
+@media (max-width: 640px) {
+  .it { grid-template-columns: 34px repeat(2, minmax(0, 1fr)); }
+  .it > :first-child { grid-row: span 2; }
+  .it--head { display: none; }
+  .op-objections { margin-left: 0; }
+  .op-links { margin-left: 0; }
+}
