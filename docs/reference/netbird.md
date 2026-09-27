@@ -135,7 +135,7 @@ does have four gaps:
 | `laptop-admins` | the team's laptop peer(s) | add the laptop peer, or add the group to the admin *user*; a user's groups propagate to their peers (D:/manage/access-control) |
 | `control-plane` | `brz-control` (VM #1) | auto-group on `NETBIRD_SETUP_KEY_CP` |
 | `sandbox-host` | `brz-sandbox` (VM #2) | auto-group on `NETBIRD_SETUP_KEY_SB` |
-| `approvers` | *users* allowed on the approver URL | Team → Users → user → groups (G3) |
+| `approvers` | *users* allowed on the Ontofill Console (engine approvals, SSO) | Team → Users → user → groups (G3) |
 
 Ports (defaults; change them to match the code): engine API `8000`, Postgres `5432`, Oxigraph `7878`,
 investigator `8400`, approver `8401` (from `proveedor-abierto/deploy`), sandbox dispatch agent `9100`
@@ -491,7 +491,7 @@ For the "peer-to-peer" bonus, show the VM ↔ VM `P2P` line and the laptop line,
 | E2 | Access Control → Policies: P1–P3, `Default` gone, one-way arrows | fence |
 | E3 | `netbird status -d` on VM #1: `Connection type: P2P` to `brz-sandbox` | 3 |
 | E4 | Reverse Proxy → Services: both services `active`, auth badges (password vs SSO + `approvers`) | 1, 2 |
-| E5 | The investigator URL asking for the password, and the approver URL redirecting to SSO (a private browser window) | 2 |
+| E5 | The Proveedor Abierto product URL asking for the password, and the Ontofill Console URL redirecting to SSO (a private browser window) | 2 |
 | E6 | External `nmap -Pn -p 1-65535 <public-ip>` (or `nc -zv`): everything filtered, 22 included | 1 |
 | E7 | A live `netbird expose` terminal next to the pod, the URL asking for the PIN, then after `docker stop` the URL failing plus the "Peer unexposed service" audit event | 4 |
 | E8 | Reverse Proxy → Logs: an authenticated request with the method | 2 |

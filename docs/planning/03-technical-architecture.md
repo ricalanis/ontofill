@@ -104,6 +104,48 @@ The engine and the case product are separate products with separate URLs, and th
   brief), watchlist, open exports (OCDS/CSV/RDF), and a plain "how complete is this" view. No approvals, no run control,
   no spend, no engine internals. It reads the published gold export only, never the live run or the case's pending files.
 
+## 7a. Console visualization: end to end (user goal, 18:47 Sat; canonical)
+The console must make the engine legible for ANY case: what it's doing, why, what it cost, what it produced and what
+it contained, driven only by the engine's own artifacts (case package, run feed, trace, jobs, metrics, gold export,
+bronze metadata). It carries no domain words. Every view works **live** (streaming) and on a **recorded run** (replay),
+and says honestly when its data doesn't exist yet.
+
+**Acceptance: the questions it must answer in ≤ 2 clicks from a case**
+1. What is the engine doing right now, and what needs me? (a cross-case inbox)
+2. How was this question turned into a contract? (brief → PRD revisions → DoD with basis → ontology)
+3. Where did it look, and why did it trust or reject each source? (the discovery funnel + authority)
+4. Which pages did it visit, and what did it do on each? (captures, site graph, live view)
+5. Why is this value here? (value → evidence → step → plan → objective → ontology → PRD → brief)
+6. How close is it to done, and what is it doing about the gaps? (DoD progress, completeness, outer-loop decisions)
+7. What went wrong, and what was contained? (failures, stops, quarantines, limit kills, six checkpoints)
+8. What did it cost, and where did the money go? (by phase, model, mode, source; per gold value)
+9. Did it get better or cheaper over time? (repairs, macros, the share of code-only steps)
+10. Same engine, different question: how do two cases compare? (side by side)
+
+**Views, along the engine's lifecycle**
+| Stage | View | Source artifacts |
+|---|---|---|
+| Run | Live pipeline P1–P5 per run: state, checkpoint, time, cost; the outer-loop reopen markers | status.json, trace, metrics.loops |
+| P1 | PRD revision timeline (draft → human reason → draft) with diffs; DoD criteria with basis + quote; authority policy tiers | 01-scope/prd.json, revisions/, decisions.jsonl |
+| P2 | Factors → taxonomy → ontology graph (classes, properties, relations); DoD compiled to queries; critic objections | 02-ontology/* |
+| Loops | Per-phase iteration threads: propose → critique → revise → check, objections and resolution, draft digests, stop reason | trace (event loop) |
+| P3 | Discovery funnel per provider: leads → captured → critic-accepted → authority-passed → sources; Tavily credits; source review | 03-fanout/*, surface-map/leads.json, trace |
+| Spiders | Site graph per source: page types, sample instances, edges, property hints | surface-map/<source>/site-graph.json |
+| P4 | Per (source, objective) plan: target properties, path, method, mode range, allowed domains, budget | 04-local/*/tdd |
+| P5 | Step stream: observed / requested / executed / evaluated, mode, verdict (Jev → Vultr vision), action gates, retries, escalations; capture thumbnails; live-view link | trace, jobs, bronze meta |
+| Cells | Cell lifecycle + the six checkpoints, limits and usage, limit kills, quarantines, gateway screens | jobs.jsonl, trace |
+| Learning | Repair attempts (stderr → diff → test), promoted macro versions, share of D0/D1 steps over runs | trace repair, 05-macros |
+| Refine | Silver → gold: observations, kept conflicts, SHACL violations, entity-resolution merges | silver export / metrics |
+| Output | Gold growth over time; completeness heatmap (entities × DoD properties → evidence); DoD progress; sources × properties coverage; a generic entity browser with value → evidence; exports | entities.jsonl, metrics.json |
+| Lineage | Value → evidence → step → plan → objective → ontology → PRD → brief (generic journal) | trace + case files |
+| Failures | Captcha/login stops, blocked domains, errors, retries, sources dropped and why | trace, jobs |
+| Humans | Cross-case "needs you" inbox; decision log; time waiting on humans | APPROVAL_PENDING, decisions.jsonl |
+| Cost | Spend by phase, model, mode and source; cost per gold value; run budget burn | trace usage, gateway log, spend history |
+| Compare | Run vs run (what changed; re-refine impact); case vs case (two briefs → two PRDs → two ontologies → two outputs) | runs/*, both cases |
+
+**Rules:** every case view and every approval review shows the case's question (its brief) at the top (user feedback); honest charts (no decoration, no invented data); each view names its source artifact; missing data leads to an
+empty state that says what will appear and which gap produces it; 1280 and 390 px; AA contrast.
+
 ## 8. Safety model (the track's core)
 - **Isolation:** gVisor `runsc`, a network isolated per cell, egress allowlist, resource caps, destruction after every session.
 - **Secrets:** the real key lives only in the gateway. Hands hold nothing; brains hold a session-scoped, budget-capped,
