@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
-from ontofill.workflow import run_case
+from ontofill.workflow import NEEDS_HUMAN_EXIT, run_case
 from tests.test_r22_p1 import _prd
 
 
@@ -26,9 +26,10 @@ def test_prd_exhaustion_records_bounded_errors_in_status_trace_and_cli(tmp_path,
 
     result = run_case(case, run_id=run_id, decision=decision, lake=lake, to_phase=1)
 
-    assert result == 3
+    assert result == NEEDS_HUMAN_EXIT
     prefix = f"runs/case/{run_id}"
     status = json.loads(lake.read_key(f"{prefix}/status.json"))
+    assert status["checkpoint_pending"] is None
     trace = [json.loads(line) for line in lake.read_key(f"{prefix}/trace.live.jsonl").splitlines()]
     output = capsys.readouterr().out
     for name in ("authority_policy", "personas", "definition_of_done"):
@@ -44,6 +45,6 @@ def test_prd_exhaustion_records_bounded_errors_in_status_trace_and_cli(tmp_path,
     assert len(attempts) == 3
     assert all(step["evaluated"]["status"] == "invalid_response" for step in attempts)
     assert all(step["evaluated"].get("reason") for step in attempts)
-    pause = [step for step in trace if step["evaluated"].get("status") == "paused"]
+    pause = [step for step in trace if step["evaluated"].get("status") == "needs_human"]
     assert pause
     assert "definition_of_done" in pause[-1]["evaluated"]["reason"]
