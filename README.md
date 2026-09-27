@@ -38,7 +38,9 @@ which also states where each case stands.
   library case, each from a one-paragraph brief.
 - **Honest gap.** The reference case has **no engine gold yet**: its primary procurement portal needs a data API
   that the sandbox egress allowlist refused, and the source critic accepted none of the other candidates. The
-  allowlist now admits that portal's own API and CDN hosts (`378a8c0`), and the run resumed on it. The engine run
+  allowlist now admits that portal's own API and CDN hosts (`378a8c0`), and the run resumed on it. The portal now
+  renders inside the sandbox. Only a trusted publisher's sibling hosts were added, GET only; third-party hosts stay
+  blocked and POSTs are refused, so the blast radius stayed zero while egress widened. The engine run
   continues after submission; its status is live on the judges console, with every run, review and failure.
 - **Building in the open.** A simpler second case (San Francisco library branches) surfaced five engine defects
   that the hard case had hidden. Three are fixed with tests: city-level jurisdictions in P1, invalid ontology rules
