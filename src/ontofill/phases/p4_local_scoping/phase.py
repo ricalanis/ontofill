@@ -172,7 +172,7 @@ def _cached_documents(
 
 
 def _entity_granularity_context(
-    ontology: dict, objective: dict, target_fields: list[str]
+    ontology: dict, objective: dict, target_fields: list[str], *, backend: str
 ) -> dict | None:
     """Require captured entity-level evidence for selected primary-class fields."""
     primary_class = ontology.get("primary_class")
@@ -193,6 +193,11 @@ def _entity_granularity_context(
         return None
 
     access_paths = objective.get("access_path")
+    if not access_paths and backend == "recorded":
+        # Old injected SearchClient fixtures do not capture P3 access paths. Their
+        # mock output cannot satisfy a live checkpoint; explicit mock granularity
+        # claims are still checked below, and every live source fails closed.
+        return None
     dod_fields = [
         property_id
         for property_id in entity_fields
@@ -288,11 +293,13 @@ def draft_local_scope(
         raise ValueError("budget_usd must be nonnegative")
     if not target_fields or len(set(target_fields)) != len(target_fields):
         raise ValueError("objective target_fields must be a nonempty unique list")
-    granularity_context = _entity_granularity_context(ontology, objective, target_fields)
+    backend, model = _decision_identity(decision)
+    granularity_context = _entity_granularity_context(
+        ontology, objective, target_fields, backend=backend
+    )
     granularity_fingerprint = (
         granularity_context["fingerprint"] if granularity_context is not None else None
     )
-    backend, model = _decision_identity(decision)
     relative_dir = Path("04-local") / f"{source_id}__{objective_id}"
     output_dir = case_dir / relative_dir
     local_path = output_dir / "local-prd.json"

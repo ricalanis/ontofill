@@ -1,3 +1,16 @@
+# R44 P3 granularity
+
+The first composed gate passed 570 tests/5 skips and failed seven recorded legacy SearchClient fixtures that carry no P3 access-path metadata. The live P4 invariant remains strict. A narrowly scoped recorded-only compatibility path now allows missing metadata solely in mock previews; explicit aggregate/unknown mock paths still fail. A new live missing-path regression and the seven formerly failing cases passed together (26 focused tests, Ruff clean). The managed composed successor gate passed **578 tests, 5 skips**, Ruff lint/format, both JSON schema syntax checks, and diff checks.
+
+- [x] FILES: `src/ontofill/phases/p4_local_scoping/phase.py`, `tests/test_local_scope.py`. TASK: independently reject aggregate/unknown/legacy objectives before model call/cache, and scope an entity-level TDD. DONE: worker managed `p4-granularity-workflow-rejection` passed 12 P4 tests and Ruff lint/format/diff checks at `59d32af`; root composed full gate remains. FORMAT: Ruff check/format.
+
+The first full gate passed 565 tests/5 skips and failed three older synthetic fixtures that claimed per-library capability from an identity-free generic search form/table. Those fixtures now include a captured `name` field while preserving redirect and prompt-screening assertions. The second full gate passed 568 tests/5 skips and Ruff lint, then stopped on one deterministic format line; Ruff formatted it. A focused cache regression now proves old capability claims are recaptured before reuse.
+
+- [x] FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `schemas/objectives.schema.json`, `schemas/source-candidate.schema.json`, `tests/test_r44_granularity.py`. TASK: reject aggregate statistics as providers of primary-class DoD properties, accept grounded entity records, and ask for per-entity datasets. DONE: `uv run pytest -q tests/test_r44_granularity.py tests/test_r35_p3_capability.py` passed 6 tests after red baseline. FORMAT: focused Ruff check/format passed.
+- [x] FILES: P3 cache and `tests/test_r44_granularity.py`. TASK: invalidate old objectives and candidate skip keys without record granularity. DONE: focused 4 tests passed, including a full second discovery after stripping legacy fields. FORMAT: Ruff check/format passed.
+- [x] FILES: same plus P4 worker's scoped files. TASK: compose R44 P3/P4 and preserve synthetic workflow behavior. DONE: managed full successor passed 578 tests/5 skips, Ruff lint/format, schema JSON and diff checks. FORMAT: Ruff check and format over engine-owned paths.
+- [ ] FILES: `coord/status/codex-ontofill.md`, `coord/GAPS.md`. TASK: record green SHA and gate, then pre-push scan and push only ontofill main. DONE: origin/main contains the verified commit; VM deployment waits for no-engine window. FORMAT: markdown.
+
 # R33b thin candidate follow-up
 
 FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `tests/test_r33b_redirect_preview.py`, task records.
@@ -442,13 +455,3 @@ FORMAT: Ruff format for changed Python files.
 
 Managed check: `agent-progress run --task r40-parse-error --paths sandbox/parse-pod/runner.py,src/ontofill/sandbox/parse.py,tests/test_sandbox_parse.py --check malformed-biff-diagnostic --strategy bounded-stage-diagnostic-without-payload-text --hypothesis 'A malformed synthetic BIFF workbook keeps invalid_xls as its stable task reason and emits bounded safe diagnostic text in its six-checkpoint job and task trace, without leaking raw bytes or secret-like text.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && git diff --check'`
 Result: attempt 1 was the intended red baseline (`KeyError: message`); attempt 2 passed 26 tests, skipped 2 containment tests, and passed Ruff lint, format, and `git diff --check`.
-# R44 P3 granularity
-
-- [x] FILES: `src/ontofill/phases/p4_local_scoping/phase.py`, `tests/test_local_scope.py`. TASK: independently reject aggregate/unknown/legacy objectives before model call/cache, and scope an entity-level TDD. DONE: worker managed `p4-granularity-workflow-rejection` passed 12 P4 tests and Ruff lint/format/diff checks at `59d32af`; root composed full gate remains. FORMAT: Ruff check/format.
-
-The first full gate passed 565 tests/5 skips and failed three older synthetic fixtures that claimed per-library capability from an identity-free generic search form/table. Those fixtures now include a captured `name` field while preserving redirect and prompt-screening assertions. The second full gate passed 568 tests/5 skips and Ruff lint, then stopped on one deterministic format line; Ruff formatted it. A focused cache regression now proves old capability claims are recaptured before reuse.
-
-- [x] FILES: `src/ontofill/phases/p3_fanout/discovery_loop.py`, `schemas/objectives.schema.json`, `schemas/source-candidate.schema.json`, `tests/test_r44_granularity.py`. TASK: reject aggregate statistics as providers of primary-class DoD properties, accept grounded entity records, and ask for per-entity datasets. DONE: `uv run pytest -q tests/test_r44_granularity.py tests/test_r35_p3_capability.py` passed 6 tests after red baseline. FORMAT: focused Ruff check/format passed.
-- [x] FILES: P3 cache and `tests/test_r44_granularity.py`. TASK: invalidate old objectives and candidate skip keys without record granularity. DONE: focused 4 tests passed, including a full second discovery after stripping legacy fields. FORMAT: Ruff check/format passed.
-- [ ] FILES: same plus P4 worker's scoped files. TASK: compose R44 P3/P4 and preserve synthetic workflow behavior. DONE: managed full gate in GOAL.md. FORMAT: Ruff check and format over engine-owned paths.
-- [ ] FILES: `coord/status/codex-ontofill.md`, `coord/GAPS.md`. TASK: record green SHA and gate, then pre-push scan and push only ontofill main. DONE: origin/main contains the verified commit; VM deployment waits for no-engine window. FORMAT: markdown.

@@ -1,4 +1,16 @@
-# Current goal: R33b never offer a thin redirect source review
+# Current goal: R44 per-entity source granularity
+
+P4 independently refuses aggregate, unknown or missing primary-class DoD granularity before inference or TDD cache reuse. Its model prompt and validation rule specify one row/page per entity. A stale local TDD is invalidated when cited granularity evidence changes.
+
+The deprecated injected SearchClient path used by recorded fixtures has no P3 capture metadata. It may preview a mock run without access paths, while any live backend with missing paths fails closed and explicit aggregate/unknown paths fail on every backend. Mock output cannot satisfy checkpoints or the DoD.
+
+P3 confirms a source for primary-class DoD properties only when captured evidence supports a route to records at one row or page per primary entity; aggregate statistics do not count. Search asks for entity-level lists, and P4 independently checks objectives before TDD.
+
+DONE: `uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox && uv run python -m json.tool schemas/objectives.schema.json >/dev/null && uv run python -m json.tool schemas/source-candidate.schema.json >/dev/null && git diff --check` (managed composed successor passed 578 tests, 5 skips, Ruff, schemas and diff checks).
+
+Constraints: synthetic tests; no case artifacts, approvals, credentials, VM deploy or PA-owned code. Public delivery only after the composed gate passes.
+
+# Prior goal: R33b never offer a thin redirect source review
 
 Only a one-shot sandbox preview with a capture, screenshot, landing URL, source class,
 and critic-supported DoD capability may produce a new redirect source review packet.
@@ -176,12 +188,3 @@ When malformed legacy BIFF reaches the isolated parser pod, preserve its stable 
 DONE (passed): `agent-progress run --task r40-parse-error --paths sandbox/parse-pod/runner.py,src/ontofill/sandbox/parse.py,tests/test_sandbox_parse.py --check malformed-biff-diagnostic --strategy bounded-stage-diagnostic-without-payload-text --hypothesis 'A malformed synthetic BIFF workbook keeps invalid_xls as its stable task reason and emits bounded safe diagnostic text in its six-checkpoint job and task trace, without leaking raw bytes or secret-like text.' -- sh -c 'uv run pytest -q tests/test_sandbox_parse.py && uv run ruff check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && uv run ruff format --check sandbox/parse-pod/runner.py src/ontofill/sandbox/parse.py tests/test_sandbox_parse.py && git diff --check'` passed: 26 passed, 2 skipped; Ruff lint, format, and diff checks clean. Attempt 1 was the expected red baseline at the missing diagnostic field.
 
 Constraints: own only the parse-pod runner, sandbox parse adapter, focused synthetic tests, and task notes. Do not touch P5/source review, R36 TLS, PA-owned files, real case/APPROVED, secrets, VM, or deployment. Commit locally; root integrates.
-# Current goal: R44 per-entity source granularity
-
-P4 independently refuses aggregate, unknown or missing primary-class DoD granularity before inference or TDD cache reuse. Its model prompt and validation rule specify one row/page per entity. A stale local TDD is invalidated when cited granularity evidence changes.
-
-P3 confirms a source for primary-class DoD properties only when captured evidence supports a route to records at one row or page per primary entity; aggregate statistics do not count. Search asks for entity-level lists, and P4 independently checks objectives before TDD.
-
-DONE: `agent-progress run --task r44-p3 --paths src/ontofill/phases/p3_fanout/discovery_loop.py,schemas/objectives.schema.json,schemas/source-candidate.schema.json,tests/test_r44_granularity.py,tests/test_discovery_loop.py,tests/test_r33_p3_reachability.py,tests/test_r39_p3_jurisdiction.py,GOAL.md,TODO.md,NOTES.md --check r44-p3-entity-fixtures --strategy captured-primary-identity-in-existing-fixtures --hypothesis 'The old synthetic redirect and prompt-screening cases remain valid when their captured pages actually name a primary entity; aggregate counts remain rejected.' -- sh -c 'uv run pytest -q && uv run ruff check src tests packages infra sandbox && uv run ruff format --check src tests packages infra sandbox && git diff --check'`
-
-Constraints: synthetic tests; no case artifacts, approvals, credentials, VM deploy or PA-owned code. Public delivery only after the composed gate passes.

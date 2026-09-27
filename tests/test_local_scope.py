@@ -309,6 +309,18 @@ def test_r44_granularity_accepts_entity_records_and_scopes_tdd_to_entities(tmp_p
     assert any("aggregate statistics" in rule for rule in tdd["validation_rules"])
 
 
+def test_r44_live_objective_without_access_path_fails_closed(tmp_path) -> None:
+    objective = granularity_objective()
+    objective.pop("access_path")
+    decision = FakeDecision("vultr", "synthetic-live-model", RESPONSE)
+
+    with pytest.raises(ModelValidationExhausted, match="entity_records"):
+        draft_local_scope(tmp_path, PRD, R44_ONTOLOGY, objective, decision)
+
+    assert decision.calls == []
+    assert not artifact_dir(tmp_path).exists()
+
+
 def test_r44_granularity_change_invalidates_cached_tdd_and_missing_evidence_cannot_reuse_it(
     tmp_path,
 ) -> None:
