@@ -74,11 +74,11 @@
         "approved_thresholds": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["target", "operator", "min_ratio"],
+          "required": ["target", "operator"],
           "properties": {
             "target": {"type": "number", "minimum": 0},
             "operator": {"enum": [">=", ">", "=", "<=", "<"]},
-            "min_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+            "min_ratio": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
           }
         },
         "rejected_query": {"$ref": "dod-queries.schema.json#/$defs/query"}

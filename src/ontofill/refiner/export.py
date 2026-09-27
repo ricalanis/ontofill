@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
+from ontofill.case.checkpoints import load_verified_approval
 from ontofill.refiner.core import (
     SCHEMA_ROOT,
     _canonical,
@@ -217,7 +218,7 @@ def _check_lineage(
     dod_queries: dict,
     validators: dict[str, Draft202012Validator],
     generated_by: dict[str, str],
-) -> None:
+) -> list[dict]:
     by_value: dict[str, list[dict]] = {}
     for step in trace:
         for value_id in step["value_ids"]:
@@ -251,8 +252,21 @@ def _check_lineage(
     prd_path = objective_doc["prd_path"]
     global_prd = _read_case_json(case_dir, prd_path, validators["global-prd"])
     approved_criteria = {item["id"]: item for item in global_prd["definition_of_done"]}
-    if {query["criterion_id"] for query in query_doc["queries"]} != set(approved_criteria):
+    query_criterion_ids = [query["criterion_id"] for query in query_doc["queries"]]
+    if len(query_criterion_ids) != len(set(query_criterion_ids)):
+        raise ValueError("DoD queries contain duplicate approved PRD criteria")
+    unresolved_criteria = _approved_unresolved_criteria(
+        case_dir,
+        ontology_doc,
+        query_criterion_ids,
+        approved_criteria,
+        validators,
+    )
+    unresolved_ids = {item["criterion_id"] for item in unresolved_criteria}
+    if set(query_criterion_ids) | unresolved_ids != set(approved_criteria):
         raise ValueError("DoD queries do not cover every approved PRD criterion")
+    if set(query_criterion_ids) & unresolved_ids:
+        raise ValueError("unresolved DoD criteria must not also have executable queries")
     for query in query_doc["queries"]:
         criterion = approved_criteria.get(query["criterion_id"])
         if criterion is None or (query["target"], query["operator"]) != (
@@ -375,6 +389,107 @@ def _check_lineage(
         objective_version_is_stale or query_version_is_stale
     ) and not authorized_ontology_only_values:
         raise ValueError("stale ontology lineage has no exported ontology-only replay value")
+    return unresolved_criteria
+
+
+def _approved_unresolved_criteria(
+    case_dir: Path,
+    ontology: dict,
+    query_criterion_ids: list[str],
+    approved_criteria: dict[str, dict],
+    validators: dict[str, Draft202012Validator],
+) -> list[dict]:
+    """Load only current, approved unresolved DoD receipts for omitted query IDs."""
+    missing_ids = set(approved_criteria) - set(query_criterion_ids)
+    receipt_path = case_dir / "02-ontology/recommendations/unresolved.json"
+    if not receipt_path.is_file():
+        if missing_ids:
+            raise ValueError("missing ontology recommendations for omitted DoD criteria")
+        return []
+    recommendation_validator = validators.get("ontology-recommendations")
+    if recommendation_validator is None:
+        raise ValueError("ontology recommendations schema is unavailable")
+    receipt = _read_case_json(
+        case_dir, "02-ontology/recommendations/unresolved.json", recommendation_validator
+    )
+    unresolved = receipt.get("unresolved_criteria", [])
+    if not unresolved:
+        if missing_ids:
+            raise ValueError("ontology recommendations do not explain omitted DoD criteria")
+        return []
+    if not missing_ids:
+        raise ValueError(
+            "stale unresolved DoD recommendations remain after query coverage was restored"
+        )
+    try:
+        prd_approval = load_verified_approval(
+            case_dir / "01-scope/APPROVED", case_dir, ["01-scope/prd.json"], "prd"
+        )
+        ontology_approval = load_verified_approval(
+            case_dir / "02-ontology/APPROVED",
+            case_dir,
+            ["02-ontology/ontology.json"],
+            "ontology",
+        )
+    except (OSError, ValueError) as exc:
+        raise ValueError("unresolved DoD criteria require current digest-bound approvals") from exc
+    if (
+        prd_approval.get("decision", "approve") == "deny"
+        or ontology_approval.get("decision", "approve") == "deny"
+    ):
+        raise ValueError("unresolved DoD criteria require approved PRD and ontology artifacts")
+    if receipt["generated_by"] != ontology["generated_by"]:
+        raise ValueError("stale unresolved DoD recommendations do not match the approved ontology")
+    unresolved_ids = [item["criterion_id"] for item in unresolved]
+    if len(unresolved_ids) != len(set(unresolved_ids)) or set(unresolved_ids) != missing_ids:
+        raise ValueError("unresolved DoD recommendations do not match omitted query criteria")
+    for item in unresolved:
+        criterion = approved_criteria[item["criterion_id"]]
+        thresholds = item["approved_thresholds"]
+        expected = {
+            "target": criterion["target"],
+            "operator": criterion["operator"],
+            "min_ratio": criterion.get("min_ratio"),
+        }
+        received = {
+            "target": thresholds["target"],
+            "operator": thresholds["operator"],
+            "min_ratio": thresholds.get("min_ratio"),
+        }
+        if received != expected or item["metric"] != criterion["metric"]:
+            raise ValueError(
+                f"unresolved DoD recommendation differs from approved criterion "
+                f"`{item['criterion_id']}`"
+            )
+        rejected_query = item["rejected_query"]
+        aggregate = rejected_query["aggregate"]
+        approved_min_ratio = criterion.get("min_ratio")
+        unsupported_ratio = (
+            approved_min_ratio is not None and aggregate != "entities_meeting_completeness"
+        )
+        zero_operators = {"<=", "<", "=", "=="}
+        zero_primary_count = (
+            criterion["target"] == 0
+            and criterion["operator"] in zero_operators
+            and rejected_query["target"] == criterion["target"]
+            and rejected_query["operator"] == criterion["operator"]
+            and (
+                aggregate == "count_distinct_source_classes"
+                or (
+                    aggregate in {"count_entities", "count_entities_with_relation"}
+                    and rejected_query.get("class_id", rejected_query.get("class"))
+                    in {None, ontology.get("primary_class")}
+                )
+            )
+        )
+        if rejected_query["criterion_id"] != item["criterion_id"] or not (
+            unsupported_ratio or zero_primary_count
+        ):
+            raise ValueError(
+                f"unresolved DoD recommendation has no unsupported query for "
+                f"`{item['criterion_id']}`"
+            )
+    return unresolved
 
 
 def _validate_entities(entities: Sequence[dict], ontology: dict, lake: GoldLake) -> None:
@@ -637,6 +752,7 @@ def _metrics(
     preview: bool,
     decisions_by_backend: dict[str, int] | None,
     coverage_basis: str = "none",
+    unresolved_criteria: Sequence[dict] = (),
 ) -> dict:
     classes, properties = _ontology_declarations(ontology)
     relations, _ = _signal_definitions(ontology, classes, properties)
@@ -827,6 +943,17 @@ def _metrics(
                 and _compare(actual, query["target"], query["operator"]),
             }
         )
+    for item in unresolved_criteria:
+        dod.append(
+            {
+                "criterion_id": item["criterion_id"],
+                "query": "unresolved",
+                "target": item["approved_thresholds"]["target"],
+                "actual": 0,
+                "met": False,
+                "reason": "unresolved",
+            }
+        )
     metrics = {
         "run_id": run_id,
         "entities_total": entities_total,
@@ -898,7 +1025,7 @@ def export_run(
         if step_backend == "jev" and step["value_ids"]:
             raise ValueError("Jev trace cannot ground gold values")
     _validate_entities(sorted_entities, ontology, lake)
-    _check_lineage(
+    unresolved_criteria = _check_lineage(
         case_dir,
         run_id,
         sorted_entities,
@@ -920,6 +1047,7 @@ def export_run(
         preview,
         decisions_by_backend,
         coverage_basis="classification" if taxonomy_classified else "none",
+        unresolved_criteria=unresolved_criteria,
     )
     validators["metrics"].validate(metrics)
     prefix = f"gold/{case_id}/{run_id}"

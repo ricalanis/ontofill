@@ -896,6 +896,28 @@ def _remaining_budget_usd(decision: object, total_budget: float | None) -> float
     return max(0.0, total_budget - spent)
 
 
+def _unmet_dod_criterion_ids(metrics: Mapping) -> list[str]:
+    return sorted(
+        {
+            row["criterion_id"]
+            for row in metrics.get("dod", [])
+            if row.get("met") is False and isinstance(row.get("criterion_id"), str)
+        }
+    )
+
+
+def _final_dod_status(metrics: Mapping) -> tuple[str, str | None, int]:
+    """Keep an export with unmet approved criteria visible, but never mark it done."""
+    unmet = _unmet_dod_criterion_ids(metrics)
+    if unmet:
+        return (
+            "paused",
+            f"approved DoD remains unresolved or unmet: {', '.join(unmet)}",
+            NEEDS_HUMAN_EXIT,
+        )
+    return "done", None, 0
+
+
 def run_case(
     case_dir: Path,
     *,
@@ -951,6 +973,7 @@ def run_case(
     pending: str | None = None
     reopen_phase: int | None = None
     outer_paused = False
+    final_status_exit = 3
     historical_trace = _persisted_run_trace(lake, case_id, run_id, [])
     earlier_reopens = prior_reopens(historical_trace)
     latest_outer = _latest_outer_decision(historical_trace)
@@ -1523,15 +1546,29 @@ def run_case(
                     sources=sources,
                 )
             else:
+                unmet_dod_ids = _unmet_dod_criterion_ids(metrics)
+                unmet_dod_reason = (
+                    f"approved DoD remains unresolved or unmet: {', '.join(unmet_dod_ids)}"
+                    if unmet_dod_ids
+                    else None
+                )
+                if pending:
+                    final_state = "paused"
+                    final_reason = unmet_dod_reason
+                    final_status_exit = NEEDS_HUMAN_EXIT if unmet_dod_ids else 3
+                elif outer_paused:
+                    final_state = "paused"
+                    final_reason = f"outer gap loop stopped: {outer.stop_reason}"
+                    if unmet_dod_reason:
+                        final_reason = f"{final_reason}; {unmet_dod_reason}"
+                    final_status_exit = NEEDS_HUMAN_EXIT if unmet_dod_ids else 3
+                else:
+                    final_state, final_reason, final_status_exit = _final_dod_status(metrics)
                 feed.update_status(
-                    state="paused" if pending or outer_paused else "done",
+                    state=final_state,
                     phase=5,
                     checkpoint_pending=pending,
-                    reason=(
-                        f"outer gap loop stopped: {outer.stop_reason}"
-                        if outer_paused and not pending
-                        else None
-                    ),
+                    reason=final_reason,
                     metrics=metrics,
                     sources=sources,
                 )
@@ -1545,6 +1582,8 @@ def run_case(
                     print(
                         f"state=paused open_dod_gaps={len(outer.gaps)} reason={outer.stop_reason}"
                     )
+                elif final_state == "paused":
+                    print(f"state=paused phase=5 reason={final_reason} needs_human=true")
                 else:
                     print(f"state=done checkpoint_pending=none open_dod_gaps={len(outer.gaps)}")
         except SourceReviewPending as exc:
@@ -1700,7 +1739,7 @@ def run_case(
             lake=lake,
             store=store,
         )
-    return 3 if pending or outer_paused else 0
+    return final_status_exit
 
 
 def _existing_run(case_dir: Path, run_id: str | None) -> tuple[str, object, str, dict]:

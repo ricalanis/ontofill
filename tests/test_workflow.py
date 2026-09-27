@@ -15,6 +15,7 @@ from ontofill.phases.p3_fanout.authority import source_fingerprint
 from ontofill.workflow import (
     NEEDS_HUMAN_EXIT,
     _capture_with_live_trace,
+    _final_dod_status,
     _persisted_run_trace,
     _preview_decision,
     _scratch_case,
@@ -22,6 +23,22 @@ from ontofill.workflow import (
     run_case,
 )
 from tests.approval_support import bind_approval
+
+
+def test_unmet_approved_dod_pauses_final_status_and_names_criteria() -> None:
+    state, reason, exit_code = _final_dod_status(
+        {
+            "dod": [
+                {"criterion_id": "dod1", "met": True},
+                {"criterion_id": "dod2", "met": False, "reason": "unresolved"},
+                {"criterion_id": "dod3", "met": False},
+            ]
+        }
+    )
+
+    assert state == "paused"
+    assert reason == "approved DoD remains unresolved or unmet: dod2, dod3"
+    assert exit_code == NEEDS_HUMAN_EXIT
 
 
 def test_export_trace_includes_steps_from_prior_checkpoint_runs(tmp_path) -> None:

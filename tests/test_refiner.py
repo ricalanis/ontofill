@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ontofill.case.checkpoints import write_json
 from ontofill.contracts import validate_document
 from ontofill.inference import RecordedDecisionClient
 from ontofill.lake import FileLake
@@ -19,6 +20,7 @@ from ontofill.refiner import (
 )
 from ontofill.refiner.core import classify_entities
 from ontofill.refiner.export import _compare, _metrics, _query_actual
+from tests.approval_support import bind_approval
 
 RUN_ID = "mock-books"
 SOURCE_ID = "synthetic-catalog"
@@ -913,3 +915,198 @@ def test_valid_ontology_date_survives_without_string_coercion(tmp_path: Path) ->
     assert result.rejected == []
     assert result.entities[0]["properties"]["published"]["value"] == "2024-02-29"
     assert type(result.entities[0]["properties"]["copies"]["value"]) is int
+
+
+def _seed_unresolved_export_case(
+    case_dir: Path,
+    *,
+    with_receipt: bool = True,
+    stale_receipt: bool = False,
+    zero_count_aggregate: str | None = None,
+) -> tuple[dict, dict]:
+    model, queries = ontology(), dod_queries()
+    write_lineage(case_dir, model, queries, RECORDED)
+    prd_path = case_dir / "01-scope/prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    criterion = prd["definition_of_done"][1]
+    if zero_count_aggregate is None:
+        criterion["min_ratio"] = 0.8
+        reason = "The approved per-entity ratio cannot be evaluated by count_entities."
+    else:
+        criterion.update(
+            metric="books missing from the output",
+            operator="<=",
+            target=0,
+        )
+        criterion.pop("min_ratio", None)
+        reason = "The zero count is only met when no books are present."
+    write_json(prd_path, prd)
+    queries["queries"] = [queries["queries"][0]]
+    write_json(case_dir / "02-ontology/dod-queries.json", queries)
+
+    if with_receipt:
+        recommendation_generated_by = RECORDED.copy()
+        if stale_receipt:
+            recommendation_generated_by["at"] = "2026-01-02T00:00:00Z"
+        write_json(
+            case_dir / "02-ontology/recommendations/unresolved.json",
+            {
+                "schema_version": "1",
+                "ontology_path": "02-ontology/ontology.json",
+                "generated_by": recommendation_generated_by,
+                "unresolved": [],
+                "repairs": [],
+                "query_repairs": [],
+                "unresolved_criteria": [
+                    {
+                        "criterion_id": "unavailable",
+                        "metric": criterion["metric"],
+                        "reason": reason,
+                        "approved_thresholds": {
+                            "target": criterion["target"],
+                            "operator": criterion["operator"],
+                            **(
+                                {"min_ratio": criterion["min_ratio"]}
+                                if "min_ratio" in criterion
+                                else {}
+                            ),
+                        },
+                        "rejected_query": {
+                            "criterion_id": "unavailable",
+                            "aggregate": zero_count_aggregate or "count_entities",
+                            **(
+                                {"class_id": "Book"}
+                                if zero_count_aggregate != "count_distinct_source_classes"
+                                else {}
+                            ),
+                            "target": criterion["target"],
+                            "operator": criterion["operator"],
+                        },
+                    }
+                ],
+            },
+        )
+    for checkpoint, relative_path in (
+        ("prd", "01-scope/prd.json"),
+        ("ontology", "02-ontology/ontology.json"),
+    ):
+        write_json(
+            case_dir / Path(relative_path).parent / "APPROVED",
+            bind_approval(
+                case_dir,
+                [relative_path],
+                {
+                    "approver": "Synthetic reviewer",
+                    "date": "2026-09-27",
+                    "checkpoint": checkpoint,
+                    "decision": "approve",
+                },
+            ),
+        )
+    return model, queries
+
+
+def test_export_reports_unresolved_dod_as_unmet_without_claiming_done(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    model, queries = _seed_unresolved_export_case(case_dir)
+
+    metrics = export_run(
+        FileLake(tmp_path / "lake"),
+        case_dir,
+        "books",
+        RUN_ID,
+        [],
+        ontology=model,
+        dod_queries=queries,
+        generated_by=RECORDED,
+    )
+
+    unresolved = next(row for row in metrics["dod"] if row["criterion_id"] == "unavailable")
+    assert unresolved == {
+        "criterion_id": "unavailable",
+        "query": "unresolved",
+        "target": 1,
+        "actual": 0,
+        "met": False,
+        "reason": "unresolved",
+    }
+    assert not any(row["met"] for row in metrics["dod"])
+    validate_document("metrics", metrics)
+
+
+@pytest.mark.parametrize("aggregate", ["count_entities", "count_distinct_source_classes"])
+def test_export_accepts_zero_count_unresolved_receipt_without_min_ratio(
+    tmp_path: Path, aggregate: str
+) -> None:
+    case_dir = tmp_path / "case"
+    model, queries = _seed_unresolved_export_case(case_dir, zero_count_aggregate=aggregate)
+
+    metrics = export_run(
+        FileLake(tmp_path / "lake"),
+        case_dir,
+        "books",
+        RUN_ID,
+        [],
+        ontology=model,
+        dod_queries=queries,
+        generated_by=RECORDED,
+    )
+
+    unresolved = next(row for row in metrics["dod"] if row["criterion_id"] == "unavailable")
+    assert unresolved["target"] == 0
+    assert unresolved["actual"] == 0
+    assert unresolved["met"] is False
+    assert unresolved["reason"] == "unresolved"
+    validate_document("metrics", metrics)
+
+
+@pytest.mark.parametrize(
+    ("receipt", "stale", "expected_error"),
+    [
+        (False, False, "missing ontology recommendations"),
+        (True, True, "stale unresolved DoD recommendations"),
+    ],
+)
+def test_export_fails_closed_for_missing_or_stale_unresolved_receipt(
+    tmp_path: Path,
+    receipt: bool,
+    stale: bool,
+    expected_error: str,
+) -> None:
+    case_dir = tmp_path / "case"
+    model, queries = _seed_unresolved_export_case(
+        case_dir, with_receipt=receipt, stale_receipt=stale
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        export_run(
+            FileLake(tmp_path / "lake"),
+            case_dir,
+            "books",
+            RUN_ID,
+            [],
+            ontology=model,
+            dod_queries=queries,
+            generated_by=RECORDED,
+        )
+
+
+def test_export_rejects_unresolved_receipt_after_approved_prd_changes(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    model, queries = _seed_unresolved_export_case(case_dir)
+    prd_path = case_dir / "01-scope/prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    prd["definition_of_done"][1]["target"] = 2
+    write_json(prd_path, prd)
+
+    with pytest.raises(ValueError, match="current digest-bound approvals"):
+        export_run(
+            FileLake(tmp_path / "lake"),
+            case_dir,
+            "books",
+            RUN_ID,
+            [],
+            ontology=model,
+            dod_queries=queries,
+            generated_by=RECORDED,
+        )

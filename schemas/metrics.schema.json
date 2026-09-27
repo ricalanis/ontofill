@@ -100,8 +100,15 @@
         "query": {"type": "string", "minLength": 1},
         "target": {"type": "number", "minimum": 0},
         "actual": {"type": "number", "minimum": 0},
-        "met": {"type": "boolean"}
-      }
+        "met": {"type": "boolean"},
+        "reason": {"const": "unresolved"}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["reason"], "properties": {"reason": {"const": "unresolved"}}},
+          "then": {"properties": {"actual": {"const": 0}, "met": {"const": false}}}
+        }
+      ]
     }
   },
   "allOf": [
