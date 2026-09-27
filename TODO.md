@@ -42,6 +42,15 @@ FORMAT: Ruff check/format for edited Python; JSON parse for edited schemas; `git
 
 CHECK: `agent-progress run --task r51b-budget --check r51b-wall-clock-p3-successor` passed: 12 tests, Ruff lint/format, JSON parsing for both schemas, and diff check. The initial same-check run passed pytest and found one import-order issue; the final managed attempt passed cleanly.
 
+## R52 P3 bronze trace progress
+- [x] Emit one live trace step for each spider page/robots bronze write and the site-graph bronze publication, including bronze key, source, and job; stream capture results into RunFeed before P3 returns.
+- [x] Keep the crawl boundary truthful: the pod returns its bounded output after crawling, then the control plane persists and streams each artifact.
+FILES: `src/ontofill/sandbox/capture.py`, `src/ontofill/workflow.py`, `src/ontofill/phases/p3_fanout/site_graph.py`, `tests/test_sandbox_spider.py`, `tests/test_site_graph.py`, `tests/test_workflow.py`.
+TASK: Make each P3 bronze capture attributable in the live run feed while publishing page persistence progress.
+DONE: `uv run pytest -q tests/test_sandbox_spider.py tests/test_site_graph.py tests/test_workflow.py` plus Ruff check/format for touched Python files; page and robots steps carry key/source/job, graph publication has a trace step, and callback steps reach RunFeed before P3 returns.
+FORMAT: `uv run ruff check src/ontofill/sandbox/capture.py src/ontofill/workflow.py src/ontofill/phases/p3_fanout/site_graph.py tests/test_sandbox_spider.py tests/test_site_graph.py tests/test_workflow.py && uv run ruff format --check src/ontofill/sandbox/capture.py src/ontofill/workflow.py src/ontofill/phases/p3_fanout/site_graph.py tests/test_sandbox_spider.py tests/test_site_graph.py tests/test_workflow.py`.
+CHECK: `agent-progress run --task r52-spider-trace --check p3-bronze-live-trace-and-graph-publish` passed 17 tests, Ruff lint/format, and `git diff --check`. The first managed check found one import-order issue after 9 tests passed; fixed before the final gate.
+
 # R25 current integration
 
 FILES: `sandbox/code-repair/runner.py`, `src/ontofill/phases/p5_execute/phase.py`, `src/ontofill/repair/`, `src/ontofill/sandbox/jobs.py`, focused tests.

@@ -10,6 +10,7 @@ import pytest
 from ontofill.lake import FileLake
 from ontofill.phases.p3_fanout.authority import source_fingerprint
 from ontofill.workflow import (
+    _capture_with_live_trace,
     _persisted_run_trace,
     _preview_decision,
     _scratch_case,
@@ -29,6 +30,25 @@ def test_export_trace_includes_steps_from_prior_checkpoint_runs(tmp_path) -> Non
         "before-approval",
         "after-approval",
     ]
+
+
+def test_capture_trace_bridge_publishes_during_capture_and_deduplicates_result() -> None:
+    events: list[str] = []
+    step = {"step_id": "step:synthetic-page", "executed": {"bronze_key": "sha256:page"}}
+
+    def capture(_url: str, **kwargs: object) -> dict:
+        kwargs["on_trace"](step)
+        events.append("capture-returned")
+        return {"page_trace": [step]}
+
+    traced_capture, published_ids = _capture_with_live_trace(
+        capture, lambda _step: events.append("published")
+    )
+    result = traced_capture("https://example.invalid/")
+
+    assert events == ["published", "capture-returned"]
+    assert result["page_trace"] == [step]
+    assert published_ids == {step["step_id"]}
 
 
 def test_retained_auto_source_is_rechecked_against_revised_authority_policy(tmp_path) -> None:

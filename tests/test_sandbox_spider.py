@@ -157,6 +157,7 @@ def test_spider_capture_persists_page_and_robots_bytes_with_one_six_checkpoint_j
     _mock_spider_runtime(monkeypatch, result)
     lake = FileLake(tmp_path / "lake")
     job_id = "job:0123456789abcdef0123456789abcdef"
+    streamed: list[dict] = []
     captured = capture_url(
         "https://catalog.example.invalid/",
         allowed_domains=["example.invalid"],
@@ -181,6 +182,7 @@ def test_spider_capture_persists_page_and_robots_bytes_with_one_six_checkpoint_j
             "max_response_bytes": 512 * 1024,
         },
         job_id=job_id,
+        on_trace=streamed.append,
     )
 
     assert captured["job_id"] == job_id
@@ -207,6 +209,21 @@ def test_spider_capture_persists_page_and_robots_bytes_with_one_six_checkpoint_j
     assert page["job_id"] == job_id
     assert captured["page_trace"][-1]["executed"]["bronze_key"] == page["bronze_key"]
     assert captured["page_trace"][-1]["requested"]["method"] == "GET"
+    write_steps = [
+        step
+        for step in streamed
+        if step.get("executed", {}).get("bronze_key") in {page["bronze_key"], robot["bronze_key"]}
+    ]
+    assert len(write_steps) == 2
+    assert {step["executed"]["bronze_key"] for step in write_steps} == {
+        page["bronze_key"],
+        robot["bronze_key"],
+    }
+    assert all(step["source_id"] == "source-synthetic" for step in write_steps)
+    assert all(step["executed"]["job_id"] == job_id for step in write_steps)
+    assert [step["step_id"] for step in write_steps] == [
+        step["step_id"] for step in captured["page_trace"]
+    ]
 
     job_record = build_job_record(captured)
     assert job_record["job_id"] == job_id

@@ -499,6 +499,7 @@ def build_site_graph(
         {
             "content_type": "application/json",
             "source_id": source_id,
+            "job_id": job_id,
             "run_id": run_id,
             "ontology_version": str(ontology["version"]),
             "generated_by": provenance["backend"],
@@ -619,6 +620,9 @@ def run_confirmed_source_spiders(
 ) -> dict:
     """Crawl each approved source once, then persist and rank its site graph."""
     document = deepcopy(dict(objectives))
+    progress_callback = getattr(capture, "on_trace", None)
+    if not callable(progress_callback):
+        progress_callback = None
     force = set(force_source_ids)
     trace: list[dict] = []
     jobs: list[dict] = []
@@ -746,7 +750,33 @@ def run_confirmed_source_spiders(
                     "generated_by": dict(provenance),
                 }
             )
+            if progress_callback is not None:
+                progress_callback(trace[-1])
             continue
+        publish_step = {
+            "step_id": f"step:{uuid.uuid4().hex}",
+            "run_id": run_id,
+            "phase": 3,
+            "source_id": source_id,
+            "objective_id": objective.get("id"),
+            "tdd_path": spider_tdd_path,
+            "mode": "D1",
+            "observed": {
+                "bronze_key": envelope["bronze_key"],
+                "page_count": len(envelope["graph"]["instances"]),
+            },
+            "requested": {"tool": "site_graph.publish", "job_id": job_id},
+            "executed": {"bronze_key": envelope["bronze_key"], "job_id": job_id},
+            "evaluated": {"status": "published"},
+            "parent_step_id": None,
+            "value_ids": [],
+            "ts": datetime.now(UTC).isoformat(),
+            "generated_by": dict(provenance),
+        }
+        graph_trace.append(publish_step)
+        if progress_callback is not None:
+            for step in graph_trace:
+                progress_callback(step)
         trace.extend(graph_trace)
         jobs.extend(graph_jobs)
         envelopes[source_id] = envelope

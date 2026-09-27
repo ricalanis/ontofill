@@ -549,6 +549,7 @@ def test_confirmed_source_spider_runner_uses_bounded_policy_and_ranks_objectives
     lake = FileLake(tmp_path / "lake")
     capture_result = _capture_result(lake)
     calls: list[dict] = []
+    streamed: list[dict] = []
 
     def capture(url: str, **kwargs: dict) -> dict:
         calls.append({"url": url, **kwargs})
@@ -564,6 +565,7 @@ def test_confirmed_source_spider_runner_uses_bounded_policy_and_ranks_objectives
             "proof": {"dispatch_result": {"status": 200}},
         }
 
+    capture.on_trace = streamed.append
     decision = FakeDecision()
     decision.backend = "vultr"
     live_provenance = {**PROVENANCE, "backend": "vultr"}
@@ -588,6 +590,16 @@ def test_confirmed_source_spider_runner_uses_bounded_policy_and_ranks_objectives
     assert calls[0]["spider_options"]["delay_seconds"] >= 0
     assert calls[0]["job_id"].startswith("job:")
     graph = result["graphs"][SOURCE_ID]["graph"]
+    publish_step = next(
+        step
+        for step in result["trace"]
+        if step.get("requested", {}).get("tool") == "site_graph.publish"
+        and step.get("evaluated", {}).get("status") == "published"
+    )
+    validate_document("trace-step", publish_step)
+    assert publish_step["executed"]["bronze_key"] == result["graphs"][SOURCE_ID]["bronze_key"]
+    assert publish_step["executed"]["job_id"] == calls[0]["job_id"]
+    assert streamed[-1] == publish_step
     assert graph["job_ids"] == [calls[0]["job_id"]]
     assert {item["job_id"] for item in graph["instances"]} == {calls[0]["job_id"]}
     assert result["objectives"]["objectives"][0]["expected_contribution"] == 1.0

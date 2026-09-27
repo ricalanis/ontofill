@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import math
@@ -443,6 +444,61 @@ def _append_trace_bytes(existing: bytes, additions: list[dict]) -> bytes:
 def _publish_steps(feed: RunFeed, trace: list[dict]) -> None:
     for step in trace:
         feed.append_step(step, screenshot_key=step.get("screenshot_key"))
+
+
+def _capture_with_live_trace(
+    capture: Callable[..., dict], publish: Callable[[dict], None]
+) -> tuple[Callable[..., dict], set[str]]:
+    """Publish capture steps as bronze writes finish, with a fallback for test doubles."""
+    try:
+        parameters = inspect.signature(capture).parameters.values()
+        supports_callback = any(
+            parameter.name == "on_trace" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except (TypeError, ValueError):
+        supports_callback = False
+
+    published_ids: set[str] = set()
+
+    def emit_once(step: dict) -> None:
+        if not isinstance(step, dict):
+            return
+        step_id = step.get("step_id")
+        if isinstance(step_id, str) and step_id in published_ids:
+            return
+        publish(step)
+        if isinstance(step_id, str):
+            published_ids.add(step_id)
+
+    def traced_capture(*args, **kwargs) -> dict:
+        if supports_callback:
+            kwargs["on_trace"] = emit_once
+        try:
+            result = capture(*args, **kwargs)
+        except Exception as exc:
+            rows = getattr(exc, "trace", None)
+            if isinstance(rows, list):
+                for row in rows:
+                    emit_once(row)
+            failed_result = getattr(exc, "result", None)
+            if isinstance(failed_result, Mapping):
+                for key in ("trace", "page_trace"):
+                    rows = failed_result.get(key)
+                    if isinstance(rows, list):
+                        for row in rows:
+                            emit_once(row)
+            raise
+        if isinstance(result, Mapping):
+            for key in ("trace", "page_trace"):
+                rows = result.get(key)
+                if isinstance(rows, list):
+                    for row in rows:
+                        emit_once(row)
+        return result
+
+    traced_capture.on_trace = emit_once
+    return traced_capture, published_ids
 
 
 def _publish_decision_calls(
@@ -1090,7 +1146,12 @@ def run_case(
 
             if from_phase <= 3:
                 feed.update_status(state="running", phase=3)
+            streamed_capture_step_ids: set[str] = set()
             if search_client is None:
+                trace_capture, streamed_capture_step_ids = _capture_with_live_trace(
+                    capture or capture_url,
+                    lambda step: feed.append_step(step, screenshot_key=step.get("screenshot_key")),
+                )
                 remaining_budget_usd = _remaining_budget_usd(decision, budget_usd)
                 providers = []
                 if catalog := os.getenv("ONTOFILL_CATALOG_URL"):
@@ -1108,14 +1169,15 @@ def run_case(
                             lake=lake,
                             run_id=run_id,
                             provenance=provenance,
+                            fetch=trace_capture,
                         ),
                     ),
-                    capture=capture or capture_url,
+                    capture=trace_capture,
                     lake=lake,
                     run_id=run_id,
                     provenance=provenance,
                     budget=_p3_loop_budget(remaining_budget_usd),
-                    spider_capture=(capture or capture_url) if not mock else None,
+                    spider_capture=trace_capture if not mock else None,
                 )
             trace_before = len(getattr(search_client, "trace", []))
             jobs_before = len(getattr(search_client, "jobs", []))
@@ -1141,7 +1203,14 @@ def run_case(
                     identity = source_identities.get(source_step.get("source_id"))
                     if identity is not None:
                         source_step.update(identity)
-                _publish_steps(feed, fresh_trace)
+                _publish_steps(
+                    feed,
+                    [
+                        step
+                        for step in fresh_trace
+                        if step.get("step_id") not in streamed_capture_step_ids
+                    ],
+                )
                 trace.extend(fresh_trace)
                 for job in getattr(search_client, "jobs", [])[jobs_before:]:
                     if "checkpoints" in job:

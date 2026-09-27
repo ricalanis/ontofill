@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -660,6 +660,7 @@ def _persist_spider_output(
     generated_by: dict,
     redirect_domain: str,
     limits: SandboxLimits,
+    on_trace: Callable[[dict], None] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     pages = result.get("pages")
     robots = result.get("robots")
@@ -688,6 +689,7 @@ def _persist_spider_output(
                     "url": record.get("url"),
                     "source_id": source_id,
                     "step_id": step_id,
+                    "job_id": job_id,
                     "captured_at": datetime.now(UTC).isoformat(),
                 },
             )
@@ -720,6 +722,8 @@ def _persist_spider_output(
                 parent_step_id=step_id,
             )
         )
+        if on_trace is not None:
+            on_trace(robot_traces[-1])
     for item in pages:
         if not isinstance(item, dict) or item.get("method") != "GET":
             raise CaptureError("spider pod returned a non-GET page record")
@@ -757,6 +761,7 @@ def _persist_spider_output(
                 "captured_at": captured_at,
                 "source_id": source_id,
                 "step_id": step_id,
+                "job_id": job_id,
             },
         )
         trace_id = f"step:{uuid.uuid4().hex}"
@@ -803,6 +808,8 @@ def _persist_spider_output(
                 parent_step_id=step_id,
             )
         )
+        if on_trace is not None:
+            on_trace(page_traces[-1])
     return page_rows, robot_rows, page_traces, robot_traces
 
 
@@ -830,6 +837,7 @@ def _spider_job_result(
     pod_steps: int,
     peak_memory_mb: float,
     egress_events: list[dict],
+    on_trace: Callable[[dict], None] | None = None,
 ) -> tuple[dict, list[dict]]:
     crawl = result.get("crawl")
     if not isinstance(crawl, Mapping):
@@ -846,6 +854,7 @@ def _spider_job_result(
         generated_by=provenance,
         redirect_domain=redirect_domain,
         limits=limits,
+        on_trace=on_trace,
     )
     status = result.get("status")
     status = status if type(status) is int and 0 <= status <= 599 else 0
@@ -928,6 +937,9 @@ def _spider_job_result(
         "edges": result.get("edges", []),
         "page_trace": [*robot_traces, *page_traces],
     }
+    if on_trace is not None:
+        for row in job["trace"]:
+            on_trace(row)
     return job, job["page_trace"]
 
 
@@ -996,6 +1008,7 @@ def capture_url(
     redirect_domain: str | None = None,
     spider_options: Mapping[str, object] | None = None,
     job_id: str | None = None,
+    on_trace: Callable[[dict], None] | None = None,
 ) -> dict:
     """Capture a public page or one bounded gVisor spider job."""
     domains = _domains(allowed_domains)
@@ -1003,6 +1016,7 @@ def capture_url(
     if exact is not None and not set(exact).issubset(domains):
         raise ValueError("exact_hosts must be a subset of allowed_domains")
     step_id = f"step:{uuid.uuid4().hex}"
+    job_id = job_id or f"job:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
     settings = _spider_settings(spider_options) if spider_options is not None else None
@@ -1013,11 +1027,11 @@ def capture_url(
             redirect_domain = registrable_domain(urlsplit(url).hostname or "")
         if limits is None:
             limits = SandboxLimits(timeout_s=300, max_steps=300)
-        job_id = job_id or f"job:{uuid.uuid4().hex}"
     budget = SandboxLimits.from_value(limits)
     started_monotonic = time.monotonic()
     request = {
         "url": url,
+        "job_id": job_id,
         "allowed_domains": domains,
         "capture": ["site_graph"] if settings is not None else ["html", "a11y", "screenshot"],
         "limits": budget.as_dict(),
@@ -1026,7 +1040,6 @@ def capture_url(
         request["exact_hosts"] = exact
     if settings is not None:
         request["spider"] = settings
-        request["job_id"] = job_id
     if not _allowed_host(url, domains) or (
         exact is not None and (urlsplit(url).hostname or "").lower().rstrip(".") not in exact
     ):
@@ -1299,6 +1312,7 @@ def capture_url(
                     pod_steps=pod_steps,
                     peak_memory_mb=peak_memory_mb,
                     egress_events=events,
+                    on_trace=on_trace,
                 )
                 trace_rows = job_result["trace"]
                 proof = job_result["proof"]
@@ -1434,6 +1448,7 @@ def capture_url(
                         "captured_at": captured_at,
                         "source_id": source_id,
                         "step_id": step_id,
+                        "job_id": job_id,
                     }
                     if document is not None:
                         document_bytes = document["content"]
@@ -1462,7 +1477,11 @@ def capture_url(
                                 "redirect_chain": redirect_chain,
                             },
                             requested=request,
-                            executed={"network_request": True, "document_key": document_key},
+                            executed={
+                                "network_request": True,
+                                "document_key": document_key,
+                                "job_id": job_id,
+                            },
                             evaluated={
                                 "status": "captured",
                                 "bronze_objects": 1,
@@ -1553,7 +1572,7 @@ def capture_url(
                                 "redirect_chain": redirect_chain,
                             },
                             requested=request,
-                            executed={"network_request": True, **keys},
+                            executed={"network_request": True, **keys, "job_id": job_id},
                             evaluated={
                                 "status": "captured",
                                 "bronze_objects": 3,
@@ -1692,8 +1711,14 @@ def capture_url(
     if capture_error is not None:
         capture_error.trace = trace_rows or []
         capture_error.result = job_result
+        if on_trace is not None:
+            for row in capture_error.trace:
+                on_trace(row)
         raise capture_error
     assert job_result is not None
+    if settings is None and on_trace is not None:
+        for row in job_result["trace"]:
+            on_trace(row)
     return job_result
 
 
@@ -1711,6 +1736,7 @@ def fetch_url(
     generated_by: dict | None = None,
     limits: SandboxLimits | Mapping[str, object] | None = None,
     include_bytes: bool = True,
+    on_trace: Callable[[dict], None] | None = None,
 ) -> dict:
     """Fetch a discovered file inside the same contained network and store raw bytes."""
     domains = _domains(allowed_domains)
@@ -1718,11 +1744,18 @@ def fetch_url(
     if exact is not None and not set(exact).issubset(domains):
         raise ValueError("exact_hosts must be a subset of allowed_domains")
     step_id = f"step:{uuid.uuid4().hex}"
+    job_id = f"job:{uuid.uuid4().hex}"
     timestamp = datetime.now(UTC).isoformat()
     provenance = _provenance(generated_by)
     budget = SandboxLimits.from_value(limits)
     started_monotonic = time.monotonic()
-    request = {"url": url, "allowed_domains": domains, "fetch": "bytes", "limits": budget.as_dict()}
+    request = {
+        "url": url,
+        "job_id": job_id,
+        "allowed_domains": domains,
+        "fetch": "bytes",
+        "limits": budget.as_dict(),
+    }
     if exact is not None:
         request["exact_hosts"] = exact
     if not _allowed_host(url, domains) or (
@@ -1872,6 +1905,7 @@ def fetch_url(
                     "captured_at": captured_at,
                     "source_id": source_id,
                     "step_id": step_id,
+                    "job_id": job_id,
                 },
             )
             row = _trace(
@@ -1883,7 +1917,7 @@ def fetch_url(
                 tdd_path=tdd_path,
                 observed={"url": final_url, "status": result["status"]},
                 requested=request,
-                executed={"network_request": True, "bronze_key": bronze_key},
+                executed={"network_request": True, "bronze_key": bronze_key, "job_id": job_id},
                 evaluated={
                     "status": "captured",
                     "bronze_objects": 1,
@@ -1893,6 +1927,8 @@ def fetch_url(
                 mode="D0",
                 generated_by=provenance,
             )
+            if on_trace is not None:
+                on_trace(row)
             trace_rows = [
                 row,
                 *_proof_rows(
@@ -1922,6 +1958,7 @@ def fetch_url(
                 "secrets": secrets,
             }
             job_result = {
+                "job_id": job_id,
                 "content_type": result["content_type"],
                 "bronze_key": bronze_key,
                 "url": final_url,
