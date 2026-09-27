@@ -59,9 +59,12 @@ def test_captured_source_candidate_keeps_evidence_fields() -> None:
                 "url": "https://registry.other.test/records",
                 "publisher_kinds": ["public registry"],
                 "authority_verdict": "code_evidence_only",
+                "critic_reason": "Synthetic independent review accepted this capture.",
             }
         },
     }
+    validate_document("source-candidate", packet)
+    packet["property_evidence"]["property-record-name"].pop("critic_reason")
     validate_document("source-candidate", packet)
 
 

@@ -65,7 +65,8 @@
           "publisher_kinds": {
             "type": "array", "items": {"type": "string", "minLength": 1}
           },
-          "authority_verdict": {"type": "string", "minLength": 1}
+          "authority_verdict": {"type": "string", "minLength": 1},
+          "critic_reason": {"type": "string", "minLength": 1}
         }
       }
     },
