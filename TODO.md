@@ -1,5 +1,14 @@
 # Work list
 
+## R16: cell browser liveness and idle CDP
+- [x] Reproduce the relay idle close with a failing local test and seek the demo cell's memory/timeout evidence; no demo job feed was available.
+- [x] Keep the in-pod CDP bridge and sidecar relay open across idle polls; detect browser/target death in status and action counting, with an honest failed job record and measured memory (synthetic gate).
+- [ ] Run focused managed pytest/Ruff; merge and push after the pre-push scan, then update the control VM and run the five-minute live gVisor proof plus forced renderer-death proof.
+FILES: `sandbox/agent-pod/cdp.py`, `sandbox/egress/relay.py`, `src/ontofill/sandbox/cells.py`, `schemas/jobs.schema.json`, `tests/test_cell_relay.py`, `tests/test_cells.py`.
+TASK: Survive idle CDP gaps and stop/report a dead browser target in the substrate.
+DONE: `uv run pytest -q tests/test_cell_relay.py tests/test_cells.py` and the two live R16 proofs above.
+FORMAT: `uv run ruff check src/ontofill/sandbox sandbox/agent-pod sandbox/egress tests/test_cell_relay.py tests/test_cells.py && uv run ruff format --check src/ontofill/sandbox sandbox/agent-pod sandbox/egress tests/test_cell_relay.py tests/test_cells.py`.
+
 ## R3: P5 to browser controller S1
 - [x] Add an isolated P5 controller helper and route S1-start/no-download TDDs through the existing session MCP API.
 - [x] Convert only target-property fields with a safe screen, allowed URL, selector, and mirrored screenshot evidence.

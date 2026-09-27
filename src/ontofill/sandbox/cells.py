@@ -20,6 +20,7 @@ from urllib.request import urlopen
 
 from ontofill.lake import FileLake, S3Lake
 from ontofill.sandbox.capture import (
+    CaptureError,
     _container_network_ip,
     _denied_probe_host,
     _docker,
@@ -179,6 +180,40 @@ def _cdp_url(port: int) -> str:
     if parsed.scheme not in {"ws", "wss"} or not parsed.path.startswith("/devtools/browser/"):
         raise CellError("Chromium did not expose a browser CDP WebSocket")
     return urlunsplit((parsed.scheme, f"127.0.0.1:{port}", parsed.path, "", ""))
+
+
+def _cdp_page_targets(cdp_url: str) -> set[str]:
+    """Find live page targets over the cell's private CDP tunnel."""
+    parsed = urlsplit(cdp_url)
+    if parsed.scheme != "ws" or parsed.hostname != "127.0.0.1" or not parsed.port:
+        raise CellError("cell CDP URL is not a private loopback WebSocket")
+    with urlopen(f"http://127.0.0.1:{parsed.port}/json/list", timeout=3) as response:
+        document = json.load(response)
+    if not isinstance(document, list):
+        raise CellError("Chromium target list is invalid")
+    return {
+        item["id"]
+        for item in document
+        if isinstance(item, dict)
+        and item.get("type") == "page"
+        and isinstance(item.get("id"), str)
+        and item.get("webSocketDebuggerUrl")
+    }
+
+
+def _peak_memory_mb(name: str) -> float | None:
+    """Read the container cgroup peak, which includes Chromium renderers."""
+    try:
+        result = _docker("exec", name, "cat", "/sys/fs/cgroup/memory.peak", check=False, timeout=5)
+    except CaptureError:
+        return None
+    if result.returncode:
+        return None
+    try:
+        value = int(result.stdout.strip())
+    except ValueError:
+        return None
+    return round(value / (1024 * 1024), 3) if value >= 0 else None
 
 
 def _wait_preflight(name: str) -> dict:
@@ -502,6 +537,8 @@ class _Cell:
     timer: threading.Timer | None = None
     steps: int = 0
     peak_memory_mb: float = 0.0
+    target_ids: set[str] = field(default_factory=set)
+    monitor_targets: bool = False
     task_result: dict | None = None
     task_ok: bool = False
     failure_reason: str | None = None
@@ -953,17 +990,36 @@ class CellManager:
         with self._lock:
             cell = self._require(cell_id)
             if cell.state == "ready":
+                measured = _peak_memory_mb(cell.hands)
+                if measured is not None:
+                    cell.peak_memory_mb = max(cell.peak_memory_mb, measured)
                 state_result = _docker(
                     "inspect", "--format", "{{json .State}}", cell.hands, check=False
                 )
                 if state_result.returncode:
-                    cell.failure_reason = "pids"
+                    cell.failure_reason = "browser_closed"
                     self._destroy(cell, mark_failed=True)
                 else:
                     state = json.loads(state_result.stdout)
                     if not state.get("Running"):
-                        cell.failure_reason = "memory" if state.get("OOMKilled") else "pids"
+                        cell.failure_reason = (
+                            "memory" if state.get("OOMKilled") else "browser_closed"
+                        )
                         self._destroy(cell, mark_failed=True)
+                if cell.state == "ready":
+                    try:
+                        if cell.tunnel is not None and cell.tunnel.poll() is not None:
+                            raise OSError("CDP SSH tunnel closed")
+                        targets = _cdp_page_targets(cell.cdp_url or "")
+                    except (OSError, ValueError, CellError):
+                        cell.failure_reason = "cdp_unreachable"
+                        self._destroy(cell, mark_failed=True)
+                    else:
+                        if not targets or (cell.target_ids and not cell.target_ids <= targets):
+                            cell.failure_reason = "browser_closed"
+                            self._destroy(cell, mark_failed=True)
+                        elif cell.monitor_targets:
+                            cell.target_ids = targets
                 if cell.state == "ready" and cell.brain:
                     brain_state = _docker(
                         "inspect", "--format", "{{json .State}}", cell.brain, check=False
@@ -984,6 +1040,9 @@ class CellManager:
 
     def record_step(self, cell_id: str) -> int:
         with self._lock:
+            self._require(cell_id).monitor_targets = True
+        self.status(cell_id)
+        with self._lock:
             cell = self._require(cell_id)
             if cell.state != "ready":
                 raise CellError("cell is not ready")
@@ -997,6 +1056,7 @@ class CellManager:
     def report_task_result(self, cell_id: str, result: dict, *, ok: bool) -> None:
         if not isinstance(result, dict) or not isinstance(ok, bool):
             raise TypeError("result must be an object and ok must be boolean")
+        self.status(cell_id)
         with self._lock:
             cell = self._require(cell_id)
             if cell.state != "ready":
@@ -1010,7 +1070,7 @@ class CellManager:
     def destroy(self, cell_id: str) -> dict:
         with self._lock:
             cell = self._require(cell_id)
-            if cell.state != "destroyed":
+            if cell.state not in {"destroyed", "stopped"}:
                 self._destroy(cell)
             return {"cell_id": cell_id, "state": cell.state, "job_record": cell.job_record}
 
@@ -1024,6 +1084,9 @@ class CellManager:
     def _destroy(self, cell: _Cell, *, mark_failed: bool = False) -> None:
         if cell.timer:
             cell.timer.cancel()
+        measured = _peak_memory_mb(cell.hands)
+        if measured is not None:
+            cell.peak_memory_mb = max(cell.peak_memory_mb, measured)
         if cell.tunnel:
             cell.tunnel.terminate()
             try:
@@ -1084,7 +1147,10 @@ class CellManager:
             and firewall_removed,
         }
         teardown["verified"] = all(teardown.values())
-        cell.state = "destroyed" if teardown["verified"] else "teardown_failed"
+        if teardown["verified"] and cell.failure_reason in {"browser_closed", "cdp_unreachable"}:
+            cell.state = "stopped"
+        else:
+            cell.state = "destroyed" if teardown["verified"] else "teardown_failed"
         cell.cdp_url = None
         cell.brain_url = None
         cell.session_token = None

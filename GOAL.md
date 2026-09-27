@@ -1,6 +1,10 @@
 # Goal
 Deliver a generic Ontofill engine for any open brief, with evidence-backed export, live Vultr decisions, and real zero-inbound Vultr/NetBird infrastructure.
 
+R16 outcome: a live browser cell survives idle CDP gaps, reports a dead browser or target as stopped with a failed job proof, and completes a bounded five-minute gVisor session.
+
+DONE R16: `uv run pytest -q tests/test_cell_relay.py tests/test_cells.py` plus Ruff check/format for touched substrate/tests; on the sandbox VM a five-minute allowed-page session with at least 30-second idle gaps succeeds, while a forced renderer death yields `state=stopped` and a failed jobs record.
+
 Current milestone: close each engine row in the coordination gap tracker, have the orchestrator verify it, then run the real case. P4 negotiation and P1 research are cut by the user.
 
 DONE R1+R5: a console-shaped approval marker binds raw artifact bytes for PRD, factors, ontology and actions; a stale digest pauses the live run with the exact reason and leaves case files unchanged. The user-authorized managed gate passed (246 tests, 3 skips, Ruff clean), public main reached `89c5fff`, and the control VM fast-forwarded plus `uv sync --frozen`.
