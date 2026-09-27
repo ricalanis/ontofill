@@ -48,8 +48,11 @@ class CaseDir:
         return str(found[-1].relative_to(self.root)) if found else None
 
 
-CHECKPOINTS = ("prd", "factors", "ontology", "action")
-DENIABLE = ("prd", "factors", "ontology", "action")  # CONTRACT v0.9.5 (phase checkpoints) and §12 (actions)
+CHECKPOINTS = ("prd", "factors", "ontology", "source", "action")
+# CONTRACT v0.9.5 (phase checkpoints), §12 (actions); a source review (R33/R34) may be denied too: the engine then
+# never uses that publisher (its APPROVED is not an approve with a matching fingerprint)
+DENIABLE = ("prd", "factors", "ontology", "source", "action")
+_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 DENY_REASON_MAX = 2000
 
 
@@ -108,7 +111,11 @@ def approvals(case: CaseDir) -> list[Approval]:
     out = []
     if not case.root.is_dir():
         return out
-    for pending in sorted(case.root.glob("*/APPROVAL_PENDING.md")) + sorted(case.root.glob("*/*/APPROVAL_PENDING.md")):
+    found = [
+        sorted(case.root.glob(pattern))
+        for pattern in ("*/APPROVAL_PENDING.md", "*/*/APPROVAL_PENDING.md", "03-fanout/sources/*/APPROVAL_PENDING.md")
+    ]
+    for pending in [p for group in found for p in group]:
         rel_dir = str(pending.parent.relative_to(case.root))
         if "revisions" in pending.parent.relative_to(case.root).parts:
             continue  # an archived draft's request (v0.9.5), not a live checkpoint
@@ -150,6 +157,8 @@ def load_artifacts(case: CaseDir, item: Approval) -> dict:
             continue
         if "definition_of_done" in doc:
             docs["prd"] = doc
+        elif "source_id" in doc and "fingerprint" in doc:  # 03-fanout/sources/<id>/candidate.json (R33)
+            docs["source"] = doc
         elif "taxonomies" in doc:
             docs["ontology"] = doc
         elif "factors" in doc:
@@ -315,6 +324,17 @@ def build_record(
         record["reason"] = reason
     elif item.checkpoint == "action":
         record["decision"] = "approve"
+    if item.checkpoint == "source":
+        # bind the engine's fingerprint of the candidate reviewed: the engine accepts only an APPROVED carrying it
+        fp = str(item.meta.get("source_fingerprint") or "")
+        if not _FINGERPRINT.match(fp):
+            raise DecisionError(
+                "this source review has no valid source_fingerprint; wait for the engine to re-ask", 409
+            )
+        candidate = load_artifacts(case, item).get("source") or {}
+        if candidate.get("fingerprint") != fp:
+            raise DecisionError(STALE_MESSAGE, 409)
+        record["source_fingerprint"] = fp
     if decision == "deny" and decisions and item.checkpoint == "factors":
         # a deny may carry the per-factor view the approver had formed, but only when it is complete and valid
         factors = (load_artifacts(case, item).get("factors") or {}).get("factors") or []
@@ -508,6 +528,7 @@ def decide(
             "identity_source": identity_source,
             **(extra or {}),
             "artifact_sha256": record["artifact_sha256"],
+            **({"source_fingerprint": record["source_fingerprint"]} if record.get("source_fingerprint") else {}),
             **({"run_id": run_id} if run_id else {}),
         }
         try:
