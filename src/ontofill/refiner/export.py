@@ -293,8 +293,6 @@ def _check_lineage(
                     and step["tdd_path"]
                 ]
                 evidence_step_id = evidence.get("step_id")
-                if evidence_step_id is not None:
-                    matching = [step for step in matching if step["step_id"] == evidence_step_id]
                 if not matching:
                     raise ValueError(
                         f"value {value_id} lacks source/objective/TDD lineage "
