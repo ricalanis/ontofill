@@ -1,0 +1,21 @@
+[Unit]
+Description=Ontofill runner: resumes a paused run when its checkpoint is decided in the Ontofill Console
+After=network-online.target ontofill-ba-gateway.service
+Wants=network-online.target
+
+[Service]
+# The runner's own config (case registry, budgets, state dir, engine command). The engine's secrets live in the
+# separate ONTOFILL_RUNNER_ENGINE_ENV file, loaded into the engine child only.
+EnvironmentFile=/opt/ontofill/runner.env
+WorkingDirectory=/opt/ontofill/engine/runner
+ExecStart=/opt/ontofill/engine/runner/.venv/bin/ontofill-runner serve
+Restart=on-failure
+RestartSec=10
+# SIGTERM lets running engines stop cleanly (the runner forwards it, then waits the grace period).
+KillSignal=SIGTERM
+TimeoutStopSec=60
+StateDirectory=ontofill-runner
+StateDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

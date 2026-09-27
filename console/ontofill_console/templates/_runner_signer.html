@@ -1,0 +1,17 @@
+{# Who a runner action is recorded as. Unlike approval pages, the SSO identity value is never shown here. #}
+{% if identity_mode == "sso-group" %}
+{% if group_verified %}
+      <p class="signer">Verified: member of <strong class="mono">{{ approver_group }}</strong> via NetBird SSO; name self-declared.</p>
+      <label for="runner_name">Your name (self-declared)</label>
+      <input id="runner_name" name="display_name" type="text" required maxlength="100" autocomplete="name">
+{% else %}
+      <p class="signer signer--none">Not verified as a member of <span class="mono">{{ approver_group }}</span>: runner actions are disabled.</p>
+{% endif %}
+{% elif identity_mode == "local" %}
+      <label for="runner_name">Your name (local mode)</label>
+      <input id="runner_name" name="approver" type="text" required maxlength="120" autocomplete="name">
+{% elif identity %}
+      <p class="signer">Signed in (identity recorded, not shown here).</p>
+{% else %}
+      <p class="signer signer--none">No signed-in identity: runner actions are disabled.</p>
+{% endif %}

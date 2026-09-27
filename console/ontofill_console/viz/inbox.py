@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from fastapi import Request
 from fastapi.responses import HTMLResponse
 
-from .. import live
+from .. import live, runner_state
 from .core import Artifacts, VizContext, age, gap, parse_ts
 from .operation import is_live, last_activity, live_marker
 
@@ -80,6 +80,9 @@ def model(settings) -> dict:
         items += mine
         cases.append({"id": case.id, "title": case.title, "question": case.brief,
                       "needs_you": sum(1 for i in mine if i["state"] == "need")})
+    root = getattr(settings, "runner_state", None)  # R18: runner failures, budget stops, kills (runner_state owns this)
+    if root is not None:
+        items += runner_state.inbox_items(root, set(settings.cases))
     items.sort(key=lambda i: (RANK.get(i["state"], 9), i["since"] or ""))
     moving = [i["activity"] for i in items if i.get("live")]
     newest = max(moving, key=lambda ts: parse_ts(ts) or datetime.min.replace(tzinfo=UTC), default=None)

@@ -22,6 +22,7 @@
   <p class="source">case {{ case.id }}{% if domain and domain.usable() %} · primary class: {{ domain.class_label(plural=True)|lower }}{% endif %}</p>
 </section>
 {% include "_question.html" %}
+{% include "_runner.html" %}
 
 <div class="panels">
   <section class="panel" aria-labelledby="now-h">

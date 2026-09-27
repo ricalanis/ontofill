@@ -21,6 +21,8 @@ services:
       ONTOFILL_CONSOLE_IDENTITY_HEADER: ${ONTOFILL_CONSOLE_IDENTITY_HEADER:-X-NetBird-User}
       ONTOFILL_CONSOLE_SPEND_HISTORY: /evidence/spend-history.jsonl
       ONTOFILL_CONSOLE_EVIDENCE_DIR: /evidence
+      ONTOFILL_RUNNER_STATE: /runner   # shared with the ontofill-runner service (R18): control.json, KILL, status
+      ONTOFILL_CONSOLE_GATEWAY_LOG: /gateway-log   # R19: the inference gateway's JSONL call log (metadata only), read-only
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_REGION: ${AWS_REGION:-}
@@ -31,5 +33,7 @@ services:
       - ${CONSOLE_CASE_B_HOST_DIR:-../.cache/empty-case}:/cases/b/case:rw
       - ${CONSOLE_CASE_B_LAKE_DIR:-../.cache/empty-lake}:/cases/b/lake:ro
       - ${CONSOLE_EVIDENCE_HOST_DIR:-../.cache/empty-evidence}:/evidence:ro
+      - ${CONSOLE_RUNNER_STATE_HOST_DIR:-../.cache/empty-runner}:/runner:rw
+      - ${CONSOLE_GATEWAY_LOG_HOST_DIR:-../.cache/empty-gateway-log}:/gateway-log:ro
     ports:
       - "${CONSOLE_BIND_IP:-127.0.0.1}:${CONSOLE_PORT:-8410}:8410"

@@ -4,6 +4,7 @@
 {% set RUN_STATE = {"running": "run", "paused": "pause", "failed": "block", "done": "done"} %}
 {% block main %}
 {{ v.head("Cases", "Every case package the engine works on: the question it answers, its latest run, and what is waiting for a person.", "ONTOFILL_CONSOLE_CASES registry · brief.md · runs/<case>/latest.json") }}
+{% include "_runner_kill.html" %}
 {% if rows %}
 <ul class="strips">
   {% for c in rows %}{% set q = cases[c.id].brief if cases.get(c.id) else None %}

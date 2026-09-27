@@ -1,0 +1,16 @@
+{# R18: the runner's state for this case and the operator actions (approvers only; logged in decisions.jsonl). #}
+{% if runner %}
+<section class="panel" aria-labelledby="runner-h">
+  <h2 class="section-h" id="runner-h">Runner</h2>
+  <p class="signer" data-runner-state="{{ runner.state or 'unknown' }}">{{ runner.text }}{% if runner.run_id %} · <span class="mono">{{ runner.run_id }}</span>{% endif %}</p>
+  {% if runner.reason and runner.state in ("failed", "budget_stop", "waiting_approval") %}<p class="source">{{ runner.reason }}</p>{% endif %}
+  <form method="post" action="/cases/{{ case.id }}/runner">
+    {% include "_runner_signer.html" %}
+    {% set can_act = (identity_mode == "local") or (identity_mode == "sso-group" and group_verified) or (identity_mode == "sso" and identity) %}
+    <button type="submit" name="action" value="start"{% if not can_act or runner.kill %} disabled{% endif %}>Start a new run</button>
+    {% if runner.paused %}<button type="submit" name="action" value="resume"{% if not can_act %} disabled{% endif %}>Resume</button>
+    {% else %}<button type="submit" name="action" value="pause"{% if not can_act %} disabled{% endif %}>Pause</button>
+    {% if runner.state == "failed" %}<button type="submit" name="action" value="resume"{% if not can_act %} disabled{% endif %}>Retry once</button>{% endif %}{% endif %}
+  </form>
+</section>
+{% endif %}

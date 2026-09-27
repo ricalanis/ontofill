@@ -1,0 +1,8 @@
+{# R18: the global kill switch. On = the runner launches nothing and stops running engines. #}
+<form method="post" action="/runner/kill" class="panel">
+  <p class="signer" data-runner-kill="{{ 'on' if runner_kill else 'off' }}">Runner: {{ "OFF (kill switch on): nothing runs" if runner_kill else "on: approved checkpoints resume by themselves" }}</p>
+  {% include "_runner_signer.html" %}
+  {% set can_act = (identity_mode == "local") or (identity_mode == "sso-group" and group_verified) or (identity_mode == "sso" and identity) %}
+  {% if runner_kill %}<button type="submit" name="state" value="off"{% if not can_act %} disabled{% endif %}>Turn the runner back on</button>
+  {% else %}<button type="submit" name="state" value="on" class="btn--deny"{% if not can_act %} disabled{% endif %}>Kill switch: stop all runs</button>{% endif %}
+</form>

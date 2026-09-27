@@ -6,6 +6,7 @@
   <h1>Approvals</h1>
   <p class="lede">The engine pauses at three checkpoints until a person signs off: the PRD, the factors of variation, and the ontology. It also stops before any action that is not read-only and asks here first. Your answer is written to the <span class="mono">APPROVED</span> marker, bound to the exact artifact you reviewed, and logged; the next <span class="mono">ontofill run</span> resumes from it.</p>
 </section>
+{% include "_runner.html" %}
 {% if done %}{% set done_item = items|selectattr("phase_dir", "equalto", done)|first %}<p class="notice" role="status">{% if done_item and done_item.decision == "deny" %}Denied <span class="mono">{{ done }}</span>.{% if done_item.checkpoint != "action" %} The engine regenerates it with your reason on the next <span class="mono">ontofill run</span>.{% else %} The run resumes on the next <span class="mono">ontofill run</span>.{% endif %}{% else %}Approved <span class="mono">{{ done }}</span>. The run resumes on the next <span class="mono">ontofill run</span>.{% endif %}</p>{% endif %}
 {% if error %}<p class="notice notice--error" role="alert">{{ error }}</p>{% endif %}
 {% if items %}

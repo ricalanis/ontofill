@@ -1,0 +1,33 @@
+[project]
+name = "ontofill-runner"
+version = "0.1.0"
+description = "Self-sustained case runs: resumes a paused engine run when its checkpoint is decided in the Ontofill Console"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
+
+[project.scripts]
+ontofill-runner = "ontofill_runner.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ontofill_runner"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "BLE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
