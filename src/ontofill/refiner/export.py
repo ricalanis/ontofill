@@ -613,6 +613,8 @@ def _completeness_relation_id(
     class_id: str,
 ) -> str | None:
     relation_id = query.get("relation_id")
+    if relation_id is None and query.get("measure") == "share":
+        return None  # an explicit share with no relation measures every primary entity (R64)
     if relation_id is not None:
         relation = relations.get(relation_id)
         if relation is None:

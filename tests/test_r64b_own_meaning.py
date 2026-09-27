@@ -128,3 +128,72 @@ def test_export_measures_a_relation_share() -> None:
     }
     assert _query_actual(entities, query) == 0.5
     assert _query_actual(entities, {k: v for k, v in query.items() if k != "measure"}) == 1
+
+
+def test_an_explicit_share_without_relation_is_not_redirected_to_the_cases_relation_count() -> None:
+    """The export used to resolve a completeness share with no relation_id to the case's single relation-count query
+    (here `held_by`), even when the share was explicit: SF's dod1 would again be measured only over cross-checked
+    branches. Only a legacy query (no `measure`) falls back; an explicit share measures every primary entity."""
+    import pytest
+
+    from ontofill.refiner.export import _metrics
+    from tests.test_refiner import RECORDED, RUN_ID, ontology
+
+    model = ontology()
+    queries = {
+        "queries": [
+            {
+                "criterion_id": "linked_books",
+                "aggregate": "count_entities_with_relation",
+                "class_id": "Book",
+                "relation_id": "held_by",
+                "target": 1,
+                "operator": ">=",
+            },
+            {
+                "criterion_id": "complete_books",
+                "aggregate": "entities_meeting_completeness",
+                "class": "Book",
+                "properties": "dod",
+                "min_ratio": 0.8,
+                "measure": "share",
+                "target": 1,
+                "operator": ">=",
+            },
+        ]
+    }
+
+    def book(index: int, *, complete: bool, linked: bool) -> dict:
+        def field(present: bool) -> dict:
+            return {
+                "value": f"v{index}" if present else None,
+                "status": "gold" if present else "missing",
+                "evidence": [{"source_type": "catalog"}] if present else [],
+            }
+
+        values = {p["id"]: field(complete) for p in model["properties"] if p["domain"] == "Book"}
+        values["book_id"] = field(True)
+        links = [{"property": "held_by", "target": f"library-{index}"}] if linked else []
+        return {"class": "Book", "properties": values, "classified_as": [], "links": links}
+
+    books = [
+        book(0, complete=True, linked=True),
+        book(1, complete=False, linked=True),
+        book(2, complete=True, linked=False),
+        book(3, complete=True, linked=False),
+    ]
+    result = _metrics(
+        run_id=RUN_ID,
+        entities=books,
+        ontology=model,
+        dod_queries=queries,
+        trace=[],
+        taxonomy_levels={},
+        jobs=None,
+        generated_by=RECORDED,
+        preview=False,
+        decisions_by_backend=None,
+    )
+    assert result["dod"][1]["actual"] == pytest.approx(
+        0.75
+    )  # 3 of all 4 books, not 1 of the 2 linked ones
