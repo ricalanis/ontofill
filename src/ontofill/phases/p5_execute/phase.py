@@ -27,6 +27,8 @@ from ontofill.inference.page_content import screened_page_content
 from ontofill.lake import FileLake, S3Lake
 from ontofill.phases.p5_execute.controller import execute_controller
 from ontofill.refiner import Observation, SilverStore
+from ontofill.repair import repair_html_extractor
+from ontofill.repair.runner import RepairExecutor
 from ontofill.runfeed import RunFeed
 from ontofill.sandbox import capture_url, fetch_url
 
@@ -65,6 +67,74 @@ def _html_table(html: str) -> ParsedFile:
             if cells:
                 rows.append(ParsedRow(f"html-table-{table_number}", row_number, cells))
     return ParsedFile("html", tuple(rows))
+
+
+def _html_d1_records(
+    mapping: tuple[tuple[str | None, tuple[str, ...], list[ParsedRow]], dict, dict],
+    ontology: dict,
+    tdd: dict,
+) -> list[dict]:
+    """Convert mapped literal HTML cells into the D1 oracle used to test a macro."""
+    (_sheet, headers, rows), macro, _mapping_step = mapping
+    properties = {item["id"]: item for item in ontology["properties"]}
+    classes = {item["id"]: item for item in ontology["classes"]}
+    entity_class = classes[macro["class_id"]]
+    expected = []
+    for row in rows[: tdd.get("target_volume", 300)]:
+        values = {
+            column["header"]: ""
+            for column in macro["columns"]
+            if column["property_id"] in tdd["target_fields"]
+        }
+        by_property: dict[str, object] = {}
+        for column in macro["columns"]:
+            property_id = column["property_id"]
+            index = headers.index(column["header"])
+            if index >= len(row.values) or property_id not in tdd["target_fields"]:
+                continue
+            raw_value = row.values[index]
+            try:
+                value = _coerce(raw_value, properties[property_id]["datatype"])
+            except (TypeError, ValueError):
+                continue
+            if value is not None:
+                values[column["header"]] = str(raw_value)
+                by_property[property_id] = value
+        identity = by_property.get(entity_class["identifier_property"]) or by_property.get(
+            entity_class["title_property"]
+        )
+        if identity is not None and normalize_identifier(identity) and values:
+            expected.append({"row_number": row.row_number, "values": values})
+    return expected
+
+
+def _rows_from_html_macro(
+    mapping: tuple[tuple[str | None, tuple[str, ...], list[ParsedRow]], dict, dict],
+    outputs: tuple[list[dict], ...],
+) -> tuple[tuple[str | None, tuple[str, ...], list[ParsedRow]], dict, dict] | None:
+    if len(outputs) != 1:
+        return None
+    (sheet, _headers, _rows), macro, mapping_step = mapping
+    headers = tuple(column["header"] for column in macro["columns"])
+    rows = []
+    for record in outputs[0]:
+        if (
+            not isinstance(record.get("row_number"), int)
+            or isinstance(record.get("row_number"), bool)
+            or not isinstance(record.get("values"), dict)
+        ):
+            return None
+        values = record["values"]
+        if set(values) != set(headers) or any(
+            not isinstance(value, str) for value in values.values()
+        ):
+            return None
+        rows.append(
+            ParsedRow(
+                sheet or "html-table", record["row_number"], tuple(values[key] for key in headers)
+            )
+        )
+    return (sheet, headers, rows), macro, mapping_step
 
 
 def _table(parsed: ParsedFile) -> tuple[str | None, tuple[str, ...], list[ParsedRow]] | None:
@@ -476,6 +546,7 @@ def execute_objective(
     browser_client: BrowserAgentClient | None = None,
     browser_steps_root: Path | None = None,
     browser_captures_root: Path | None = None,
+    repair_executor: RepairExecutor | None = None,
 ) -> ExecutionResult:
     """Execute one approved TDD; every emitted value is a literal captured cell."""
     source_id = objective["source_id"]
@@ -518,6 +589,28 @@ def execute_objective(
     page = capture(objective["source_url"], **kwargs)
     traces = list(page["trace"])
     jobs = [page]
+
+    def controller_fallback() -> ExecutionResult:
+        if feed is None:
+            raise RuntimeError("P5 S1 fallback requires the run feed")
+        result = execute_controller(
+            case_dir=case_dir,
+            objective=objective,
+            ontology=ontology,
+            tdd=tdd,
+            lake=lake,
+            run_id=run_id,
+            store=store,
+            provenance=provenance,
+            feed=feed,
+            tdd_path=tdd_path,
+            coerce=_coerce,
+            client=browser_client,
+            steps_root=browser_steps_root,
+            captures_root=browser_captures_root,
+        )
+        return ExecutionResult(result.observations, [*traces, *result.trace], jobs, "html")
+
     candidates = [
         link
         for link in page_links(page["html"], page["url"])
@@ -525,6 +618,8 @@ def execute_objective(
     ]
     candidate_count = len(candidates)
     downloaded = None
+    repair_trace: list[dict] = []
+    mapped = None
     if candidates:
         selection_schema = {
             "type": "object",
@@ -587,43 +682,99 @@ def execute_objective(
                 }
             )
             return ExecutionResult([], traces, jobs, "html")
-        if feed is None:
-            raise RuntimeError("P5 S1 fallback requires the run feed")
-        result = execute_controller(
+        parsed = _html_table(page["html"])
+        if (
+            tdd.get("extraction_method") == "dom"
+            and _table(parsed) is not None
+            and page.get("html_key")
+        ):
+            evidence_url, bronze_key = page["url"], page["html_key"]
+            parent_step = page["trace"][0]["step_id"]
+            mapped = _map_columns(
+                case_dir=case_dir,
+                source_id=source_id,
+                parsed=parsed,
+                ontology=ontology,
+                tdd=tdd,
+                decision=decision,
+                run_id=run_id,
+                objective_id=objective_id,
+                tdd_path=tdd_path,
+                parent_step_id=parent_step,
+                provenance=provenance,
+            )
+            if mapped is not None:
+                expected = _html_d1_records(mapped, ontology, tdd)
+                repaired = repair_html_extractor(
+                    case_dir=case_dir,
+                    lake=lake,
+                    capture_key=bronze_key,
+                    expected=expected,
+                    decision=decision,
+                    run_id=run_id,
+                    source_id=source_id,
+                    objective_id=objective_id,
+                    tdd_path=tdd_path,
+                    source_type=objective["source_type"],
+                    target_fields=list(tdd["target_fields"]),
+                    ontology_fingerprint=_digest(ontology),
+                    generated_by=provenance,
+                    parent_step_id=mapped[2]["step_id"],
+                    executor=repair_executor,
+                )
+                repair_trace = list(repaired.trace)
+                if repaired.passed:
+                    replayed = _rows_from_html_macro(mapped, repaired.outputs)
+                    if replayed is not None:
+                        mapped = replayed
+                    else:
+                        repaired = type(repaired)(
+                            False,
+                            repaired.trace,
+                            repaired.outputs,
+                            failure_reason="invalid_macro_output",
+                        )
+                if not repaired.passed:
+                    failure_step = {
+                        "step_id": f"step:{uuid.uuid4().hex}",
+                        "run_id": run_id,
+                        "phase": 5,
+                        "source_id": source_id,
+                        "objective_id": objective_id,
+                        "tdd_path": tdd_path,
+                        "mode": "S1",
+                        "event": "escalation",
+                        "observed": {"repair_failure": repaired.failure_reason or "repair_failed"},
+                        "requested": {"action": "code.repair", "next_mode": "S1"},
+                        "executed": {"strategy": "browser_agent.session.act"},
+                        "evaluated": {"status": "escalated"},
+                        "parent_step_id": (
+                            repair_trace[-1]["step_id"] if repair_trace else mapped[2]["step_id"]
+                        ),
+                        "value_ids": [],
+                        "ts": datetime.now(UTC).isoformat(),
+                        "generated_by": provenance,
+                    }
+                    traces.extend([mapped[2], *repair_trace, failure_step])
+                    return controller_fallback()
+            else:
+                return controller_fallback()
+        else:
+            return controller_fallback()
+    if downloaded is not None:
+        mapped = _map_columns(
             case_dir=case_dir,
-            objective=objective,
+            source_id=source_id,
+            parsed=parsed,
             ontology=ontology,
             tdd=tdd,
-            lake=lake,
+            decision=decision,
             run_id=run_id,
-            store=store,
-            provenance=provenance,
-            feed=feed,
+            objective_id=objective_id,
             tdd_path=tdd_path,
-            coerce=_coerce,
-            client=browser_client,
-            steps_root=browser_steps_root,
-            captures_root=browser_captures_root,
+            parent_step_id=parent_step,
+            provenance=provenance,
         )
-        return ExecutionResult(
-            result.observations,
-            [*traces, *result.trace],
-            jobs,
-            "html",
-        )
-    mapped = _map_columns(
-        case_dir=case_dir,
-        source_id=source_id,
-        parsed=parsed,
-        ontology=ontology,
-        tdd=tdd,
-        decision=decision,
-        run_id=run_id,
-        objective_id=objective_id,
-        tdd_path=tdd_path,
-        parent_step_id=parent_step,
-        provenance=provenance,
-    )
     if tdd.get("membership"):
         if downloaded is None:
             reason = "membership_requires_downloaded_file"
@@ -692,6 +843,7 @@ def execute_objective(
         return ExecutionResult([], traces, jobs, parsed.format)
     (sheet, headers, rows), macro, mapping_step = mapped
     traces.append(mapping_step)
+    traces.extend(repair_trace)
     class_id = macro["class_id"]
     entity_class = next(item for item in ontology["classes"] if item["id"] == class_id)
     properties = {item["id"]: item for item in ontology["properties"]}
@@ -699,6 +851,7 @@ def execute_objective(
         item["property_id"]: headers.index(item["header"]) for item in macro["columns"]
     }
     source_type = objective["source_type"]
+    execution_mode = "D0" if downloaded is not None else "D1"
     emitted: list[Observation] = []
     for row in rows[: tdd.get("target_volume", 300)]:
         values = {}
@@ -772,7 +925,7 @@ def execute_objective(
                 "source_id": source_id,
                 "objective_id": objective_id,
                 "tdd_path": tdd_path,
-                "mode": "D0",
+                "mode": execution_mode,
                 "observed": {"sheet": sheet, "row": row.row_number},
                 "requested": {"tool": "emit.observation", "properties": list(values)},
                 "executed": {"tool": "emit.observation", "count": len(value_ids)},
@@ -803,6 +956,7 @@ def execute_objectives(
     browser_client: BrowserAgentClient | None = None,
     browser_steps_root: Path | None = None,
     browser_captures_root: Path | None = None,
+    repair_executor: RepairExecutor | None = None,
 ) -> list[ExecutionResult]:
     """Run every selected objective, applying complete-list membership last."""
     ordered = [
@@ -826,6 +980,7 @@ def execute_objectives(
             browser_client=browser_client,
             browser_steps_root=browser_steps_root,
             browser_captures_root=browser_captures_root,
+            repair_executor=repair_executor,
         )
         for objective in ordered
     ]

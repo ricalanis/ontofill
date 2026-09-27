@@ -73,6 +73,7 @@ def test_failure_then_patch_pass_stores_artifacts_and_trace(tmp_path: Path) -> N
     )
     assert outcome.passed
     assert outcome.attempts == 2
+    assert outcome.outputs == ([{"name": "Alpha"}], [{"name": "Beta"}])
     assert [row["repair"]["result"] for row in outcome.trace] == ["fail", "pass"]
     assert outcome.trace[0]["repair"]["test"] == {
         "pages": 2,
@@ -140,6 +141,29 @@ def test_retry_budget_and_limit_stop_are_visible(tmp_path: Path) -> None:
     for row in stopped.trace:
         validate_document("trace-step", row)
     assert stopped.trace[-1]["evaluated"]["reason"] == "timeout"
+
+
+def test_patch_error_returns_the_failed_attempt_for_caller_fallback(tmp_path: Path) -> None:
+    lake = FileLake(tmp_path / "lake")
+    cases = [_case(lake, b"<p>x</p>", ({"name": "x"},))]
+
+    class FailingExecutor:
+        def run(self, code, captures, limits):
+            return RepairExecution((), "candidate did not match", error="candidate_error")
+
+    def failed_patch(_feedback):
+        raise RuntimeError("inference unavailable")
+
+    outcome = run_code_repair(
+        **_args(lake, cases),
+        initial_code="broken extractor",
+        patch=failed_patch,
+        executor=FailingExecutor(),
+    )
+    assert not outcome.passed
+    assert outcome.failure_reason == "patch_error"
+    assert len(outcome.trace) == 1
+    assert outcome.trace[0]["repair"]["result"] == "fail"
 
 
 def test_pod_runner_executes_bytes_and_returns_error_without_expectations(tmp_path: Path) -> None:

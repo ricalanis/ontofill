@@ -61,6 +61,7 @@ class RepairOutcome:
     code_key: str
     attempts: int
     failure_reason: str | None = None
+    outputs: tuple[list[dict], ...] = ()
 
 
 class RepairExecutor(Protocol):
@@ -339,7 +340,13 @@ def run_code_repair(
         if emit_step is not None:
             emit_step(repair_step.copy())
         if passed:
-            return RepairOutcome(True, tuple(trace), code_key, attempt)
+            return RepairOutcome(
+                True,
+                tuple(trace),
+                code_key,
+                attempt,
+                outputs=tuple(execution.outputs),
+            )
         if execution.limit_reason:
             limit_step = {
                 **trace[-1],
@@ -359,7 +366,10 @@ def run_code_repair(
         if attempt == max_attempts:
             return RepairOutcome(False, tuple(trace), code_key, attempt, "max_attempts")
         feedback = RepairFeedback(attempt, code, stderr[-500:], output_diff[:8192], diff, test)
-        candidate = patch(feedback)
+        try:
+            candidate = patch(feedback)
+        except Exception:  # noqa: BLE001 - inference failures trigger the caller's safe fallback
+            return RepairOutcome(False, tuple(trace), code_key, attempt, "patch_error")
         if candidate is None or candidate == code:
             return RepairOutcome(False, tuple(trace), code_key, attempt, "no_patch")
         previous_code, code = code, candidate
